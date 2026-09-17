@@ -48,6 +48,7 @@ contract and follows `LEDGERFUL_TABLE_STYLE`. Purity inventory unchanged
 | `search --json` | yes | yes | 0136 envelope; empty results OK |
 | `search-trigrams --json` | yes (0352) | yes | schemaVersion 1 object `kind: "searchTrigrams"`. Hidden CLI. Count-backed `totalMatching` is **not** an 0136 `search` key. `emptyReason` omit when `resultCount > 0`. `next` omit unless runnable (`ledgerful index` or `ledgerful search {accepted…}`). No `line`/`content`. CLI-only; no MCP. |
 | `bridge query --json` | yes (0366) | yes (exit 0) | Hidden CLI. schemaVersion 1 object `kind: "bridgeQuery"`. Closed `status`: `disabled` \| `unavailable` \| `failed` \| `empty` \| `populated`. `ok` agrees with process exit (`disabled`/`empty`/`populated` → 0; `unavailable`/`failed` → 1 after JSON). Omit-empty `source` (`ipc` \| `cli`), `providerCommand`, `resultCount`, `results`, `skippedLines`, `message`, `next`. `results[]` only on `populated`. Not BridgeRecord NDJSON (0136 `--json-lines`). CLI-only; no MCP. |
+| `bridge export --json` / `--stdout` / `-o -` | yes (0367) | yes (exit 0) | Hidden CLI. **Not** `kind: bridgeExport`. Body is one BridgeRecord **0.3** Snapshot. Additive camelCase `payload.datasets[]` (always `impact` plus requested `--hotspots`/`--ledger`/`--madr`). `--json` with no `--out` implies stdout (no default `.ledgerful` write). `--json --out <path>` writes the file and leaves stdout empty. `-o -` is stdout. `--stdout` + `--out <path>` errors. `--madr` row is `notWired`. Compact one-line is NDJSON-compatible; pretty `--json` is not importable as NDJSON lines. CLI-only; no MCP. |
 | `verify --json` | yes | yes* | plan-execution payload; see rejected combos |
 | `index --check --json` | yes | yes (0149) | schemaVersion 1 + `kind: "indexCheck"` camelCase DTO (0207); Info suppressed under json; Error still on stderr |
 | `index --semantic --json` | yes (0161) | yes | One final JSON object (`schemaVersion`, `mode`, `reason`, counts, `upToDate`); zero human mid-run lines on stdout |
@@ -1182,6 +1183,38 @@ Not BridgeRecord NDJSON (that remains `search --json-lines` / export).
 **`disabled` / `empty`:** exit **0**, omit `results` / `resultCount`. `--json` stderr empty.
 **`unavailable` / `failed`:** JSON then exit **1**.
 **Human `disabled`:** stderr enable hint (0065) plus stdout `Status: disabled`.
+
+No MCP tool. Not Daily 5.
+
+---
+
+## `bridge export` Snapshot `datasets[]` (0367)
+
+Hidden CLI. Body is **BridgeRecord 0.3** (`record_kind: snapshot`), not a
+`kind: bridgeExport` envelope. `payload.datasets[]` items are camelCase.
+
+Row set: always `impact`, plus one row per requested flag
+(`--hotspots` / `--ledger` / `--madr`). Sorted by `name`.
+`metadata.hotspot_count` / `ledger_count` equal the matching row `count`
+(or `"0"` when that row is absent).
+
+| Field | Notes |
+|---|---|
+| `name` | `hotspots` \| `ledger` \| `madr` \| `impact` |
+| `requested` | clap flag; `impact` is always `false` |
+| `included` | rows (or the impact packet) serialized |
+| `count` | always. `impact` is **1**. Else vec length; `0` on empty / notWired / error |
+| `source` | omit-empty: `live` \| `ledgerSqlite` \| `workingTreeImpact` |
+| `commitsRequested` / `commitsWalked` | omit-empty; hotspots only |
+| `stop` | omit-empty; hotspots only; `budget` \| `cancelled` |
+| `limit` | omit-empty; hotspots + ledger |
+| `filter` | omit-empty; hotspots; `"unfiltered"` or comma-joined prefixes |
+| `emptyReason` | omit-empty: `noMatches` \| `historyError` \| `ledgerError` \| `notWired` |
+| `next` | omit-empty; `--madr` is `ledgerful ledger adr export` |
+
+`--json` with no `--out` implies stdout. `--json --out <path>` writes the file
+and leaves stdout empty. `-o -` is stdout (not a file named `-`).
+`--stdout` + `--out <path>` errors. Compact one-line is NDJSON-compatible.
 
 No MCP tool. Not Daily 5.
 

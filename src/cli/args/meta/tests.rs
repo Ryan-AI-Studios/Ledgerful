@@ -17,6 +17,11 @@ fn search_trigrams_json_is_machine_output() {
     assert!(parse(&["bridge", "query", "q", "--json"]).is_machine_output());
     assert!(parse(&["bridge", "query", "--json", "q"]).is_machine_output());
     assert!(!parse(&["bridge", "query", "q"]).is_machine_output());
+    assert!(parse(&["bridge", "export", "--json"]).is_machine_output());
+    assert!(parse(&["bridge", "export", "--stdout"]).is_machine_output());
+    assert!(parse(&["bridge", "export", "-o", "-"]).is_machine_output());
+    assert!(!parse(&["bridge", "export"]).is_machine_output());
+    assert!(!parse(&["bridge", "export", "--out", "snap.json"]).is_machine_output());
     assert!(
         parse(&["bridge", "query", "q", "--json"])
             .argv_shape()

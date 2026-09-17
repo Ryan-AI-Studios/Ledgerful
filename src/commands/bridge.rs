@@ -4,9 +4,9 @@ use miette::Result;
 
 #[derive(Subcommand, Debug)]
 pub enum BridgeCommands {
-    /// Export Ledgerful state (hotspots/ledger/decisions) as BridgeRecord NDJSON
+    /// Export a BridgeRecord JSON snapshot (compact is NDJSON-compatible)
     Export {
-        /// Output path
+        /// Output path (`-` means stdout)
         #[arg(long, short)]
         out: Option<String>,
         /// Print to stdout instead of writing to a file
@@ -21,8 +21,8 @@ pub enum BridgeCommands {
         /// Include ledger entries
         #[arg(long)]
         ledger: bool,
-        /// Path scope for hotspots
-        #[arg(long)]
+        /// Path prefixes for `--hotspots` (comma-separated; slash-normalized)
+        #[arg(long, requires = "hotspots")]
         scope: Option<String>,
         /// Export structured MADR fields
         #[arg(long)]
@@ -59,7 +59,7 @@ pub fn execute(command: BridgeCommands) -> Result<()> {
             madr,
             json,
         } => {
-            let scope_vec = scope.map(|s| s.split(',').map(|p| p.trim().to_string()).collect());
+            let scope_vec = normalize_export_scope(scope);
             let args = ExportArgs {
                 out_path: out,
                 stdout,
@@ -74,5 +74,42 @@ pub fn execute(command: BridgeCommands) -> Result<()> {
         }
         BridgeCommands::Import { input } => crate::bridge::import::execute_import(input),
         BridgeCommands::Query { query, json } => crate::bridge::client::execute_query(query, json),
+    }
+}
+
+fn normalize_export_scope(scope: Option<String>) -> Option<Vec<String>> {
+    let slash = char::from_u32(92).expect("backslash");
+    let prefixes: Vec<String> = scope?
+        .split(',')
+        .map(|p| p.trim().replace(slash, "/"))
+        .filter(|p| !p.is_empty())
+        .collect();
+    if prefixes.is_empty() {
+        None
+    } else {
+        Some(prefixes)
+    }
+}
+
+#[cfg(test)]
+#[allow(non_snake_case)]
+mod tests {
+    use super::normalize_export_scope;
+
+    #[test]
+    fn normalize_export_scope__backslash_and_comma__forward_slash_prefixes() {
+        let mut scoped = String::from("src");
+        scoped.push(char::from_u32(92).expect("backslash"));
+        scoped.push_str("bridge, docs");
+        assert_eq!(
+            normalize_export_scope(Some(scoped)),
+            Some(vec!["src/bridge".to_string(), "docs".to_string()])
+        );
+    }
+
+    #[test]
+    fn normalize_export_scope__empty_tokens__none() {
+        assert_eq!(normalize_export_scope(Some("  ,  ".to_string())), None);
+        assert_eq!(normalize_export_scope(None), None);
     }
 }

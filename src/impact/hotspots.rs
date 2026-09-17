@@ -109,6 +109,10 @@ pub struct HotspotQuery {
     pub all_parents: bool,
     pub decay_half_life: usize,
     pub dir_filter: Option<String>,
+    /// Additive multi-prefix crawl filter (0367 `bridge export --scope`).
+    /// When non-empty, a path matches if it `starts_with` **any** prefix.
+    /// Existing `dir_filter` callers stay keep-green when this is empty.
+    pub dir_filters: Vec<String>,
     pub lang_filter: Option<String>,
     pub exact_file: Option<String>,
     pub centrality: bool,
@@ -289,7 +293,15 @@ pub fn calculate_hotspots_detailed(
                 continue;
             }
 
-            if query
+            if !query.dir_filters.is_empty() {
+                if !query
+                    .dir_filters
+                    .iter()
+                    .any(|dir| path_str.starts_with(dir.as_str()))
+                {
+                    continue;
+                }
+            } else if query
                 .dir_filter
                 .as_ref()
                 .is_some_and(|dir| !path_str.starts_with(dir))

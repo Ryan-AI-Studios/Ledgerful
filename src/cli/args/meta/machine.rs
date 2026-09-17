@@ -102,7 +102,9 @@ impl Commands {
             },
             Commands::Tests(args) => args.json,
             Commands::Bridge { subcommand } => match subcommand {
-                BridgeCommands::Export { json, .. } => *json,
+                BridgeCommands::Export {
+                    json, stdout, out, ..
+                } => *json || *stdout || out.as_deref() == Some("-"),
                 BridgeCommands::Import { .. } => false,
                 BridgeCommands::Query { json, .. } => *json,
             },

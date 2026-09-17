@@ -91,6 +91,35 @@ pub struct SnapshotPayload {
     pub hotspots: Vec<crate::impact::packet::Hotspot>,
     pub ledger: Vec<crate::ledger::types::LedgerEntry>,
     pub metadata: std::collections::HashMap<String, String>,
+    /// Requested-versus-emitted provenance (0367). JSON key `datasets`.
+    #[serde(default)]
+    pub datasets: Vec<ExportDataset>,
+}
+
+/// One exported dataset row. Item keys are camelCase (`commitsRequested`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportDataset {
+    pub name: String,
+    pub requested: bool,
+    pub included: bool,
+    pub count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commits_requested: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commits_walked: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub empty_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

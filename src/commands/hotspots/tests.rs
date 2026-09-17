@@ -838,6 +838,30 @@ fn entity_prefix_still_git_history_starts_with() {
         dir_filter: Some("src/".to_string()),
         ..HotspotQuery::default()
     };
+    let calc_filters = calculate_hotspots_detailed(
+        &storage,
+        &provider,
+        &HotspotQuery {
+            commits: 50,
+            limit: 10,
+            dir_filters: vec!["src/".to_string()],
+            ..HotspotQuery::default()
+        },
+    )
+    .expect("dir_filters calc");
+    assert!(
+        calc_filters.hotspots.iter().all(|h| h
+            .path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .starts_with("src/")),
+        "dir_filters must crawl-filter like dir_filter: {:?}",
+        calc_filters
+            .hotspots
+            .iter()
+            .map(|h| h.path.clone())
+            .collect::<Vec<_>>()
+    );
     let calc = calculate_hotspots_detailed(&storage, &provider, &query).expect("calc");
     assert!(
         calc.hotspots.iter().all(|h| h
