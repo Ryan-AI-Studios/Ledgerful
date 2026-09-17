@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.14] - 2026-09-17
+
 ### Added
 
 - **Bridge export dataset provenance (0367):**
