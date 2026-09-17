@@ -1,9 +1,10 @@
-use crate::common::{DirGuard, TempEnv, git_add_and_commit, setup_git_repo};
+use crate::common::{DirGuard, TempEnv, git_add_and_commit, run_cli, setup_git_repo};
 use ledgerful::commands::config::{
     execute_config_schema, execute_config_verify, execute_config_view,
 };
 use ledgerful::commands::init::execute_init;
 use serde_json::Value;
+use serial_test::serial;
 use std::fs;
 use std::process::Command;
 use tempfile::tempdir;
@@ -835,5 +836,220 @@ fn config_verify_base_url_origin_dotenv() {
     assert!(
         human_out.contains("explicit (dotenv:LEDGERFUL_LOCAL_MODEL_URL)"),
         "human Source cell: {human_out}"
+    );
+}
+
+fn inited_config_repo() -> tempfile::TempDir {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("dummy.txt"), "content").unwrap();
+    git_add_and_commit(root, "initial");
+    let (out, err, code) = run_cli(root, &["init"]);
+    assert_eq!(code, 0, "init failed: {out}{err}");
+    tmp
+}
+
+#[test]
+#[serial(cwd)]
+fn config_verify_human_unscoped_catalog_then_valid_then_next() {
+    let tmp = inited_config_repo();
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["config", "verify"]);
+    assert_eq!(code, 0, "verify failed: {stdout}{stderr}");
+    assert!(
+        stdout.contains("Health catalog: Backend, Semantic, Ask, Gate"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("config verify --verbose"), "{stdout}");
+    assert!(stdout.contains("config view --section"), "{stdout}");
+    assert!(
+        !stdout.contains("config set"),
+        "Next must not name config set: {stdout}"
+    );
+    assert!(stdout.contains("Resolved Settings"), "{stdout}");
+    assert!(stdout.contains("All configurations are valid."), "{stdout}");
+    let resolved = stdout.find("Resolved Settings").expect("resolved");
+    let catalog = stdout.find("Health catalog").expect("catalog");
+    let valid = stdout.find("All configurations are valid.").expect("valid");
+    let next = stdout.find("Next:").expect("next");
+    assert!(
+        resolved < catalog && catalog < valid && valid < next,
+        "order Resolved < catalog < valid < Next in {stdout}"
+    );
+
+    let (verbose, verr, vcode) = run_cli(tmp.path(), &["config", "verify", "--verbose"]);
+    assert_eq!(vcode, 0, "{verbose}{verr}");
+    assert!(verbose.contains("config view --section"), "{verbose}");
+    assert!(
+        !verbose.contains("config verify --verbose"),
+        "unscoped --verbose omits verify --verbose Next: {verbose}"
+    );
+}
+
+#[test]
+#[serial(cwd)]
+fn config_verify_json_unscoped_is_bare_array_auto_omits_origin() {
+    let tmp = inited_config_repo();
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["config", "verify", "--json"]);
+    assert_eq!(code, 0, "verify --json failed: {stdout}{stderr}");
+    let trimmed = stdout.trim();
+    assert!(
+        trimmed.starts_with('['),
+        "first non-ws must be [: {trimmed}"
+    );
+    assert!(
+        !stdout.contains("Health catalog"),
+        "json must not print catalog: {stdout}"
+    );
+    let v: Value = serde_json::from_str(trimmed).expect("bare array");
+    let arr = v.as_array().expect("array");
+    assert_eq!(arr.len(), 4, "{v}");
+    let backend = arr
+        .iter()
+        .find(|s| s["section"] == "Backend")
+        .expect("Backend");
+    let ty = backend["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["label"] == "type")
+        .expect("type");
+    assert!(ty.get("origin").is_none(), "{ty}");
+}
+
+#[test]
+#[serial(cwd)]
+fn config_verify_json_verbose_embed_concurrency_has_default_origin() {
+    let tmp = inited_config_repo();
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["config", "verify", "--json", "--verbose"]);
+    assert_eq!(code, 0, "verify --json --verbose failed: {stdout}{stderr}");
+    let v: Value = serde_json::from_str(stdout.trim()).expect("bare array");
+    let semantic = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["section"] == "Semantic")
+        .expect("Semantic");
+    let rows = semantic["rows"].as_array().unwrap();
+    let embed = rows
+        .iter()
+        .find(|r| r["label"] == "embed_concurrency")
+        .expect("embed_concurrency");
+    assert_eq!(embed["source"], "default", "{embed}");
+    assert_eq!(embed["origin"], "default", "{embed}");
+    let ask = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["section"] == "Ask")
+        .expect("Ask");
+    let cli_timeout = ask["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["label"] == "cli_default_timeout_secs")
+        .expect("cli_default_timeout_secs");
+    assert!(cli_timeout.get("origin").is_none(), "{cli_timeout}");
+    let effective = rows
+        .iter()
+        .find(|r| r["label"] == "embed_concurrency_effective")
+        .expect("effective");
+    assert!(effective.get("origin").is_none(), "{effective}");
+}
+
+#[test]
+#[serial(cwd)]
+fn config_verify_section_backend_human_next_and_json() {
+    let tmp = inited_config_repo();
+    let (json_out, err, code) = run_cli(
+        tmp.path(),
+        &["config", "verify", "--json", "--section", "backend"],
+    );
+    assert_eq!(code, 0, "{json_out}{err}");
+    let v: Value = serde_json::from_str(json_out.trim()).expect("array");
+    let arr = v.as_array().expect("array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["section"], "Backend");
+
+    let (human, herr, hcode) = run_cli(tmp.path(), &["config", "verify", "--section", "backend"]);
+    assert_eq!(hcode, 0, "{human}{herr}");
+    assert!(
+        !human.contains("Health catalog:"),
+        "scoped must not claim four-section catalog: {human}"
+    );
+    assert!(
+        human.contains("config verify --section backend --verbose"),
+        "{human}"
+    );
+
+    let (verbose, verr, vcode) = run_cli(
+        tmp.path(),
+        &["config", "verify", "--section", "backend", "--verbose"],
+    );
+    assert_eq!(vcode, 0, "{verbose}{verr}");
+    assert!(
+        !verbose.contains("config verify --section backend --verbose"),
+        "verbose scoped omits Next: {verbose}"
+    );
+}
+
+#[test]
+#[serial(cwd)]
+fn config_view_human_unscoped_names_section_key_and_json_has_no_envelope() {
+    let tmp = inited_config_repo();
+    let (human, herr, hcode) = run_cli(tmp.path(), &["config", "view"]);
+    assert_eq!(hcode, 0, "{human}{herr}");
+    assert!(human.contains("config view --section"), "{human}");
+    assert!(human.contains("--key"), "{human}");
+    assert!(human.contains("config verify --verbose"), "{human}");
+
+    let (json_out, jerr, jcode) = run_cli(tmp.path(), &["config", "view", "--json"]);
+    assert_eq!(jcode, 0, "{json_out}{jerr}");
+    let v: Value = serde_json::from_str(json_out.trim()).expect("object");
+    assert!(v.get("schemaVersion").is_none(), "{v}");
+    assert!(
+        !json_out.contains("Next:"),
+        "json dump must not include Next: {json_out}"
+    );
+}
+
+#[test]
+#[serial(cwd)]
+fn config_view_section_gate_json_stays_object_slice() {
+    let tmp = inited_config_repo();
+    let (stdout, stderr, code) = run_cli(
+        tmp.path(),
+        &["config", "view", "--json", "--section", "gate"],
+    );
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    let v: Value = serde_json::from_str(stdout.trim()).expect("object");
+    assert!(v.get("schemaVersion").is_none(), "{v}");
+    assert!(v.get("mode").is_some(), "{v}");
+}
+
+#[test]
+#[serial(cwd)]
+fn config_view_human_scoped_omits_next() {
+    let tmp = inited_config_repo();
+    let (section_out, err, code) = run_cli(tmp.path(), &["config", "view", "--section", "gate"]);
+    assert_eq!(code, 0, "{section_out}{err}");
+    assert!(
+        !section_out.contains("Next:"),
+        "human --section must omit Next: {section_out}"
+    );
+    assert!(
+        !section_out.contains("ledgerful config view --section"),
+        "{section_out}"
+    );
+
+    let (key_out, kerr, kcode) = run_cli(
+        tmp.path(),
+        &["config", "view", "--section", "gate", "--key", "mode"],
+    );
+    assert_eq!(kcode, 0, "{key_out}{kerr}");
+    assert!(!key_out.contains("Next:"), "{key_out}");
+    assert!(
+        !key_out.contains("ledgerful config view --section"),
+        "{key_out}"
     );
 }

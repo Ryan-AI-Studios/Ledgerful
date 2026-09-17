@@ -112,12 +112,18 @@ pub enum PolicyCommands {
 Examples:
   ledgerful config view                        Show resolved configuration
   ledgerful config show                        Alias for `config view`
+  ledgerful config view --section local_model
   ledgerful config verify                      Verify config and environment health
+  ledgerful config verify --verbose            Include default rows
   ledgerful config set coverage.enabled=true   Set a configuration value
   ledgerful config diff                        Show declared vs inferred config
 ")]
 pub enum ConfigCommands {
     /// Verify current configuration and environment health
+    #[command(after_help = "\
+Examples:
+  ledgerful config verify --verbose            Include default rows
+")]
     Verify {
         /// Output results as JSON
         #[arg(long)]
@@ -131,6 +137,11 @@ pub enum ConfigCommands {
     },
     /// View resolved project configuration
     #[command(visible_alias = "show")]
+    #[command(after_help = "\
+Examples:
+  ledgerful config view --section local_model
+  ledgerful config view --section local_model --key prefer_local
+")]
     View {
         /// Output as JSON
         #[arg(long)]

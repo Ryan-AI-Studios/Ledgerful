@@ -96,7 +96,11 @@ pub fn execute_config_verify(json: bool, section: Option<&str>, verbose: bool) -
 
     if success {
         if !json {
+            if section.is_none() {
+                println!("{}", crate::commands::config_verify::health_catalog_line());
+            }
             println!("\nAll configurations are valid.");
+            print_verify_next(section, verbose);
         }
         Ok(())
     } else {
@@ -114,5 +118,21 @@ pub fn execute_config_verify(json: bool, section: Option<&str>, verbose: bool) -
             );
         }
         Err(miette::miette!("Configuration verification failed."))
+    }
+}
+
+fn print_verify_next(section: Option<&str>, verbose: bool) {
+    match (section, verbose) {
+        (None, false) => {
+            println!("Next: ledgerful config verify --verbose");
+            println!("      ledgerful config view --section SECTION");
+        }
+        (None, true) => {
+            println!("Next: ledgerful config view --section SECTION");
+        }
+        (Some(sec), false) => {
+            println!("Next: ledgerful config verify --section {sec} --verbose");
+        }
+        (Some(_), true) => {}
     }
 }

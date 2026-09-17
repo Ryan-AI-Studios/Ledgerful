@@ -109,6 +109,11 @@ pub fn execute_config_view(json: bool, section: Option<String>, key: Option<Stri
                     .map_err(|e| miette::miette!("Failed to serialize: {e}"))?
             );
         }
+        if section.is_none() && key.is_none() {
+            println!("Next: ledgerful config view --section SECTION");
+            println!("      ledgerful config view --section SECTION --key KEY");
+            println!("      ledgerful config verify --verbose");
+        }
     }
     Ok(())
 }

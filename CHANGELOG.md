@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Config readout provenance (0362):** `config verify` human unscoped
+  names the four-section health catalog and clap next. Config-backed
+  semantic concurrency rows emit `origin`; Auto/derived rows still omit
+  it; Inherited keeps `source: inherited` with file origin. `config view`
+  stays a redacted dump; unscoped human names `--section`/`--key`.
+  Success `--json` stays a bare array.
+
 - **Ledger stack/validator list readout (0361):** Empty `ledger validator
   list` names `0 registered` and clap next (no empty table). `ledger
   stack` names clap-required flags without invented terms and prints
