@@ -173,11 +173,15 @@ fn apply_provenance(row: &mut ConfigRow, ctx: &ProvenanceContext) {
     if ctx.keys.contains(toml_key) {
         row.origin = Some(RowOrigin::File);
         row.location = Some(ctx.config_location.clone());
-        row.source = ValueSource::Explicit;
+        if row.source != ValueSource::Inherited {
+            row.source = ValueSource::Explicit;
+        }
     } else {
         row.origin = Some(RowOrigin::Default);
         row.location = None;
-        row.source = ValueSource::Default;
+        if row.source != ValueSource::Inherited {
+            row.source = ValueSource::Default;
+        }
     }
 }
 
@@ -197,6 +201,9 @@ fn toml_string_nonempty(root: Option<&toml::Value>, dotted: &str) -> bool {
 
 fn source_cell(row: &ConfigRow) -> String {
     match row.origin {
+        Some(RowOrigin::File) if row.source == ValueSource::Inherited => {
+            "inherited (file)".to_string()
+        }
         Some(RowOrigin::File) => "explicit (file)".to_string(),
         Some(RowOrigin::Env) => format!(
             "explicit (env:{})",
@@ -251,6 +258,15 @@ pub fn all_sections() -> Vec<Box<dyn ConfigSection>> {
         Box::new(AskSection),
         Box::new(GateSection),
     ]
+}
+
+/// Human-only catalog identity for unscoped `config verify` (0362).
+pub fn health_catalog_line() -> String {
+    let names: Vec<&str> = all_sections().iter().map(|s| s.name()).collect();
+    format!(
+        "Health catalog: {} (not the full config dump).",
+        names.join(", ")
+    )
 }
 
 pub fn render_verify_report(
@@ -497,6 +513,32 @@ impl ConfigSection for AskSection {
     }
 }
 
+fn value_source_for(source: crate::semantic::concurrency::ConcurrencySource) -> ValueSource {
+    use crate::semantic::concurrency::ConcurrencySource as Cs;
+    match source {
+        Cs::Cli | Cs::ConfigParse | Cs::ConfigEmbed | Cs::ConfigEmbedCap => ValueSource::Explicit,
+        Cs::ConfigLegacy | Cs::ConfigLocalModel => ValueSource::Inherited,
+        Cs::Default => ValueSource::Default,
+        Cs::Auto => ValueSource::Auto,
+    }
+}
+
+fn toml_key_for(
+    source: crate::semantic::concurrency::ConcurrencySource,
+    row_key: &'static str,
+) -> Option<&'static str> {
+    use crate::semantic::concurrency::ConcurrencySource as Cs;
+    match source {
+        Cs::ConfigParse => Some("semantic.parse_concurrency"),
+        Cs::ConfigEmbed => Some("semantic.embed_concurrency"),
+        Cs::ConfigEmbedCap => Some("semantic.embed_concurrency_cap"),
+        Cs::ConfigLegacy => Some("semantic.concurrency"),
+        Cs::ConfigLocalModel => Some("local_model.concurrency"),
+        Cs::Default => Some(row_key),
+        Cs::Cli | Cs::Auto => None,
+    }
+}
+
 pub struct SemanticSection;
 
 impl ConfigSection for SemanticSection {
@@ -511,9 +553,7 @@ impl ConfigSection for SemanticSection {
     fn render_rows(&self, config: &Config) -> Vec<ConfigRow> {
         let mut rows = Vec::new();
 
-        let available_parallelism = std::thread::available_parallelism().ok().map(|n| {
-            std::num::NonZeroUsize::new(n.get()).expect("available_parallelism is non-zero")
-        });
+        let available_parallelism = std::thread::available_parallelism().ok();
         let resolve_opts = crate::semantic::concurrency::ResolveOptions {
             available_parallelism,
             ..Default::default()
@@ -528,81 +568,23 @@ impl ConfigSection for SemanticSection {
         rows.push(ConfigRow::new(
             "parse_threads",
             resolved.parse_threads.get().to_string(),
-            match resolved.parse_source {
-                crate::semantic::concurrency::ConcurrencySource::Cli => ValueSource::Explicit,
-                crate::semantic::concurrency::ConcurrencySource::ConfigParse => {
-                    ValueSource::Explicit
-                }
-                crate::semantic::concurrency::ConcurrencySource::ConfigEmbed => {
-                    ValueSource::Explicit
-                }
-                crate::semantic::concurrency::ConcurrencySource::ConfigEmbedCap => {
-                    ValueSource::Explicit
-                }
-                crate::semantic::concurrency::ConcurrencySource::ConfigLegacy => {
-                    ValueSource::Inherited
-                }
-                crate::semantic::concurrency::ConcurrencySource::ConfigLocalModel => {
-                    ValueSource::Inherited
-                }
-                crate::semantic::concurrency::ConcurrencySource::Default => ValueSource::Default,
-                crate::semantic::concurrency::ConcurrencySource::Auto => ValueSource::Auto,
-            },
-            None,
+            value_source_for(resolved.parse_source),
+            toml_key_for(resolved.parse_source, "semantic.parse_concurrency"),
         ));
 
         rows.push(ConfigRow::new(
             "embed_concurrency",
             resolved.requested_embed_threads.get().to_string(),
-            match resolved.embed_source {
-                crate::semantic::concurrency::ConcurrencySource::Cli => ValueSource::Explicit,
-                crate::semantic::concurrency::ConcurrencySource::ConfigParse => {
-                    ValueSource::Explicit
-                }
-                crate::semantic::concurrency::ConcurrencySource::ConfigEmbed => {
-                    ValueSource::Explicit
-                }
-                crate::semantic::concurrency::ConcurrencySource::ConfigEmbedCap => {
-                    ValueSource::Explicit
-                }
-                crate::semantic::concurrency::ConcurrencySource::ConfigLegacy => {
-                    ValueSource::Inherited
-                }
-                crate::semantic::concurrency::ConcurrencySource::ConfigLocalModel => {
-                    ValueSource::Inherited
-                }
-                crate::semantic::concurrency::ConcurrencySource::Default => ValueSource::Default,
-                crate::semantic::concurrency::ConcurrencySource::Auto => ValueSource::Auto,
-            },
-            None,
+            value_source_for(resolved.embed_source),
+            toml_key_for(resolved.embed_source, "semantic.embed_concurrency"),
         ));
 
-        let effective_source = if resolved.embed_threads.get()
-            < resolved.requested_embed_threads.get()
-        {
-            ValueSource::Auto
-        } else {
-            match resolved.embed_source {
-                crate::semantic::concurrency::ConcurrencySource::Cli => ValueSource::Explicit,
-                crate::semantic::concurrency::ConcurrencySource::ConfigParse => {
-                    ValueSource::Explicit
-                }
-                crate::semantic::concurrency::ConcurrencySource::ConfigEmbed => {
-                    ValueSource::Explicit
-                }
-                crate::semantic::concurrency::ConcurrencySource::ConfigEmbedCap => {
-                    ValueSource::Explicit
-                }
-                crate::semantic::concurrency::ConcurrencySource::ConfigLegacy => {
-                    ValueSource::Inherited
-                }
-                crate::semantic::concurrency::ConcurrencySource::ConfigLocalModel => {
-                    ValueSource::Inherited
-                }
-                crate::semantic::concurrency::ConcurrencySource::Default => ValueSource::Default,
-                crate::semantic::concurrency::ConcurrencySource::Auto => ValueSource::Auto,
-            }
-        };
+        let effective_source =
+            if resolved.embed_threads.get() < resolved.requested_embed_threads.get() {
+                ValueSource::Auto
+            } else {
+                value_source_for(resolved.embed_source)
+            };
 
         rows.push(ConfigRow::new(
             "embed_concurrency_effective",
@@ -614,27 +596,8 @@ impl ConfigSection for SemanticSection {
         rows.push(ConfigRow::new(
             "embed_concurrency_cap",
             resolved.embed_cap.get().to_string(),
-            match resolved.cap_source {
-                crate::semantic::concurrency::ConcurrencySource::Cli => ValueSource::Explicit,
-                crate::semantic::concurrency::ConcurrencySource::ConfigParse => {
-                    ValueSource::Explicit
-                }
-                crate::semantic::concurrency::ConcurrencySource::ConfigEmbed => {
-                    ValueSource::Explicit
-                }
-                crate::semantic::concurrency::ConcurrencySource::ConfigEmbedCap => {
-                    ValueSource::Explicit
-                }
-                crate::semantic::concurrency::ConcurrencySource::ConfigLegacy => {
-                    ValueSource::Inherited
-                }
-                crate::semantic::concurrency::ConcurrencySource::ConfigLocalModel => {
-                    ValueSource::Inherited
-                }
-                crate::semantic::concurrency::ConcurrencySource::Default => ValueSource::Default,
-                crate::semantic::concurrency::ConcurrencySource::Auto => ValueSource::Auto,
-            },
-            None,
+            value_source_for(resolved.cap_source),
+            toml_key_for(resolved.cap_source, "semantic.embed_concurrency_cap"),
         ));
 
         rows.push(ConfigRow::new(
@@ -967,5 +930,49 @@ mod tests {
         assert_eq!(row.origin, Some(RowOrigin::Env));
         assert_eq!(row.location.as_deref(), Some("LEDGERFUL_LOCAL_MODEL_URL"));
         assert_eq!(row.source, ValueSource::Explicit);
+    }
+
+    #[test]
+    fn health_catalog_line_matches_all_sections() {
+        let names: Vec<&str> = all_sections().iter().map(|s| s.name()).collect();
+        assert_eq!(names, vec!["Backend", "Semantic", "Ask", "Gate"]);
+        assert_eq!(
+            health_catalog_line(),
+            "Health catalog: Backend, Semantic, Ask, Gate (not the full config dump)."
+        );
+    }
+
+    #[test]
+    fn toml_key_for_default_embed_is_row_aware() {
+        use crate::semantic::concurrency::ConcurrencySource as Cs;
+        assert_eq!(
+            toml_key_for(Cs::Default, "semantic.embed_concurrency"),
+            Some("semantic.embed_concurrency")
+        );
+        assert_eq!(
+            toml_key_for(Cs::Default, "semantic.embed_concurrency_cap"),
+            Some("semantic.embed_concurrency_cap")
+        );
+        assert_eq!(toml_key_for(Cs::Auto, "semantic.parse_concurrency"), None);
+        assert_eq!(
+            toml_key_for(Cs::ConfigLegacy, "semantic.parse_concurrency"),
+            Some("semantic.concurrency")
+        );
+    }
+
+    #[test]
+    fn apply_provenance_preserves_inherited_with_file_origin() {
+        let ctx = ctx_from_toml("[semantic]\nconcurrency = 8\n", ".ledgerful/config.toml");
+        let mut row = ConfigRow::new(
+            "parse_threads",
+            "8",
+            ValueSource::Inherited,
+            Some("semantic.concurrency"),
+        );
+        apply_provenance(&mut row, &ctx);
+        assert_eq!(row.source, ValueSource::Inherited);
+        assert_eq!(row.origin, Some(RowOrigin::File));
+        assert_eq!(row.location.as_deref(), Some(".ledgerful/config.toml"));
+        assert_eq!(source_cell(&row), "inherited (file)");
     }
 }
