@@ -1,0 +1,7 @@
+package: vis-network
+version: 10.1.2
+file: standalone/umd/vis-network.min.js
+source: https://registry.npmjs.org/vis-network/-/vis-network-10.1.2.tgz
+sha256: fc674cfa6cceb27a3b40ff4ea75c204a2d8570fb39b9a627127cf7039e141ad4
+license: Apache-2.0 OR MIT
+retrieved: 2026-09-17

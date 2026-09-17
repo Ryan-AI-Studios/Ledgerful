@@ -33,6 +33,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Standalone graph visualization (0370):**
+  `viz` and `viz --view services` write offline HTML
+  with pinned vis-network 10.1.2 (no unpkg). Graph
+  Louvain and edges stay inside the `--limit`ed node
+  set. Gated services view uses the declared
+  `[services]` overlay instead of leftover Cozo
+  counts.
+
 - **Evidence chain disclosure (0369):**
   `export evidence` `gateModeDisclosure.chainContinuityStatus`
   says `verified:` only after a gated `prev_hash`
