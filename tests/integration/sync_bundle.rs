@@ -127,6 +127,7 @@ fn test_bundle_rejects_wrong_signing_key() {
     assert!(
         result
             .unwrap_err()
+            .to_string()
             .contains("Signature verification failed")
     );
 }
@@ -216,7 +217,10 @@ fn test_bundle_rejects_oversized_zip_input() {
 
     assert!(result.is_err());
     assert!(
-        result.unwrap_err().contains("Bundle exceeds maximum size"),
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Bundle exceeds maximum size"),
         "expected bundle size cap error"
     );
 }
@@ -284,7 +288,7 @@ fn test_bundle_invalid_signature_is_rejected_before_full_deserialization() {
 
     let result = Bundle::parse(&zip_bytes, &verify_keys);
     assert!(result.is_err());
-    let err = result.unwrap_err();
+    let err = result.unwrap_err().to_string();
     assert!(
         err.contains("Signature verification failed"),
         "expected signature failure before full manifest deserialization, got: {}",

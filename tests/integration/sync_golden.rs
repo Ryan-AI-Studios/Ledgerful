@@ -434,7 +434,7 @@ fn verify_uses_load_peer_keys_fail_closed() {
     let path = tmp.path().join("foreign.lfbundle");
     fs::write(&path, &enc).unwrap();
 
-    let err = handle_verify(path.to_str().unwrap()).expect_err("unknown peer");
+    let err = handle_verify(path.to_str().unwrap(), false).expect_err("unknown peer");
     let msg = format!("{err:#}").to_lowercase();
     assert!(
         msg.contains("unknown") || msg.contains("verify") || msg.contains("signature"),

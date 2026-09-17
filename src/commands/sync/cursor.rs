@@ -1,8 +1,10 @@
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
+use crate::sync::hlc::HLC;
 use miette::{Result, miette};
 use rusqlite::OptionalExtension;
 use std::io::Write;
+use std::str::FromStr;
 
 pub fn handle(set: Option<String>, json: bool) -> Result<()> {
     let layout = crate::commands::helpers::get_layout()?;
@@ -38,6 +40,18 @@ pub fn handle(set: Option<String>, json: bool) -> Result<()> {
             display_hlc(extract_hlc.as_deref())
         );
         println!("  Last Apply HLC:   {}", display_hlc(apply_hlc.as_deref()));
+        println!(
+            "HLC watermarks are Hybrid Logical Clocks (`physical_ms-logical-node_id`), not wall-clock lag."
+        );
+        println!(
+            "Extract is the last bundle this device published; Apply is the last bundle this device consumed."
+        );
+        if let Some(line) = human_compare_line(
+            nonempty_hlc(extract_hlc.as_deref()),
+            nonempty_hlc(apply_hlc.as_deref()),
+        ) {
+            println!("{line}");
+        }
     }
 
     Ok(())
@@ -65,6 +79,36 @@ pub(crate) fn lag_reason(
         "neverRun"
     } else {
         "hlcNotWallClock"
+    }
+}
+
+/// Emit matrix: omit when either watermark is missing; `incomparable` when
+/// both present but unparseable; otherwise `Ord` on parsed HLCs.
+pub(crate) fn watermark_compare(
+    extract: Option<&str>,
+    apply: Option<&str>,
+) -> Option<&'static str> {
+    let (Some(extract), Some(apply)) = (extract, apply) else {
+        return None;
+    };
+    match (HLC::from_str(extract), HLC::from_str(apply)) {
+        (Ok(eh), Ok(ah)) => Some(if eh > ah {
+            "extractAhead"
+        } else if ah > eh {
+            "applyAhead"
+        } else {
+            "equal"
+        }),
+        _ => Some("incomparable"),
+    }
+}
+
+fn human_compare_line(extract: Option<&str>, apply: Option<&str>) -> Option<&'static str> {
+    match watermark_compare(extract, apply)? {
+        "extractAhead" => Some("Extract is ahead of Apply."),
+        "applyAhead" => Some("Apply is ahead of Extract."),
+        "equal" => Some("Extract and Apply watermarks are equal."),
+        _ => None,
     }
 }
 
@@ -106,7 +150,7 @@ fn emit_cursor_json(layout: &Layout) -> Result<()> {
         .unwrap_or((None, None));
     let extract = nonempty_hlc(extract_hlc.as_deref());
     let apply = nonempty_hlc(apply_hlc.as_deref());
-    let envelope = serde_json::json!({
+    let mut envelope = serde_json::json!({
         "schemaVersion": 1,
         "initialized": initialized,
         "lastExtractHlc": extract,
@@ -117,6 +161,9 @@ fn emit_cursor_json(layout: &Layout) -> Result<()> {
         },
         "nextAction": cursor_log_next_action(initialized),
     });
+    if let Some(cmp) = watermark_compare(extract, apply) {
+        envelope["watermarkCompare"] = serde_json::Value::String(cmp.to_string());
+    }
     let mut stdout = std::io::stdout().lock();
     serde_json::to_writer(&mut stdout, &envelope)
         .map_err(|e| miette!("Failed to write cursor JSON: {e}"))?;
@@ -147,6 +194,37 @@ mod tests {
     #[test]
     fn lag_reason_hlc_not_wall_clock() {
         assert_eq!(lag_reason(true, Some("a"), Some("b")), "hlcNotWallClock");
+    }
+
+    #[test]
+    fn watermark_compare_omit_when_either_missing() {
+        assert_eq!(watermark_compare(None, None), None);
+        assert_eq!(watermark_compare(Some("1700000000000-0000-a"), None), None);
+        assert_eq!(watermark_compare(None, Some("1700000000000-0000-a")), None);
+    }
+
+    #[test]
+    fn watermark_compare_incomparable_when_both_present_unparseable() {
+        assert_eq!(
+            watermark_compare(Some("hlc-a"), Some("hlc-b")),
+            Some("incomparable")
+        );
+    }
+
+    #[test]
+    fn watermark_compare_orders_parseable_hlcs() {
+        assert_eq!(
+            watermark_compare(Some("1700000000001-0000-a"), Some("1700000000000-0000-a")),
+            Some("extractAhead")
+        );
+        assert_eq!(
+            watermark_compare(Some("1700000000000-0000-a"), Some("1700000000001-0000-a")),
+            Some("applyAhead")
+        );
+        assert_eq!(
+            watermark_compare(Some("1700000000000-0000-a"), Some("1700000000000-0000-a")),
+            Some("equal")
+        );
     }
 
     #[test]

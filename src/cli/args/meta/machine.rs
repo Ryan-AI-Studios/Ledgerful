@@ -164,6 +164,7 @@ impl Commands {
                 SyncSubcommands::Status { json } => *json,
                 SyncSubcommands::Cursor { json, .. } => *json,
                 SyncSubcommands::Log { json, .. } => *json,
+                SyncSubcommands::Verify { json, .. } => *json,
                 _ => false,
             },
             Commands::SearchTrigrams(SearchTrigramsArgs { json, .. }) => *json,

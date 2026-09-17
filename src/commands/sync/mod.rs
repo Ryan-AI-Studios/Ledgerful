@@ -23,8 +23,8 @@ pub fn handle(subcommand: SyncSubcommands) -> Result<()> {
         SyncSubcommands::Run { once } => run::handle(once),
         SyncSubcommands::Setup { enable, json } => setup::handle(enable, json),
         SyncSubcommands::Status { json } => status::handle(json),
-        SyncSubcommands::Verify { path } => verify::handle(&path),
+        SyncSubcommands::Verify { path, json } => verify::handle(&path, json),
         SyncSubcommands::Cursor { set, json } => cursor::handle(set, json),
-        SyncSubcommands::Log { tail, json } => log::handle(tail, json),
+        SyncSubcommands::Log { tail, json, failed } => log::handle(tail, json, failed),
     }
 }

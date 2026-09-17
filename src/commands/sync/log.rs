@@ -1,9 +1,10 @@
 use super::cursor::{cursor_log_next_action, sync_initialized};
+use crate::sync::event_log::{SyncLogEvent, parse_event_line};
 use miette::{Result, miette};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 
-pub fn handle(tail: Option<usize>, json: bool) -> Result<()> {
+pub fn handle(tail: Option<usize>, json: bool, failed: bool) -> Result<()> {
     let layout = crate::commands::helpers::get_layout()?;
     let initialized = sync_initialized(&layout)?;
     let log_path = layout.state_dir.join("sync").join("sync.log");
@@ -16,7 +17,16 @@ pub fn handle(tail: Option<usize>, json: bool) -> Result<()> {
             "neverInitialized"
         };
         if json {
-            emit_log_json(state, log_path.as_str(), 0, 0, &[], next_action)?;
+            emit_log_json(&LogJson {
+                log_state: state,
+                path: log_path.as_str(),
+                line_count: 0,
+                skipped_lines: 0,
+                lines: &[],
+                events: &[],
+                failed,
+                next_action,
+            })?;
             return Ok(());
         }
         println!("No sync log found at {log_path} ({state}). Next: {next_action}");
@@ -26,7 +36,7 @@ pub fn handle(tail: Option<usize>, json: bool) -> Result<()> {
     let file = match File::open(log_path.as_std_path()) {
         Ok(f) => f,
         Err(e) => {
-            return unreadable_log(json, log_path.as_str(), next_action, e.to_string());
+            return unreadable_log(json, log_path.as_str(), next_action, e.to_string(), failed);
         }
     };
     let is_file = file.metadata().map(|m| m.is_file()).unwrap_or(false);
@@ -36,6 +46,7 @@ pub fn handle(tail: Option<usize>, json: bool) -> Result<()> {
             log_path.as_str(),
             next_action,
             "sync.log is not a regular file".to_string(),
+            failed,
         );
     }
     let reader = BufReader::new(file);
@@ -47,62 +58,108 @@ pub fn handle(tail: Option<usize>, json: bool) -> Result<()> {
             Err(_) => skipped += 1,
         }
     }
+    let line_count = decoded.len() as u64;
+
+    let selected: Vec<String> = if failed {
+        decoded
+            .into_iter()
+            .filter(|line| parse_event_line(line).is_some_and(|ev| !ev.ok))
+            .collect()
+    } else {
+        decoded
+    };
 
     let limit = tail.unwrap_or(20);
-    let start = if decoded.len() > limit {
-        decoded.len() - limit
+    let start = if selected.len() > limit {
+        selected.len() - limit
     } else {
         0
     };
-    let tailed = &decoded[start..];
+    let tailed = &selected[start..];
+    let events: Vec<SyncLogEvent> = tailed.iter().filter_map(|l| parse_event_line(l)).collect();
     let log_state = if skipped > 0 { "partial" } else { "ok" };
 
     if json {
-        emit_log_json(
+        emit_log_json(&LogJson {
             log_state,
-            log_path.as_str(),
-            decoded.len() as u64,
-            skipped,
-            tailed,
+            path: log_path.as_str(),
+            line_count,
+            skipped_lines: skipped,
+            lines: tailed,
+            events: &events,
+            failed,
             next_action,
-        )?;
+        })?;
         return Ok(());
     }
 
     println!("Recent Sync Logs ({log_path}):");
     for line in tailed {
-        println!("{}", line);
+        if let Some(ev) = parse_event_line(line) {
+            match ev.bundle.as_deref() {
+                Some(bundle) => println!("{} {} {} ok={}", ev.ts, ev.event, bundle, ev.ok),
+                None => println!("{} {} ok={}", ev.ts, ev.event, ev.ok),
+            }
+        } else {
+            println!("{}", line);
+        }
     }
 
     Ok(())
 }
 
-fn unreadable_log(json: bool, path: &str, next_action: &str, err: String) -> Result<()> {
+fn unreadable_log(
+    json: bool,
+    path: &str,
+    next_action: &str,
+    err: String,
+    failed: bool,
+) -> Result<()> {
     if json {
-        emit_log_json("unreadable", path, 0, 0, &[], next_action)?;
+        emit_log_json(&LogJson {
+            log_state: "unreadable",
+            path,
+            line_count: 0,
+            skipped_lines: 0,
+            lines: &[],
+            events: &[],
+            failed,
+            next_action,
+        })?;
         crate::output::requested_exit::request_exit(1);
         return Err(miette!("Failed to open log file: {err}"));
     }
     Err(miette!("Failed to open log file: {err}"))
 }
 
-fn emit_log_json(
-    log_state: &str,
-    path: &str,
+struct LogJson<'a> {
+    log_state: &'a str,
+    path: &'a str,
     line_count: u64,
     skipped_lines: u64,
-    lines: &[String],
-    next_action: &str,
-) -> Result<()> {
-    let envelope = serde_json::json!({
+    lines: &'a [String],
+    events: &'a [SyncLogEvent],
+    failed: bool,
+    next_action: &'a str,
+}
+
+fn emit_log_json(args: &LogJson<'_>) -> Result<()> {
+    let mut envelope = serde_json::json!({
         "schemaVersion": 1,
-        "logState": log_state,
-        "path": path,
-        "lineCount": line_count,
-        "skippedLines": skipped_lines,
-        "lines": lines,
-        "nextAction": next_action,
+        "logState": args.log_state,
+        "path": args.path,
+        "lineCount": args.line_count,
+        "skippedLines": args.skipped_lines,
+        "lines": args.lines,
+        "nextAction": args.next_action,
     });
+    if !args.events.is_empty() {
+        envelope["events"] = serde_json::to_value(args.events)
+            .map_err(|e| miette!("Failed to serialize log events: {e}"))?;
+    }
+    if args.failed {
+        envelope["failed"] = serde_json::Value::Bool(true);
+    }
     let mut stdout = std::io::stdout().lock();
     serde_json::to_writer(&mut stdout, &envelope)
         .map_err(|e| miette!("Failed to write log JSON: {e}"))?;

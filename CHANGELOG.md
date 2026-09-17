@@ -6,6 +6,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Sync operational evidence (0365):**
+  `sync::run` appends JSON-line events
+  to `sync.log`; `sync log --json`
+  exposes `events[]` and `--failed`.
+  `sync verify --json` emits a closed
+  `verdict` over signed and tampered
+  bundles.
+
 ### Fixed
 
 - **Timings inner/flame stage coverage (0364):**
@@ -21,6 +31,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   0314 kinds and 0149 envelope unchanged.
 
 ### Changed
+
+- **Sync cursor HLC readout (0365):**
+  Human output explains Hybrid Logical
+  Clocks and extract-vs-apply order.
+  `lag.status` stays `unknown` (0327).
 
 - **Config readout provenance (0362):** `config verify` human unscoped
   names the four-section health catalog and clap next. Config-backed

@@ -1637,8 +1637,11 @@ impl Commands {
                         f.push("json");
                     }
                 }
-                SyncSubcommands::Verify { .. } => {
+                SyncSubcommands::Verify { json, .. } => {
                     // path is positional value — never hashed.
+                    if *json {
+                        f.push("json");
+                    }
                 }
                 SyncSubcommands::Cursor { set, json } => {
                     if set.is_some() {
@@ -1648,12 +1651,15 @@ impl Commands {
                         f.push("json");
                     }
                 }
-                SyncSubcommands::Log { tail, json } => {
+                SyncSubcommands::Log { tail, json, failed } => {
                     if tail.is_some() {
                         f.push("tail");
                     }
                     if *json {
                         f.push("json");
+                    }
+                    if *failed {
+                        f.push("failed");
                     }
                 }
             },

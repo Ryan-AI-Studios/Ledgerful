@@ -6,7 +6,44 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::fmt;
 use std::io::{Read, Write};
+
+/// Typed parse failure so `sync verify` can classify without scraping `Display`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BundleParseError {
+    UnknownDevice(String),
+    SignatureFailed(String),
+    IntegrityFailed(String),
+    SchemaInvalid(String),
+}
+
+impl BundleParseError {
+    fn schema(msg: String) -> Self {
+        Self::SchemaInvalid(msg)
+    }
+
+    fn integrity(msg: String) -> Self {
+        Self::IntegrityFailed(msg)
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::UnknownDevice(s)
+            | Self::SignatureFailed(s)
+            | Self::IntegrityFailed(s)
+            | Self::SchemaInvalid(s) => s.as_str(),
+        }
+    }
+}
+
+impl fmt::Display for BundleParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::error::Error for BundleParseError {}
 
 /// Maximum encrypted/zip payload accepted for team-sync bundles (256 MiB).
 /// Transport reads enforce this before decrypt to avoid memory exhaustion.
@@ -140,97 +177,103 @@ impl Bundle {
     pub fn parse(
         zip_bytes: &[u8],
         verify_keys: &HashMap<String, [u8; 32]>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, BundleParseError> {
         if zip_bytes.len() > MAX_BUNDLE_SIZE {
-            return Err(format!(
+            return Err(BundleParseError::schema(format!(
                 "Bundle exceeds maximum size: {} > {}",
                 zip_bytes.len(),
                 MAX_BUNDLE_SIZE
-            ));
+            )));
         }
 
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes))
-            .map_err(|e| format!("Failed to open ZIP: {}", e))?;
+            .map_err(|e| BundleParseError::schema(format!("Failed to open ZIP: {}", e)))?;
 
         // 1. Read raw manifest.json bytes, capped before reading.
         let mut manifest_json = Vec::new();
         {
             let mut manifest_file = archive
                 .by_name("manifest.json")
-                .map_err(|e| format!("Missing manifest.json: {}", e))?;
+                .map_err(|e| BundleParseError::schema(format!("Missing manifest.json: {}", e)))?;
             if manifest_file.size() > MAX_MANIFEST_SIZE as u64 {
-                return Err(format!(
+                return Err(BundleParseError::schema(format!(
                     "manifest.json exceeds maximum size: {} > {}",
                     manifest_file.size(),
                     MAX_MANIFEST_SIZE
-                ));
+                )));
             }
-            std::io::copy(&mut manifest_file, &mut manifest_json)
-                .map_err(|e| format!("Failed to read manifest.json: {}", e))?;
+            std::io::copy(&mut manifest_file, &mut manifest_json).map_err(|e| {
+                BundleParseError::schema(format!("Failed to read manifest.json: {}", e))
+            })?;
         }
         if manifest_json.len() > MAX_MANIFEST_SIZE {
-            return Err(format!(
+            return Err(BundleParseError::schema(format!(
                 "manifest.json exceeds maximum size: {} > {}",
                 manifest_json.len(),
                 MAX_MANIFEST_SIZE
-            ));
+            )));
         }
 
         // 2. Pre-parse only device_id so we can choose the key before full deserialization.
         let device_id = serde_json::from_slice::<Value>(&manifest_json)
-            .map_err(|e| format!("Failed to pre-parse manifest.json: {}", e))?
+            .map_err(|e| {
+                BundleParseError::schema(format!("Failed to pre-parse manifest.json: {}", e))
+            })?
             .get("device_id")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .ok_or_else(|| "manifest.json missing device_id".to_string())?;
+            .ok_or_else(|| {
+                BundleParseError::schema("manifest.json missing device_id".to_string())
+            })?;
 
         // 3. Read device.sig
         let mut signature = [0u8; 64];
         {
             let mut sig_file = archive
                 .by_name("device.sig")
-                .map_err(|e| format!("Missing device.sig: {}", e))?;
-            sig_file
-                .read_exact(&mut signature)
-                .map_err(|e| format!("Failed to read device.sig: {}", e))?;
+                .map_err(|e| BundleParseError::schema(format!("Missing device.sig: {}", e)))?;
+            sig_file.read_exact(&mut signature).map_err(|e| {
+                BundleParseError::schema(format!("Failed to read device.sig: {}", e))
+            })?;
         }
 
         // 4. Verify signature on raw manifest bytes before trusting any parsed structure.
-        let pub_key_bytes = verify_keys
-            .get(&device_id)
-            .ok_or_else(|| format!("Unknown device: {}", device_id))?;
+        let pub_key_bytes = verify_keys.get(&device_id).ok_or_else(|| {
+            BundleParseError::UnknownDevice(format!("Unknown device: {}", device_id))
+        })?;
         let verifying_key = VerifyingKey::from_bytes(pub_key_bytes)
-            .map_err(|e| format!("Invalid public key: {}", e))?;
+            .map_err(|e| BundleParseError::schema(format!("Invalid public key: {}", e)))?;
         let sig = Signature::from_bytes(&signature);
-        verifying_key
-            .verify(&manifest_json, &sig)
-            .map_err(|e| format!("Signature verification failed: {}", e))?;
+        verifying_key.verify(&manifest_json, &sig).map_err(|e| {
+            BundleParseError::SignatureFailed(format!("Signature verification failed: {}", e))
+        })?;
 
         // 5. Only after signature verification succeeds, deserialize the full Manifest.
-        let manifest: Manifest = serde_json::from_slice(&manifest_json)
-            .map_err(|e| format!("Failed to parse manifest.json: {}", e))?;
+        let manifest: Manifest = serde_json::from_slice(&manifest_json).map_err(|e| {
+            BundleParseError::schema(format!("Failed to parse manifest.json: {}", e))
+        })?;
 
         // 6. Validate deserialized manifest size/integrity bounds.
         if manifest.entries.len() > MAX_ENTRIES {
-            return Err(format!(
+            return Err(BundleParseError::schema(format!(
                 "entries count {} exceeds maximum {}",
                 manifest.entries.len(),
                 MAX_ENTRIES
-            ));
+            )));
         }
         if manifest.tombstones.len() > MAX_TOMBSTONES {
-            return Err(format!(
+            return Err(BundleParseError::schema(format!(
                 "tombstones count {} exceeds maximum {}",
                 manifest.tombstones.len(),
                 MAX_TOMBSTONES
-            ));
+            )));
         }
         if manifest.entry_count != manifest.entries.len() {
-            return Err(format!(
+            return Err(BundleParseError::integrity(format!(
                 "entry_count mismatch: declared {}, actual {}",
                 manifest.entry_count,
                 manifest.entries.len()
-            ));
+            )));
         }
 
         // 7. Verify manifest SHA-256
@@ -239,15 +282,15 @@ impl Bundle {
             "tombstones": manifest.tombstones,
         });
         let payload_json = serde_json::to_vec(&payload)
-            .map_err(|e| format!("Failed to serialize payload: {}", e))?;
+            .map_err(|e| BundleParseError::schema(format!("Failed to serialize payload: {}", e)))?;
         let mut hasher = Sha256::new();
         hasher.update(&payload_json);
         let calculated_sha = hex::encode(hasher.finalize());
         if manifest.manifest_sha256 != calculated_sha {
-            return Err(format!(
+            return Err(BundleParseError::integrity(format!(
                 "Manifest SHA-256 mismatch: expected {}, got {}",
                 manifest.manifest_sha256, calculated_sha
-            ));
+            )));
         }
 
         Ok(Bundle {
