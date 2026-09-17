@@ -327,6 +327,24 @@ async fn export_evidence__web_matches_direct_call__same_unzipped_members() {
     handle.abort();
 
     assert_zip_member_parity(&direct_zip, &web_zip);
+    let disclosure = gate_mode_disclosure_from_zip(&direct_zip);
+    let status = disclosure["chainContinuityStatus"].as_str().unwrap();
+    let note = disclosure["completenessNote"].as_str().unwrap();
+    assert!(
+        status.starts_with("signed-head-only:") || status.starts_with("not verified —"),
+        "{status}"
+    );
+    assert!(
+        !status.starts_with("verified:"),
+        "seeded export without a matching walk must not claim verified: {status}"
+    );
+    assert!(
+        note.contains("not full-chain verified")
+            || note.contains("Chain continuity is not verified"),
+        "{note}"
+    );
+    let web_disclosure = gate_mode_disclosure_from_zip(&web_zip);
+    assert_eq!(disclosure, web_disclosure);
 }
 
 #[test]
@@ -518,4 +536,180 @@ fn export_evidence__cli_refuses_symlink_to_state() {
         stderr.contains("inside .ledgerful/state/"),
         "error must mention .ledgerful/state/ after symlink resolution; got: {stderr}"
     );
+}
+
+fn seed_signed_linked_chain(repo: &ExportRepo) {
+    seed_export_ledger(repo);
+    let keys_path = repo.root.join(".ledgerful").join("keys");
+    let storage = StorageManager::init(repo.db_path.as_path()).unwrap();
+    let conn = storage.get_connection();
+    let db = ledgerful::ledger::db::LedgerDb::new(conn);
+    let mut entries = db.get_all_committed_ledger_entries().unwrap();
+    entries.sort_by(|a, b| {
+        a.committed_at
+            .cmp(&b.committed_at)
+            .then_with(|| a.tx_id.cmp(&b.tx_id))
+    });
+    let genesis = entries
+        .first()
+        .map(|e| e.committed_at.clone())
+        .unwrap_or_default();
+    let length = entries.len() as i64;
+    let mut prev: Option<String> = None;
+    let mut last_hash = String::new();
+    for mut entry in entries {
+        entry.prev_hash = prev.clone();
+        conn.execute(
+            "UPDATE ledger_entries SET prev_hash = ?1 WHERE tx_id = ?2",
+            rusqlite::params![prev, entry.tx_id],
+        )
+        .unwrap();
+        last_hash = ledgerful::ledger::crypto::compute_entry_hash_for_entry(&entry)
+            .expect("compute_entry_hash_for_entry");
+        prev = Some(last_hash.clone());
+    }
+    let (head_sig, head_pub) = ledgerful::ledger::crypto::sign_chain_head(
+        keys_path.as_std_path(),
+        &last_hash,
+        &genesis,
+        length,
+    )
+    .expect("sign_chain_head");
+    conn.execute("DELETE FROM chain_head WHERE id = 1", []).ok();
+    conn.execute(
+        "INSERT INTO chain_head (id, latest_entry_hash, genesis, length, head_signature, head_public_key, updated_at) \
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            last_hash,
+            genesis,
+            length,
+            head_sig.unwrap_or_default(),
+            head_pub.unwrap_or_default(),
+            "2026-06-20T10:00:00Z",
+        ],
+    )
+    .unwrap();
+}
+
+fn insert_extra_genesis(repo: &ExportRepo) {
+    let storage = StorageManager::init(repo.db_path.as_path()).unwrap();
+    let conn = storage.get_connection();
+    conn.execute(
+        "INSERT INTO transactions \
+         (tx_id, status, category, entity, entity_normalized, session_id, source, started_at) \
+         VALUES (?1, 'COMMITTED', 'FEATURE', 'extra', 'extra', 'test', 'test', ?2)",
+        rusqlite::params!["tx-extra-genesis", "2026-06-21T10:00:00Z"],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO ledger_entries \
+         (tx_id, category, entry_type, entity, entity_normalized, change_type, \
+          summary, reason, is_breaking, committed_at, origin, author, observed) \
+         VALUES (?1, 'FEATURE', 'IMPLEMENTATION', 'extra', 'extra', 'MODIFY', \
+                 'extra genesis', 'reason', 0, ?2, 'LOCAL', 'Test User', NULL)",
+        rusqlite::params!["tx-extra-genesis", "2026-06-21T10:00:00Z"],
+    )
+    .unwrap();
+}
+
+fn gate_mode_disclosure_from_zip(zip_bytes: &[u8]) -> serde_json::Value {
+    let members = extract_zip_members(zip_bytes);
+    let manifest: serde_json::Value =
+        serde_json::from_slice(members.get("manifest.json").expect("manifest.json in zip"))
+            .expect("manifest.json parses");
+    manifest
+        .get("gateModeDisclosure")
+        .cloned()
+        .expect("gateModeDisclosure")
+}
+
+fn assert_zip_manifest_sig_verifies(zip_bytes: &[u8]) {
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+    let members = extract_zip_members(zip_bytes);
+    let pub_bytes = members.get("manifest.pub").expect("manifest.pub");
+    let verifying_key = VerifyingKey::from_bytes(pub_bytes.as_slice().try_into().unwrap())
+        .expect("valid verifying key");
+    let manifest = members.get("manifest.json").expect("manifest.json");
+    let sig = members.get("manifest.sig").expect("manifest.sig");
+    let signature = Signature::from_bytes(sig.as_slice().try_into().unwrap());
+    assert!(
+        verifying_key.verify(manifest, &signature).is_ok(),
+        "manifest.sig must verify"
+    );
+}
+
+#[test]
+#[serial(cwd, env)]
+fn export_evidence__signed_linked_chain__verified_disclosure() {
+    let _non_interactive = non_interactive();
+    let repo = setup_export_repo();
+    seed_signed_linked_chain(&repo);
+
+    let out_path = repo.root.join("0369-clean.zip");
+    let binary = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(binary)
+        .args([
+            "export",
+            "evidence",
+            "--profile",
+            "soc2",
+            "--out",
+            out_path.as_str(),
+            "--force",
+        ])
+        .output()
+        .expect("export evidence");
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let zip_bytes = std::fs::read(&out_path).expect("zip");
+    assert_zip_manifest_sig_verifies(&zip_bytes);
+    let disclosure = gate_mode_disclosure_from_zip(&zip_bytes);
+    let status = disclosure["chainContinuityStatus"].as_str().unwrap();
+    let note = disclosure["completenessNote"].as_str().unwrap();
+    assert!(status.starts_with("verified:"), "{status}");
+    assert!(
+        note.contains("does not assert per-entry signature validity"),
+        "{note}"
+    );
+}
+
+#[test]
+#[serial(cwd, env)]
+fn export_evidence__extra_genesis_signed_head__signed_head_only() {
+    let _non_interactive = non_interactive();
+    let repo = setup_export_repo();
+    seed_signed_linked_chain(&repo);
+    insert_extra_genesis(&repo);
+
+    let out_path = repo.root.join("0369-extra.zip");
+    let binary = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(binary)
+        .args([
+            "export",
+            "evidence",
+            "--profile",
+            "soc2",
+            "--out",
+            out_path.as_str(),
+            "--force",
+        ])
+        .output()
+        .expect("export evidence");
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let zip_bytes = std::fs::read(&out_path).expect("zip");
+    assert_zip_manifest_sig_verifies(&zip_bytes);
+    let disclosure = gate_mode_disclosure_from_zip(&zip_bytes);
+    let status = disclosure["chainContinuityStatus"].as_str().unwrap();
+    assert!(status.starts_with("signed-head-only:"), "{status}");
+    assert!(!status.starts_with("verified:"), "{status}");
 }

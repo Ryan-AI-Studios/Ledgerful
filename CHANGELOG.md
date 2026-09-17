@@ -33,6 +33,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Evidence chain disclosure (0369):**
+  `export evidence` `gateModeDisclosure.chainContinuityStatus`
+  says `verified:` only after a gated `prev_hash`
+  walk plus a real stored signed head. Broken
+  walks with a valid head signature are
+  `signed-head-only:`. Consecutive gate-mode
+  ranges no longer invert.
+
 - **ADR export lifecycle Status (0368):**
   `ledger adr export` and SOC2 ZIP `adr/*.md`
   stamp `- **Status**` from `adr_metadata`

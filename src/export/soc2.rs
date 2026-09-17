@@ -141,7 +141,7 @@ pub fn generate_soc2_export_with_options(
 
     let config = crate::config::load::load_config(layout).unwrap_or_default();
 
-    let (ledger_entries, verification_rows, adr_entries, chain_head) = if has_db {
+    let (ledger_entries, verification_rows, adr_entries, stored_head, chain_head) = if has_db {
         let storage = StorageManager::open_read_only_sqlite_only(layout)?;
         let conn = storage.get_connection();
         let db = LedgerDb::new(conn);
@@ -201,13 +201,15 @@ pub fn generate_soc2_export_with_options(
             Err(e) => return Err(miette!("Failed to read chain head: {e}")),
         };
 
-        // Base-export invariant: synthesize a chain_head from the entries when
-        // no singleton chain_head row exists, so legacy or bypass-inserted data
-        // still carries a rollback ceiling in chain_head.json.
-        let head = head.or_else(|| synthesize_chain_head(&entries));
-        (entries, vrows, paired, head)
+        // Zip still synthesizes chain_head.json for legacy/empty-head
+        // exports (0050). Disclosure classifies from the stored row only.
+        let stored_head = head;
+        let zip_head = stored_head
+            .clone()
+            .or_else(|| synthesize_chain_head(&entries));
+        (entries, vrows, paired, stored_head, zip_head)
     } else {
-        (Vec::new(), Vec::new(), Vec::new(), None)
+        (Vec::new(), Vec::new(), Vec::new(), None, None)
     };
 
     // 2. Build the file payloads (bytes + manifest entries).
@@ -254,7 +256,7 @@ pub fn generate_soc2_export_with_options(
     }
 
     let mode_disclosure =
-        build_mode_disclosure(&ledger_entries, &config.gate.mode, chain_head.as_ref());
+        build_mode_disclosure(&ledger_entries, &config.gate.mode, stored_head.as_ref());
 
     // Include chain_head.json in the export before sorting so it participates
     // in the deterministic alphabetical order.
@@ -390,15 +392,162 @@ The export can be verified offline with the public key included as
 /// and any inner double quotes are doubled (`"` → `""`), as RFC 4180
 /// requires. This is the minimal RFC 4180 quoting form — fields are quoted
 /// exactly when the spec mandates it and never otherwise.
+const NOTE_VERIFIED: &str = "Walked prev_hash continuity of the presented chain matches the stored signed head; this does not assert per-entry signature validity. Detection of rollback to an earlier valid state requires an independently retained chain head.";
+const NOTE_SIGNED_HEAD_ONLY: &str = "Chain walk was not full-chain verified; authenticity is based on the stored head signature only; detection of rollback to an earlier valid state requires an independently retained chain head.";
+const NOTE_INVALID: &str = "Chain continuity or stored head signature is invalid; this field does not assert per-entry signature validity.";
+const NOTE_NOT_VERIFIED: &str = "Chain continuity is not verified; the chain feature is not started, the stored head is unsigned, or the head was synthesized.";
+const EN_DASH: char = '\u{2013}';
+
+fn push_mode_range(ranges: &mut Vec<String>, start: usize, end: usize, mode: &str) {
+    if start > end {
+        return;
+    }
+    ranges.push(format!("entries {start}{EN_DASH}{end} under {mode}"));
+}
+
+fn head_sig_fields_present(head: &ChainHead) -> bool {
+    let sig = head.head_signature.as_deref().unwrap_or("");
+    let pubk = head.head_public_key.as_deref().unwrap_or("");
+    !sig.is_empty() && !pubk.is_empty()
+}
+
+fn first_walk_failure(
+    entries: &[crate::ledger::types::LedgerEntry],
+    head: &ChainHead,
+) -> Option<String> {
+    let walk = crate::ledger::chain_iter::iter_local_chain(entries);
+    // Extra-genesis / orphans / link-breaks apply only after a prev_hash
+    // chain has started. Spec §1b writes
+    // `should_walk_chain = stored_head.is_some() || has_any_prev_link`,
+    // but this function runs only with a stored head, so that formula
+    // would always be true and would mislabel pre-chain + real head as
+    // extra-genesis `signed-head-only:` (DoD-3). Gate on linkage.
+    let has_any_prev_link = walk
+        .ordered
+        .iter()
+        .any(|e| e.prev_hash.as_deref().is_some_and(|p| !p.is_empty()))
+        || entries
+            .iter()
+            .any(|e| e.origin == "LOCAL" && e.prev_hash.as_deref().is_some_and(|p| !p.is_empty()));
+
+    if !walk.forks.is_empty() {
+        return Some(format!(
+            "signed-head-only: detected {} fork(s) in local chain (first parent hash {})",
+            walk.forks.len(),
+            walk.forks[0].0
+        ));
+    }
+    if has_any_prev_link && !walk.extra_genesis.is_empty() {
+        return Some(format!(
+            "signed-head-only: {} additional genesis entry/entries with null prev_hash after chain started",
+            walk.extra_genesis.len()
+        ));
+    }
+    if has_any_prev_link && !walk.orphans.is_empty() {
+        return Some(format!(
+            "signed-head-only: {} orphan local entry/entries not linked by prev_hash",
+            walk.orphans.len()
+        ));
+    }
+    if has_any_prev_link
+        && let Some(msg) = crate::ledger::chain_iter::check_chain_links(&walk.ordered)
+    {
+        let detail = msg
+            .strip_prefix("Chain break at TX ")
+            .unwrap_or(msg.as_str());
+        return Some(format!("signed-head-only: chain break at TX {detail}"));
+    }
+
+    let computed_hash = walk.tail_hash().unwrap_or_default();
+    if computed_hash != head.latest_entry_hash {
+        return Some(format!(
+            "signed-head-only: latest entry hash mismatch (computed {computed_hash}, head claims {})",
+            head.latest_entry_hash
+        ));
+    }
+    let computed_len = walk.length();
+    if computed_len != head.length {
+        return Some(format!(
+            "signed-head-only: chain length mismatch (computed {computed_len}, head claims {})",
+            head.length
+        ));
+    }
+    None
+}
+
+fn classify_continuity(
+    entries: &[crate::ledger::types::LedgerEntry],
+    stored_head: Option<&ChainHead>,
+) -> (String, String) {
+    if entries.is_empty() {
+        return (
+            "not verified — chain feature not present or not yet started".to_string(),
+            NOTE_NOT_VERIFIED.to_string(),
+        );
+    }
+    match stored_head {
+        Some(head) => {
+            if !head_sig_fields_present(head) {
+                return (
+                    "not verified — unsigned chain head".to_string(),
+                    NOTE_NOT_VERIFIED.to_string(),
+                );
+            }
+            let valid = crate::ledger::crypto::verify_chain_head(
+                &head.latest_entry_hash,
+                &head.genesis,
+                head.length,
+                head.head_signature.as_deref().unwrap_or(""),
+                head.head_public_key.as_deref().unwrap_or(""),
+            );
+            if !valid {
+                return (
+                    format!(
+                        "INVALID — stored chain head signature does not verify (head {}, genesis {}, length {})",
+                        head.latest_entry_hash, head.genesis, head.length
+                    ),
+                    NOTE_INVALID.to_string(),
+                );
+            }
+            if let Some(reason) = first_walk_failure(entries, head) {
+                return (reason, NOTE_SIGNED_HEAD_ONLY.to_string());
+            }
+            (
+                format!(
+                    "verified: {} linked entries from genesis {} to head {}",
+                    head.length, head.genesis, head.latest_entry_hash
+                ),
+                NOTE_VERIFIED.to_string(),
+            )
+        }
+        None => {
+            let any_prev = entries
+                .iter()
+                .any(|e| e.prev_hash.as_deref().is_some_and(|p| !p.is_empty()));
+            if any_prev {
+                (
+                    "INVALID — entries have prev_hash values but no chain head is present (downgrade detected)".to_string(),
+                    NOTE_INVALID.to_string(),
+                )
+            } else {
+                (
+                    "not verified — unsigned synthesized head".to_string(),
+                    NOTE_NOT_VERIFIED.to_string(),
+                )
+            }
+        }
+    }
+}
+
 fn build_mode_disclosure(
     entries: &[crate::ledger::types::LedgerEntry],
     current_mode: &str,
-    chain_head: Option<&ChainHead>,
+    stored_head: Option<&ChainHead>,
 ) -> GateModeDisclosure {
     let mut mode: Option<String> = None;
     let mut transition_points: Vec<String> = Vec::new();
     let mut observed_ranges: Vec<String> = Vec::new();
-    let mut last_index: usize = 0;
+    let mut last_transition_1based: usize = 0;
 
     for (idx, entry) in entries.iter().enumerate() {
         if entry.entity == "ledgerful/gate-mode"
@@ -408,12 +557,13 @@ fn build_mode_disclosure(
                 .or_else(|| parse_mode_from_entry_text(&entry.reason));
             if let Some(new_mode) = new_mode {
                 if let Some(prev) = mode.as_ref() {
-                    observed_ranges.push(format!(
-                        "entries {}–{} under {}",
-                        last_index + 1,
-                        idx,
-                        prev
-                    ));
+                    let current_1based = idx + 1;
+                    push_mode_range(
+                        &mut observed_ranges,
+                        last_transition_1based + 1,
+                        current_1based - 1,
+                        prev,
+                    );
                 }
                 mode = Some(new_mode.clone());
                 transition_points.push(format!(
@@ -422,20 +572,18 @@ fn build_mode_disclosure(
                     new_mode,
                     entry.tx_id
                 ));
-                last_index = idx + 1;
+                last_transition_1based = idx + 1;
             }
         }
     }
 
-    if let Some(prev) = mode.as_ref()
-        && last_index < entries.len()
-    {
-        observed_ranges.push(format!(
-            "entries {}–{} under {}",
-            last_index + 1,
+    if let Some(prev) = mode.as_ref() {
+        push_mode_range(
+            &mut observed_ranges,
+            last_transition_1based + 1,
             entries.len(),
-            prev
-        ));
+            prev,
+        );
     }
 
     let transition_history = if transition_points.is_empty() {
@@ -443,6 +591,8 @@ fn build_mode_disclosure(
             "No mode-transition entries found; all {} entries predate mode tracking.",
             entries.len()
         )
+    } else if observed_ranges.is_empty() {
+        transition_points.join("; ")
     } else {
         format!(
             "{}; {}",
@@ -451,43 +601,13 @@ fn build_mode_disclosure(
         )
     };
 
-    let chain_continuity_status = match chain_head {
-        Some(head) => {
-            let valid = crate::ledger::crypto::verify_chain_head(
-                &head.latest_entry_hash,
-                &head.genesis,
-                head.length,
-                head.head_signature.as_deref().unwrap_or(""),
-                head.head_public_key.as_deref().unwrap_or(""),
-            );
-            if valid {
-                format!(
-                    "verified: {} linked entries from genesis {} to head {}",
-                    head.length, head.genesis, head.latest_entry_hash
-                )
-            } else {
-                format!(
-                    "INVALID — stored chain head signature does not verify (head {}, genesis {}, length {})",
-                    head.latest_entry_hash, head.genesis, head.length
-                )
-            }
-        }
-        None => {
-            if entries.iter().any(|e| e.prev_hash.is_some()) {
-                "INVALID — entries have prev_hash values but no chain head is present (downgrade detected)".to_string()
-            } else {
-                "not verified — chain feature not present or not yet started".to_string()
-            }
-        }
-    };
+    let (chain_continuity_status, completeness_note) = classify_continuity(entries, stored_head);
 
     GateModeDisclosure {
         reported_effective_mode: current_mode.to_string(),
         transition_history,
         chain_continuity_status,
-        completeness_note:
-            "Verifies the integrity and continuity of the presented chain; detection of rollback to an earlier valid state requires an independently retained chain head."
-                .to_string(),
+        completeness_note,
     }
 }
 
@@ -622,8 +742,310 @@ fn build_verification_csv(rows: &[crate::state::storage::VerificationExportRow])
 }
 
 #[cfg(test)]
+#[allow(non_snake_case)]
 mod tests {
     use super::*;
+    use crate::ledger::crypto::{compute_entry_hash_for_entry, sign_chain_head};
+    use crate::ledger::types::{
+        Category, ChangeType, EntryType, LedgerEntry, VerificationBasis, VerificationStatus,
+    };
+
+    fn sample_entry(tx: &str, prev: Option<&str>, committed_at: &str) -> LedgerEntry {
+        LedgerEntry {
+            id: 1,
+            tx_id: tx.to_string(),
+            category: Category::Feature,
+            entry_type: EntryType::Implementation,
+            entity: "e".to_string(),
+            entity_normalized: "e".to_string(),
+            change_type: ChangeType::Modify,
+            summary: "s".to_string(),
+            reason: "r".to_string(),
+            is_breaking: false,
+            committed_at: committed_at.to_string(),
+            verification_status: None::<VerificationStatus>,
+            verification_basis: None::<VerificationBasis>,
+            outcome_notes: None,
+            origin: "LOCAL".to_string(),
+            trace_id: None,
+            signature: Some("sig".to_string()),
+            public_key: Some("pub".to_string()),
+            risk: None,
+            related_tickets: None,
+            author: "Test".to_string(),
+            observed: None,
+            prev_hash: prev.map(str::to_string),
+            sig_version: 1,
+        }
+    }
+
+    fn gate_mode_entry(tx: &str, mode: &str, committed_at: &str) -> LedgerEntry {
+        let mut entry = sample_entry(tx, None, committed_at);
+        entry.entity = "ledgerful/gate-mode".to_string();
+        entry.entity_normalized = "ledgerful/gate-mode".to_string();
+        entry.entry_type = EntryType::Maintenance;
+        entry.summary = format!("initialized to {mode}");
+        entry
+    }
+
+    fn sign_head(latest: &str, genesis: &str, length: i64) -> ChainHead {
+        let dir = tempfile::tempdir().expect("temp keys dir");
+        let (sig, pubk) =
+            sign_chain_head(dir.path(), latest, genesis, length).expect("sign_chain_head");
+        ChainHead {
+            latest_entry_hash: latest.to_string(),
+            genesis: genesis.to_string(),
+            length,
+            head_signature: sig,
+            head_public_key: pubk,
+            updated_at: "2026-01-02T00:00:00Z".to_string(),
+        }
+    }
+
+    fn linked_two() -> (Vec<LedgerEntry>, ChainHead) {
+        let a = sample_entry("tx-a", None, "2026-01-01T00:00:00Z");
+        let a_hash = compute_entry_hash_for_entry(&a).expect("hash a");
+        let b = sample_entry("tx-b", Some(&a_hash), "2026-01-02T00:00:00Z");
+        let b_hash = compute_entry_hash_for_entry(&b).expect("hash b");
+        let head = sign_head(&b_hash, &a.committed_at, 2);
+        (vec![a, b], head)
+    }
+
+    #[test]
+    fn build_mode_disclosure__empty_entries__not_verified_chain_feature() {
+        let d = build_mode_disclosure(&[], "observe", None);
+        assert_eq!(
+            d.chain_continuity_status,
+            "not verified — chain feature not present or not yet started"
+        );
+        assert_eq!(d.completeness_note, NOTE_NOT_VERIFIED);
+    }
+
+    #[test]
+    fn build_mode_disclosure__signed_head_clean_walk__verified() {
+        let (entries, head) = linked_two();
+        let d = build_mode_disclosure(&entries, "observe", Some(&head));
+        assert!(
+            d.chain_continuity_status.starts_with("verified:"),
+            "{}",
+            d.chain_continuity_status
+        );
+        assert_eq!(d.completeness_note, NOTE_VERIFIED);
+    }
+
+    #[test]
+    fn build_mode_disclosure__extra_genesis_after_chain_started__signed_head_only() {
+        let (mut entries, head) = linked_two();
+        entries.push(sample_entry("tx-extra", None, "2026-01-03T00:00:00Z"));
+        let d = build_mode_disclosure(&entries, "observe", Some(&head));
+        assert!(
+            d.chain_continuity_status.starts_with("signed-head-only:"),
+            "{}",
+            d.chain_continuity_status
+        );
+        assert!(
+            d.chain_continuity_status.contains("additional genesis"),
+            "{}",
+            d.chain_continuity_status
+        );
+        assert!(!d.chain_continuity_status.starts_with("verified:"));
+        assert_eq!(d.completeness_note, NOTE_SIGNED_HEAD_ONLY);
+    }
+
+    #[test]
+    fn build_mode_disclosure__orphan__signed_head_only() {
+        let (mut entries, head) = linked_two();
+        entries.push(sample_entry(
+            "tx-orphan",
+            Some("deadbeef"),
+            "2026-01-03T00:00:00Z",
+        ));
+        let d = build_mode_disclosure(&entries, "observe", Some(&head));
+        assert!(
+            d.chain_continuity_status.contains("orphan"),
+            "{}",
+            d.chain_continuity_status
+        );
+        assert_eq!(d.completeness_note, NOTE_SIGNED_HEAD_ONLY);
+    }
+
+    #[test]
+    fn build_mode_disclosure__fork__signed_head_only() {
+        let a = sample_entry("tx-a", None, "2026-01-01T00:00:00Z");
+        let a_hash = compute_entry_hash_for_entry(&a).expect("hash a");
+        let b = sample_entry("tx-b", Some(&a_hash), "2026-01-02T00:00:00Z");
+        let c = sample_entry("tx-c", Some(&a_hash), "2026-01-03T00:00:00Z");
+        let b_hash = compute_entry_hash_for_entry(&b).expect("hash b");
+        let head = sign_head(&b_hash, &a.committed_at, 2);
+        let d = build_mode_disclosure(&[a, b, c], "observe", Some(&head));
+        assert!(
+            d.chain_continuity_status.starts_with("signed-head-only:"),
+            "{}",
+            d.chain_continuity_status
+        );
+        assert!(
+            d.chain_continuity_status.contains("fork"),
+            "{}",
+            d.chain_continuity_status
+        );
+        assert_eq!(d.completeness_note, NOTE_SIGNED_HEAD_ONLY);
+    }
+
+    #[test]
+    fn build_mode_disclosure__length_mismatch__signed_head_only() {
+        let (entries, mut head) = linked_two();
+        head.length = 99;
+        let dir = tempfile::tempdir().expect("temp keys dir");
+        let (sig, pubk) = sign_chain_head(
+            dir.path(),
+            &head.latest_entry_hash,
+            &head.genesis,
+            head.length,
+        )
+        .expect("re-sign");
+        head.head_signature = sig;
+        head.head_public_key = pubk;
+        let d = build_mode_disclosure(&entries, "observe", Some(&head));
+        assert!(
+            d.chain_continuity_status.starts_with("signed-head-only:"),
+            "{}",
+            d.chain_continuity_status
+        );
+        assert!(
+            d.chain_continuity_status.contains("chain length mismatch"),
+            "{}",
+            d.chain_continuity_status
+        );
+        assert_eq!(d.completeness_note, NOTE_SIGNED_HEAD_ONLY);
+    }
+
+    #[test]
+    fn build_mode_disclosure__no_stored_head_no_prev__unsigned_synthesized() {
+        let entries = vec![sample_entry("tx-a", None, "2026-01-01T00:00:00Z")];
+        let d = build_mode_disclosure(&entries, "observe", None);
+        assert_eq!(
+            d.chain_continuity_status,
+            "not verified — unsigned synthesized head"
+        );
+        assert_eq!(d.completeness_note, NOTE_NOT_VERIFIED);
+    }
+
+    #[test]
+    fn build_mode_disclosure__stored_unsigned_head__not_synthesized_token() {
+        let entries = vec![sample_entry("tx-a", None, "2026-01-01T00:00:00Z")];
+        let head = ChainHead {
+            latest_entry_hash: "abc".to_string(),
+            genesis: "2026-01-01T00:00:00Z".to_string(),
+            length: 1,
+            head_signature: None,
+            head_public_key: None,
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        let d = build_mode_disclosure(&entries, "observe", Some(&head));
+        assert_eq!(
+            d.chain_continuity_status,
+            "not verified — unsigned chain head"
+        );
+        assert_eq!(d.completeness_note, NOTE_NOT_VERIFIED);
+    }
+
+    #[test]
+    fn build_mode_disclosure__no_stored_head_with_prev__invalid_downgrade() {
+        let entries = vec![sample_entry("tx-a", Some("prev"), "2026-01-01T00:00:00Z")];
+        let d = build_mode_disclosure(&entries, "observe", None);
+        assert_eq!(
+            d.chain_continuity_status,
+            "INVALID — entries have prev_hash values but no chain head is present (downgrade detected)"
+        );
+        assert_eq!(d.completeness_note, NOTE_INVALID);
+    }
+
+    #[test]
+    fn build_mode_disclosure__prechain_real_head__not_extra_genesis() {
+        let a = sample_entry("tx-a", None, "2026-01-01T00:00:00Z");
+        let b = sample_entry("tx-b", None, "2026-01-02T00:00:00Z");
+        let a_hash = compute_entry_hash_for_entry(&a).expect("hash a");
+        let head = sign_head(&a_hash, &a.committed_at, 1);
+        let d = build_mode_disclosure(&[a, b], "observe", Some(&head));
+        assert!(
+            !d.chain_continuity_status.contains("additional genesis"),
+            "{}",
+            d.chain_continuity_status
+        );
+        assert!(
+            d.chain_continuity_status.starts_with("verified:"),
+            "{}",
+            d.chain_continuity_status
+        );
+    }
+
+    #[test]
+    fn build_mode_disclosure__consecutive_transitions__omit_inverted_range() {
+        let entries = vec![
+            gate_mode_entry("tx-g1", "enforce", "2026-01-01T00:00:00Z"),
+            gate_mode_entry("tx-g2", "observe", "2026-01-02T00:00:00Z"),
+            sample_entry("tx-c", None, "2026-01-03T00:00:00Z"),
+        ];
+        let d = build_mode_disclosure(&entries, "observe", None);
+        assert!(
+            !d.transition_history.contains("entries 2–1"),
+            "{}",
+            d.transition_history
+        );
+        assert!(
+            !d.transition_history.split("entries ").skip(1).any(|rest| {
+                let Some((span, _)) = rest.split_once(" under ") else {
+                    return false;
+                };
+                let Some((start, end)) = span.split_once(EN_DASH) else {
+                    return false;
+                };
+                start
+                    .parse::<usize>()
+                    .ok()
+                    .zip(end.parse::<usize>().ok())
+                    .is_some_and(|(s, e)| s > e)
+            }),
+            "{}",
+            d.transition_history
+        );
+    }
+
+    #[test]
+    fn build_mode_disclosure__single_entry_span__en_dash_nn() {
+        let entries = vec![
+            gate_mode_entry("tx-g1", "enforce", "2026-01-01T00:00:00Z"),
+            sample_entry("tx-mid", None, "2026-01-02T00:00:00Z"),
+            gate_mode_entry("tx-g2", "observe", "2026-01-03T00:00:00Z"),
+        ];
+        let d = build_mode_disclosure(&entries, "observe", None);
+        assert!(
+            d.transition_history.contains("entries 2–2 under enforce"),
+            "{}",
+            d.transition_history
+        );
+        assert!(d.transition_history.contains(EN_DASH));
+    }
+
+    #[test]
+    fn build_mode_disclosure__trailing_range_omitted_when_last_is_transition() {
+        let entries = vec![
+            sample_entry("tx-a", None, "2026-01-01T00:00:00Z"),
+            gate_mode_entry("tx-g1", "enforce", "2026-01-02T00:00:00Z"),
+        ];
+        let d = build_mode_disclosure(&entries, "enforce", None);
+        assert!(
+            !d.transition_history.contains("under enforce")
+                || !d.transition_history.contains("entries 3–"),
+            "{}",
+            d.transition_history
+        );
+        assert!(
+            !d.transition_history.contains("entries 3"),
+            "{}",
+            d.transition_history
+        );
+    }
 
     #[test]
     fn csv_quote_passes_through_plain_field() {
