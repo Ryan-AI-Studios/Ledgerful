@@ -33,6 +33,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **ADR export lifecycle Status (0368):**
+  `ledger adr export` and SOC2 ZIP `adr/*.md`
+  stamp `- **Status**` from `adr_metadata`
+  (default `proposed`) and put change type on
+  `- **Change type**`. List envelope unchanged.
+
 - **Timings inner/flame stage coverage (0364):**
   Inner spans group by command with an
   uninstrumented denominator; capture ignores
