@@ -1830,6 +1830,28 @@ fn global_timings_inner_rows_seeded_for_pool() {
     assert_eq!(summary.data.len(), 1);
     assert_eq!(summary.data[0].runs, 1);
     assert_eq!(summary.data[0].total_ms, 100);
+
+    let export_path = tmp.path().join("inner-outers-only.json");
+    seed_timing_rows(&root.join("repo_a"), &[sample_outer("r2", "scan", 40)]);
+    execute_timings_global(
+        &fixture_config(&root),
+        GlobalTimingsArgs {
+            json: true,
+            inner: true,
+            days: Some(30),
+            command: Some("scan".into()),
+            export: Some(export_path.clone()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&export_path).unwrap()).unwrap();
+    assert!(json["data"].as_array().unwrap().is_empty());
+    assert!(json.get("message").is_none() || json["message"].is_null());
+    assert_eq!(json["coverage"][0]["command"], "scan");
+    assert_eq!(json["coverage"][0]["outer_ms"], 40);
+    assert_eq!(json["coverage"][0]["inner_ms"], 0);
 }
 
 #[test]

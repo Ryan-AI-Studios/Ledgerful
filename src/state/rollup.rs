@@ -742,7 +742,8 @@ fn execute_timings_global_inner(
         })
         .collect();
 
-    let message = empty_timings_message(&collected, aggs.is_empty());
+    let empty_window = aggs.is_empty() && coverage.is_empty();
+    let message = empty_timings_message(&collected, empty_window);
     let mut envelope = serde_json::json!({
         "schemaVersion": 1,
         "totalRepos": collected.total_repos,
@@ -750,9 +751,11 @@ fn execute_timings_global_inner(
         "skippedRepos": collected.skipped_repos,
         "timingsAbsent": collected.timings_absent,
         "warnings": collected.warnings,
-        "message": message,
         "data": aggs,
     });
+    if let Some(msg) = &message {
+        envelope["message"] = serde_json::Value::String(msg.clone());
+    }
     if !coverage.is_empty()
         && let Ok(coverage_value) = serde_json::to_value(&coverage)
     {
