@@ -86,7 +86,15 @@ pub fn handle(bundle_path: &str, json: bool) -> Result<()> {
         }
     };
 
-    let layout = crate::commands::helpers::get_layout()?;
+    let layout = match crate::commands::helpers::get_layout() {
+        Ok(l) => l,
+        Err(e) => {
+            return finish(
+                json,
+                VerifyReport::fail("schemaInvalid", format!("Failed to resolve layout: {e}")),
+            );
+        }
+    };
     let sync_dir = layout.state_dir.join("sync");
     let mut verify_keys = match load_peer_keys(sync_dir.as_std_path()) {
         Ok(k) => k,
@@ -100,21 +108,50 @@ pub fn handle(bundle_path: &str, json: bool) -> Result<()> {
 
     let own_pub_path = sync_dir.join("device.pub");
     if own_pub_path.exists() {
-        let storage = StorageManager::init_with_layout(&layout)?;
-        let device_id: Option<String> = storage
+        let storage = match StorageManager::init_with_layout(&layout) {
+            Ok(s) => s,
+            Err(e) => {
+                return finish(
+                    json,
+                    VerifyReport::fail("schemaInvalid", format!("Failed to open storage: {e}")),
+                );
+            }
+        };
+        let device_id: Option<String> = match storage
             .get_connection()
             .query_row("SELECT device_id FROM sync_state WHERE id = 1", [], |row| {
                 row.get(0)
             })
             .optional()
-            .map_err(|e| miette!("Failed to query sync_state device_id: {e}"))?;
+        {
+            Ok(id) => id,
+            Err(e) => {
+                return finish(
+                    json,
+                    VerifyReport::fail(
+                        "schemaInvalid",
+                        format!("Failed to query sync_state device_id: {e}"),
+                    ),
+                );
+            }
+        };
 
         if let Some(device_id) = device_id
             && !device_id.is_empty()
             && device_id != "unknown"
         {
-            let key_bytes = fs::read(own_pub_path.as_std_path())
-                .map_err(|e| miette!("Failed to read device.pub: {e}"))?;
+            let key_bytes = match fs::read(own_pub_path.as_std_path()) {
+                Ok(b) => b,
+                Err(e) => {
+                    return finish(
+                        json,
+                        VerifyReport::fail(
+                            "schemaInvalid",
+                            format!("Failed to read device.pub: {e}"),
+                        ),
+                    );
+                }
+            };
             if key_bytes.len() == 32 {
                 let mut arr = [0u8; 32];
                 arr.copy_from_slice(&key_bytes);

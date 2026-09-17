@@ -24,7 +24,7 @@ pub fn handle(tail: Option<usize>, json: bool, failed: bool) -> Result<()> {
                 skipped_lines: 0,
                 lines: &[],
                 events: &[],
-                failed: false,
+                failed,
                 next_action,
             })?;
             return Ok(());
@@ -36,7 +36,7 @@ pub fn handle(tail: Option<usize>, json: bool, failed: bool) -> Result<()> {
     let file = match File::open(log_path.as_std_path()) {
         Ok(f) => f,
         Err(e) => {
-            return unreadable_log(json, log_path.as_str(), next_action, e.to_string());
+            return unreadable_log(json, log_path.as_str(), next_action, e.to_string(), failed);
         }
     };
     let is_file = file.metadata().map(|m| m.is_file()).unwrap_or(false);
@@ -46,6 +46,7 @@ pub fn handle(tail: Option<usize>, json: bool, failed: bool) -> Result<()> {
             log_path.as_str(),
             next_action,
             "sync.log is not a regular file".to_string(),
+            failed,
         );
     }
     let reader = BufReader::new(file);
@@ -107,7 +108,13 @@ pub fn handle(tail: Option<usize>, json: bool, failed: bool) -> Result<()> {
     Ok(())
 }
 
-fn unreadable_log(json: bool, path: &str, next_action: &str, err: String) -> Result<()> {
+fn unreadable_log(
+    json: bool,
+    path: &str,
+    next_action: &str,
+    err: String,
+    failed: bool,
+) -> Result<()> {
     if json {
         emit_log_json(&LogJson {
             log_state: "unreadable",
@@ -116,7 +123,7 @@ fn unreadable_log(json: bool, path: &str, next_action: &str, err: String) -> Res
             skipped_lines: 0,
             lines: &[],
             events: &[],
-            failed: false,
+            failed,
             next_action,
         })?;
         crate::output::requested_exit::request_exit(1);

@@ -686,6 +686,11 @@ fn log_events_failed_filter_and_disabled_run_writes_nothing() {
     assert_eq!(code, 0);
     let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(v["logState"], "noLog");
+    let (stdout, _, code) = run_cli(tmp.path(), &["sync", "log", "--failed", "--json"]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["logState"], "noLog");
+    assert_eq!(v["failed"], true);
 
     append_sync_event(
         layout.state_dir.as_std_path(),

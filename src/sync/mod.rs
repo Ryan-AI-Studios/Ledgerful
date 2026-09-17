@@ -130,16 +130,45 @@ pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Res
                 entry_count, tombstone_count
             );
 
-            let encrypted = Bundle::encrypt(&extracted.zip_bytes, team_secret)
-                .map_err(|e| miette::miette!("Encryption failed: {}", e))?;
+            let encrypted = match Bundle::encrypt(&extracted.zip_bytes, team_secret) {
+                Ok(b) => b,
+                Err(e) => {
+                    log_ev(
+                        state_dir,
+                        EVENT_ERROR,
+                        false,
+                        None,
+                        Some(&format!("encrypt failed: {e}")),
+                    );
+                    return Err(miette::miette!("Encryption failed: {}", e));
+                }
+            };
 
             let filename = extracted.bundle.manifest.filename();
-            transport
-                .put_outgoing_bytes(&filename, &encrypted)
-                .map_err(|e| miette::miette!("Transport put failed: {}", e))?;
+            if let Err(e) = transport.put_outgoing_bytes(&filename, &encrypted) {
+                log_ev(
+                    state_dir,
+                    EVENT_ERROR,
+                    false,
+                    Some(filename.as_str()),
+                    Some(&format!("put failed: {e}")),
+                );
+                return Err(miette::miette!("Transport put failed: {}", e));
+            }
 
-            extract::commit_extract_export(state_dir, &extracted, &device_id)
-                .map_err(|e| miette::miette!("Failed to commit extract export state: {}", e))?;
+            if let Err(e) = extract::commit_extract_export(state_dir, &extracted, &device_id) {
+                log_ev(
+                    state_dir,
+                    EVENT_ERROR,
+                    false,
+                    Some(filename.as_str()),
+                    Some(&format!("commit extract failed: {e}")),
+                );
+                return Err(miette::miette!(
+                    "Failed to commit extract export state: {}",
+                    e
+                ));
+            }
 
             println!("Uploaded bundle: {}", filename);
             log_ev(
@@ -163,13 +192,34 @@ pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Res
 
     // 2. Apply remote peer bundles
     println!("Fetching remote bundles...");
-    let incoming = transport
-        .list_incoming()
-        .map_err(|e| miette::miette!("Transport list failed: {}", e))?;
+    let incoming = match transport.list_incoming() {
+        Ok(v) => v,
+        Err(e) => {
+            log_ev(
+                state_dir,
+                EVENT_ERROR,
+                false,
+                None,
+                Some(&format!("list incoming failed: {e}")),
+            );
+            return Err(miette::miette!("Transport list failed: {}", e));
+        }
+    };
 
     // Load peer keys (peers only; fallible — no copy_from_slice panic on malformed *.pub).
-    let mut peer_keys = peers::load_peer_keys(&sync_dir)
-        .map_err(|e| miette::miette!("Failed to load peer keys: {e}"))?;
+    let mut peer_keys = match peers::load_peer_keys(&sync_dir) {
+        Ok(k) => k,
+        Err(e) => {
+            log_ev(
+                state_dir,
+                EVENT_ERROR,
+                false,
+                None,
+                Some(&format!("load peer keys failed: {e}")),
+            );
+            return Err(miette::miette!("Failed to load peer keys: {e}"));
+        }
+    };
     // Self-insert stays at the call site (do not fold local key into load_peer_keys).
     peer_keys.insert(device_id.clone(), sign_key.verifying_key().to_bytes());
 
