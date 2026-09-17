@@ -1213,6 +1213,26 @@ mod tests {
         assert!(scorer.precomputed_git_activity.is_none());
     }
 
+    #[test]
+    fn test_explain_file_indexed_without_symbols_is_not_missing() {
+        let (storage, _cozo) = in_memory_storage_with_cozo();
+        let conn = storage.get_connection();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at) VALUES ('src/empty.rs', 'Rust', 'he', 10, 'OK', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let config = default_config();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut scorer = ConfidenceScorer::new(None, &storage, &config, tmp.path(), false);
+        let explanation = scorer.explain_file(Path::new("src/empty.rs")).unwrap();
+        assert!(explanation.symbols.is_empty());
+        assert!(
+            explanation.indexed,
+            "file in project_files with no symbols is indexed, not missing"
+        );
+    }
+
     /// Performance guard: `--explain <file>` on a tiny in-memory graph must
     /// complete quickly. This test is marked slow because wall-clock assertions
     /// are inherently flaky; it primarily documents the latency target.

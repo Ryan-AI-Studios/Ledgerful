@@ -917,6 +917,28 @@ impl<'a> ConfidenceScorer<'a> {
     // Symbol resolution helpers
     // ------------------------------------------------------------------
 
+    pub(super) fn project_file_indexed(&self, stored_path: &str) -> Result<bool> {
+        let conn = self.storage.get_connection();
+        let count: i64 = if cfg!(target_os = "windows") {
+            conn.query_row(
+                "SELECT COUNT(*) FROM project_files \
+                 WHERE LOWER(file_path) = LOWER(?1) AND parse_status != 'DELETED'",
+                [stored_path],
+                |row| row.get(0),
+            )
+            .into_diagnostic()?
+        } else {
+            conn.query_row(
+                "SELECT COUNT(*) FROM project_files \
+                 WHERE file_path = ?1 AND parse_status != 'DELETED'",
+                [stored_path],
+                |row| row.get(0),
+            )
+            .into_diagnostic()?
+        };
+        Ok(count > 0)
+    }
+
     pub(super) fn get_symbols_for_file(&self, file_path: &Path) -> Result<FileSymbols> {
         let original_input = file_path.to_string_lossy().to_string();
         let normalized = normalize_file_path(self.repo_path, &original_input);

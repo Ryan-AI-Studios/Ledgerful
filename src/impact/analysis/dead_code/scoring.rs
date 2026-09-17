@@ -150,7 +150,8 @@ impl<'a> ConfidenceScorer<'a> {
         let file_str = file_path.display().to_string();
         let mut explanation =
             crate::impact::analysis::dead_code::compute_dead_code_explanation(&file_str, &findings);
-        explanation.indexed = !resolved.symbols.is_empty();
+        explanation.indexed =
+            !resolved.symbols.is_empty() || self.project_file_indexed(&resolved.stored_path)?;
         Ok(explanation)
     }
 
