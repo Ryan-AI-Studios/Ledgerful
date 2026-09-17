@@ -104,7 +104,7 @@ impl Commands {
             Commands::Bridge { subcommand } => match subcommand {
                 BridgeCommands::Export { json, .. } => *json,
                 BridgeCommands::Import { .. } => false,
-                BridgeCommands::Query { .. } => false,
+                BridgeCommands::Query { json, .. } => *json,
             },
             Commands::Ledger { command } => match command {
                 LedgerCommands::Start { .. } => false,

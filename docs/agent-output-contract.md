@@ -47,6 +47,7 @@ contract and follows `LEDGERFUL_TABLE_STYLE`. Purity inventory unchanged
 | `status --json` | yes (0149) | yes | **same payload** as `ledger status --json` |
 | `search --json` | yes | yes | 0136 envelope; empty results OK |
 | `search-trigrams --json` | yes (0352) | yes | schemaVersion 1 object `kind: "searchTrigrams"`. Hidden CLI. Count-backed `totalMatching` is **not** an 0136 `search` key. `emptyReason` omit when `resultCount > 0`. `next` omit unless runnable (`ledgerful index` or `ledgerful search {accepted…}`). No `line`/`content`. CLI-only; no MCP. |
+| `bridge query --json` | yes (0366) | yes (exit 0) | Hidden CLI. schemaVersion 1 object `kind: "bridgeQuery"`. Closed `status`: `disabled` \| `unavailable` \| `failed` \| `empty` \| `populated`. `ok` agrees with process exit (`disabled`/`empty`/`populated` → 0; `unavailable`/`failed` → 1 after JSON). Omit-empty `source` (`ipc` \| `cli`), `providerCommand`, `resultCount`, `results`, `skippedLines`, `message`, `next`. `results[]` only on `populated`. Not BridgeRecord NDJSON (0136 `--json-lines`). CLI-only; no MCP. |
 | `verify --json` | yes | yes* | plan-execution payload; see rejected combos |
 | `index --check --json` | yes | yes (0149) | schemaVersion 1 + `kind: "indexCheck"` camelCase DTO (0207); Info suppressed under json; Error still on stderr |
 | `index --semantic --json` | yes (0161) | yes | One final JSON object (`schemaVersion`, `mode`, `reason`, counts, `upToDate`); zero human mid-run lines on stdout |
@@ -1147,6 +1148,45 @@ No MCP tool. Not Daily 5.
 
 ---
 
+## `bridge query --json` schema (v1)
+
+Track **0366**. Hidden CLI. Single camelCase object (`output::json::emit`).
+Not BridgeRecord NDJSON (that remains `search --json-lines` / export).
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "bridgeQuery",
+  "ok": true,
+  "status": "disabled",
+  "query": "configuration provenance",
+  "next": "Bridge is disabled. Enable with `bridge.enabled = true` in config or set LEDGERFUL_BRIDGE=1."
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `schemaVersion` | number | Always **1** |
+| `kind` | string | Always `"bridgeQuery"` |
+| `ok` | bool | `true` iff `status` is `disabled` \| `empty` \| `populated`. Agrees with process exit |
+| `status` | string | Closed: `disabled` \| `unavailable` \| `failed` \| `empty` \| `populated` |
+| `query` | string | Original query string |
+| `source` | string \| **omitted** | `ipc` \| `cli` when a provider path ran |
+| `providerCommand` | string \| **omitted** | Config echo when the CLI path was attempted |
+| `resultCount` | number \| **omitted** | Only on `populated` |
+| `results[]` | array \| **omitted** | Only on `populated`. `{memoryId, relevance, content}` sorted by `memoryId` then `relevance` (`f64::total_cmp`). Non-finite `relevance` omitted (not JSON `null`) |
+| `skippedLines` | number \| **omitted** | Unparseable lines + non-Insight records + non-finite Insights. Omit when 0 |
+| `message` | string \| **omitted** | Failure detail (no secret, no raw argv) |
+| `next` | string \| **omitted** | Opt-in / allowlist / provider next. Generic; no product name |
+
+**`disabled` / `empty`:** exit **0**, omit `results` / `resultCount`. `--json` stderr empty.
+**`unavailable` / `failed`:** JSON then exit **1**.
+**Human `disabled`:** stderr enable hint (0065) plus stdout `Status: disabled`.
+
+No MCP tool. Not Daily 5.
+
+---
+
 ## `change-context --json` schema (v1)
 
 Track **0114**. Canonical agent-consumable change packet composing impact
@@ -1489,6 +1529,15 @@ ledgerful session --json
 For `verify --json`, **`ok` and the process exit must agree**: `ok: true` ⇒
 exit `0`; validation rejection ⇒ `ok: false` and non-zero exit with JSON still
 on stdout.
+
+### `bridge query`
+
+| Code | Meaning |
+|---|---|
+| `0` | `status` is `disabled`, `empty`, or `populated` (`ok: true`) |
+| `1` | `status` is `unavailable` or `failed` (`ok: false`; JSON still on stdout when `--json`) |
+
+`--json` success (exit 0) has empty stderr. Human `disabled` still prints the enable hint on stderr (0065 keep-green).
 
 ### `ledger status --exit-code`
 

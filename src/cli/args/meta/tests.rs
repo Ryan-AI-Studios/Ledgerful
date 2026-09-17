@@ -14,6 +14,16 @@ fn parse(args: &[&str]) -> Commands {
 fn search_trigrams_json_is_machine_output() {
     assert!(parse(&["search-trigrams", "led", "--json"]).is_machine_output());
     assert!(!parse(&["search-trigrams", "led"]).is_machine_output());
+    assert!(parse(&["bridge", "query", "q", "--json"]).is_machine_output());
+    assert!(parse(&["bridge", "query", "--json", "q"]).is_machine_output());
+    assert!(!parse(&["bridge", "query", "q"]).is_machine_output());
+    assert!(
+        parse(&["bridge", "query", "q", "--json"])
+            .argv_shape()
+            .contains("json"),
+        "argv_shape must record json: {}",
+        parse(&["bridge", "query", "q", "--json"]).argv_shape()
+    );
     let shape = parse(&["search-trigrams", "led", "--json"]).argv_shape();
     assert!(
         shape.contains("json"),

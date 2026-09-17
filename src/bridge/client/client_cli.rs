@@ -1,40 +1,33 @@
-use crate::bridge::model::{BridgeRecord, deserialize_record};
-use crate::config::load::load_config;
+use crate::bridge::allowlist::check_bridge_provider_command;
 use crate::util::query::sanitize_fts5_query;
-use miette::Result;
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use wait_timeout::ChildExt;
 
-fn provider_command() -> String {
-    match crate::state::layout::get_layout_or_cwd_if_not_git() {
-        Ok(layout) => load_config(&layout)
-            .map(|c| c.bridge.provider_command)
-            .unwrap_or_else(|_| "ai-brains".to_string()),
-        Err(_) => "ai-brains".to_string(),
-    }
+#[derive(Debug, Clone)]
+pub(crate) enum CliRun {
+    AllowlistDenied { command: String },
+    SpawnErr { command: String },
+    Timeout { command: String },
+    NonZero { command: String, message: String },
+    WaitErr { command: String, message: String },
+    Stdout { command: String, stdout: String },
 }
 
-pub fn query_external_cli(query: &str) -> Result<Vec<BridgeRecord>> {
-    // CR3: Increased from 800ms to 2000ms to prevent false timeouts on loaded systems.
-    let timeout = Duration::from_millis(2000);
-
-    let command_name = provider_command();
-
-    // 0073 / RT-A3: reject evil repo-config provider_command before spawn
-    // (basename allowlist: ai-brains / ai-brains.exe only).
-    if let Err(e) = crate::bridge::allowlist::check_bridge_provider_command(&command_name) {
+pub(crate) fn query_external_cli(query: &str, timeout: Duration, command_name: &str) -> CliRun {
+    if check_bridge_provider_command(command_name).is_err() {
         tracing::warn!(
-            "Bridge provider_command '{}' denied by allowlist before spawn: {}. \
+            "Bridge provider_command '{}' denied by allowlist before spawn. \
              Only ai-brains is permitted (0073).",
-            command_name,
-            e
+            command_name
         );
-        return Ok(Vec::new());
+        return CliRun::AllowlistDenied {
+            command: command_name.to_string(),
+        };
     }
 
-    let mut child = match Command::new(&command_name)
+    let mut child = match Command::new(command_name)
         .args([
             "sync",
             "query",
@@ -53,7 +46,9 @@ pub fn query_external_cli(query: &str) -> Result<Vec<BridgeRecord>> {
                 command_name,
                 e
             );
-            return Ok(Vec::new());
+            return CliRun::SpawnErr {
+                command: command_name.to_string(),
+            };
         }
     };
 
@@ -66,7 +61,9 @@ pub fn query_external_cli(query: &str) -> Result<Vec<BridgeRecord>> {
             );
             let _ = child.kill();
             let _ = child.wait();
-            return Ok(Vec::new());
+            return CliRun::Timeout {
+                command: command_name.to_string(),
+            };
         }
         Err(e) => {
             tracing::warn!(
@@ -76,7 +73,10 @@ pub fn query_external_cli(query: &str) -> Result<Vec<BridgeRecord>> {
             );
             let _ = child.kill();
             let _ = child.wait();
-            return Ok(Vec::new());
+            return CliRun::WaitErr {
+                command: command_name.to_string(),
+                message: e.to_string(),
+            };
         }
     };
 
@@ -90,7 +90,10 @@ pub fn query_external_cli(query: &str) -> Result<Vec<BridgeRecord>> {
             command_name,
             stderr
         );
-        return Ok(Vec::new());
+        return CliRun::NonZero {
+            command: command_name.to_string(),
+            message: stderr,
+        };
     }
 
     let mut stdout = String::new();
@@ -98,18 +101,8 @@ pub fn query_external_cli(query: &str) -> Result<Vec<BridgeRecord>> {
         let _ = out.read_to_string(&mut stdout);
     }
 
-    let mut records = Vec::new();
-    for line in stdout.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        match deserialize_record(line) {
-            Ok(record) => records.push(record),
-            Err(e) => {
-                tracing::warn!("Failed to parse bridge provider record: {}", e);
-            }
-        }
+    CliRun::Stdout {
+        command: command_name.to_string(),
+        stdout,
     }
-
-    Ok(records)
 }
