@@ -136,12 +136,19 @@ pub fn execute_ledger_audit(
     )
 }
 
-pub(crate) fn audit_overall_stop_line(stage: &str) -> String {
-    format!("Audit stopped: overall budget ({stage}).")
+pub(crate) fn audit_overall_stop_line(stage: &str, stop: CompletenessStop) -> String {
+    match stop {
+        CompletenessStop::Cancelled => format!("Audit stopped: cancelled ({stage})."),
+        CompletenessStop::Budget | CompletenessStop::Error => {
+            format!("Audit stopped: overall budget ({stage}).")
+        }
+    }
 }
 
-fn eprint_audit_overall_stop() {
-    eprintln!("{AUDIT_BUDGET_WARN}");
+fn eprint_audit_overall_stop(stop: CompletenessStop) {
+    if stop == CompletenessStop::Budget {
+        eprintln!("{AUDIT_BUDGET_WARN}");
+    }
 }
 
 fn empty_velocity() -> VelocitySummary {
@@ -170,11 +177,15 @@ fn empty_project_audit_report(
 }
 
 fn overall_stop_kind(cancel: &AtomicBool) -> CompletenessStop {
-    if cancel.load(Ordering::SeqCst) {
+    if cancel.load(Ordering::Relaxed) {
         CompletenessStop::Cancelled
     } else {
         CompletenessStop::Budget
     }
+}
+
+fn audit_stage_gate_fired(deadline: Option<Instant>, cancel: &AtomicBool) -> bool {
+    cancel.load(Ordering::Relaxed) || overall_deadline_fired(deadline)
 }
 
 fn overall_completeness(
@@ -227,9 +238,14 @@ fn emit_unscoped_report(
     json_out: Option<&mut Vec<u8>>,
 ) -> Result<()> {
     let overall = report.completeness.as_ref().is_some_and(is_overall_stop);
+    let stop = report
+        .completeness
+        .as_ref()
+        .map(|c| c.stop)
+        .unwrap_or(CompletenessStop::Budget);
     if json {
         if overall {
-            eprint_audit_overall_stop();
+            eprint_audit_overall_stop(stop);
         }
         emit_project_audit_json(report, json_out)?;
         return Ok(());
@@ -240,7 +256,7 @@ fn emit_unscoped_report(
             .as_ref()
             .and_then(|c| c.stage.as_deref())
             .unwrap_or("storage");
-        let line = audit_overall_stop_line(stage);
+        let line = audit_overall_stop_line(stage, stop);
         if let Some(buf) = json_out {
             buf.write_all(line.as_bytes())
                 .map_err(|e| miette::miette!("Failed to write audit stop line: {e}"))?;
@@ -264,12 +280,13 @@ fn emit_skip_open_storage(
     json_out: Option<&mut Vec<u8>>,
 ) -> Result<()> {
     let completeness = overall_completeness(cancel, overall_secs, "storage");
+    let stop = completeness.stop;
     let report = empty_project_audit_report(Some(completeness));
     if json {
-        eprint_audit_overall_stop();
+        eprint_audit_overall_stop(stop);
         return emit_project_audit_json(&report, json_out);
     }
-    let line = audit_overall_stop_line("storage");
+    let line = audit_overall_stop_line("storage", stop);
     if let Some(buf) = json_out {
         buf.write_all(line.as_bytes())
             .map_err(|e| miette::miette!("Failed to write audit stop line: {e}"))?;
@@ -281,8 +298,8 @@ fn emit_skip_open_storage(
     Ok(())
 }
 
-fn should_eprint_walk_stop(overall_deadline: Option<Instant>) -> bool {
-    !overall_deadline_fired(overall_deadline)
+fn should_eprint_walk_stop(overall_deadline: Option<Instant>, cancel: &AtomicBool) -> bool {
+    !audit_stage_gate_fired(overall_deadline, cancel)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -298,7 +315,7 @@ fn audit_completeness_after_walk(
     cancel: &AtomicBool,
 ) -> Option<crate::impact::budget::AnalysisCompleteness> {
     let walk_complete = matches!(walk_stop, HistoryWalkStop::Complete);
-    if overall_deadline_fired(overall_deadline) && !walk_complete {
+    if audit_stage_gate_fired(overall_deadline, cancel) && !walk_complete {
         return Some(overall_completeness(cancel, overall_secs, "hotspots"));
     }
     completeness_for_walk(
@@ -379,7 +396,7 @@ pub(crate) fn execute_ledger_audit_in(
         .overall_deadline_override
         .or_else(|| (overall_secs > 0).then(|| Instant::now() + Duration::from_secs(overall_secs)));
 
-    if overall_deadline_fired(overall_deadline) {
+    if audit_stage_gate_fired(overall_deadline, &cancel) {
         return emit_skip_open_storage(&cancel, overall_secs, json, json_out);
     }
 
@@ -432,7 +449,7 @@ fn gather_audit_data(
     let layout = get_layout()?;
     let db = LedgerDb::new(storage.get_connection());
 
-    if overall_deadline_fired(overall_deadline) {
+    if audit_stage_gate_fired(overall_deadline, &cancel) {
         return Ok(empty_project_audit_report(Some(overall_completeness(
             &cancel,
             overall_secs,
@@ -467,7 +484,7 @@ fn gather_audit_data(
         federated: 0,
     };
 
-    if overall_deadline_fired(overall_deadline) {
+    if audit_stage_gate_fired(overall_deadline, &cancel) {
         return Ok(ProjectAuditReport {
             velocity,
             churn: vec![],
@@ -480,7 +497,7 @@ fn gather_audit_data(
         });
     }
 
-    // Named 0243 swallow: DB error → federated: 0. Instant-gated so an overall
+    // Named 0243 swallow: DB error → federated: 0. Leave-gated so an overall
     // stop cannot depend on this fail-open (0327 dummy equality count).
     let federated_count = db
         .get_federated_entries_by_entity("%", "%", 1000000)
@@ -488,7 +505,7 @@ fn gather_audit_data(
         .unwrap_or(0);
     velocity.federated = federated_count;
 
-    if overall_deadline_fired(overall_deadline) {
+    if audit_stage_gate_fired(overall_deadline, &cancel) {
         return Ok(ProjectAuditReport {
             velocity,
             churn: vec![],
@@ -527,7 +544,7 @@ fn gather_audit_data(
         vec![]
     };
 
-    if overall_deadline_fired(overall_deadline) {
+    if audit_stage_gate_fired(overall_deadline, &cancel) {
         return Ok(ProjectAuditReport {
             velocity,
             churn,
@@ -559,7 +576,7 @@ fn gather_audit_data(
         match calculate_hotspots_detailed(storage, &history_provider, &query) {
             Ok(calc) => {
                 walk_complete = matches!(calc.walk_stop, HistoryWalkStop::Complete);
-                if should_eprint_walk_stop(overall_deadline) {
+                if should_eprint_walk_stop(overall_deadline, &cancel) {
                     eprint_walk_stop(calc.walk_stop, calc.commits_walked, commits);
                 }
                 let completeness = audit_completeness_after_walk(
@@ -578,7 +595,7 @@ fn gather_audit_data(
             Err(e) => {
                 tracing::warn!(error = %e, "audit hotspots history failed");
                 eprintln!("warning: audit hotspots unavailable: {e}");
-                let completeness = if overall_deadline_fired(overall_deadline) {
+                let completeness = if audit_stage_gate_fired(overall_deadline, &cancel) {
                     Some(overall_completeness(&cancel, overall_secs, "hotspots"))
                 } else {
                     Some(completeness_for_error(
@@ -592,7 +609,7 @@ fn gather_audit_data(
             }
         };
 
-    if overall_deadline_fired(overall_deadline) && !walk_complete {
+    if audit_stage_gate_fired(overall_deadline, &cancel) && !walk_complete {
         completeness = keep_or_set_overall(completeness, &cancel, overall_secs, "hotspots");
         return Ok(ProjectAuditReport {
             velocity,
@@ -606,7 +623,7 @@ fn gather_audit_data(
         });
     }
 
-    if overall_deadline_fired(overall_deadline) {
+    if audit_stage_gate_fired(overall_deadline, &cancel) {
         completeness = keep_or_set_overall(completeness, &cancel, overall_secs, "ci_trend");
         return Ok(ProjectAuditReport {
             velocity,
@@ -645,7 +662,7 @@ fn gather_audit_data(
         vec![]
     };
 
-    if overall_deadline_fired(overall_deadline) {
+    if audit_stage_gate_fired(overall_deadline, &cancel) {
         completeness = keep_or_set_overall(completeness, &cancel, overall_secs, "recent");
         return Ok(ProjectAuditReport {
             velocity,
@@ -665,7 +682,7 @@ fn gather_audit_data(
 
     let recent_entries = audit_entries_from_ledger_entries(&db, recent)?;
 
-    if overall_deadline_fired(overall_deadline) {
+    if audit_stage_gate_fired(overall_deadline, &cancel) {
         completeness = keep_or_set_overall(completeness, &cancel, overall_secs, "recent");
     }
 
@@ -1434,13 +1451,14 @@ mod tests {
             post_walk.is_none() || !is_overall_stop(post_walk.as_ref().unwrap()),
             "complete walk + overall fire is the ci_trend gate, not hotspots: {post_walk:?}"
         );
-        assert!(!should_eprint_walk_stop(Some(expired)));
-        assert!(should_eprint_walk_stop(None));
-        let line = audit_overall_stop_line("hotspots");
+        let idle = AtomicBool::new(false);
+        assert!(!should_eprint_walk_stop(Some(expired), &idle));
+        assert!(should_eprint_walk_stop(None, &idle));
+        let line = audit_overall_stop_line("hotspots", CompletenessStop::Budget);
         assert_eq!(line, "Audit stopped: overall budget (hotspots).");
-        let post = audit_overall_stop_line("ci_trend");
+        let post = audit_overall_stop_line("ci_trend", CompletenessStop::Budget);
         assert_eq!(post, "Audit stopped: overall budget (ci_trend).");
-        let recent = audit_overall_stop_line("recent");
+        let recent = audit_overall_stop_line("recent", CompletenessStop::Budget);
         assert_eq!(recent, "Audit stopped: overall budget (recent).");
     }
 
@@ -1450,7 +1468,10 @@ mod tests {
         let expired = Instant::now()
             .checked_sub(Duration::from_secs(1))
             .unwrap_or_else(Instant::now);
-        assert!(!should_eprint_walk_stop(Some(expired)));
+        assert!(!should_eprint_walk_stop(
+            Some(expired),
+            &AtomicBool::new(false)
+        ));
     }
 
     #[test]
@@ -1676,6 +1697,150 @@ mod tests {
 
     #[test]
     #[allow(non_snake_case)]
+    #[serial_test::serial(cwd)]
+    fn audit_unscoped__skip_open_cancel__stage_storage_stop_cancelled() {
+        use crate::tests::DirGuard;
+        use std::fs;
+        use std::process::Command;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        assert!(
+            Command::new("git")
+                .args(["init", "-b", "main"])
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        Command::new("git")
+            .args(["config", "user.email", "t@t.com"])
+            .current_dir(root)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "t"])
+            .current_dir(root)
+            .status()
+            .unwrap();
+        fs::write(root.join("README.md"), "one\n").unwrap();
+        assert!(
+            Command::new("git")
+                .args(["add", "README.md"])
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args(["commit", "-m", "first"])
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let _guard = DirGuard::new(root);
+        let mut buf = Vec::new();
+        execute_ledger_audit_in(
+            None,
+            false,
+            3,
+            0,
+            true,
+            Some(0),
+            AuditRunOpts {
+                cancel: Some(Arc::new(AtomicBool::new(true))),
+                overall_deadline_override: None,
+            },
+            Some(&mut buf),
+        )
+        .expect("exit 0");
+        let stdout = String::from_utf8_lossy(&buf);
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect(&stdout);
+        assert!(v.get("schemaVersion").is_none(), "{v}");
+        assert_eq!(v["completeness"]["scope"], "overall");
+        assert_eq!(v["completeness"]["stage"], "storage");
+        assert_eq!(v["completeness"]["stop"], "cancelled");
+        assert!(v["completeness"].get("budgetSecs").is_none(), "{v}");
+        assert_eq!(v["hotspots"].as_array().map(Vec::len), Some(0));
+        assert_eq!(v["churn"].as_array().map(Vec::len), Some(0));
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    #[serial_test::serial(cwd)]
+    fn audit_unscoped_human__skip_open_cancel__prints_cancelled_not_budget() {
+        use crate::tests::DirGuard;
+        use std::fs;
+        use std::process::Command;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        assert!(
+            Command::new("git")
+                .args(["init", "-b", "main"])
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        Command::new("git")
+            .args(["config", "user.email", "t@t.com"])
+            .current_dir(root)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "t"])
+            .current_dir(root)
+            .status()
+            .unwrap();
+        fs::write(root.join("README.md"), "one\n").unwrap();
+        assert!(
+            Command::new("git")
+                .args(["add", "README.md"])
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args(["commit", "-m", "first"])
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let _guard = DirGuard::new(root);
+        let mut buf = Vec::new();
+        execute_ledger_audit_in(
+            None,
+            false,
+            3,
+            0,
+            false,
+            Some(0),
+            AuditRunOpts {
+                cancel: Some(Arc::new(AtomicBool::new(true))),
+                overall_deadline_override: None,
+            },
+            Some(&mut buf),
+        )
+        .expect("exit 0");
+        let human = String::from_utf8_lossy(&buf);
+        assert!(
+            human.contains("Audit stopped: cancelled (storage)."),
+            "{human}"
+        );
+        assert!(
+            !human.contains("overall budget"),
+            "cancel skip-open must not print budget copy: {human}"
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
     fn audit_stderr_token__overall_stop__audit_stopped_overall_budget() {
         assert_eq!(AUDIT_BUDGET_WARN, "audit stopped: overall budget");
     }
@@ -1685,6 +1850,80 @@ mod tests {
     fn audit_timeout_zero__disables_overall_wall_clock() {
         assert_eq!(resolve_audit_overall_budget_secs(Some(0), 25), 0);
         assert!(!overall_deadline_fired(None));
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn audit_stage_gate_fired__cancel_or_instant__neither_false() {
+        let idle = AtomicBool::new(false);
+        let cancelled = AtomicBool::new(true);
+        let far = Instant::now() + Duration::from_secs(3600);
+        let expired = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        assert!(audit_stage_gate_fired(None, &cancelled));
+        assert!(audit_stage_gate_fired(Some(far), &cancelled));
+        assert!(audit_stage_gate_fired(Some(expired), &idle));
+        assert!(!audit_stage_gate_fired(None, &idle));
+        assert!(!audit_stage_gate_fired(Some(far), &idle));
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn audit_overall_stop_line__cancelled_vs_budget__locked_copy() {
+        let cancelled = audit_overall_stop_line("storage", CompletenessStop::Cancelled);
+        assert_eq!(cancelled, "Audit stopped: cancelled (storage).");
+        assert!(!cancelled.contains("overall budget"), "{cancelled}");
+        let budget = audit_overall_stop_line("storage", CompletenessStop::Budget);
+        assert_eq!(budget, "Audit stopped: overall budget (storage).");
+        let error = audit_overall_stop_line("hotspots", CompletenessStop::Error);
+        assert_eq!(error, "Audit stopped: overall budget (hotspots).");
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn audit_completeness_after_walk__cancelled_no_instant__overall_cancelled_hotspots() {
+        let cancel = AtomicBool::new(true);
+        let overall = audit_completeness_after_walk(
+            HistoryWalkStop::Cancelled,
+            500,
+            4,
+            None,
+            None,
+            45,
+            None,
+            0,
+            &cancel,
+        )
+        .expect("overall");
+        assert!(is_overall_stop(&overall));
+        assert_eq!(overall.stop, CompletenessStop::Cancelled);
+        assert_eq!(overall.stage.as_deref(), Some("hotspots"));
+        assert!(overall.budget_secs.is_none());
+        assert!(!should_eprint_walk_stop(None, &cancel));
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn audit_completeness_after_walk__history_budget_no_instant__history_only() {
+        let idle = AtomicBool::new(false);
+        let history = audit_completeness_after_walk(
+            HistoryWalkStop::Budget,
+            500,
+            4,
+            None,
+            None,
+            45,
+            None,
+            25,
+            &idle,
+        )
+        .expect("history");
+        assert!(!is_overall_stop(&history));
+        assert_eq!(history.stop, CompletenessStop::Budget);
+        let v = serde_json::to_value(&history).expect("json");
+        assert!(v.get("scope").is_none(), "{v}");
+        assert!(should_eprint_walk_stop(None, &idle));
     }
 
     #[test]
