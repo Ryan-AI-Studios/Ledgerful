@@ -130,6 +130,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Cargo minor/patch batch (0384):** Bump
+  toml 1.1.6, rusqlite 0.40.2, uuid 1.26.1,
+  crossbeam 0.8.5, encoding_rs 0.8.41,
+  owo-colors 4.4.0, tower-http 0.7.1,
+  blake3 1.8.7 (drops `arrayref`), flate2
+  1.1.10, which 8.0.6, and gix-packetline
+  0.21.5. Clap stays **4.6.6**; gix stays
+  **0.84.0**. Not a Security/GHSA claim.
+
 - **install-action pin (0383):** Pin
   `taiki-e/install-action` tagged **v2.87.14**
   (5 sites). Catalog `tool:` inputs stay

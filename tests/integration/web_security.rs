@@ -506,6 +506,39 @@ async fn spa_dir_without_sidecar_falls_back_to_unsafe_inline() {
 }
 
 #[tokio::test]
+async fn spa_dir_missing_next_asset_returns_404_not_index() {
+    // Hashed `/_next/` assets must 404 when missing — never fall back to
+    // index.html (tower-http 0.7.1 ServeDir no-fallback I/O honesty).
+    let guard = temp_layout();
+    let tmp = tempfile::tempdir().unwrap();
+    let spa = Utf8Path::from_path(tmp.path()).unwrap().join("out");
+    std::fs::create_dir_all(spa.join("_next").as_std_path()).unwrap();
+    std::fs::write(
+        spa.join("index.html").as_std_path(),
+        "<!doctype html><html><body>spa-index-must-not-leak</body></html>",
+    )
+    .unwrap();
+
+    let (url, _token, handle) = spawn_server_with_spa(guard.layout(), Some(spa)).await;
+    let resp = client()
+        .get(format!("{}/_next/missing-asset.js", url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        404,
+        "missing /_next asset must 404, not 500"
+    );
+    let body = resp.text().await.unwrap();
+    assert!(
+        !body.contains("spa-index-must-not-leak"),
+        "/_next miss must not fall back to index.html: {body}"
+    );
+    handle.abort();
+}
+
+#[tokio::test]
 async fn embedded_fallback_response_has_security_headers_and_no_hsts() {
     // Debug builds serve a stub for embedded SPA (no --spa-dir). Middleware
     // still wraps that fallback — prove headers + hash CSP + no HSTS on the
