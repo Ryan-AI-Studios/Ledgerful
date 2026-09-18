@@ -1,7 +1,7 @@
 use crate::cli::{HotspotArgs, HotspotIncludeScope};
 use crate::git::blob::head_path_exists;
 use crate::impact::budget::{
-    AnalysisBudget, CompletenessStop, HotspotProvenance, HotspotProvenanceSource,
+    AnalysisBudget, CompletenessStop, HistoryWalkStop, HotspotProvenance, HotspotProvenanceSource,
     completeness_for_overall, completeness_for_walk, eprint_walk_stop, filter_for_cli_include,
     format_provenance_footer, is_overall_stop, overall_deadline_fired,
 };
@@ -261,7 +261,7 @@ pub(super) fn execute_hotspots_list(
                 overall_deadline,
                 cancel.clone(),
             );
-            let couplings_persisted = persist_hotspots_and_couplings(
+            let outcome = persist_hotspots_and_couplings(
                 storage,
                 repo,
                 &hotspots,
@@ -269,13 +269,7 @@ pub(super) fn execute_hotspots_list(
                 Some(&persist_budget),
             )?;
             if !args.json {
-                if couplings_persisted {
-                    println!("Hotspot and temporal coupling snapshot persisted to SQLite.");
-                } else {
-                    println!(
-                        "Hotspot snapshot persisted to SQLite (temporal coupling history skipped: repository has fewer than 10 commits)."
-                    );
-                }
+                println!("{}", format_snapshot_persist_message(outcome));
             }
         }
     }
@@ -405,21 +399,50 @@ pub(super) fn omitted_vendor_hotspots_footer(omitted: usize) -> Option<String> {
     }
 }
 
+/// Why temporal coupling history was or was not written on a snapshot persist.
+///
+/// Persist-only (0375). Distinct from unscoped-audit leave-gates (0376).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CouplingsPersistOutcome {
+    Persisted,
+    InsufficientHistory,
+    BudgetSkipped,
+    Cancelled,
+}
+
+pub(super) fn format_snapshot_persist_message(outcome: CouplingsPersistOutcome) -> &'static str {
+    match outcome {
+        CouplingsPersistOutcome::Persisted => {
+            "Hotspot and temporal coupling snapshot persisted to SQLite."
+        }
+        CouplingsPersistOutcome::InsufficientHistory => {
+            "Hotspot snapshot persisted to SQLite (temporal coupling history skipped: repository has fewer than 10 commits)."
+        }
+        CouplingsPersistOutcome::BudgetSkipped => {
+            "Hotspot snapshot persisted to SQLite (temporal coupling history skipped: persist budget)."
+        }
+        CouplingsPersistOutcome::Cancelled => {
+            "Hotspot snapshot persisted to SQLite (temporal coupling history skipped: cancelled)."
+        }
+    }
+}
+
 /// Persists a hotspot snapshot (and, history permitting, the accompanying
 /// temporal-coupling snapshot) to SQLite.
 ///
-/// Returns whether temporal coupling history was actually persisted: `true`
-/// if persisted, `false` if skipped because the repository does not yet have
-/// enough commit history (`GitError::InsufficientHistory`). Hotspot rows are
-/// always persisted regardless of coupling availability, since couplings
-/// require strictly more history than hotspots do.
+/// Returns a four-way outcome: couplings inserted (`Persisted`), skipped
+/// because the analyzed window completed with fewer than 10 commits
+/// (`InsufficientHistory`), skipped because the persist budget Instant
+/// elapsed (`BudgetSkipped`), or skipped because cancel was set
+/// (`Cancelled`). Hotspot rows are always persisted regardless of coupling
+/// availability. Truncated coupling walks are never stored as complete.
 pub(super) fn persist_hotspots_and_couplings(
     storage: &StorageManager,
     repo: &gix::Repository,
     hotspots: &[crate::impact::packet::Hotspot],
     config: &crate::config::model::Config,
     budget: Option<&AnalysisBudget>,
-) -> Result<bool> {
+) -> Result<CouplingsPersistOutcome> {
     let conn = storage.get_connection();
     let timestamp = Utc::now().to_rfc3339();
 
@@ -457,11 +480,11 @@ pub(super) fn persist_hotspots_and_couplings(
     // still propagates as a hard failure.
     let history_provider = GixHistoryProvider::new(repo);
     let engine = TemporalEngine::new(history_provider, config.temporal.clone());
-    let couplings_persisted = match engine.calculate_couplings_budgeted(budget) {
-        Ok(couplings) => {
-            if budget.is_some_and(|b| b.should_stop().is_some()) {
-                false
-            } else {
+    let outcome = match engine.calculate_couplings_budgeted(budget) {
+        Ok(couplings) => match budget.and_then(|b| b.should_stop()) {
+            Some(HistoryWalkStop::Cancelled) => CouplingsPersistOutcome::Cancelled,
+            Some(HistoryWalkStop::Budget) => CouplingsPersistOutcome::BudgetSkipped,
+            Some(HistoryWalkStop::Complete) | None => {
                 for coupling in couplings {
                     conn.execute(
                         "INSERT INTO temporal_coupling_history (snapshot_id, file_a, file_b, score, timestamp) \
@@ -476,10 +499,12 @@ pub(super) fn persist_hotspots_and_couplings(
                     )
                     .into_diagnostic()?;
                 }
-                true
+                CouplingsPersistOutcome::Persisted
             }
+        },
+        Err(crate::git::GitError::InsufficientHistory { .. }) => {
+            CouplingsPersistOutcome::InsufficientHistory
         }
-        Err(crate::git::GitError::InsufficientHistory { .. }) => false,
         Err(e) => {
             return Err(miette::miette!(
                 "Failed to calculate temporal couplings: {}",
@@ -488,5 +513,5 @@ pub(super) fn persist_hotspots_and_couplings(
         }
     };
 
-    Ok(couplings_persisted)
+    Ok(outcome)
 }

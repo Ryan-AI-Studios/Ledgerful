@@ -1,7 +1,8 @@
 use super::explain::complexity_for_entity_path;
 use super::list::{
-    latest_hotspot_history_timestamp, list_hotspot_json, live_list_provenance, omitted_docs_footer,
-    omitted_hotspots_footer, omitted_vendor_hotspots_footer, wrap_hotspots_list_json,
+    CouplingsPersistOutcome, format_snapshot_persist_message, latest_hotspot_history_timestamp,
+    list_hotspot_json, live_list_provenance, omitted_docs_footer, omitted_hotspots_footer,
+    omitted_vendor_hotspots_footer, persist_hotspots_and_couplings, wrap_hotspots_list_json,
     wrap_hotspots_list_json_with_completeness,
 };
 use super::trend::{
@@ -1798,4 +1799,183 @@ fn hotspots_semantic__overall_expired__emits_empty_files_stage_semantic() {
     assert_eq!(v["completeness"]["stage"], "semantic");
     assert_eq!(v["completeness"]["scope"], "overall");
     assert_eq!(v["files"].as_array().map(Vec::len), Some(0));
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn format_snapshot_persist_message__four_variants__locked_copy() {
+    assert_eq!(
+        format_snapshot_persist_message(CouplingsPersistOutcome::Persisted),
+        "Hotspot and temporal coupling snapshot persisted to SQLite."
+    );
+    assert_eq!(
+        format_snapshot_persist_message(CouplingsPersistOutcome::InsufficientHistory),
+        "Hotspot snapshot persisted to SQLite (temporal coupling history skipped: repository has fewer than 10 commits)."
+    );
+    let budget = format_snapshot_persist_message(CouplingsPersistOutcome::BudgetSkipped);
+    assert_eq!(
+        budget,
+        "Hotspot snapshot persisted to SQLite (temporal coupling history skipped: persist budget)."
+    );
+    assert!(
+        !budget.contains("fewer than 10 commits"),
+        "budget skip must not use the young-repo sentence: {budget}"
+    );
+    let cancelled = format_snapshot_persist_message(CouplingsPersistOutcome::Cancelled);
+    assert_eq!(
+        cancelled,
+        "Hotspot snapshot persisted to SQLite (temporal coupling history skipped: cancelled)."
+    );
+    assert!(
+        !cancelled.contains("fewer than 10 commits"),
+        "cancel skip must not use the young-repo sentence: {cancelled}"
+    );
+}
+
+fn persist_token_repo() -> (
+    tempfile::TempDir,
+    crate::state::storage::StorageManager,
+    gix::Repository,
+) {
+    use crate::state::layout::Layout;
+    use crate::state::storage::StorageManager;
+    use std::fs;
+    use std::process::Command;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    assert!(
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(root)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .status()
+            .unwrap()
+            .success()
+    );
+    Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "test"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    fs::create_dir_all(root.join("src")).unwrap();
+    for i in 0..12 {
+        fs::write(
+            root.join("src/lib.rs"),
+            format!("pub fn f() -> i32 {{ {i} }}\n"),
+        )
+        .unwrap();
+        assert!(
+            Command::new("git")
+                .args(["add", "src/lib.rs"])
+                .current_dir(root)
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args(["commit", "-m", &format!("c{i}")])
+                .current_dir(root)
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let layout = Layout::new(camino::Utf8Path::from_path(root).unwrap());
+    layout.ensure_state_dir().unwrap();
+    let storage =
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    let repo = crate::git::repo::open_repo(root).expect("open git repo");
+    (tmp, storage, repo)
+}
+
+fn sample_hotspot() -> crate::impact::packet::Hotspot {
+    crate::impact::packet::Hotspot {
+        path: std::path::PathBuf::from("src/lib.rs"),
+        score: 0.5,
+        display_score: 1.0,
+        complexity: 1,
+        frequency: 1.0,
+        centrality: None,
+    }
+}
+
+fn table_count(storage: &crate::state::storage::StorageManager, table: &str) -> i64 {
+    storage
+        .get_connection()
+        .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
+        .unwrap()
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn persist_hotspots_and_couplings__expired_budget__budget_skipped_no_coupling_rows() {
+    use crate::impact::budget::AnalysisBudget;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    let (_tmp, storage, repo) = persist_token_repo();
+    let config = crate::config::model::Config::default();
+    let hotspots = [sample_hotspot()];
+    let budget = AnalysisBudget::expired(Arc::new(AtomicBool::new(false)));
+    let outcome =
+        persist_hotspots_and_couplings(&storage, &repo, &hotspots, &config, Some(&budget))
+            .expect("persist");
+    assert_eq!(outcome, CouplingsPersistOutcome::BudgetSkipped);
+    assert!(
+        table_count(&storage, "hotspot_history") > 0,
+        "hotspot rows must still be inserted"
+    );
+    assert_eq!(
+        table_count(&storage, "temporal_coupling_history"),
+        0,
+        "truncated couplings must not be stored"
+    );
+    let _ = storage.shutdown();
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn persist_hotspots_and_couplings__cancel_flag__cancelled_no_coupling_rows() {
+    use crate::impact::budget::AnalysisBudget;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    let (_tmp, storage, repo) = persist_token_repo();
+    let config = crate::config::model::Config::default();
+    let hotspots = [sample_hotspot()];
+    let budget = AnalysisBudget::unlimited(Arc::new(AtomicBool::new(true)));
+    let outcome =
+        persist_hotspots_and_couplings(&storage, &repo, &hotspots, &config, Some(&budget))
+            .expect("persist");
+    assert_eq!(outcome, CouplingsPersistOutcome::Cancelled);
+    assert!(
+        table_count(&storage, "hotspot_history") > 0,
+        "hotspot rows must still be inserted"
+    );
+    assert_eq!(
+        table_count(&storage, "temporal_coupling_history"),
+        0,
+        "cancelled walk must not store truncated couplings"
+    );
+    let _ = storage.shutdown();
 }

@@ -33,6 +33,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Hotspot snapshot budget-skip honesty (0375):**
+  `hotspots --snapshot` no longer labels a persist-budget
+  or cancel skip as a young repo (`fewer than 10 commits`).
+  Truncated coupling walks are still not stored as complete.
+
 - **Working-tree cancel persist (0374):**
   `impact` / `scan --impact` Ctrl-C without an
   overall Instant no longer rewrites
