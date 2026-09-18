@@ -7,7 +7,7 @@ This document tracks dependency and project-level compatibility concerns for the
 | Dependency / Area | Current Version / Status | Compatibility Notes | Impact |
 | :--- | :--- | :--- | :--- |
 | **thiserror** | 2.0.x | v2 removed some raw-identifier formatting behavior. | Low |
-| **rusqlite** | 0.40.1 | Tight statement validation; unsigned integer SQL conversions are not default. | Moderate |
+| **rusqlite** | 0.40.2 | Tight statement validation; unsigned integer SQL conversions are not default. | Moderate |
 | **clap** | 4.6.1 | v4 stable; v5 remains future work. | Low |
 | **miette** | 7.6.0 | v7 stable. | Low |
 | **tree-sitter** | 0.26.8 | Parser family must be upgraded together. | Moderate |
