@@ -106,7 +106,7 @@ Default list omits tests/examples/benches **and** `.md` **and** vendored `deps_s
 
 ## `ledgerful audit`
 
-Global TOP CHURNED FILES (human + `--json` `churn[]`) are unique **file paths**. ` (+N more)` labels collapse to the first path; directories and track slugs are dropped unless a TX `snapshot_id` expands via `changed_files`. `count` is distinct LOCAL ledger TXs. JSON is a bare `ProjectAuditReport` object (**no** `schemaVersion`). `--timeout` is the overall unscoped emit budget (default 25s; `0` disables), not the 0308 history walk. Additive `completeness.scope=overall` when that deadline fires. Velocity / CI trend / recent TXs stay page-sized by `--limit` / `--offset`. Entity-scoped `audit <path>` is a different history view and ignores `--timeout`.
+Global TOP CHURNED FILES (human + `--json` `churn[]`) are unique **file paths**. ` (+N more)` labels collapse to the first path; directories and track slugs are dropped unless a TX `snapshot_id` expands via `changed_files`. `count` is distinct LOCAL ledger TXs. JSON is a bare `ProjectAuditReport` object (**no** `schemaVersion`). `--timeout` is the overall unscoped emit budget (default 25s; `0` disables Instant), not the 0308 history walk. Additive `completeness.scope=overall` when that deadline fires **or** cancel is set (0376). Human cancel copy is `Audit stopped: cancelled ({stage}).`; stderr `audit stopped: overall budget` is Budget-only. Velocity / CI trend / recent TXs stay page-sized by `--limit` / `--offset`. Entity-scoped `audit <path>` is a different history view and ignores `--timeout`.
 
 ## `ledgerful surfaces`
 

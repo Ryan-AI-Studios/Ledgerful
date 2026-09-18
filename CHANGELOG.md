@@ -33,6 +33,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Unscoped audit cancel stage gates (0376):**
+  `audit` / `ledger audit` leave cooperative stage gates
+  when Ctrl-C sets cancel, including `--timeout 0`.
+  Cancel is not labeled `overall budget`. History-budget
+  hotspot walks stay history-only.
+
 - **Hotspot snapshot budget-skip honesty (0375):**
   `hotspots --snapshot` no longer labels a persist-budget
   or cancel skip as a young repo (`fewer than 10 commits`).
