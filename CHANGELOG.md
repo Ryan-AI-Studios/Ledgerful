@@ -130,6 +130,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **install-action pin (0383):** Pin
+  `taiki-e/install-action` tagged **v2.87.14**
+  (5 sites). Catalog `tool:` inputs stay
+  unversioned (nextest / cargo-llvm-cov /
+  cargo-mutants). No Cargo bump.
+
 - **Engine GHA digest pins (0382):** Pin
   `softprops/action-gh-release` **v3.0.3**,
   `Swatinem/rust-cache` tagged **v2.9.2**, and
