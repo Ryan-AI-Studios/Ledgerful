@@ -132,6 +132,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Dogfood pin v0.2.14 (0380):** Workflow A
+  `ledgerful-pr-scan.yml` pins published **v0.2.14**
+  plus Linux gnu sidecar
+  `2b1ac064a2db39b17c0dda4a88505930f91a8ab69af00cd8c42225c1bda8f9f1`.
+  Action `uses:` stays `#16`
+  `259a5e5ca504542ab0f32d0f026924c5938ee13b` until Action
+  #18 squash. Engine packaging templates match the
+  published sidecars. Winget copy is search-honest
+  (live 0.2.13; v0.2.14 pending index).
+
 - **Cargo minor/patch batch (0384):** Bump
   toml 1.1.6, rusqlite 0.40.2, uuid 1.26.1,
   crossbeam 0.8.5, encoding_rs 0.8.41,
