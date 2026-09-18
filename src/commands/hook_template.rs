@@ -481,11 +481,20 @@ fn repo_relative_slash(root: &Utf8Path, path: &Utf8Path) -> Option<String> {
         Some(rel.as_str().replace('\\', "/"))
     } else {
         let root_s = root.as_str().replace('\\', "/");
-        let root_s = root_s.trim_end_matches('/');
+        let root_trimmed = root_s.trim_end_matches('/');
         let path_s = path.as_str().replace('\\', "/");
-        path_s
-            .strip_prefix(root_s)
-            .map(|rest| rest.trim_start_matches('/').to_string())
+        if !root_trimmed.is_empty()
+            && path_s.starts_with(root_trimmed)
+            && path_s[root_trimmed.len()..].starts_with('/')
+        {
+            Some(
+                path_s[root_trimmed.len()..]
+                    .trim_start_matches('/')
+                    .to_string(),
+            )
+        } else {
+            None
+        }
     };
     let candidate = match from_prefix {
         Some(rel) => rel.trim_end_matches('/').to_string(),
@@ -1433,6 +1442,102 @@ fi
             short_refresh_reason("broken marker; not rewritten. Recommended snippet:\nbar"),
             "broken marker; not rewritten."
         );
+    }
+
+    #[allow(non_snake_case)]
+    #[test]
+    fn repo_relative_slash_rejects_text_prefix_without_separator() {
+        assert_eq!(
+            repo_relative_slash(
+                Utf8Path::new("/tmp/proj"),
+                Utf8Path::new("/tmp/proj-main/.git/hooks")
+            )
+            .as_deref(),
+            Some(".git/hooks")
+        );
+        assert_eq!(
+            repo_relative_slash(
+                Utf8Path::new("/tmp/proj"),
+                Utf8Path::new("/tmp/proj-main/custom_hooks")
+            ),
+            None
+        );
+        assert_eq!(
+            repo_relative_slash(
+                Utf8Path::new(r"C:\work\proj"),
+                Utf8Path::new(r"C:\work\proj-main\.git\hooks")
+            )
+            .as_deref(),
+            Some(".git/hooks")
+        );
+        assert_eq!(
+            repo_relative_slash(
+                Utf8Path::new("/tmp/proj/"),
+                Utf8Path::new("/tmp/proj/.git/hooks")
+            )
+            .as_deref(),
+            Some(".git/hooks")
+        );
+        assert_eq!(
+            repo_relative_slash(Utf8Path::new("/tmp/proj"), Utf8Path::new("/tmp/proj")),
+            None
+        );
+        let from_root = repo_relative_slash(
+            Utf8Path::new("/"),
+            Utf8Path::new("/tmp/proj-main/.git/hooks"),
+        );
+        assert_ne!(
+            from_root.as_deref(),
+            Some("-main/.git/hooks"),
+            "filesystem root must not leak a prefix remainder: {from_root:?}"
+        );
+        assert_eq!(
+            repo_relative_slash(
+                Utf8Path::new("/tmp/proj"),
+                Utf8Path::new("/tmp/proj/.husky/_")
+            )
+            .as_deref(),
+            Some(".husky/_")
+        );
+        assert_eq!(
+            repo_relative_slash(
+                Utf8Path::new(r"C:\work\proj"),
+                Utf8Path::new("C:/work/proj/.husky/_")
+            )
+            .as_deref(),
+            Some(".husky/_")
+        );
+    }
+
+    #[allow(non_snake_case)]
+    #[test]
+    fn hook_refresh_preview__prefix_collision_hooks_dir__never_emits_dash_main() {
+        let dir = repo_relative_slash(
+            Utf8Path::new("/tmp/proj"),
+            Utf8Path::new("/tmp/proj-main/.git/hooks"),
+        );
+        assert_eq!(dir.as_deref(), Some(".git/hooks"));
+        let mut report = HookTemplateRefreshReport::empty(true);
+        report.hooks_dir = dir;
+        report.refreshed.push("pre-push:verify-gate".into());
+        let human = format_hook_refresh_preview(&report);
+        assert!(
+            !human.contains("-main/"),
+            "human preview leaked prefix remainder: {human}"
+        );
+        assert!(
+            human.contains("pre-push:verify-gate (.git/hooks/pre-push)"),
+            "{human}"
+        );
+        let pretty = hook_refresh_preview_json(&report).expect("json");
+        assert!(
+            !pretty.contains("-main/"),
+            "JSON preview leaked prefix remainder: {pretty}"
+        );
+        let v: serde_json::Value = serde_json::from_str(pretty.trim()).expect("parse");
+        assert_eq!(v["hooksDir"], ".git/hooks");
+        assert_eq!(v["wouldRefresh"][0]["path"], ".git/hooks/pre-push");
+        assert!(v["wouldRefresh"][0]["path"].is_string());
     }
 
     #[test]

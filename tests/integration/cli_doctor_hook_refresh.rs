@@ -5,7 +5,8 @@ use std::fs;
 use std::time::SystemTime;
 use tempfile::tempdir;
 
-use crate::common::{run_cli, setup_git_repo};
+use crate::common::{git_add_and_commit, run_cli, setup_git_repo};
+use std::process::Command;
 
 fn stale_verify_block() -> String {
     "\
@@ -159,6 +160,62 @@ fn doctor_hook_refresh_json_dry_run__pretty_envelope() {
     assert!(
         labels.iter().any(|l| l.contains("verify-gate")),
         "wouldRefresh={parsed}"
+    );
+}
+
+#[test]
+fn doctor_hook_refresh_dry_run__linked_worktree_prefix_collision__no_dash_main() {
+    let tmp = tempdir().unwrap();
+    let main = tmp.path().join("proj-main");
+    fs::create_dir_all(&main).expect("main dir");
+    setup_git_repo(&main);
+    fs::write(main.join("README"), "x").expect("readme");
+    git_add_and_commit(&main, "init");
+
+    let linked = tmp.path().join("proj");
+    let out = Command::new("git")
+        .args(["worktree", "add", linked.to_str().expect("utf8"), "HEAD"])
+        .current_dir(&main)
+        .output()
+        .expect("git worktree add");
+    assert!(
+        out.status.success(),
+        "worktree add failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let main_root = Utf8Path::from_path(&main).expect("utf8");
+    write_pre_push(main_root, &stale_verify_block());
+
+    let (stdout, stderr, code) = run_cli(&linked, &["doctor", "--apply-hook-refresh", "--dry-run"]);
+    assert_isolated_preview(&stdout, &stderr, code);
+    assert!(
+        !stdout.contains("-main/"),
+        "human preview leaked prefix remainder: {stdout}"
+    );
+    assert!(
+        stdout.contains(".git/hooks/pre-push") || stdout.contains("Would refresh"),
+        "{stdout}"
+    );
+
+    let (jout, jerr, jcode) = run_cli(
+        &linked,
+        &["doctor", "--json", "--apply-hook-refresh", "--dry-run"],
+    );
+    let parsed = parse_preview_json(&jout, &jerr, jcode);
+    let dumped = serde_json::to_string(&parsed).expect("dump");
+    assert!(
+        !dumped.contains("-main/"),
+        "JSON preview leaked prefix remainder: {dumped}"
+    );
+    assert_eq!(parsed["hooksDir"], ".git/hooks", "{parsed}");
+    assert!(
+        parsed["wouldRefresh"]
+            .as_array()
+            .expect("wouldRefresh")
+            .iter()
+            .any(|row| row["path"].as_str() == Some(".git/hooks/pre-push")),
+        "{parsed}"
     );
 }
 
