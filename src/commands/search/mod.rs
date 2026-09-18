@@ -51,6 +51,26 @@ impl SearchArgs {
     }
 }
 
+pub(crate) fn semantic_constructor_err_human_line(err: &miette::Report) -> String {
+    format!("Semantic engine initialization failed: {err:#}")
+}
+
+pub(crate) fn apply_semantic_constructor_err(
+    collector: &mut SearchCollector,
+    args: &SearchArgs,
+    err: &miette::Report,
+) {
+    if args.is_machine() {
+        collector.set_semantic_error(format!("{err:#}"));
+        return;
+    }
+    println!(
+        "{} {}",
+        "WARN".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold())),
+        semantic_constructor_err_human_line(err)
+    );
+}
+
 pub fn execute_search(args: SearchArgs) -> Result<()> {
     let layout = get_layout()?;
     let mut collector = SearchCollector::new(
@@ -245,27 +265,37 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                     let probe = crate::embed::client::check_local_model(&config.local_model);
                     let backend_status =
                         crate::semantic::backend_status_from_probe(&config.local_model, &probe);
-                    let readiness = crate::semantic::SemanticReadiness {
-                        backend_status,
-                        model_name: config.local_model.embedding_model.clone(),
-                        dimensions: 0,
-                        vector_count: 0,
-                        zero_vector_count: 0,
-                        is_stale: false,
-                        dimension_mismatch: false,
-                    };
-                    emit_readiness(&mut collector, &args, &readiness);
-                    if args.is_machine() {
-                        collector.set_semantic_error(format!("{e:#}"));
+                    if backend_status == crate::semantic::BackendStatus::Ready {
+                        apply_semantic_constructor_err(&mut collector, &args, &e);
+                        debug!("Semantic engine unavailable ({e}); falling through to BM25");
+                        (Vec::new(), false, None)
+                    } else {
+                        let readiness = crate::semantic::SemanticReadiness {
+                            backend_status,
+                            model_name: config.local_model.embedding_model.clone(),
+                            dimensions: 0,
+                            vector_count: 0,
+                            zero_vector_count: 0,
+                            is_stale: false,
+                            dimension_mismatch: false,
+                        };
+                        emit_readiness(&mut collector, &args, &readiness);
+                        if args.is_machine() {
+                            collector.set_semantic_error(format!("{e:#}"));
+                        }
+                        debug!("Semantic engine unavailable ({e}); falling through to BM25");
+                        (Vec::new(), false, Some(readiness))
                     }
-                    debug!("Semantic engine unavailable ({e}); falling through to BM25");
-                    (Vec::new(), false, Some(readiness))
                 }
             };
 
         if !results.is_empty() {
-            let extra_lexical =
-                collect_token_lexical_hits(&layout, &args.query, &results, args.limit);
+            let extra_lexical = collect_token_lexical_hits(
+                &layout,
+                &args.query,
+                retrieve::displayed_semantic_for_reserved(&results, args.limit),
+                args.limit,
+            );
             // Keep semantic primary but reserve at least one slot so a
             // token-FTS path (e.g. config_verify.rs) can enter a full top-k.
             let reserved = extra_lexical.len().min(1).min(args.limit.saturating_sub(1));
@@ -600,6 +630,60 @@ fn emit_search_index_status(args: &SearchArgs, collector: &mut SearchCollector, 
         println!(
             "{} Search index was empty; rebuilt to {post_count} document(s).",
             "WARN".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
+        );
+    }
+}
+
+#[cfg(test)]
+mod constructor_err_tests {
+    use super::*;
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn search_constructor_err__human_prints_real_error_not_empty_index() {
+        let err = miette::miette!(
+            "Could not read stored snippet_embedding dimension; refusing to open the vector store (index not modified)."
+        );
+        let line = semantic_constructor_err_human_line(&err);
+        assert!(
+            line.contains("Semantic engine initialization failed"),
+            "got: {line}"
+        );
+        assert!(
+            !line.contains("Semantic index is empty"),
+            "constructor Err must not look like empty-index: {line}"
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn search_constructor_err__json_semantic_error_without_ready_empty() {
+        let mut collector =
+            SearchCollector::new(SearchJsonMode::Envelope, "proj".into(), "q".into(), 10);
+        let args = SearchArgs {
+            query: "q".into(),
+            regex: false,
+            semantic: true,
+            limit: 10,
+            index: false,
+            json_mode: SearchJsonMode::Envelope,
+            auto_index: false,
+            project_id: "proj".into(),
+            hybrid: false,
+        };
+        let err = miette::miette!("Could not read stored snippet_embedding dimension");
+        apply_semantic_constructor_err(&mut collector, &args, &err);
+        let sem = collector.semantic_for_test().expect("semantic.error set");
+        assert!(
+            sem.error
+                .as_ref()
+                .expect("error")
+                .contains("snippet_embedding")
+        );
+        assert_eq!(sem.backend_status, "unknown");
+        assert_ne!(
+            sem.backend_status, "ready",
+            "must not emit Ready+empty readiness on constructor Err"
         );
     }
 }

@@ -33,6 +33,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Semantic index width and honesty (0377):**
+  `index --semantic` recreates `snippet_embedding` at the
+  preferred width (configured > probed) when stored differs,
+  and purges `semantic_file_hash`. Query/Ask still open stored
+  and do not drop the relation. Search constructor errors are
+  not labeled empty-index. The reserved lexical slot can admit
+  an overfetch/evicted path. Ask Tantivy keeps max score per path.
+
 - **Unscoped audit cancel stage gates (0376):**
   `audit` / `ledger audit` leave cooperative stage gates
   when Ctrl-C sets cancel, including `--timeout 0`.

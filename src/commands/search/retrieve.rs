@@ -40,6 +40,14 @@ pub(crate) fn tokenize_search_query(query: &str) -> Vec<String> {
     tokens
 }
 
+/// Semantic slice that will remain if one reserved lexical seat is taken.
+/// Overfetch / the evicted last displayed hit are **not** in this set, so they
+/// stay eligible for the reserved BM25 seat.
+pub(crate) fn displayed_semantic_for_reserved<T>(results: &[T], limit: usize) -> &[T] {
+    let cap = limit.saturating_sub(1);
+    &results[..results.len().min(cap)]
+}
+
 /// Lexical (path, score) not already in `semantic_paths`, highest score first,
 /// stable path tie-break, capped at `remaining`.
 pub(crate) fn lexical_paths_to_interleave(
@@ -718,6 +726,37 @@ mod tokenize_interleave_tests {
         let extra = lexical_paths_to_interleave(&semantic, lexical, 1);
         assert_eq!(extra.len(), 1);
         assert_eq!(extra[0].0, "src/other.rs");
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn collect_token_lexical_hits__overfetch_or_evicted_path__eligible_for_reserved_slot() {
+        use super::displayed_semantic_for_reserved;
+
+        let results = vec![
+            ("src/a.rs".to_string(), "a".to_string(), 0usize, 0.1_f32),
+            ("src/b.rs".to_string(), "b".to_string(), 0, 0.2),
+            ("src/c.rs".to_string(), "c".to_string(), 0, 0.3),
+            ("src/d.rs".to_string(), "d".to_string(), 0, 0.4),
+        ];
+        let limit = 3;
+        let displayed = displayed_semantic_for_reserved(&results, limit);
+        assert_eq!(displayed.len(), 2, "limit-1 displayed when reserving one");
+        let displayed_paths: Vec<String> = displayed.iter().map(|(p, _, _, _)| p.clone()).collect();
+        assert_eq!(displayed_paths, vec!["src/a.rs", "src/b.rs"]);
+        let lexical = vec![
+            ("src/c.rs".to_string(), 8.0),
+            ("src/d.rs".to_string(), 7.0),
+            ("src/a.rs".to_string(), 9.0),
+        ];
+        let extra = lexical_paths_to_interleave(&displayed_paths, lexical, 1);
+        assert_eq!(extra.len(), 1);
+        assert!(
+            extra[0].0 == "src/c.rs" || extra[0].0 == "src/d.rs",
+            "evicted/overfetch path must be eligible, got {}",
+            extra[0].0
+        );
+        assert_ne!(extra[0].0, "src/a.rs", "no duplicate of displayed semantic");
     }
 
     #[test]

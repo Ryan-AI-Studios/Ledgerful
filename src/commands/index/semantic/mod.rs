@@ -162,11 +162,20 @@ pub(crate) fn execute_semantic_index(
         .cozo()
         .ok_or_else(|| miette::miette!("CozoDB storage not initialized"))?;
 
-    let semantic = SemanticDiscovery::new_with_semantic_config(
+    let (semantic, recreated) = SemanticDiscovery::new_for_index(
         config.local_model.clone(),
         config.semantic.clone(),
         cozo,
     )?;
+    if recreated {
+        let dim = preferred_embedding_dimensions(&config.local_model);
+        emit_semantic_progress(
+            json,
+            &format!(
+                "WARN: Recreated snippet_embedding at {dim} dimensions (wiped stored vectors)."
+            ),
+        );
+    }
 
     // HP3: ensure the semantic file-hash tracking schema exists
     semantic.ensure_file_hash_schema()?;
@@ -452,7 +461,7 @@ pub(crate) fn execute_semantic_dry_run(
     let hnsw_rebuild_threshold = config.semantic.hnsw_rebuild_threshold();
     let would_trigger_hnsw_rebuild = estimated_chunk_count > hnsw_rebuild_threshold;
 
-    let embedding_dimensions = config.local_model.dimensions;
+    let embedding_dimensions = preferred_embedding_dimensions(&config.local_model);
 
     let report = SemanticDryRunReport {
         parse_threads: resolved.parse_threads.get(),
@@ -527,7 +536,7 @@ pub(crate) fn execute_semantic_dry_run(
         table.add_row(vec![
             "Embedding Dimensions",
             &dims_str,
-            "config.local_model.dimensions",
+            "configured > probed (preferred)",
         ]);
         table.add_row(vec![
             "HNSW Rebuild Threshold",
@@ -555,7 +564,24 @@ pub(crate) fn execute_semantic_dry_run(
     Ok(())
 }
 
-/// Human label for configured embedding width. Config `0` is unset, not a probe.
+/// Preferred index width: configured > probed. `0` when neither is available.
+/// Does not probe when the embedding backend is unconfigured.
+pub(crate) fn preferred_embedding_dimensions(
+    config: &crate::config::model::LocalModelConfig,
+) -> usize {
+    if config.dimensions > 0 {
+        return config.dimensions;
+    }
+    if !crate::embed::client::is_embedding_backend_configured(config) {
+        return 0;
+    }
+    match crate::embed::client::check_local_model(config) {
+        Ok(d) if d.dimensions > 0 => d.dimensions,
+        _ => 0,
+    }
+}
+
+/// Human label for preferred embedding width. `0` is unset, not a probe.
 pub(crate) fn format_dimensions_label(configured: usize) -> String {
     if configured == 0 {
         "unset".to_string()
