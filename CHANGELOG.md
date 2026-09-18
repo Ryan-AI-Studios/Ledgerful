@@ -130,6 +130,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Engine GHA digest pins (0382):** Pin
+  `softprops/action-gh-release` **v3.0.3**,
+  `Swatinem/rust-cache` tagged **v2.9.2**, and
+  `dtolnay/rust-toolchain` SHA `02cb101e…`.
+  PR-path `toolchain: 1.98.1` (0272) and
+  release/smoke `stable` stay. No Cargo bump.
+
 - **Engine dogfood v0.2.13 (0381):** Workflow A
   `ledgerful-version` + Linux gnu sidecar
   checksum track published **v0.2.13**. Action
