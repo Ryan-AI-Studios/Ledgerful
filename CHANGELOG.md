@@ -33,6 +33,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Hook refresh path prefix honesty (0378):**
+  `doctor --apply-hook-refresh --dry-run` no longer treats a
+  worktree root that is only a text prefix of the commondir
+  hooks path as relative (`/tmp/proj` vs
+  `/tmp/proj-main/.git/hooks` is `.git/hooks`, never
+  `-main/.git/hooks`). Human and JSON preview paths stay
+  repo-relative `/`.
+
 - **Semantic index width and honesty (0377):**
   `index --semantic` recreates `snippet_embedding` at the
   preferred width (configured > probed) when stored differs,
