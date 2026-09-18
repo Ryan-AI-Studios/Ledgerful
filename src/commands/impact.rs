@@ -12,6 +12,8 @@ use crate::state::storage::StorageManager;
 use miette::Result;
 use owo_colors::{OwoColorize, Stream};
 use std::env;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 /// Soft-open storage for impact analysis (0174).
 ///
@@ -71,6 +73,27 @@ fn report_was_durable(outcome: ImpactReportWriteOutcome) -> bool {
     )
 }
 
+/// Persist packet + report unless overall-stop or cancel (0374).
+///
+/// `None` means skip durable write (CLI overall-stop). Do not map skip to
+/// `Unchanged` (that claims a durable write).
+fn persist_or_skip(
+    storage: &StorageManager,
+    layout: &Layout,
+    packet: &mut crate::impact::packet::ImpactPacket,
+    cancel: &AtomicBool,
+) -> Result<Option<ImpactReportWriteOutcome>> {
+    if crate::impact::budget::should_skip_persist(packet.completeness.as_ref(), cancel) {
+        return Ok(None);
+    }
+    if let Err(e) = storage.save_packet(packet) {
+        tracing::warn!("SQLite save failed: {e}");
+    }
+    let outcome = soft_write_impact_report(layout, packet, storage.is_read_only())?;
+    apply_report_skip_honesty(packet, outcome);
+    Ok(Some(outcome))
+}
+
 /// Run impact analysis using a pre-built `RepoSnapshot`.
 ///
 /// Used by `execute_scan` when `--base-ref` is supplied: the caller has already
@@ -113,6 +136,7 @@ pub fn execute_impact_silent_with_snapshot_opts(
         include_governance,
         analysis_mode,
         None,
+        None,
     )
 }
 
@@ -124,6 +148,7 @@ pub fn execute_impact_silent_with_snapshot_opts_storage(
     include_governance: bool,
     analysis_mode: &str,
     preopened: Option<StorageManager>,
+    cancel: Option<Arc<AtomicBool>>,
 ) -> Result<(
     crate::impact::packet::ImpactPacket,
     ImpactReportWriteOutcome,
@@ -158,9 +183,10 @@ pub fn execute_impact_silent_with_snapshot_opts_storage(
     };
 
     let orchestrator = crate::impact::orchestrator::ImpactOrchestrator::with_builtins();
+    let cancel = cancel.unwrap_or_else(crate::impact::budget::install_cancel_flag);
     let history_opts = crate::impact::orchestrator::ImpactHistoryOpts::for_run(
         false,
-        crate::impact::budget::install_cancel_flag(),
+        Arc::clone(&cancel),
         analysis_mode,
         None,
         &config,
@@ -177,14 +203,8 @@ pub fn execute_impact_silent_with_snapshot_opts_storage(
     packet.finalize();
     crate::impact::redact::redact_secrets(&mut packet);
 
-    // Save to ledger (already soft on RO / failure)
-    if let Err(e) = storage.save_packet(&packet) {
-        tracing::warn!("SQLite save failed: {e}");
-    }
-
-    // Soft-write report: RO / PermissionDenied → Skipped, not hard-fail (0174).
-    let write_outcome = soft_write_impact_report(&layout, &packet, storage.is_read_only())?;
-    apply_report_skip_honesty(&mut packet, write_outcome);
+    let write_outcome = persist_or_skip(&storage, &layout, &mut packet, &cancel)?
+        .unwrap_or(ImpactReportWriteOutcome::OverallStop);
 
     storage.shutdown()?;
 
@@ -216,7 +236,7 @@ pub fn execute_impact_silent_with_depth_opts(
     crate::impact::packet::ImpactPacket,
     ImpactReportWriteOutcome,
 )> {
-    execute_impact_silent_with_depth_opts_storage(blast_depth, include_governance, None)
+    execute_impact_silent_with_depth_opts_storage(blast_depth, include_governance, None, None)
 }
 
 /// Like [`execute_impact_silent_with_depth_opts`] with an optional pre-opened
@@ -225,6 +245,7 @@ pub fn execute_impact_silent_with_depth_opts_storage(
     blast_depth: Option<u32>,
     include_governance: bool,
     preopened: Option<StorageManager>,
+    cancel: Option<Arc<AtomicBool>>,
 ) -> Result<(
     crate::impact::packet::ImpactPacket,
     ImpactReportWriteOutcome,
@@ -279,9 +300,10 @@ pub fn execute_impact_silent_with_depth_opts_storage(
     };
 
     let orchestrator = crate::impact::orchestrator::ImpactOrchestrator::with_builtins();
+    let cancel = cancel.unwrap_or_else(crate::impact::budget::install_cancel_flag);
     let history_opts = crate::impact::orchestrator::ImpactHistoryOpts::for_run(
         false,
-        crate::impact::budget::install_cancel_flag(),
+        Arc::clone(&cancel),
         "working_tree",
         None,
         &config,
@@ -298,14 +320,8 @@ pub fn execute_impact_silent_with_depth_opts_storage(
     packet.finalize();
     crate::impact::redact::redact_secrets(&mut packet);
 
-    // Save to ledger (already soft on RO / failure)
-    if let Err(e) = storage.save_packet(&packet) {
-        tracing::warn!("SQLite save failed: {e}");
-    }
-
-    // Soft-write report: RO / PermissionDenied → Skipped, not hard-fail (0174).
-    let write_outcome = soft_write_impact_report(&layout, &packet, storage.is_read_only())?;
-    apply_report_skip_honesty(&mut packet, write_outcome);
+    let write_outcome = persist_or_skip(&storage, &layout, &mut packet, &cancel)?
+        .unwrap_or(ImpactReportWriteOutcome::OverallStop);
 
     storage.shutdown()?;
 
@@ -591,6 +607,9 @@ pub fn execute_impact_human(
                     println!("\n{} Working tree is clean.", success_marker());
                     println!("{IMPACT_REPORT_RO_HONESTY}");
                 }
+                ImpactReportWriteOutcome::OverallStop => {
+                    println!("\n{} Working tree is clean.", success_marker());
+                }
             }
         }
         return Ok(());
@@ -608,7 +627,7 @@ pub fn execute_impact_human(
             success_marker(),
             ".ledgerful/reports/latest-impact.json".if_supports_color(Stream::Stdout, |s| s.cyan())
         );
-    } else {
+    } else if report_write_outcome == ImpactReportWriteOutcome::Skipped {
         println!("\n{IMPACT_REPORT_RO_HONESTY}");
     }
 
@@ -635,6 +654,7 @@ pub fn execute_impact(
         Vec::new(),
         false,
         None,
+        None,
     )
 }
 
@@ -659,6 +679,7 @@ pub fn execute_impact_with_blast_depth(
         Vec::new(),
         false,
         None,
+        None,
     )
 }
 
@@ -675,6 +696,7 @@ pub fn execute_impact_with_opts(
     paths: Vec<String>,
     include_governance: bool,
     timeout: Option<u64>,
+    cancel: Option<Arc<AtomicBool>>,
 ) -> Result<()> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
@@ -730,10 +752,10 @@ pub fn execute_impact_with_opts(
 
     // Write-first open with RO fallback when write open fails (0174 B7).
     let storage = open_storage_for_impact(&layout)?;
-    let cancel = crate::impact::budget::install_cancel_flag();
+    let cancel = cancel.unwrap_or_else(crate::impact::budget::install_cancel_flag);
     let history_opts = crate::impact::orchestrator::ImpactHistoryOpts::for_run(
         false,
-        cancel,
+        Arc::clone(&cancel),
         analysis_mode,
         timeout,
         &config,
@@ -796,23 +818,10 @@ pub fn execute_impact_with_opts(
         tracing::info!("Redacted {} secret(s) from impact packet", redactions.len());
     }
 
-    let skip_persist = packet
-        .completeness
-        .as_ref()
-        .is_some_and(crate::impact::budget::is_overall_stop);
-    if !skip_persist && let Err(e) = storage.save_packet(&packet) {
-        tracing::warn!("SQLite save failed: {e}");
-    }
-
-    // Overall-stop must not persist a truncated packet, must not claim a
-    // durable write (`Unchanged` is still "wrote"), and must not emit RO honesty.
-    let write_outcome = if skip_persist {
-        None
-    } else {
-        let outcome = soft_write_impact_report(&layout, &packet, storage.is_read_only())?;
-        apply_report_skip_honesty(&mut packet, outcome);
-        Some(outcome)
-    };
+    // Overall-stop / cancel must not persist a truncated packet, must not
+    // claim a durable write (`Unchanged` is still "wrote"), and must not
+    // emit RO honesty.
+    let write_outcome = persist_or_skip(&storage, &layout, &mut packet, &cancel)?;
     storage.shutdown()?;
 
     let wrote = write_outcome.is_some_and(report_was_durable);
@@ -878,7 +887,9 @@ fn emit_impact_output(
                     println!("\n{} Working tree is clean.", success_marker());
                     println!("{IMPACT_REPORT_RO_HONESTY}");
                 }
-                Some(ImpactReportWriteOutcome::Unchanged) | None => {
+                Some(ImpactReportWriteOutcome::Unchanged)
+                | Some(ImpactReportWriteOutcome::OverallStop)
+                | None => {
                     println!("\n{} Working tree is clean.", success_marker());
                 }
             }
@@ -1100,22 +1111,119 @@ mod prospective_tests {
         );
         let src = include_str!("impact.rs");
         let skip_at = src
-            .find("let skip_persist")
+            .find("fn persist_or_skip")
             .expect("working-tree overall stop must gate persist");
         let skip_block = src.get(skip_at..skip_at.saturating_add(900)).unwrap_or("");
-        assert!(skip_block.contains("is_overall_stop"));
+        assert!(skip_block.contains("should_skip_persist"));
         assert!(
             !skip_block.contains("ImpactReportWriteOutcome::Unchanged"),
             "skip persist must not map to Unchanged (that claims a durable write)"
         );
         assert!(
-            skip_block.contains("wrote = write_outcome.is_some_and(report_was_durable)"),
+            src.contains("wrote = write_outcome.is_some_and(report_was_durable)"),
             "overall-stop must pass wrote_report=false so human output does not claim a write"
         );
         let scan_src = include_str!("scan/execute.rs");
         assert!(
+            scan_src.contains("should_skip_persist"),
+            "scan --timeout persist arm must use dual-key persist skip"
+        );
+        assert!(
             scan_src.contains("apply_report_skip_honesty"),
             "scan --timeout persist arm must apply 0174 RO honesty"
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    #[serial_test::serial(cwd)]
+    fn silent_snapshot__injected_cancel__does_not_rewrite_latest_impact() {
+        use crate::git::RepoSnapshot;
+        use crate::state::layout::Layout;
+        use crate::state::reports::{LATEST_IMPACT_REPORT, write_impact_report};
+        use std::sync::atomic::AtomicBool;
+
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .expect("git init");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "t@t.com"])
+            .current_dir(root)
+            .output()
+            .expect("email");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "T"])
+            .current_dir(root)
+            .output()
+            .expect("name");
+        fs::create_dir_all(root.join("src")).expect("mkdir");
+        fs::write(root.join("src/exists.rs"), "fn x() {}").expect("write");
+        std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(root)
+            .output()
+            .expect("add");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(root)
+            .output()
+            .expect("commit");
+        fs::write(root.join("src/exists.rs"), "fn x() { 1 }").expect("dirty");
+
+        let utf8 = camino::Utf8Path::from_path(root).expect("utf8");
+        let layout = Layout::new(utf8);
+        layout.ensure_state_dir().expect("state");
+        let seed = crate::impact::packet::ImpactPacket {
+            schema_version: "v1".to_string(),
+            head_hash: Some("SEED_MARKER_0374_CANCEL".to_string()),
+            risk_reasons: vec!["seed-do-not-clobber".to_string()],
+            ..Default::default()
+        };
+        write_impact_report(&layout, &seed).expect("seed report");
+        let report_path = layout.reports_dir().join(LATEST_IMPACT_REPORT);
+        let before = fs::read_to_string(report_path.as_std_path()).expect("read before");
+        assert!(before.contains("SEED_MARKER_0374_CANCEL"));
+
+        let _cwd = crate::tests::DirGuard::new(root);
+        let repo = crate::git::repo::open_repo(root).expect("repo");
+        let (head_hash, branch_name) = crate::git::repo::get_head_info(&repo).expect("head");
+        let changes = crate::git::status::get_repo_status(&repo).expect("status");
+        let snapshot = RepoSnapshot {
+            head_hash,
+            branch_name,
+            is_clean: changes.is_empty(),
+            changes,
+        };
+        let cancel = Arc::new(AtomicBool::new(true));
+        let (packet, outcome) = execute_impact_silent_with_snapshot_opts_storage(
+            snapshot,
+            None,
+            false,
+            "working_tree",
+            None,
+            Some(Arc::clone(&cancel)),
+        )
+        .expect("silent cancel run");
+        assert_eq!(outcome, ImpactReportWriteOutcome::OverallStop);
+        assert!(!report_was_durable(outcome));
+        assert_eq!(
+            packet.completeness.as_ref().map(|c| c.stop),
+            Some(crate::impact::budget::CompletenessStop::Cancelled)
+        );
+        assert!(
+            packet
+                .completeness
+                .as_ref()
+                .is_some_and(crate::impact::budget::is_overall_stop)
+        );
+        let after = fs::read_to_string(report_path.as_std_path()).expect("read after");
+        assert_eq!(
+            before, after,
+            "working-tree cancel must not rewrite latest-impact.json"
         );
     }
 

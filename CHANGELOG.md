@@ -33,6 +33,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Working-tree cancel persist (0374):**
+  `impact` / `scan --impact` Ctrl-C without an
+  overall Instant no longer rewrites
+  `latest-impact.json` from a truncated packet.
+  `--timeout 0` is not a timed auto-graph skip.
+
 - **Hook refresh preview contract (0373):**
   `doctor --apply-hook-refresh --dry-run` is an
   isolated no-write preview (path + block id,
