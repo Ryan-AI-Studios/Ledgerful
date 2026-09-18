@@ -130,6 +130,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Engine dogfood v0.2.13 (0381):** Workflow A
+  `ledgerful-version` + Linux gnu sidecar
+  checksum track published **v0.2.13**. Action
+  `uses:` SHA stays 0334 / #337 (`259a5e5…`).
+  No Cargo bump.
+
 - **Sync cursor HLC readout (0365):**
   Human output explains Hybrid Logical
   Clocks and extract-vs-apply order.
