@@ -72,6 +72,31 @@ pub(crate) enum SemanticGather {
     Failed { reason: String },
 }
 
+/// Classify Ask gather from the shared resolver **before** opening a store.
+/// `stored_read_failed` is Failed (not Skipped) even though `open_dim` is None.
+pub(crate) fn ask_resolution_gate(
+    resolved: &crate::semantic::QueryDimResolution,
+) -> Option<SemanticGather> {
+    if resolved.dimension_mismatch {
+        return Some(SemanticGather::Failed {
+            reason:
+                "embedding dimension mismatch with stored snippet_embedding (index not modified)"
+                    .to_string(),
+        });
+    }
+    if resolved.stored_read_failed {
+        return Some(SemanticGather::Failed {
+            reason: "stored embedding dimension read failed (index not modified)".to_string(),
+        });
+    }
+    if resolved.open_dim.is_none() {
+        return Some(SemanticGather::Skipped {
+            reason: "embedding dimension unset and no stored snippet_embedding".to_string(),
+        });
+    }
+    None
+}
+
 pub(crate) fn gather_semantic_chunks(
     storage: &StorageManager,
     work_root: &std::path::Path,
@@ -93,42 +118,18 @@ pub(crate) fn gather_semantic_chunks(
     }
 
     let resolved = crate::semantic::resolve_query_dimensions(config, cozo);
-    if resolved.dimension_mismatch {
-        return SemanticGather::Failed {
-            reason:
-                "embedding dimension mismatch with stored snippet_embedding (index not modified)"
-                    .to_string(),
-        };
+    if let Some(gate) = ask_resolution_gate(&resolved) {
+        return gate;
     }
     let Some(dim) = resolved.open_dim else {
         return SemanticGather::Skipped {
             reason: "embedding dimension unset and no stored snippet_embedding".to_string(),
         };
     };
-    if resolved.stored_read_failed {
-        return SemanticGather::Failed {
-            reason: "stored embedding dimension read failed (index not modified)".to_string(),
+    if matches!(cozo.snippet_embedding_dim(), Ok(None)) {
+        return SemanticGather::Skipped {
+            reason: "semantic index not present".to_string(),
         };
-    }
-    match cozo.snippet_embedding_dim() {
-        Ok(None) => {
-            return SemanticGather::Skipped {
-                reason: "semantic index not present".to_string(),
-            };
-        }
-        Ok(Some(stored)) if stored == dim => {}
-        Ok(Some(stored)) => {
-            return SemanticGather::Failed {
-                reason: format!(
-                    "embedding dimension mismatch with stored snippet_embedding ({stored} vs {dim}; index not modified)"
-                ),
-            };
-        }
-        Err(e) => {
-            return SemanticGather::Failed {
-                reason: format!("stored embedding dimension read failed: {e}"),
-            };
-        }
     }
 
     let vector_store =
@@ -368,6 +369,31 @@ mod tests {
             Some(768),
             "Ask gather must not drop stored 768"
         );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn ask_context__stored_read_failed__failed_not_skipped() {
+        let resolved = crate::semantic::QueryDimResolution {
+            open_dim: None,
+            dimension_mismatch: false,
+            preferred: Some(768),
+            stored: None,
+            stored_read_failed: true,
+        };
+        match ask_resolution_gate(&resolved) {
+            Some(SemanticGather::Failed { reason }) => {
+                assert_eq!(
+                    reason,
+                    "stored embedding dimension read failed (index not modified)"
+                );
+                assert!(
+                    !reason.to_lowercase().contains("unset"),
+                    "must not look like Skipped unset: {reason}"
+                );
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
     }
 
     #[test]

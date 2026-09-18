@@ -309,8 +309,19 @@ fn execute_semantic_index_refuses_when_unconfigured() {
 fn dry_run_zero_configured_dims_is_unset() {
     assert_eq!(format_dimensions_label(0), "unset");
     assert_eq!(format_dimensions_label(768), "768");
+    let unconfigured = crate::config::model::LocalModelConfig::default();
+    assert!(
+        !crate::embed::client::is_embedding_backend_configured(&unconfigured),
+        "default config is unconfigured so preferred stays 0"
+    );
+    assert_eq!(preferred_embedding_dimensions(&unconfigured), 0);
+    let configured = crate::config::model::LocalModelConfig {
+        dimensions: 384,
+        ..Default::default()
+    };
+    assert_eq!(preferred_embedding_dimensions(&configured), 384);
     let report = serde_json::json!({
-        "embedding_dimensions": 0usize,
+        "embedding_dimensions": preferred_embedding_dimensions(&unconfigured),
     });
     assert_eq!(report["embedding_dimensions"], 0);
     assert_ne!(report["embedding_dimensions"], "unset");

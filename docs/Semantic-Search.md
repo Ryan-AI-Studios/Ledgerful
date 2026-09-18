@@ -45,6 +45,10 @@ bootstrap so the index never silently stays empty.
 | neither | warm (`vector_count > 0`) | **incremental** | `auto-incremental` |
 | neither | cold (`vector_count == 0`) | full | `cold-store` |
 
+- **Width change:** `index --semantic` recreates `snippet_embedding` at
+  preferred width (configured > probed) when stored differs, wiping stored
+  vectors and `semantic_file_hash`. Query/Ask never do this. After the wipe,
+  the run is `cold-store` / full.
 - **First populate / cold / post-dim-wipe empty vectors:** bare
   `index --semantic` full-bootstraps automatically (`cold-store`).
 - **Warm delta:** bare `index --semantic` re-embeds only changed files (and

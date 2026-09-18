@@ -18,6 +18,10 @@ This document tracks dependency and project-level compatibility concerns for the
 
 ## Project-Level Changes
 
+### Semantic index recreates stored width (0377)
+
+**`index --semantic` opens at preferred width (configured > probed), not stored.** When that differs from the stored `snippet_embedding` column (or the stored dim is unreadable), the command **drops FTS + HNSW + the relation and truncates `semantic_file_hash`**, then re-embeds. This is destructive and intended. Query/Ask (`SemanticDiscovery::new`) still open stored and never HP3-drop. After a width wipe, bare `index --semantic` is `cold-store` / full. `--semantic-dry-run` `embedding_dimensions` is that preferred width (`0` / human `unset` when neither configured nor probed).
+
 ### Semantic query no longer guesses 384 (0351)
 
 **`SemanticDiscovery::new` no longer defaults unset `local_model.dimensions` to 384.** Query paths resolve configured > probed > stored `snippet_embedding` width. If none of those is a positive dim, construction returns an error; `search --semantic` falls through to BM25 instead of exiting. Ask does not create or drop the stored relation on mismatch. Sample config uses `dimensions` (not `embedding_dimensions`).

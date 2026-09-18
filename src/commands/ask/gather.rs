@@ -382,6 +382,27 @@ pub(crate) fn gather_semantic_and_kg(
     gathered.evidence = evidence;
 }
 
+fn keep_max_ranked_chunk(
+    merged: &mut std::collections::BTreeMap<String, RankedChunk>,
+    path: String,
+    content: String,
+    score: f32,
+) {
+    merged
+        .entry(path.clone())
+        .and_modify(|e| {
+            if score > e.score {
+                e.score = score;
+                e.content = content.clone();
+            }
+        })
+        .or_insert(RankedChunk {
+            source: path,
+            content,
+            score,
+        });
+}
+
 fn tantivy_fallback_chunks(layout: &Layout, query: &str, limit: usize) -> Vec<RankedChunk> {
     let Ok(engine) =
         crate::search::TantivySearchEngine::open_or_create(layout.search_index_dir().as_std_path())
@@ -405,11 +426,7 @@ fn tantivy_fallback_chunks(layout: &Layout, query: &str, limit: usize) -> Vec<Ra
             if content.is_empty() {
                 continue;
             }
-            merged.entry(path.clone()).or_insert(RankedChunk {
-                source: path,
-                content,
-                score: hit.score,
-            });
+            keep_max_ranked_chunk(&mut merged, path, content, hit.score);
         }
     }
     let mut out: Vec<RankedChunk> = merged.into_values().collect();
@@ -497,6 +514,36 @@ mod tests {
         .expect("gather");
         storage.shutdown().expect("shutdown");
         gathered
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn gather_tantivy_chunks__token_score_beats_full_query__keeps_max() {
+        let mut merged = std::collections::BTreeMap::new();
+        keep_max_ranked_chunk(
+            &mut merged,
+            "src/a.rs".to_string(),
+            "weak full-query snippet".to_string(),
+            0.2,
+        );
+        keep_max_ranked_chunk(
+            &mut merged,
+            "src/a.rs".to_string(),
+            "strong token snippet".to_string(),
+            4.5,
+        );
+        let hit = merged.get("src/a.rs").expect("path");
+        assert!((hit.score - 4.5).abs() < f32::EPSILON);
+        assert_eq!(hit.content, "strong token snippet");
+        keep_max_ranked_chunk(
+            &mut merged,
+            "src/a.rs".to_string(),
+            "weaker later".to_string(),
+            1.0,
+        );
+        let hit = merged.get("src/a.rs").expect("path");
+        assert!((hit.score - 4.5).abs() < f32::EPSILON);
+        assert_eq!(hit.content, "strong token snippet");
     }
 
     #[test]

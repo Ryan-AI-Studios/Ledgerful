@@ -301,6 +301,52 @@ impl<'a> SemanticDiscovery<'a> {
         })
     }
 
+    /// Index-only open at **preferred** width (configured > probed).
+    /// Query/Ask keep [`Self::new_with_semantic_config`] (stored preferred).
+    ///
+    /// When stored width differs or the stored dim is unreadable, opening at
+    /// preferred recreates `snippet_embedding` (existing schema wipe) and
+    /// truncates `semantic_file_hash`. Same-width index does not purge hashes.
+    /// Returns `(discovery, recreated)` so the CLI can WARN on human paths.
+    pub fn new_for_index(
+        mut config: LocalModelConfig,
+        semantic_config: SemanticConfig,
+        storage: &'a CozoStorage,
+    ) -> Result<(Self, bool)> {
+        let resolved = resolve_query_dimensions(&config, storage);
+        let dim = match resolved.preferred {
+            Some(d) if d > 0 => d,
+            _ => {
+                return Err(miette::miette!(
+                    "Cannot create snippet_embedding with dimension 0. Set `local_model.dimensions` (nomic-embed-text is 768) or ensure the embedding probe returns a non-zero size. Inspect with `ledgerful index --semantic-dry-run`."
+                ));
+            }
+        };
+        let recreated =
+            resolved.stored_read_failed || resolved.stored.is_some_and(|stored| stored != dim);
+        config.dimensions = dim;
+        let skip_hnsw = config.disable_hnsw;
+        tracing::debug!("Initializing VectorStore for index at {dim} dimensions");
+        let embedder = SemanticEmbedder::new(config.clone());
+        let vector_store = VectorStore::new_with_hnsw_threshold(
+            storage,
+            dim,
+            skip_hnsw,
+            semantic_config.hnsw_rebuild_threshold(),
+        )?;
+        let this = Self {
+            embedder,
+            vector_store,
+            config,
+            query_mismatch: resolved.dimension_mismatch,
+        };
+        if recreated {
+            this.ensure_file_hash_schema()?;
+            this.purge_all_file_hashes()?;
+        }
+        Ok((this, recreated))
+    }
+
     pub fn check_readiness(&self) -> Result<SemanticReadiness> {
         let probe = crate::embed::client::check_local_model(&self.config);
         let backend_status = backend_status_from_probe(&self.config, &probe);
@@ -663,6 +709,19 @@ impl<'a> SemanticDiscovery<'a> {
             script,
             params,
             ScriptMutability::Mutable,
+        )?;
+        Ok(())
+    }
+
+    /// Drop every `semantic_file_hash` row (width recreate / unreadable stored dim).
+    fn purge_all_file_hashes(&self) -> Result<()> {
+        let relations = self.vector_store.storage_ref().get_relations()?;
+        if !relations.contains(&"semantic_file_hash".to_string()) {
+            return Ok(());
+        }
+        self.vector_store.storage_ref().run_script(
+            "?[file_path, content_hash] := *semantic_file_hash{file_path, content_hash}\n\
+             :rm semantic_file_hash {file_path, content_hash}",
         )?;
         Ok(())
     }
@@ -1372,5 +1431,127 @@ mod tests {
             "expected dimension 0 refusal, got: {msg}"
         );
         assert_eq!(storage.snippet_embedding_dim().expect("dim"), None);
+    }
+
+    fn sample_chunk(path: &str) -> crate::semantic::chunker::AstChunk {
+        crate::semantic::chunker::AstChunk {
+            file_path: path.to_string(),
+            name: "f".to_string(),
+            kind: crate::index::symbols::SymbolKind::Function,
+            content: "fn f() {}".to_string(),
+            docstring: None,
+            range: (0, 0),
+            lines: (1, 1),
+            offset: 0,
+        }
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn new_for_index__preferred_differs_from_stored__recreates_dim_and_purges_hashes() {
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let config_768 = LocalModelConfig {
+            dimensions: 768,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let semantic = SemanticDiscovery::new(config_768, &storage).expect("open 768");
+        semantic.ensure_file_hash_schema().expect("hash schema");
+        let mut embedding = vec![0.0_f32; 768];
+        embedding[0] = 1.0;
+        semantic
+            .index_chunks_batched(vec![sample_chunk("src/a.rs")], vec![embedding])
+            .expect("insert 768");
+        semantic
+            .record_file_hash("src/a.rs", "hash-a")
+            .expect("hash");
+        assert_eq!(storage.snippet_embedding_dim().expect("dim"), Some(768));
+        assert!(semantic.is_file_hash_current("src/a.rs", "hash-a"));
+
+        let config_384 = LocalModelConfig {
+            dimensions: 384,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let (indexed, recreated) = SemanticDiscovery::new_for_index(
+            config_384.clone(),
+            SemanticConfig::default(),
+            &storage,
+        )
+        .expect("index open 384");
+        assert!(recreated, "width change must recreate");
+        assert_eq!(
+            storage.snippet_embedding_dim().expect("dim"),
+            Some(384),
+            "index path must persist preferred width"
+        );
+        assert!(
+            indexed.get_tracked_files().expect("tracked").is_empty(),
+            "width recreate must purge semantic_file_hash"
+        );
+        assert_eq!(
+            indexed.get_vector_count().unwrap_or(usize::MAX),
+            0,
+            "width recreate must wipe stored vectors"
+        );
+
+        let query = SemanticDiscovery::new_with_semantic_config(
+            config_384,
+            SemanticConfig::default(),
+            &storage,
+        )
+        .expect("query opens stored 384");
+        assert_eq!(
+            storage.snippet_embedding_dim().expect("dim"),
+            Some(384),
+            "query new() must not drop the recreated relation"
+        );
+        drop(query);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn new_with_semantic_config__stored_differs_from_preferred__opens_stored_no_drop() {
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        VectorStore::new_without_hnsw(&storage, 768).expect("768 store");
+        let config = LocalModelConfig {
+            dimensions: 384,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        SemanticDiscovery::new_with_semantic_config(config, SemanticConfig::default(), &storage)
+            .expect("open stored");
+        assert_eq!(
+            storage.snippet_embedding_dim().expect("dim"),
+            Some(768),
+            "query constructor must open stored 768 and not drop"
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn new_for_index__same_width__does_not_purge_hashes() {
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let config = LocalModelConfig {
+            dimensions: 3,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let semantic = SemanticDiscovery::new(config.clone(), &storage).expect("open");
+        semantic.ensure_file_hash_schema().expect("hash schema");
+        semantic
+            .index_chunks_batched(
+                vec![sample_chunk("src/keep.rs")],
+                vec![vec![1.0_f32, 0.0, 0.0]],
+            )
+            .expect("insert");
+        semantic
+            .record_file_hash("src/keep.rs", "keep-hash")
+            .expect("hash");
+        let (again, recreated) =
+            SemanticDiscovery::new_for_index(config, SemanticConfig::default(), &storage)
+                .expect("same width");
+        assert!(!recreated);
+        assert!(again.is_file_hash_current("src/keep.rs", "keep-hash"));
     }
 }

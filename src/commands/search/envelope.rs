@@ -199,6 +199,11 @@ impl SearchCollector {
         self.mode.is_lines()
     }
 
+    #[cfg(test)]
+    pub(crate) fn semantic_for_test(&self) -> Option<&SearchSemantic> {
+        self.semantic.as_ref()
+    }
+
     pub fn set_engine_mode(&mut self, engine_mode: &str) {
         self.engine_mode = engine_mode.to_string();
     }
