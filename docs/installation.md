@@ -54,7 +54,7 @@ scoop install ledgerful
 
 ### winget
 
-Package accepted on winget (2026-07-30); community index is live at **0.2.12** (version PR [#430322](https://github.com/microsoft/winget-pkgs/pull/430322) merged 2026-09-06):
+Package accepted on winget (2026-07-30); community index is live at **0.2.13** (`winget search` 2026-09-18). GitHub Release **v0.2.14** is published; do not claim winget 0.2.14 until search shows it. History: 0.2.12 was [#430322](https://github.com/microsoft/winget-pkgs/pull/430322) merged 2026-09-06.
 
 ```powershell
 winget install Ledgerful.Ledgerful
