@@ -106,6 +106,18 @@ fn hotspot_trends_count(root: &std::path::Path) -> i64 {
         .unwrap()
 }
 
+fn temporal_coupling_history_count(root: &std::path::Path) -> i64 {
+    let repo_root = Utf8Path::from_path(root).unwrap();
+    let storage = StorageManager::open_read_only_sqlite_only(&Layout::new(repo_root)).unwrap();
+    let conn = storage.get_connection();
+    conn.query_row(
+        "SELECT COUNT(*) FROM temporal_coupling_history",
+        [],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
 /// 0181 honesty: reject a bare table `Score` column. 0309 footer
 /// `Delta: displayScore` is allowed (not a header).
 fn assert_no_bare_score_header(stdout: &str) {
@@ -463,6 +475,47 @@ fn test_trend_bootstrap_succeeds_on_young_repo_with_insufficient_coupling_histor
     assert!(
         stdout_human.contains("Delta: displayScore"),
         "expected 0309 trend provenance footer, got: {stdout_human}"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn cli_hotspots_snapshot__young_repo__prints_insufficient_history_sentence() {
+    let tmp = setup_young_indexed_repo();
+    let root = tmp.path();
+    assert_eq!(hotspot_history_count(root), 0);
+    assert_eq!(temporal_coupling_history_count(root), 0);
+
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["hotspots", "--snapshot"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "expected `hotspots --snapshot` to succeed on a young repo: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(
+            "Hotspot snapshot persisted to SQLite (temporal coupling history skipped: repository has fewer than 10 commits)."
+        ),
+        "expected exact InsufficientHistory sentence, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("skipped: persist budget"),
+        "young-repo snapshot must not use the persist-budget sentence: {stdout}"
+    );
+    assert!(
+        hotspot_history_count(root) > 0,
+        "hotspot_history rows must be inserted"
+    );
+    assert_eq!(
+        temporal_coupling_history_count(root),
+        0,
+        "temporal_coupling_history must stay empty on InsufficientHistory"
     );
 }
 

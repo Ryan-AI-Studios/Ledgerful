@@ -158,8 +158,10 @@ struct BootstrapOutcome {
     bootstrapped: bool,
     /// True when history already existed under the write lock (no-op).
     skipped: bool,
-    /// Whether temporal coupling history was actually persisted (false when the
-    /// repository has fewer than 10 commits — soft degradation, not a failure).
+    /// Whether temporal coupling history was actually persisted (`true` only
+    /// for `CouplingsPersistOutcome::Persisted`). `false` covers young-repo
+    /// InsufficientHistory and any persist-budget / cancel skip; trend calls
+    /// persist with `budget: None` so those skip arms are not taken here.
     couplings_persisted: bool,
 }
 
@@ -188,8 +190,10 @@ fn run_bootstrap_compute(
                 ..Default::default()
             };
             let hotspots = calculate_hotspots(storage, &history_provider, &query)?;
-            let couplings_persisted =
-                persist_hotspots_and_couplings(storage, repo, &hotspots, config, None)?;
+            let couplings_persisted = matches!(
+                persist_hotspots_and_couplings(storage, repo, &hotspots, config, None)?,
+                super::list::CouplingsPersistOutcome::Persisted
+            );
             // The trend view reads from `hotspot_trends` (populated by the
             // post-commit hook); make the bootstrapped snapshot visible there
             // too.
