@@ -3,7 +3,7 @@ use crate::git::{ChangeType, RepoSnapshot};
 use crate::impact::analysis::AnalysisRegistry;
 use crate::impact::budget::{
     AnalysisBudget, CompletenessStop, PROSPECTIVE_BUDGET_WARN, REVIEW_BUDGET_WARN,
-    completeness_for_overall, overall_stop_stderr_token, stage_slug_for_provider,
+    completeness_for_overall, is_overall_stop, overall_stop_stderr_token, stage_slug_for_provider,
 };
 use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
 use crate::impact::packet::{ChangedFile, FileAnalysisStatus, ImpactPacket};
@@ -291,19 +291,17 @@ impl ImpactOrchestrator {
             let name = provider.name();
             let slug = stage_slug_for_provider(name);
             if opts.cancel.load(Ordering::Relaxed) {
-                if opts.overall_deadline.is_some() {
-                    apply_overall_stop(
-                        packet,
-                        CompletenessStop::Cancelled,
-                        opts.overall_budget_secs,
-                        slug,
-                    );
-                }
+                apply_overall_stop_unless_present(
+                    packet,
+                    CompletenessStop::Cancelled,
+                    opts.overall_budget_secs,
+                    slug,
+                );
                 break;
             }
             if Instant::now() >= deadline {
                 if opts.overall_deadline.is_some() {
-                    apply_overall_stop(
+                    apply_overall_stop_unless_present(
                         packet,
                         CompletenessStop::Budget,
                         opts.overall_budget_secs,
@@ -328,25 +326,23 @@ impl ImpactOrchestrator {
             // In-flight providers are not killed. If the last (or current)
             // provider returns after the overall Instant, still record the
             // stop so persist is skipped and completeness is honest.
-            if opts.overall_deadline.is_some() {
-                if opts.cancel.load(Ordering::Relaxed) {
-                    apply_overall_stop(
-                        packet,
-                        CompletenessStop::Cancelled,
-                        opts.overall_budget_secs,
-                        slug,
-                    );
-                    break;
-                }
-                if Instant::now() >= deadline {
-                    apply_overall_stop(
-                        packet,
-                        CompletenessStop::Budget,
-                        opts.overall_budget_secs,
-                        slug,
-                    );
-                    break;
-                }
+            if opts.cancel.load(Ordering::Relaxed) {
+                apply_overall_stop_unless_present(
+                    packet,
+                    CompletenessStop::Cancelled,
+                    opts.overall_budget_secs,
+                    slug,
+                );
+                break;
+            }
+            if opts.overall_deadline.is_some() && Instant::now() >= deadline {
+                apply_overall_stop_unless_present(
+                    packet,
+                    CompletenessStop::Budget,
+                    opts.overall_budget_secs,
+                    slug,
+                );
+                break;
             }
         }
 
@@ -373,6 +369,15 @@ impl ImpactOrchestrator {
         };
         self.analysis_registry.run(packet, &rules, config)?;
 
+        if opts.cancel.load(Ordering::Relaxed) {
+            apply_overall_stop_unless_present(
+                packet,
+                CompletenessStop::Cancelled,
+                opts.overall_budget_secs,
+                "analysis",
+            );
+        }
+
         // 4. Collect Warnings
         if let Ok(w) = warnings_collector.lock() {
             packet.analysis_warnings.extend(w.iter().cloned());
@@ -380,6 +385,18 @@ impl ImpactOrchestrator {
 
         Ok(())
     }
+}
+
+fn apply_overall_stop_unless_present(
+    packet: &mut ImpactPacket,
+    stop: CompletenessStop,
+    budget_secs: Option<u64>,
+    stage: &str,
+) {
+    if packet.completeness.as_ref().is_some_and(is_overall_stop) {
+        return;
+    }
+    apply_overall_stop(packet, stop, budget_secs, stage);
 }
 
 fn apply_overall_stop(
@@ -401,8 +418,10 @@ fn apply_overall_stop(
         }
     } else if packet.analysis_mode == "range" {
         warn!(stage, ?stop, "review analysis stopped");
-    } else {
+    } else if packet.analysis_mode == "prospective" {
         warn!(stage, ?stop, "prospective analysis stopped");
+    } else {
+        warn!(stage, ?stop, "{} analysis stopped", packet.analysis_mode);
     }
 }
 
@@ -1226,6 +1245,103 @@ mod tests {
         assert_eq!(c.budget_secs, Some(25));
         assert!(c.filter.is_none());
         assert!(c.commits_requested.is_none());
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn working_tree__injected_cancel_without_instant__overall_cancelled_omits_budget_secs() {
+        use crate::impact::budget::{CompletenessScope, CompletenessStop};
+        use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        struct SkipOnCancel;
+        impl EnrichmentProvider for SkipOnCancel {
+            fn name(&self) -> &'static str {
+                "Hotspot Enrichment Provider"
+            }
+            fn enrich(
+                &self,
+                _context: &EnrichmentContext,
+                _packet: &mut ImpactPacket,
+            ) -> Result<()> {
+                panic!("cancel at entry must not start providers");
+            }
+        }
+
+        struct CountAnalysis {
+            n: Arc<AtomicUsize>,
+        }
+        impl crate::impact::analysis::ImpactProvider for CountAnalysis {
+            fn name(&self) -> &'static str {
+                "CountAnalysis"
+            }
+            fn analyze(
+                &self,
+                _packet: &ImpactPacket,
+                _rules: &crate::policy::rules::Rules,
+                _config: &Config,
+            ) -> Result<crate::impact::packet::RiskImpact> {
+                self.n.fetch_add(1, Ordering::SeqCst);
+                Ok(crate::impact::packet::RiskImpact::default())
+            }
+        }
+
+        let analyze_count = Arc::new(AtomicUsize::new(0));
+        let (storage, temp) = memory_storage();
+        let config = Config::default();
+        let mut packet = dirty_one_file_packet();
+        packet.analysis_mode = "working_tree".to_string();
+        packet.completeness = crate::impact::budget::completeness_for_walk(
+            crate::impact::budget::HistoryWalkStop::Cancelled,
+            500,
+            3,
+            None,
+            crate::impact::budget::CompletenessFilter::Unfiltered,
+            None,
+            None,
+        );
+        let mut orchestrator = ImpactOrchestrator::new();
+        orchestrator.register_enrichment_provider(Box::new(SkipOnCancel));
+        orchestrator.register_analysis_provider(Box::new(CountAnalysis {
+            n: Arc::clone(&analyze_count),
+        }));
+        let opts = ImpactHistoryOpts {
+            cancel: Arc::new(AtomicBool::new(true)),
+            overall_budget_secs: None,
+            overall_deadline: None,
+            ..ImpactHistoryOpts::default()
+        };
+        orchestrator
+            .run_with_history_opts(&mut packet, &storage, &config, temp.path(), opts)
+            .expect("cancel without Instant should return Ok");
+        let c = packet
+            .completeness
+            .expect("overall completeness on working-tree cancel");
+        assert_eq!(c.stop, CompletenessStop::Cancelled);
+        assert_eq!(c.scope, Some(CompletenessScope::Overall));
+        assert_eq!(c.stage.as_deref(), Some("hotspots"));
+        assert!(c.budget_secs.is_none());
+        let v = serde_json::to_value(&c).expect("json");
+        assert!(v.get("budgetSecs").is_none());
+        assert_eq!(analyze_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn apply_overall_stop__working_tree_cancel__does_not_log_prospective() {
+        let src = include_str!("orchestrator.rs");
+        let warn_at = src
+            .find("fn apply_overall_stop(")
+            .expect("apply_overall_stop");
+        let warn_fn = src.get(warn_at..warn_at.saturating_add(1600)).unwrap_or("");
+        assert!(
+            warn_fn.contains("packet.analysis_mode == \"prospective\""),
+            "prospective warn copy must be gated, not the working-tree default"
+        );
+        assert!(
+            warn_fn.contains("{} analysis stopped"),
+            "working_tree / base_ref cancel must log {{mode}} analysis stopped"
+        );
     }
 
     #[test]

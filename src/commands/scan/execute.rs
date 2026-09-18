@@ -482,7 +482,7 @@ pub fn execute_scan_with_opts(
         // empty-state case.
         // Prospective / explicit `--timeout` must not spend unbounded time in
         // observability auto-graph before the overall analysis Instant starts.
-        let auto_graph_storage = if prospective || timeout.is_some() {
+        let auto_graph_storage = if prospective || timeout.is_some_and(|s| s > 0) {
             None
         } else if !snapshot.changes.is_empty() {
             maybe_auto_analyze_graph(&snapshot.changes, &current_dir, &config, &layout)?
@@ -594,9 +594,10 @@ pub fn execute_scan_with_opts(
             } else {
                 "working_tree"
             };
+            let cancel = crate::impact::budget::install_cancel_flag();
             let history_opts = crate::impact::orchestrator::ImpactHistoryOpts::for_run(
                 false,
-                crate::impact::budget::install_cancel_flag(),
+                std::sync::Arc::clone(&cancel),
                 analysis_mode,
                 timeout,
                 &config,
@@ -617,10 +618,10 @@ pub fn execute_scan_with_opts(
                 impact_packet.analysis_warnings.sort();
                 impact_packet.analysis_warnings.dedup();
             }
-            let skip_persist = impact_packet
-                .completeness
-                .as_ref()
-                .is_some_and(crate::impact::budget::is_overall_stop);
+            let skip_persist = crate::impact::budget::should_skip_persist(
+                impact_packet.completeness.as_ref(),
+                &cancel,
+            );
             if skip_persist {
                 let _ = storage.shutdown();
                 emit_scan_impact_in_memory(
@@ -666,12 +667,14 @@ pub fn execute_scan_with_opts(
                 include_governance,
                 "base_ref",
                 auto_graph_storage,
+                None,
             )?
         } else {
             crate::commands::impact::execute_impact_silent_with_depth_opts_storage(
                 blast_depth,
                 include_governance,
                 auto_graph_storage,
+                None,
             )?
         };
 

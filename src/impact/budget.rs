@@ -557,6 +557,17 @@ pub fn is_overall_stop(c: &AnalysisCompleteness) -> bool {
     c.scope == Some(CompletenessScope::Overall)
 }
 
+/// Skip durable `save_packet` / `latest-impact.json` when the overall analysis
+/// stopped **or** the cooperative cancel flag is set (0374).
+///
+/// Persist-only. Distinct from unscoped-audit leave-gates (**0376**).
+pub fn should_skip_persist(
+    completeness: Option<&AnalysisCompleteness>,
+    cancel: &AtomicBool,
+) -> bool {
+    completeness.is_some_and(is_overall_stop) || cancel.load(Ordering::Relaxed)
+}
+
 /// Stable `stage` slugs for builtin enrichment providers (0347). Not `name()` prose.
 pub fn stage_slug_for_provider(name: &str) -> &'static str {
     match name {
@@ -719,6 +730,29 @@ mod tests {
 
     #[test]
     #[allow(non_snake_case)]
+    fn should_skip_persist__overall_or_cancel__true_otherwise_false() {
+        let overall = completeness_for_overall(CompletenessStop::Budget, Some(8), "federated");
+        let walk = completeness_for_walk(
+            HistoryWalkStop::Cancelled,
+            500,
+            12,
+            None,
+            CompletenessFilter::Unfiltered,
+            None,
+            None,
+        );
+        let idle = AtomicBool::new(false);
+        let cancelled = AtomicBool::new(true);
+        assert!(should_skip_persist(Some(&overall), &idle));
+        assert!(should_skip_persist(None, &cancelled));
+        assert!(should_skip_persist(walk.as_ref(), &cancelled));
+        assert!(!should_skip_persist(walk.as_ref(), &idle));
+        assert!(!should_skip_persist(None, &idle));
+        assert!(!is_overall_stop(walk.as_ref().expect("walk completeness")));
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
     fn working_tree_impact__omitted_timeout__does_not_use_prospective_default() {
         assert_eq!(overall_budget_secs_for_mode("working_tree", None, 25), None);
         assert_eq!(
@@ -767,6 +801,7 @@ mod tests {
             "adr",
             "knowledge",
             "enrichment",
+            "analysis",
         ] {
             assert!(
                 contract.contains(&format!("`{slug}`")),

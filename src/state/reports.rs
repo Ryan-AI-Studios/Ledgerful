@@ -182,6 +182,9 @@ pub enum ImpactReportWriteOutcome {
     Unchanged,
     /// Report not written: storage is read-only or write hit RO-class error.
     Skipped,
+    /// Durable persist skipped because overall analysis stopped (0347/0374).
+    /// Not a read-only skip — do not emit RO honesty.
+    OverallStop,
 }
 
 /// Greppable honesty when durable impact report write is unavailable (0174).

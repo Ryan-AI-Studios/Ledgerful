@@ -466,7 +466,7 @@ fn scan_timeout__without_impact__errors() {
 fn scan_timeout_or_prospective_skips_auto_graph() {
     let src = include_str!("execute.rs");
     assert!(
-        src.contains("if prospective || timeout.is_some()"),
+        src.contains("if prospective || timeout.is_some_and(|s| s > 0)"),
         "timed/prospective scan must not run unbounded auto-graph before the overall Instant"
     );
 }
