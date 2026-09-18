@@ -32,6 +32,7 @@ mod cli_dependencies;
 mod cli_deploy_impact_populated;
 mod cli_deploy_manifests;
 mod cli_doctor;
+mod cli_doctor_hook_refresh;
 mod cli_dogfood_0186;
 mod cli_dx1_prompts;
 mod cli_dx7_config_hints;

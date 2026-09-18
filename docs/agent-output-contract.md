@@ -29,6 +29,7 @@ contract and follows `LEDGERFUL_TABLE_STYLE`. Purity inventory unchanged
 
 | Command | Has `--json` | Pure success stderr | Notes |
 |---|---|---|---|
+| `doctor --json --apply-hook-refresh --dry-run` | yes (0373) | yes (exit 0) | schemaVersion 1 object `kind: "hookRefreshPreview"`. Always `executed: false` + `dryRun: true`. Omit `ok`. Omit `emptyDiagnostics`. CamelCase `wouldRefresh[]` / `alreadyCurrent[]` items `{label, path}`; `skippedUnknown[]` `{label, reason}` (`reason` is a single-line token, no snippet). Omit-empty `refused` / `discoveryNotes` / `hooksDir`. `hooksDir` and item `path` are repo-relative `/` (never `\`). Pretty JSON + one trailing newline. Isolated preview: no health `findings` / `summary`, no writes, no `.ledgerful` create. `--json --apply-hook-refresh` without `--dry-run` stays rejected. Write-path apply stays human. CLI-only; no MCP. |
 | `doctor --json` | yes | yes | schemaVersion 1 findings; additive `environment.githubLatest` (0205); additive per-finding `sessionPriority` `now`\|`later` (0225 emission-only; **0295** hygiene/`is_hygiene` is `later` on observe and enforce; 0225 signing trio later-on-observe only); additive per-finding `acknowledged` / `acknowledgedAt` (0226); additive top-level `completionReadiness` (0311: `cold`\|`loading`\|`busy`\|`ready`\|`unreachable`\|`fallback_failed`; omit when generation is not configured). Additive CLI-only `readyForPublishScope` `{readyMeans: "zeroBlockFindings", notRequiredForReady: ["chain", "fullTests", "signerTrust"]}` always present (0325; including `readyForPublish == false`). Do **not** emit `readyForPublishDefinition` or `notEvaluated`. schemaVersion stays 1. Sidecar `doctor-results.json` does **not** include `githubLatest`, `sessionPriority`, `acknowledged`, `acknowledgedAt`, `completionReadiness`, or `readyForPublishScope`. Optional embed miss is `embed-unreachable` (optional warn), not `ERROR ledgerful::embed::client` (0285). |
 | `release pins --json` (bare `release --json`) | yes (0201) | yes | schemaVersion 1 object `kind: "releasePins"`; exit **0** match / **1** drift / **2** skipped or unverified. Parent `--json` (T18). Not Daily 5 |
 | `change-context --json` | yes | yes | impact-shaped packet. Additive omit-empty `completeness` (0308/0347). `--timeout` is an **overall analysis** budget (`hotspots` list/explain `--timeout` is overall emit, 0349; unscoped `audit` `--timeout` is overall emit, 0350); omitted on working-tree; prospective default 25s. Token `prospective analysis stopped: overall budget` is stderr-only |
@@ -335,12 +336,12 @@ These reject rather than emit empty stdout under machine mode.
 
 | Combo | Error |
 |---|---|
-| `doctor --json --apply-hook-refresh` | `doctor --json cannot be combined with --apply-hook-refresh` |
+| `doctor --json --apply-hook-refresh` (no `--dry-run`) | `doctor --json cannot be combined with --apply-hook-refresh` |
 | `doctor --fix` (no `--yes` / `--dry-run`) | `doctor --fix requires --yes or --dry-run` |
 | `doctor --dry-run` (no `--fix` / `--apply-hook-refresh`) | clap: `--dry-run` requires `--fix` or `--apply-hook-refresh` |
 | `doctor --fix --apply-hook-refresh` | clap: `--fix` conflicts with `--apply-hook-refresh` |
 
-`--json --fix --dry-run` is allowed (additive top-level `fix` plan; schemaVersion stays 1). Apply is always a human path for hooks (rewrites `.git/hooks` under opt-in). Detect-only `doctor --json` remains pure schema-v1 findings JSON.
+`--json --fix --dry-run` is allowed (additive top-level `fix` plan; schemaVersion stays 1). `--json --apply-hook-refresh --dry-run` is the isolated `hookRefreshPreview` envelope (no health catalog). Write-path `--apply-hook-refresh` (no `--dry-run`) stays human. Detect-only `doctor --json` remains pure schema-v1 findings JSON.
 
 ### Rejected flag combinations (`dead-code --json`)
 

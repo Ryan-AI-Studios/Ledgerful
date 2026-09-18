@@ -158,7 +158,7 @@ On **observe** + `intent.require_signing = false`, `PHANTOM_PROMOTED_WITHOUT_VER
 
 Repo config `[doctor] acknowledged_codes` (sorted) suppresses human **bodies** for those codes until the finding disappears. JSON still lists the finding with `acknowledged: true` (and `sessionPriority` still `later` when eligible). Acked codes do **not** inflate the later trailer. Stale acks (code in config, no finding this run) are inert — no GC.
 
-`--fix --dry-run` names the `config set` for `sig-pin`. `--fix --yes` pins `intent.trusted_public_keys` only; `sig-version` refuses with greppable `re-sign first` when LOCAL v1 rows remain (never `ledger re-sign --all`). Phantom `--yes` writes ack only. `--fix` conflicts with `--apply-hook-refresh`. `--json --fix --dry-run` is allowed; `--json --apply-hook-refresh` stays rejected.
+`--fix --dry-run` names the `config set` for `sig-pin`. `--fix --yes` pins `intent.trusted_public_keys` only; `sig-version` refuses with greppable `re-sign first` when LOCAL v1 rows remain (never `ledger re-sign --all`). Phantom `--yes` writes ack only. `--fix` conflicts with `--apply-hook-refresh`. `--json --fix --dry-run` is allowed; `--json --apply-hook-refresh --dry-run` emits `kind: hookRefreshPreview`; `--json --apply-hook-refresh` without `--dry-run` stays rejected.
 
 Sidecar omits `acknowledged` / `acknowledgedAt` (same freeze as `sessionPriority`).
 

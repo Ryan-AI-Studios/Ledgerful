@@ -252,7 +252,8 @@ pub struct AskArgs {
 /// Health check for Ledgerful and local model stack.
 #[derive(Args, Debug)]
 pub struct DoctorArgs {
-    /// Emit pure schema-v1 JSON on stdout (severity, readyForPublish, findings)
+    /// Emit JSON on stdout (schema-v1 findings, or `hookRefreshPreview` with
+    /// `--apply-hook-refresh --dry-run`)
     #[arg(long)]
     pub json: bool,
     /// Refresh stale Ledgerful marker-bounded hook blocks to current product templates

@@ -43,9 +43,20 @@ fn doctor_json_plus_apply_hook_refresh_rejected() {
         msg.contains("doctor --json cannot be combined with --apply-hook-refresh"),
         "got {msg}"
     );
-    // clap accepts the flags; rejection is in execute_doctor.
+    // clap accepts the flags; rejection is in execute_doctor when --dry-run is absent.
     let parsed = Cli::try_parse_from(["ledgerful", "doctor", "--json", "--apply-hook-refresh"]);
     assert!(parsed.is_ok(), "flags are parseable; combo rejected later");
+    let dry = Cli::try_parse_from([
+        "ledgerful",
+        "doctor",
+        "--json",
+        "--apply-hook-refresh",
+        "--dry-run",
+    ]);
+    assert!(
+        dry.is_ok(),
+        "json+apply+dry-run parses for hookRefreshPreview"
+    );
 }
 
 #[test]

@@ -444,6 +444,8 @@ pub struct HookTemplateRefreshReport {
     pub refused: Option<String>,
     pub dry_run: bool,
     pub discovery_notes: Vec<String>,
+    /// Repo-relative hooks dir (`/` separators) when resolution was `Found`.
+    pub hooks_dir: Option<String>,
 }
 
 impl HookTemplateRefreshReport {
@@ -460,6 +462,51 @@ impl HookTemplateRefreshReport {
             && self.refused.is_none()
             && self.discovery_notes.is_empty()
     }
+}
+
+fn is_absolute_display(path: &str) -> bool {
+    let p = path.replace('\\', "/");
+    p.starts_with('/') || (p.len() >= 2 && p.as_bytes()[1] == b':')
+}
+
+fn looks_like_git_hooks(path: &str) -> bool {
+    let p = path.replace('\\', "/");
+    p.ends_with("/.git/hooks") || p == ".git/hooks"
+}
+
+/// Repo-relative `/` form, or a logical `.git/hooks` for commondir hooks
+/// that sit outside the worktree. Never returns an empty or absolute path.
+fn repo_relative_slash(root: &Utf8Path, path: &Utf8Path) -> Option<String> {
+    let from_prefix = if let Ok(rel) = path.strip_prefix(root) {
+        Some(rel.as_str().replace('\\', "/"))
+    } else {
+        let root_s = root.as_str().replace('\\', "/");
+        let root_s = root_s.trim_end_matches('/');
+        let path_s = path.as_str().replace('\\', "/");
+        path_s
+            .strip_prefix(root_s)
+            .map(|rest| rest.trim_start_matches('/').to_string())
+    };
+    let candidate = match from_prefix {
+        Some(rel) => rel.trim_end_matches('/').to_string(),
+        None => {
+            let path_s = path.as_str().replace('\\', "/");
+            if looks_like_git_hooks(&path_s) {
+                return Some(".git/hooks".to_string());
+            }
+            return None;
+        }
+    };
+    if candidate.is_empty() {
+        return None;
+    }
+    if is_absolute_display(&candidate) {
+        if looks_like_git_hooks(&candidate) {
+            return Some(".git/hooks".to_string());
+        }
+        return None;
+    }
+    Some(candidate.replace('\\', "/"))
 }
 
 /// Refresh stale product templates under the resolved hooks dir.
@@ -482,7 +529,10 @@ pub fn refresh_product_templates_at(
     }
 
     let hooks_dir = match resolve_hooks_dir(repo_root) {
-        HooksDirResolution::Found { hooks_dir } => hooks_dir,
+        HooksDirResolution::Found { hooks_dir } => {
+            report.hooks_dir = repo_relative_slash(repo_root, &hooks_dir);
+            hooks_dir
+        }
         HooksDirResolution::OutsideRepo { hooks_dir } => {
             report.refused = Some(format!(
                 "hooks path '{hooks_dir}' is outside the repository; refusing rewrite"
@@ -741,6 +791,179 @@ pub fn print_refresh_report(report: &HookTemplateRefreshReport) {
             "OK:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
         );
     }
+}
+
+const PREVIEW_KIND: &str = "hookRefreshPreview";
+const PREVIEW_FOOTER: &str = "Dry-run completed. No hook files were modified.";
+
+fn short_refresh_reason(reason: &str) -> String {
+    let first = reason.lines().next().unwrap_or(reason);
+    first
+        .trim_end_matches(" Recommended snippet:")
+        .trim_end_matches(" Snippet:")
+        .trim()
+        .to_string()
+}
+
+fn hook_name_from_label(label: &str) -> &str {
+    label.split(':').next().unwrap_or(label)
+}
+
+fn preview_item_path(report: &HookTemplateRefreshReport, label: &str) -> String {
+    let hook = hook_name_from_label(label);
+    match &report.hooks_dir {
+        Some(dir) if !dir.is_empty() => format!("{dir}/{hook}"),
+        _ => hook.to_string(),
+    }
+}
+
+fn preview_is_noop(report: &HookTemplateRefreshReport) -> bool {
+    report.refused.is_none()
+        && report.refreshed.is_empty()
+        && report.already_current.is_empty()
+        && report.skipped_unknown.is_empty()
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HookRefreshPreviewItem {
+    label: String,
+    path: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HookRefreshPreviewSkip {
+    label: String,
+    reason: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HookRefreshPreviewJson {
+    schema_version: u32,
+    kind: &'static str,
+    executed: bool,
+    dry_run: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    would_refresh: Vec<HookRefreshPreviewItem>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    already_current: Vec<HookRefreshPreviewItem>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    skipped_unknown: Vec<HookRefreshPreviewSkip>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refused: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    discovery_notes: Vec<String>,
+    #[serde(skip_serializing_if = "option_blank")]
+    hooks_dir: Option<String>,
+}
+
+fn option_blank(value: &Option<String>) -> bool {
+    value.as_ref().is_none_or(String::is_empty)
+}
+
+fn labeled_preview_items(
+    labels: &[String],
+    report: &HookTemplateRefreshReport,
+) -> Vec<HookRefreshPreviewItem> {
+    let mut items: Vec<HookRefreshPreviewItem> = labels
+        .iter()
+        .map(|label| HookRefreshPreviewItem {
+            label: label.clone(),
+            path: preview_item_path(report, label),
+        })
+        .collect();
+    items.sort_by(|a, b| a.label.cmp(&b.label).then(a.path.cmp(&b.path)));
+    items
+}
+
+/// Isolated doctor `--apply-hook-refresh --dry-run` human preview (0373).
+pub fn format_hook_refresh_preview(report: &HookTemplateRefreshReport) -> String {
+    let mut out = String::new();
+    for note in &report.discovery_notes {
+        out.push_str(&format!("WARN: {note}\n"));
+    }
+    if let Some(reason) = &report.refused {
+        out.push_str(&format!("REFUSED: {reason}\n"));
+        out.push_str(PREVIEW_FOOTER);
+        out.push('\n');
+        return out;
+    }
+    if preview_is_noop(report) {
+        out.push_str("DRY-RUN No product hook templates to refresh.\n");
+        out.push_str(PREVIEW_FOOTER);
+        out.push('\n');
+        return out;
+    }
+    let would = labeled_preview_items(&report.refreshed, report);
+    if !would.is_empty() {
+        out.push_str(&format!(
+            "DRY-RUN Would refresh {} block(s):\n",
+            would.len()
+        ));
+        for item in &would {
+            out.push_str(&format!("  {} ({})\n", item.label, item.path));
+        }
+    }
+    let current = labeled_preview_items(&report.already_current, report);
+    if !current.is_empty() {
+        out.push_str(&format!("Already current: {}\n", current.len()));
+        for item in &current {
+            out.push_str(&format!("  {} ({})\n", item.label, item.path));
+        }
+    }
+    let mut skips = report.skipped_unknown.clone();
+    skips.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    for (label, reason) in &skips {
+        out.push_str(&format!(
+            "SKIP: skipped {label}: {}\n",
+            short_refresh_reason(reason)
+        ));
+    }
+    out.push_str(PREVIEW_FOOTER);
+    out.push('\n');
+    out
+}
+
+/// Print the isolated doctor dry-run preview (not used by `update --repair-hooks`).
+pub fn print_hook_refresh_preview(report: &HookTemplateRefreshReport) {
+    print!("{}", format_hook_refresh_preview(report));
+}
+
+pub fn hook_refresh_preview_json(report: &HookTemplateRefreshReport) -> Result<String> {
+    let would_refresh = labeled_preview_items(&report.refreshed, report);
+    let already_current = labeled_preview_items(&report.already_current, report);
+    let mut skipped_unknown: Vec<HookRefreshPreviewSkip> = report
+        .skipped_unknown
+        .iter()
+        .map(|(label, reason)| HookRefreshPreviewSkip {
+            label: label.clone(),
+            reason: short_refresh_reason(reason),
+        })
+        .collect();
+    skipped_unknown.sort_by(|a, b| a.label.cmp(&b.label).then(a.reason.cmp(&b.reason)));
+    let mut discovery_notes = report.discovery_notes.clone();
+    discovery_notes.sort();
+    let body = HookRefreshPreviewJson {
+        schema_version: 1,
+        kind: PREVIEW_KIND,
+        executed: false,
+        dry_run: true,
+        would_refresh,
+        already_current,
+        skipped_unknown,
+        refused: report.refused.clone(),
+        discovery_notes,
+        hooks_dir: report.hooks_dir.clone(),
+    };
+    let pretty = serde_json::to_string_pretty(&body).into_diagnostic()?;
+    Ok(format!("{pretty}\n"))
+}
+
+pub fn print_hook_refresh_preview_json(report: &HookTemplateRefreshReport) -> Result<()> {
+    print!("{}", hook_refresh_preview_json(report)?);
+    Ok(())
 }
 
 /// Ensure a single gate in a hook file path (used by init). Returns true when
@@ -1174,6 +1397,116 @@ fi
         assert!(
             !after.contains(&format!("# {brand}-")),
             "legacy markers must be gone:\n{after}"
+        );
+    }
+
+    #[test]
+    fn preview_noop_does_not_hide_already_current() {
+        let mut report = HookTemplateRefreshReport::empty(true);
+        report.already_current.push("pre-push:verify-gate".into());
+        report.hooks_dir = Some(".git/hooks".into());
+        let text = format_hook_refresh_preview(&report);
+        assert!(text.contains("Already current: 1"), "{text}");
+        assert!(
+            text.contains("pre-push:verify-gate (.git/hooks/pre-push)"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("No product hook templates to refresh"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Dry-run completed. No hook files were modified."),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn preview_short_reason_strips_snippet() {
+        assert_eq!(
+            short_refresh_reason(
+                "unrecognised block boundary or customised body; not rewritten. Snippet:\nfoo"
+            ),
+            "unrecognised block boundary or customised body; not rewritten."
+        );
+        assert_eq!(
+            short_refresh_reason("broken marker; not rewritten. Recommended snippet:\nbar"),
+            "broken marker; not rewritten."
+        );
+    }
+
+    #[test]
+    fn repo_relative_slash_maps_commondir_and_omits_empty() {
+        assert_eq!(
+            repo_relative_slash(
+                Utf8Path::new("C:/work/linked"),
+                Utf8Path::new("C:/work/main/.git/hooks")
+            )
+            .as_deref(),
+            Some(".git/hooks")
+        );
+        assert_eq!(
+            repo_relative_slash(Utf8Path::new("/tmp/repo"), Utf8Path::new("/tmp/repo")),
+            None
+        );
+        assert_eq!(
+            repo_relative_slash(
+                Utf8Path::new("/tmp/repo"),
+                Utf8Path::new("/tmp/repo/.git/hooks")
+            )
+            .as_deref(),
+            Some(".git/hooks")
+        );
+    }
+
+    #[test]
+    fn preview_json_omits_ok_and_uses_forward_slashes() {
+        let mut report = HookTemplateRefreshReport::empty(true);
+        report.refreshed.push("pre-push:verify-gate".into());
+        report.hooks_dir = Some(".git/hooks".into());
+        let pretty = hook_refresh_preview_json(&report).expect("json");
+        assert!(pretty.ends_with('\n'), "{pretty:?}");
+        let v: serde_json::Value = serde_json::from_str(pretty.trim()).expect("parse");
+        assert_eq!(v["schemaVersion"], 1);
+        assert_eq!(v["kind"], "hookRefreshPreview");
+        assert_eq!(v["executed"], false);
+        assert_eq!(v["dryRun"], true);
+        assert!(v.get("ok").is_none(), "{v}");
+        assert!(v.get("emptyDiagnostics").is_none(), "{v}");
+        assert!(v.get("findings").is_none(), "{v}");
+        assert!(v.get("summary").is_none(), "{v}");
+        assert_eq!(v["wouldRefresh"][0]["path"], ".git/hooks/pre-push");
+        assert_eq!(v["hooksDir"], ".git/hooks");
+        let dumped = serde_json::to_string(&v).expect("dump");
+        assert!(!dumped.contains('\\'), "backslash leak: {dumped}");
+        let mut empty_dir = HookTemplateRefreshReport::empty(true);
+        empty_dir
+            .already_current
+            .push("pre-push:verify-gate".into());
+        let omitted = hook_refresh_preview_json(&empty_dir).expect("json");
+        let omitted_v: serde_json::Value = serde_json::from_str(omitted.trim()).expect("parse");
+        assert!(
+            omitted_v.get("hooksDir").is_none(),
+            "empty hooksDir must be omitted: {omitted_v}"
+        );
+        assert_eq!(omitted_v["alreadyCurrent"][0]["path"], "pre-push");
+    }
+
+    #[test]
+    fn preview_warn_then_noop_when_only_discovery_notes() {
+        let mut report = HookTemplateRefreshReport::empty(true);
+        report
+            .discovery_notes
+            .push("hooks directory '.git/hooks' does not exist or is not a directory".into());
+        let text = format_hook_refresh_preview(&report);
+        assert!(text.starts_with("WARN: "), "{text}");
+        assert!(
+            text.contains("No product hook templates to refresh"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Dry-run completed. No hook files were modified."),
+            "{text}"
         );
     }
 }
