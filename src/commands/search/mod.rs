@@ -85,9 +85,15 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
 
     // --- Staleness check (applies to both semantic and BM25 paths) ---
     if !args.index {
-        let config = load_config(&layout)?;
+        let config = {
+            let _stage = stage_span!("config_load").entered();
+            load_config(&layout)?
+        };
         let threshold = config.index.stale_threshold_days;
-        let storage_opt = StorageManager::open_read_only(&layout).ok();
+        let storage_opt = {
+            let _stage = stage_span!("storage_open").entered();
+            StorageManager::open_read_only(&layout).ok()
+        };
 
         if args.auto_index {
             // Missing DB must still bootstrap under --auto-index (same as ask).
@@ -180,8 +186,14 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
 
     if args.semantic {
         collector.set_engine_mode("semantic");
-        let config = load_config(&layout)?;
-        let storage = StorageManager::open_read_only(&layout)?;
+        let config = {
+            let _stage = stage_span!("config_load").entered();
+            load_config(&layout)?
+        };
+        let storage = {
+            let _stage = stage_span!("storage_open").entered();
+            StorageManager::open_read_only(&layout)?
+        };
         let cozo = storage
             .cozo()
             .ok_or_else(|| miette::miette!("CozoDB storage not initialized"))?;
@@ -215,79 +227,83 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                 }
             };
 
-        let (mut results, query_succeeded, semantic_readiness) =
-            match crate::semantic::SemanticDiscovery::new(config.local_model.clone(), cozo) {
-                Ok(semantic_engine) => {
-                    let readiness = semantic_engine.check_readiness()?;
-                    emit_readiness(&mut collector, &args, &readiness);
-                    debug!("Performing semantic search for: {}", args.query);
-                    if !args.is_machine() {
-                        println!("[Search Mode: Semantic]");
-                    }
-                    let semantic_fetch = args.limit.saturating_add(1);
-                    let query_result = {
-                        let _stage = stage_span!("semantic_query").entered();
-                        semantic_engine.query(
-                            layout.root.as_std_path(),
-                            &args.query,
-                            semantic_fetch,
-                        )
-                    };
-                    match query_result {
-                        Ok((r, filtered_foreign)) => {
-                            if filtered_foreign > 0 {
-                                collector.set_filtered_foreign_count(filtered_foreign);
-                                debug!(
-                                    "Semantic query filtered {filtered_foreign} foreign path hit(s) outside work root"
-                                );
-                            }
-                            (r, true, Some(readiness.clone()))
-                        }
-                        Err(e) => {
-                            let failure_msg =
-                                crate::semantic::semantic_query_failure_message(&readiness, &e);
-                            if args.is_machine() {
-                                collector.set_semantic_error(failure_msg);
-                            } else {
-                                println!(
-                                    "{} {}",
-                                    "WARN".if_supports_color(Stream::Stdout, |s| s
-                                        .style(Style::new().yellow().bold())),
-                                    failure_msg
-                                );
-                            }
-                            debug!("Semantic query failed: {e}");
-                            (Vec::new(), false, Some(readiness))
-                        }
-                    }
+        let semantic_ready = {
+            let _stage = stage_span!("semantic_ready").entered();
+            crate::semantic::SemanticDiscovery::new(config.local_model.clone(), cozo).and_then(
+                |engine| {
+                    engine
+                        .check_readiness()
+                        .map(|readiness| (engine, readiness))
+                },
+            )
+        };
+        let (mut results, query_succeeded, semantic_readiness) = match semantic_ready {
+            Ok((semantic_engine, readiness)) => {
+                emit_readiness(&mut collector, &args, &readiness);
+                debug!("Performing semantic search for: {}", args.query);
+                if !args.is_machine() {
+                    println!("[Search Mode: Semantic]");
                 }
-                Err(e) => {
-                    let probe = crate::embed::client::check_local_model(&config.local_model);
-                    let backend_status =
-                        crate::semantic::backend_status_from_probe(&config.local_model, &probe);
-                    if backend_status == crate::semantic::BackendStatus::Ready {
-                        apply_semantic_constructor_err(&mut collector, &args, &e);
-                        debug!("Semantic engine unavailable ({e}); falling through to BM25");
-                        (Vec::new(), false, None)
-                    } else {
-                        let readiness = crate::semantic::SemanticReadiness {
-                            backend_status,
-                            model_name: config.local_model.embedding_model.clone(),
-                            dimensions: 0,
-                            vector_count: 0,
-                            zero_vector_count: 0,
-                            is_stale: false,
-                            dimension_mismatch: false,
-                        };
-                        emit_readiness(&mut collector, &args, &readiness);
-                        if args.is_machine() {
-                            collector.set_semantic_error(format!("{e:#}"));
+                let semantic_fetch = args.limit.saturating_add(1);
+                let query_result = {
+                    let _stage = stage_span!("semantic_query").entered();
+                    semantic_engine.query(layout.root.as_std_path(), &args.query, semantic_fetch)
+                };
+                match query_result {
+                    Ok((r, filtered_foreign)) => {
+                        if filtered_foreign > 0 {
+                            collector.set_filtered_foreign_count(filtered_foreign);
+                            debug!(
+                                "Semantic query filtered {filtered_foreign} foreign path hit(s) outside work root"
+                            );
                         }
-                        debug!("Semantic engine unavailable ({e}); falling through to BM25");
+                        (r, true, Some(readiness.clone()))
+                    }
+                    Err(e) => {
+                        let failure_msg =
+                            crate::semantic::semantic_query_failure_message(&readiness, &e);
+                        if args.is_machine() {
+                            collector.set_semantic_error(failure_msg);
+                        } else {
+                            println!(
+                                "{} {}",
+                                "WARN".if_supports_color(Stream::Stdout, |s| s
+                                    .style(Style::new().yellow().bold())),
+                                failure_msg
+                            );
+                        }
+                        debug!("Semantic query failed: {e}");
                         (Vec::new(), false, Some(readiness))
                     }
                 }
-            };
+            }
+            Err(e) => {
+                let probe = crate::embed::client::check_local_model(&config.local_model);
+                let backend_status =
+                    crate::semantic::backend_status_from_probe(&config.local_model, &probe);
+                if backend_status == crate::semantic::BackendStatus::Ready {
+                    apply_semantic_constructor_err(&mut collector, &args, &e);
+                    debug!("Semantic engine unavailable ({e}); falling through to BM25");
+                    (Vec::new(), false, None)
+                } else {
+                    let readiness = crate::semantic::SemanticReadiness {
+                        backend_status,
+                        model_name: config.local_model.embedding_model.clone(),
+                        dimensions: 0,
+                        vector_count: 0,
+                        zero_vector_count: 0,
+                        is_stale: false,
+                        dimension_mismatch: false,
+                    };
+                    emit_readiness(&mut collector, &args, &readiness);
+                    if args.is_machine() {
+                        collector.set_semantic_error(format!("{e:#}"));
+                    }
+                    debug!("Semantic engine unavailable ({e}); falling through to BM25");
+                    (Vec::new(), false, Some(readiness))
+                }
+            }
+        };
 
         if !results.is_empty() {
             let extra_lexical = collect_token_lexical_hits(
@@ -434,7 +450,10 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
     }
 
     let index_path = layout.search_index_dir();
-    let engine = TantivySearchEngine::open_or_create(index_path.as_std_path())?;
+    let engine = {
+        let _stage = stage_span!("index_open").entered();
+        TantivySearchEngine::open_or_create(index_path.as_std_path())?
+    };
 
     // 0126: capture pre_count BEFORE rebuild — StreamIndexer consumes engine.
     let pre_count = engine.document_count();
@@ -475,17 +494,24 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                             .style(Style::new().green().bold()))
                     );
                 }
-                let engine = TantivySearchEngine::open_or_create(index_path.as_std_path())?;
-                engine.verify_index_integrity(index_path.as_std_path())?;
-                debug!("Tantivy index integrity verified.");
-                engine
+                {
+                    let _stage = stage_span!("index_open").entered();
+                    let engine = TantivySearchEngine::open_or_create(index_path.as_std_path())?;
+                    engine.verify_index_integrity(index_path.as_std_path())?;
+                    debug!("Tantivy index integrity verified.");
+                    engine
+                }
             }
             // Soft concurrency (0141): stamp-driven rebuild may fail under worktree
             // writer contention. Never trust the pre-rebuild reader after failure —
             // rebuild clears the index first, so re-open from disk and only soft-
             // continue when documents remain. Empty/corrupt post-failure → hard err.
             Err(e) if stamp_rebuild && !args.index && pre_count > 0 => {
-                match TantivySearchEngine::open_or_create(index_path.as_std_path()) {
+                let stamp_reopen = {
+                    let _stage = stage_span!("index_open").entered();
+                    TantivySearchEngine::open_or_create(index_path.as_std_path())
+                };
+                match stamp_reopen {
                     Ok(reopened) if reopened.document_count() > 0 => {
                         if !args.is_machine() {
                             eprintln!(
@@ -513,9 +539,12 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         }
     } else if fts_rebuilt_for_auto_index {
         // Early rebuild already ran — re-open so BM25 sees fresh docs.
-        let engine = TantivySearchEngine::open_or_create(index_path.as_std_path())?;
-        engine.verify_index_integrity(index_path.as_std_path())?;
-        engine
+        {
+            let _stage = stage_span!("index_open").entered();
+            let engine = TantivySearchEngine::open_or_create(index_path.as_std_path())?;
+            engine.verify_index_integrity(index_path.as_std_path())?;
+            engine
+        }
     } else {
         engine
     };
@@ -685,5 +714,39 @@ mod constructor_err_tests {
             sem.backend_status, "ready",
             "must not emit Ready+empty readiness on constructor Err"
         );
+    }
+}
+
+#[cfg(test)]
+mod stage_inventory_tests {
+    #[test]
+    fn search_stage_span_literals_are_the_frozen_eight() {
+        let src = include_str!("mod.rs");
+        let mut names = std::collections::BTreeSet::new();
+        let needle = "stage_span!(\"";
+        let mut rest = src;
+        while let Some(i) = rest.find(needle) {
+            let after = &rest[i + needle.len()..];
+            if let Some(end) = after.find('"') {
+                names.insert(after[..end].to_string());
+                rest = &after[end + 1..];
+            } else {
+                break;
+            }
+        }
+        let expected: std::collections::BTreeSet<String> = [
+            "auto_index",
+            "fts_rebuild",
+            "lexical_query",
+            "semantic_query",
+            "config_load",
+            "storage_open",
+            "index_open",
+            "semantic_ready",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        assert_eq!(names, expected, "stage_span names: {names:?}");
     }
 }

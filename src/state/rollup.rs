@@ -871,11 +871,14 @@ fn execute_timings_global_flame(
 
     if args.json {
         let message = empty_timings_message(&collected, body.is_empty());
-        let mut data = serde_json::json!({ "collapsed": body });
-        if !body.is_empty() {
-            data["unique_stacks"] = serde_json::json!(unique_stacks);
-            data["total_weight_ms"] = serde_json::json!(total_weight_ms);
-        }
+        let data = crate::commands::timings::flame_json_payload(
+            &crate::state::storage::timings::FlameFold {
+                collapsed: body.clone(),
+                unique_stacks,
+                total_weight_ms,
+            },
+            days,
+        );
         let envelope = serde_json::json!({
             "schemaVersion": 1,
             "totalRepos": collected.total_repos,
@@ -903,6 +906,7 @@ fn execute_timings_global_flame(
         return Ok(());
     }
 
+    eprintln!("{}", crate::commands::timings::flame_units_legend(days));
     println!("{body}");
     print_timings_degradation(&collected);
     Ok(())

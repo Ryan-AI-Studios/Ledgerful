@@ -90,16 +90,22 @@ a timed invocation. Capture deliberately no-ops when the command name is
 
 ## Span names
 
-Span names are **engine-internal** labels. `search` records a closed set:
-`auto_index`, `fts_rebuild`, `semantic_query`, and `lexical_query`
-(`lexical_query` is the Tantivy retrieve path — bm25, hybrid, and regex
-fallthrough). Names must not embed user data (paths, queries).
-High-cardinality names are a bug; `doctor` will warn.
+Span names are **engine-internal** labels. `search` records a closed set of
+eight distinct names: `auto_index`, `fts_rebuild`, `semantic_query`,
+`lexical_query` (`lexical_query` is the Tantivy retrieve path — bm25, hybrid,
+and regex fallthrough), plus `config_load`, `storage_open`, `index_open`, and
+`semantic_ready` (constructor + readiness; `query` stays `semantic_query`).
+Names must not embed user data (paths, queries). High-cardinality names are a
+bug; `doctor` will warn.
 
 `--inner` groups by `(command, span_name)` and prints coverage
 `inner / outer (uninstrumented)` using wall-clock sums. Nested children
 are not added again into `inner`. `--flame` folds identical Brendan Gregg
-collapsed stacks; the trailing integer is **exclusive milliseconds**.
+collapsed stacks; the trailing integer is **exclusive milliseconds**
+(parent minus children, floor 1), **summed over the `--days` window**.
+Human nonempty `--flame` prints that legend on **stderr**; `--export` is
+pure stacks for speedscope. `--flame --json` adds omit-empty `weight_unit`
+(`exclusive_ms`) and `window_days`.
 
 Inner span ids and `parent_span_id` values are **run-scoped**
 (`{run_id}:{tracing_span_id}`) so concurrent CLI processes never collide when

@@ -16,6 +16,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Flame exclusive-ms units (0396):** `timings --flame` documents exclusive
+  milliseconds (stderr legend; JSON omit-empty `weight_unit` /
+  `window_days`). Search records `config_load`, `storage_open`,
+  `index_open`, and `semantic_ready` in addition to the 0364 four names.
+  `--export` stays pure collapsed stacks. `--inner` grouping is unchanged.
+
 - **Ask gather mix (0395):** `ask --semantic` always blends Tantivy
   lexical hits with nonempty vectors, rewrites definition-shaped NL
   to identifiers (`project_symbols.symbol_name` JOIN

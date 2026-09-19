@@ -110,7 +110,7 @@ discovery walk, and derived cache for repo discovery).
 | `--export PATH` | Write JSON summary (or collapsed text with `--flame`) |
 | `--inner` | Aggregate `(command, span_name)` samples across repos; coverage[] is wall-clock |
 | `--command NAME` | Filter `--inner` / `--flame` to one command |
-| `--flame` | Collapsed stacks with `{repo_basename};{command}[;span] duration` |
+| `--flame` | Collapsed stacks with `{repo_basename};{command}[;span] exclusive_ms` (stderr units legend on nonempty human body; JSON nested `data` omit-empty `weight_unit` / `window_days`) |
 | `--explain COMMAND` | Pool last 7d + prior 7d outer samples across repos; p50 sentence; refuses incomparable percents. No success prior (empty or all-failed) does not invent `0 ms`; sole `"<unhashed>"` is not comparable (`unhashedArgv`); one-sided unhashed is that token, not `workloadMismatch` |
 | `--opt-in` / `--opt-out` | User-config self-timing capture (same as local; works with or without `--global`) |
 | `--prune` | **Refused** — global path never writes per-repo DBs |
@@ -129,7 +129,9 @@ to match the local timings schema (`command`, `runs`, `p50_ms`, … / `repo_path
 (`command`, `span_name`, `samples`, `total_ms`, `max_ms`). Omit-empty
 `coverage[]` matches local inner (`command`, `outer_ms`, `inner_ms`,
 `uninstrumented_ms`). `--flame` folds identical `{repo_basename};command[;span]`
-stacks (exclusive ms).
+stacks (exclusive ms). Nested `data` matches local `--flame --json`:
+`collapsed` plus omit-empty `unique_stacks` / `total_weight_ms` /
+`weight_unit` (`exclusive_ms`) / `window_days`.
 
 ### `GlobalTimingsSummary`
 

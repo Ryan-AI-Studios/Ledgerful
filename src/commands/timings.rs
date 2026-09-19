@@ -8,9 +8,9 @@ use crate::output::table::build_premium_table;
 use crate::output::table::format_timing_millis;
 use crate::state::storage::StorageManager;
 use crate::state::storage::timings::{
-    CommandTimingCoverage, InnerSpanAgg, TimingQuery, aggregate_inner_spans, count_timings,
-    explain_command, explain_report_json, fold_flame_stacks, is_self_timing_enabled, prune_timings,
-    query_timings, set_self_timing_enabled, summarize_outer, table_exists,
+    CommandTimingCoverage, FlameFold, InnerSpanAgg, TimingQuery, aggregate_inner_spans,
+    count_timings, explain_command, explain_report_json, fold_flame_stacks, is_self_timing_enabled,
+    prune_timings, query_timings, set_self_timing_enabled, summarize_outer, table_exists,
 };
 use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream, Style};
@@ -47,6 +47,25 @@ fn envelope<T: Serialize>(data: T) -> JsonEnvelope<T> {
         schema_version: 1,
         data,
     }
+}
+
+/// Locked `--flame` human legend (stderr). `{days}` is the query window.
+pub(crate) fn flame_units_legend(days: u32) -> String {
+    format!(
+        "Collapsed stacks: last field is exclusive milliseconds (parent minus children, floor 1), summed over the last {days} day(s)."
+    )
+}
+
+/// Local `--flame --json` `data` object. Additive keys omit-empty when collapsed is empty.
+pub(crate) fn flame_json_payload(fold: &FlameFold, days: u32) -> serde_json::Value {
+    let mut data = serde_json::json!({ "collapsed": fold.collapsed });
+    if !fold.collapsed.is_empty() {
+        data["unique_stacks"] = serde_json::json!(fold.unique_stacks);
+        data["total_weight_ms"] = serde_json::json!(fold.total_weight_ms);
+        data["weight_unit"] = serde_json::json!("exclusive_ms");
+        data["window_days"] = serde_json::json!(days);
+    }
+    data
 }
 
 /// Entry point for non-global `ledgerful timings ...`.
@@ -305,9 +324,8 @@ fn execute_flame(conn: &rusqlite::Connection, args: &TimingsArgs) -> Result<()> 
     )?;
 
     let fold = fold_flame_stacks(&rows, None);
-    let body = fold.collapsed;
     if let Some(ref path) = args.export {
-        std::fs::write(path, &body).into_diagnostic()?;
+        std::fs::write(path, &fold.collapsed).into_diagnostic()?;
         if !args.json {
             println!("Wrote collapsed stacks to {}.", path.display());
         }
@@ -315,23 +333,20 @@ fn execute_flame(conn: &rusqlite::Connection, args: &TimingsArgs) -> Result<()> 
     }
 
     if args.json {
-        let mut data = serde_json::json!({ "collapsed": body });
-        if !body.is_empty() {
-            data["unique_stacks"] = serde_json::json!(fold.unique_stacks);
-            data["total_weight_ms"] = serde_json::json!(fold.total_weight_ms);
-        }
         println!(
             "{}",
-            serde_json::to_string_pretty(&envelope(data)).into_diagnostic()?
+            serde_json::to_string_pretty(&envelope(flame_json_payload(&fold, days)))
+                .into_diagnostic()?
         );
         return Ok(());
     }
 
-    if body.is_empty() {
+    if fold.collapsed.is_empty() {
         println!("No timing rows in the last {days} day(s).");
         return Ok(());
     }
-    println!("{body}");
+    eprintln!("{}", flame_units_legend(days));
+    println!("{}", fold.collapsed);
     Ok(())
 }
 
@@ -604,6 +619,67 @@ mod tests {
         assert_eq!(json["data"][0]["command"], "search");
         assert_eq!(json["data"][0]["span_name"], "lexical_query");
         assert_eq!(json["coverage"][0]["uninstrumented_ms"], 60);
+    }
+
+    #[test]
+    fn flame_units_legend_interpolates_days() {
+        assert_eq!(
+            flame_units_legend(30),
+            "Collapsed stacks: last field is exclusive milliseconds (parent minus children, floor 1), summed over the last 30 day(s)."
+        );
+        assert!(flame_units_legend(7).contains("last 7 day(s)."));
+    }
+
+    #[test]
+    fn flame_json_payload_nonempty_sets_unit_and_window() {
+        let fold = FlameFold {
+            collapsed: "search 10".into(),
+            unique_stacks: 1,
+            total_weight_ms: 10,
+        };
+        let data = flame_json_payload(&fold, 30);
+        assert_eq!(data["collapsed"], "search 10");
+        assert_eq!(data["unique_stacks"], 1);
+        assert_eq!(data["total_weight_ms"], 10);
+        assert_eq!(data["weight_unit"], "exclusive_ms");
+        assert_eq!(data["window_days"], 30);
+    }
+
+    #[test]
+    fn flame_json_payload_empty_omits_additive_keys() {
+        let fold = FlameFold {
+            collapsed: String::new(),
+            unique_stacks: 0,
+            total_weight_ms: 0,
+        };
+        let data = flame_json_payload(&fold, 30);
+        assert_eq!(data["collapsed"], "");
+        assert!(data.get("weight_unit").is_none());
+        assert!(data.get("window_days").is_none());
+        assert!(data.get("unique_stacks").is_none());
+        assert!(data.get("total_weight_ms").is_none());
+    }
+
+    #[test]
+    fn execute_flame_source_pins_legend_and_payload() {
+        let src = include_str!("timings.rs");
+        assert!(
+            src.contains("eprintln!(\"{}\", flame_units_legend(days))"),
+            "human nonempty flame must eprint the locked legend"
+        );
+        assert!(
+            src.contains("flame_json_payload(&fold, days)"),
+            "JSON flame must use flame_json_payload"
+        );
+        assert!(
+            src.contains("if fold.collapsed.is_empty()"),
+            "empty human copy must gate on fold.collapsed after the JSON return"
+        );
+        let ops = include_str!("../cli/args/ops.rs");
+        assert!(
+            ops.contains("exclusive milliseconds"),
+            "--flame help must name exclusive milliseconds"
+        );
     }
 
     #[test]
