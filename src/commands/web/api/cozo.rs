@@ -171,7 +171,7 @@ fn enrich_kg_nodes(layout: &Layout, nodes: &mut [KgNode]) {
         .collect();
 
     // File nodes: complexity from the hotspots table, file path from the URN.
-    if let Ok(complexities) = query_file_complexities(&storage, &file_paths) {
+    if let Ok(complexities) = query_file_complexities(&storage, &file_paths, false) {
         for n in nodes.iter_mut().filter(|n| n.category == "file") {
             if let Some(p) = n.id.strip_prefix("urn:ledgerful:file:") {
                 n.complexity = complexities.get(p).copied().unwrap_or(0);

@@ -1,6 +1,7 @@
 use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
 use crate::impact::packet::ImpactPacket;
 use miette::Result;
+use std::sync::atomic::AtomicBool;
 use tracing::warn;
 
 pub struct FederatedProvider;
@@ -21,12 +22,20 @@ impl EnrichmentProvider for FederatedProvider {
         // Soft-open / RO change-context: skip discovery refresh writes.
         // Cross-repo read-only impact may still run below.
         if !context.storage.is_read_only {
+            let fallback_cancel = AtomicBool::new(false);
+            let cancel = context
+                .history_budget
+                .as_ref()
+                .map(|b| b.cancel.as_ref())
+                .unwrap_or(&fallback_cancel);
             match crate::federated::refresh::refresh_federated_dependencies(
                 &context.project_root,
                 packet,
                 context.storage,
                 context.config,
                 Some(context.deadline),
+                context.overall_deadline,
+                cancel,
             ) {
                 Ok(degradation_warnings) => {
                     // 0034: surface scan degradation warnings (budget hit,
@@ -77,6 +86,7 @@ mod tests {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
             skip_git_history_enrichment: false,
             history_budget: None,
+            overall_deadline: None,
         };
         let mut packet = ImpactPacket::default();
 
@@ -102,6 +112,7 @@ mod tests {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
             skip_git_history_enrichment: false,
             history_budget: None,
+            overall_deadline: None,
         };
         let mut packet = ImpactPacket {
             tree_clean: true,

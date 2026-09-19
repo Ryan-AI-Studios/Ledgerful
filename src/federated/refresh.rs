@@ -1,9 +1,11 @@
 use crate::config::model::Config;
+use crate::impact::budget::poll_overall_stop;
 use crate::impact::packet::ImpactPacket;
 use crate::state::storage::StorageManager;
 use camino::Utf8PathBuf;
 use miette::{Result, miette};
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 use tracing::warn;
 
@@ -13,6 +15,8 @@ pub fn refresh_federated_dependencies(
     storage: &StorageManager,
     config: &Config,
     deadline: Option<Instant>,
+    overall_deadline: Option<Instant>,
+    cancel: &AtomicBool,
 ) -> Result<Vec<String>> {
     let utf8_current_dir = Utf8PathBuf::from_path_buf(current_dir.to_path_buf())
         .map_err(|_| miette!("Invalid UTF-8 path in current directory"))?;
@@ -31,6 +35,11 @@ pub fn refresh_federated_dependencies(
 
     let timestamp = chrono::Utc::now().to_rfc3339();
     for (path, schema, sibling_warnings) in siblings {
+        // 0389: stop remaining siblings when the overall emit Instant fires.
+        // Do **not** poll `deadline` (0034 120s backstop) here.
+        if poll_overall_stop(overall_deadline, cancel).is_some() {
+            break;
+        }
         // 0184: same path+basename writer as CLI scan (not schema.repo_name).
         let store_name = crate::federated::links::path_basename(path.as_str());
         for warning in &sibling_warnings {

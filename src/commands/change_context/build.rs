@@ -5,6 +5,7 @@ use super::storage::{open_storage_for_change_context, storage_unavailable_reason
 use crate::config::model::Config;
 use crate::git::RepoSnapshot;
 use crate::git::repo::{get_head_info, open_repo};
+use crate::impact::budget::is_overall_stop;
 use crate::impact::packet::{ImpactPacket, RiskLevel};
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
@@ -154,7 +155,11 @@ pub fn build_change_context(
         analysis_warnings: warnings,
         // 0124 RO uses `not_ready_packet` (empty `freshness[]`), not
         // `permission_denied: true` on this path.
-        freshness: classify_change_context_freshness(layout, storage, &config, false),
+        freshness: if impact.completeness.as_ref().is_some_and(is_overall_stop) {
+            Vec::new()
+        } else {
+            classify_change_context_freshness(layout, storage, &config, false)
+        },
         next_actions,
         impact_schema_version: Some(impact.schema_version.clone()),
         completeness: impact.completeness.clone(),

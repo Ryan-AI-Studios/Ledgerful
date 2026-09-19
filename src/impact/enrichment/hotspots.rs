@@ -32,6 +32,7 @@ impl EnrichmentProvider for HotspotProvider {
             all_parents: context.config.temporal.all_parents,
             decay_half_life: context.config.hotspots.decay_half_life,
             budget: context.history_budget.clone(),
+            skip_unindexed_complexity_fallback: context.overall_deadline.is_some(),
             ..Default::default()
         };
         match calculate_hotspots_detailed(context.storage, &history_provider, &query) {
@@ -102,6 +103,7 @@ mod tests {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
             skip_git_history_enrichment: false,
             history_budget: None,
+            overall_deadline: None,
         };
         let mut packet = ImpactPacket::default();
 

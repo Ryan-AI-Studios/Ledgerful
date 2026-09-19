@@ -133,6 +133,10 @@ pub struct HotspotQuery {
     pub exclude_vendor_paths: bool,
     /// Cooperative walk budget (0308). `None` means unlimited wall clock.
     pub budget: Option<AnalysisBudget>,
+    /// 0389: skip the unindexed `symbols` gap fallback (correlated
+    /// `MAX(snapshot_id)` subquery). Set when an overall emit Instant is
+    /// present so a complete git walk cannot stall 60s+ on historical paths.
+    pub skip_unindexed_complexity_fallback: bool,
 }
 
 /// Ranked hotspot list plus how many candidate paths were omitted when
@@ -370,7 +374,24 @@ pub fn calculate_hotspots_detailed(
     }
 
     let file_paths: Vec<String> = frequency_map.keys().map(|p| p.to_string()).collect();
-    let file_complexities = query_file_complexities(storage, &file_paths)?;
+    // 0389: do not start the unindexed complexity query when the walk already
+    // stopped or the overall Instant has fired. Skip the `symbols` gap
+    // fallback on overall-deadline runs even if the walk completed.
+    let skip_complexity = walk.stop != HistoryWalkStop::Complete
+        || query
+            .budget
+            .as_ref()
+            .and_then(AnalysisBudget::should_stop)
+            .is_some();
+    let file_complexities = if skip_complexity {
+        HashMap::new()
+    } else {
+        query_file_complexities(
+            storage,
+            &file_paths,
+            query.skip_unindexed_complexity_fallback,
+        )?
+    };
 
     let mut hotspots = Vec::new();
 
@@ -463,6 +484,7 @@ fn table_has_column(conn: &rusqlite::Connection, table: &str, column: &str) -> R
 pub(crate) fn query_file_complexities(
     storage: &StorageManager,
     file_paths: &[String],
+    skip_unindexed_fallback: bool,
 ) -> Result<HashMap<String, i32>> {
     let mut file_complexities = HashMap::new();
     let conn = storage.get_connection();
@@ -505,6 +527,11 @@ pub(crate) fn query_file_complexities(
         .collect();
 
     if gaps.is_empty() {
+        return Ok(file_complexities);
+    }
+
+    if skip_unindexed_fallback {
+        tracing::debug!("Skipping unindexed symbols complexity fallback (0389 overall emit)");
         return Ok(file_complexities);
     }
 
@@ -601,7 +628,7 @@ mod tests {
         ).unwrap();
 
         let storage = StorageManager::init_from_conn(conn);
-        let result = query_file_complexities(&storage, &["a.rs".to_string()]).unwrap();
+        let result = query_file_complexities(&storage, &["a.rs".to_string()], false).unwrap();
         assert_eq!(result.get("a.rs"), Some(&5));
     }
 
@@ -634,7 +661,7 @@ mod tests {
         .unwrap();
 
         let storage = StorageManager::init_from_conn(conn);
-        let result = query_file_complexities(&storage, &["b.rs".to_string()]).unwrap();
+        let result = query_file_complexities(&storage, &["b.rs".to_string()], false).unwrap();
         assert_eq!(result.get("b.rs"), Some(&10));
     }
 
@@ -660,7 +687,7 @@ mod tests {
         .unwrap();
 
         let storage = StorageManager::init_from_conn(conn);
-        let result = query_file_complexities(&storage, &["a.rs".to_string()]).unwrap();
+        let result = query_file_complexities(&storage, &["a.rs".to_string()], false).unwrap();
         assert_eq!(result.get("a.rs"), Some(&12));
     }
 
@@ -699,7 +726,7 @@ mod tests {
         .unwrap();
 
         let storage = StorageManager::init_from_conn(conn);
-        let result = query_file_complexities(&storage, &["a.rs".to_string()]).unwrap();
+        let result = query_file_complexities(&storage, &["a.rs".to_string()], false).unwrap();
         assert_eq!(result.get("a.rs"), Some(&12));
     }
 
@@ -737,7 +764,7 @@ mod tests {
         .unwrap();
 
         let storage = StorageManager::init_from_conn(conn);
-        let result = query_file_complexities(&storage, &["a.rs".to_string()]).unwrap();
+        let result = query_file_complexities(&storage, &["a.rs".to_string()], false).unwrap();
         assert_eq!(result.get("a.rs"), Some(&10));
     }
 
@@ -776,7 +803,7 @@ mod tests {
         .unwrap();
 
         let storage = StorageManager::init_from_conn(conn);
-        let result = query_file_complexities(&storage, &["a.rs".to_string()]).unwrap();
+        let result = query_file_complexities(&storage, &["a.rs".to_string()], false).unwrap();
         assert_eq!(result.get("a.rs"), Some(&0));
     }
 
@@ -794,7 +821,7 @@ mod tests {
         .unwrap();
 
         let storage = StorageManager::init_from_conn(conn);
-        let result = query_file_complexities(&storage, &["a.rs".to_string()]).unwrap();
+        let result = query_file_complexities(&storage, &["a.rs".to_string()], false).unwrap();
         assert_eq!(result.get("a.rs"), Some(&5));
         // No crash even though project_symbols table is missing
     }
@@ -813,6 +840,153 @@ mod tests {
     #[test]
     fn hotspot_query_default_does_not_exclude_vendor_paths() {
         assert!(!HotspotQuery::default().exclude_vendor_paths);
+        assert!(!HotspotQuery::default().skip_unindexed_complexity_fallback);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn calculate_hotspots_detailed__walk_stopped_or_overall_fired__skips_query_file_complexities() {
+        use crate::git::GitError;
+        use crate::impact::temporal::{CommitFileSet, HistoryWalkResult};
+        use crate::state::migrations::get_migrations;
+        use rusqlite::Connection;
+        use std::collections::HashSet;
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+
+        struct BudgetStoppedWalk;
+        impl HistoryProvider for BudgetStoppedWalk {
+            fn get_history(
+                &self,
+                _max_commits: usize,
+                _max_days: Option<u64>,
+                _since_commit: Option<String>,
+                _all_parents: bool,
+            ) -> std::result::Result<Vec<CommitFileSet>, GitError> {
+                let mut files = HashSet::new();
+                files.insert(Utf8PathBuf::from("hist.rs"));
+                Ok(vec![CommitFileSet {
+                    files,
+                    is_merge: false,
+                }])
+            }
+            fn get_history_budgeted(
+                &self,
+                max_commits: usize,
+                max_days: Option<u64>,
+                since_commit: Option<String>,
+                all_parents: bool,
+                _budget: Option<&AnalysisBudget>,
+            ) -> std::result::Result<HistoryWalkResult, GitError> {
+                let history = self.get_history(max_commits, max_days, since_commit, all_parents)?;
+                Ok(HistoryWalkResult {
+                    history,
+                    stop: HistoryWalkStop::Budget,
+                    commits_walked: 1,
+                    head: None,
+                })
+            }
+        }
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO symbols (file_path, symbol_name, symbol_kind, is_public, cognitive_complexity, cyclomatic_complexity) VALUES ('hist.rs', 'f', 'function', 1, 99, 99)",
+            [],
+        )
+        .unwrap();
+        let storage = StorageManager::init_from_conn(conn);
+        let query = HotspotQuery {
+            commits: 10,
+            limit: 50,
+            budget: Some(AnalysisBudget::expired(Arc::new(AtomicBool::new(false)))),
+            skip_unindexed_complexity_fallback: true,
+            ..Default::default()
+        };
+        let calc = calculate_hotspots_detailed(&storage, &BudgetStoppedWalk, &query).unwrap();
+        assert_eq!(calc.walk_stop, HistoryWalkStop::Budget);
+        let hotspot = calc
+            .hotspots
+            .iter()
+            .find(|h| h.path == std::path::Path::new("hist.rs"))
+            .expect("hist.rs ranked");
+        assert_eq!(
+            hotspot.complexity, 0,
+            "complexity query must be skipped when the walk already stopped"
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn query_file_complexities__skip_unindexed_fallback__omits_symbols_gap_rows() {
+        use crate::state::migrations::get_migrations;
+        use rusqlite::Connection;
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO symbols (file_path, symbol_name, symbol_kind, is_public, cognitive_complexity, cyclomatic_complexity) VALUES ('hist.rs', 'f', 'function', 1, 99, 99)",
+            [],
+        )
+        .unwrap();
+        let storage = StorageManager::init_from_conn(conn);
+        let skipped = query_file_complexities(&storage, &["hist.rs".to_string()], true).unwrap();
+        assert!(
+            !skipped.contains_key("hist.rs"),
+            "unindexed symbols fallback must not run when skip_unindexed_fallback"
+        );
+    }
+
+    struct CompleteWalk;
+    impl HistoryProvider for CompleteWalk {
+        fn get_history(
+            &self,
+            _max_commits: usize,
+            _max_days: Option<u64>,
+            _since_commit: Option<String>,
+            _all_parents: bool,
+        ) -> std::result::Result<Vec<crate::impact::temporal::CommitFileSet>, crate::git::GitError>
+        {
+            let mut files = std::collections::HashSet::new();
+            files.insert(Utf8PathBuf::from("hist.rs"));
+            Ok(vec![crate::impact::temporal::CommitFileSet {
+                files,
+                is_merge: false,
+            }])
+        }
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn calculate_hotspots_detailed__complete_walk_skip_fallback__complexity_zero() {
+        use crate::state::migrations::get_migrations;
+        use rusqlite::Connection;
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO symbols (file_path, symbol_name, symbol_kind, is_public, cognitive_complexity, cyclomatic_complexity) VALUES ('hist.rs', 'f', 'function', 1, 99, 99)",
+            [],
+        )
+        .unwrap();
+        let storage = StorageManager::init_from_conn(conn);
+        let query = HotspotQuery {
+            commits: 10,
+            limit: 50,
+            skip_unindexed_complexity_fallback: true,
+            ..Default::default()
+        };
+        let calc = calculate_hotspots_detailed(&storage, &CompleteWalk, &query).unwrap();
+        assert_eq!(calc.walk_stop, HistoryWalkStop::Complete);
+        let hotspot = calc
+            .hotspots
+            .iter()
+            .find(|h| h.path == std::path::Path::new("hist.rs"))
+            .expect("hist.rs ranked");
+        assert_eq!(
+            hotspot.complexity, 0,
+            "complete walk must still skip unindexed symbols fallback when overall Instant is set"
+        );
     }
 
     #[test]
