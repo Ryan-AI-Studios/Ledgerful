@@ -21,6 +21,19 @@ fn test_parse_intent_recognizes_callers_phrasings() {
 }
 
 #[test]
+#[allow(non_snake_case)]
+fn parse_intent__apply_provenance_defined__not_configuration_nl() {
+    assert!(matches!(
+        parse_intent("Where is apply_provenance defined?"),
+        Some(ExactIntent::SymbolDefinition(t)) if t == "apply_provenance"
+    ));
+    assert!(
+        parse_intent("Where is configuration provenance resolved? Cite file paths.").is_none(),
+        "multi-word NL must not capture first word as SymbolDefinition"
+    );
+}
+
+#[test]
 fn test_parse_intent_recognizes_callees_and_routes() {
     assert!(matches!(
         parse_intent("what does execute_ask call"),
