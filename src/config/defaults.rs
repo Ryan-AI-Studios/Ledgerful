@@ -115,6 +115,10 @@ enabled = false
 # `BridgeRecord` NDJSON lines on stdout.
 provider_command = "ai-brains"
 
+# Overall emit budget for `bridge export --hotspots` (0394). Distinct from
+# `[hotspots] history_budget_secs`. `0` disables the wall clock.
+# export_overall_budget_secs = 25
+
 [impact]
 # Overall emit budget for prospective `--paths` (0347). Distinct from
 # `[hotspots] history_budget_secs`. `0` disables the wall clock.

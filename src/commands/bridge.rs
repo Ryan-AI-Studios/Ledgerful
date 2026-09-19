@@ -30,6 +30,9 @@ pub enum BridgeCommands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Overall emit budget seconds for `--hotspots` (`0` disables the wall clock; ignored without `--hotspots`)
+        #[arg(long)]
+        timeout: Option<u64>,
     },
     /// Import external insights (BridgeRecord NDJSON) into Ledgerful
     Import {
@@ -58,6 +61,7 @@ pub fn execute(command: BridgeCommands) -> Result<()> {
             scope,
             madr,
             json,
+            timeout,
         } => {
             let scope_vec = normalize_export_scope(scope);
             let args = ExportArgs {
@@ -69,6 +73,7 @@ pub fn execute(command: BridgeCommands) -> Result<()> {
                 scope: scope_vec,
                 madr,
                 json,
+                timeout,
             };
             crate::bridge::export::execute_export(args)
         }

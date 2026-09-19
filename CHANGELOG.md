@@ -16,6 +16,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Bridge export `--hotspots` hang (0394):** `bridge export --stdout
+  --hotspots` honors `--timeout` (overall emit; default 25s) with a
+  real cancel flag and skips the unindexed complexity fallback when
+  that Instant is set, so the Snapshot emits before a 20s kill.
+  When `--hotspots` owns the walk, orchestrator git-history
+  enrichment is skipped (`payload.impact` hotspots/couplings stay
+  empty; `payload.hotspots` is the requested dataset). Skip-open
+  uses `stop` without `emptyReason: noMatches`. Stderr
+  `bridge export stopped: overall budget` is Budget-only.
+
 - **Hotspot explain score vs restored complexity (0393):**
   `hotspots explain` recomputes `score` from the indexed complexity
   restored onto the Metrics line, not walk zeros after an
