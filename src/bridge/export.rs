@@ -4,9 +4,12 @@ use crate::bridge::model::{
 use crate::git::RepoSnapshot;
 use crate::git::repo::{get_head_info, open_repo};
 use crate::git::status::get_repo_status;
-use crate::impact::budget::{AnalysisBudget, HistoryWalkStop};
+use crate::impact::budget::{
+    AnalysisBudget, BRIDGE_EXPORT_BUDGET_WARN, CompletenessStop, HistoryWalkStop,
+    install_cancel_flag, poll_overall_stop, resolve_bridge_export_overall_budget_secs,
+};
 use crate::impact::hotspots::{HotspotCalculation, HotspotQuery};
-use crate::impact::orchestrator::{ImpactOrchestrator, map_snapshot_to_packet};
+use crate::impact::orchestrator::{ImpactHistoryOpts, ImpactOrchestrator, map_snapshot_to_packet};
 use crate::impact::temporal::GixHistoryProvider;
 use crate::ledger::db::LedgerDb;
 use crate::ledger::types::LedgerEntry;
@@ -19,6 +22,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::{Duration, Instant};
 
 const LEDGER_PAGE: usize = 10;
 
@@ -55,6 +59,19 @@ pub struct ExportArgs {
     /// Output as raw JSON instead of BridgeRecord
     #[arg(long)]
     pub json: bool,
+
+    /// Overall emit budget seconds for `--hotspots` (`0` disables the wall clock).
+    /// Ignored when `--hotspots` is not set.
+    #[arg(long)]
+    pub timeout: Option<u64>,
+}
+
+/// Test injection. CLI `execute_export` installs Ctrl-C; library/tests leave `None`.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ExportRunOpts {
+    pub cancel: Option<Arc<AtomicBool>>,
+    pub overall_deadline_override: Option<Instant>,
+    pub overall_secs_override: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,8 +106,12 @@ pub(crate) fn export_machine_flags(json: bool, stdout: bool, out: Option<&str>) 
 }
 
 pub fn execute_export(args: ExportArgs) -> Result<()> {
-    execute_export_with(
+    execute_export_with_opts(
         args,
+        ExportRunOpts {
+            cancel: Some(install_cancel_flag()),
+            ..ExportRunOpts::default()
+        },
         |storage, history, query| {
             crate::impact::hotspots::calculate_hotspots_detailed(storage, history, query)
         },
@@ -102,8 +123,26 @@ pub fn execute_export(args: ExportArgs) -> Result<()> {
     )
 }
 
+#[cfg(test)]
 pub(crate) fn execute_export_with<H, L>(
     args: ExportArgs,
+    hotspots_fn: H,
+    ledger_fn: L,
+) -> Result<()>
+where
+    H: FnOnce(
+        &StorageManager,
+        &GixHistoryProvider<'_>,
+        &HotspotQuery,
+    ) -> Result<HotspotCalculation>,
+    L: FnOnce(&StorageManager) -> Result<Vec<LedgerEntry>>,
+{
+    execute_export_with_opts(args, ExportRunOpts::default(), hotspots_fn, ledger_fn)
+}
+
+pub(crate) fn execute_export_with_opts<H, L>(
+    args: ExportArgs,
+    opts: ExportRunOpts,
     hotspots_fn: H,
     ledger_fn: L,
 ) -> Result<()>
@@ -149,8 +188,48 @@ where
     };
 
     let mut packet = map_snapshot_to_packet(snapshot, layout.root.as_std_path())?;
+    let cancel = opts
+        .cancel
+        .clone()
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let overall_secs = if args.hotspots {
+        opts.overall_secs_override.unwrap_or_else(|| {
+            resolve_bridge_export_overall_budget_secs(
+                args.timeout,
+                config.bridge.export_overall_budget_secs,
+            )
+        })
+    } else {
+        0
+    };
+    let overall_deadline = if args.hotspots {
+        opts.overall_deadline_override.or_else(|| {
+            (overall_secs > 0).then(|| Instant::now() + Duration::from_secs(overall_secs))
+        })
+    } else {
+        None
+    };
+
     let orchestrator = ImpactOrchestrator::with_builtins();
-    orchestrator.run(&mut packet, &storage, &config, layout.root.as_std_path())?;
+    if args.hotspots {
+        // Bound the export walk, not the orchestrator Instant (0394: sibling
+        // PROSPECTIVE_BUDGET_WARN). Skip git-history enrichment so a dirty
+        // tree does not double-walk; payload.hotspots is the requested set.
+        orchestrator.run_with_history_opts(
+            &mut packet,
+            &storage,
+            &config,
+            layout.root.as_std_path(),
+            ImpactHistoryOpts {
+                skip_git_history_enrichment: true,
+                cancel: Arc::clone(&cancel),
+                overall_budget_secs: None,
+                overall_deadline: None,
+            },
+        )?;
+    } else {
+        orchestrator.run(&mut packet, &storage, &config, layout.root.as_std_path())?;
+    }
     packet.finalize();
 
     let mut datasets = Vec::new();
@@ -158,56 +237,81 @@ where
     let mut ledger_entries = Vec::new();
 
     if args.hotspots {
-        let discovered = gix::discover(&layout.root).into_diagnostic()?;
-        let history_provider = GixHistoryProvider::new(&discovered);
-        let cancel = Arc::new(AtomicBool::new(false));
         let filter = hotspot_filter_string(&args.scope);
-        let query = HotspotQuery {
-            limit: config.hotspots.limit,
-            commits: config.hotspots.max_commits,
-            decay_half_life: config.hotspots.decay_half_life,
-            dir_filters: args.scope.clone().unwrap_or_default(),
-            budget: Some(AnalysisBudget::from_secs(
-                config.hotspots.history_budget_secs,
-                cancel,
-            )),
-            ..HotspotQuery::default()
-        };
-        match hotspots_fn(&storage, &history_provider, &query) {
-            Ok(calc) => {
-                let count = calc.hotspots.len();
-                let empty_reason = (count == 0).then(|| "noMatches".to_string());
-                datasets.push(ExportDataset {
-                    name: "hotspots".to_string(),
-                    requested: true,
-                    included: true,
-                    count,
-                    source: Some("live".to_string()),
-                    commits_requested: Some(query.commits),
-                    commits_walked: Some(calc.commits_walked),
-                    stop: walk_stop_token(calc.walk_stop).map(str::to_string),
-                    limit: Some(query.limit),
-                    filter: Some(filter),
-                    empty_reason,
-                    next: None,
-                });
-                hotspots = calc.hotspots;
-            }
-            Err(_) => {
-                datasets.push(ExportDataset {
-                    name: "hotspots".to_string(),
-                    requested: true,
-                    included: false,
-                    count: 0,
-                    source: Some("live".to_string()),
-                    commits_requested: Some(query.commits),
-                    commits_walked: None,
-                    stop: None,
-                    limit: Some(query.limit),
-                    filter: Some(filter),
-                    empty_reason: Some("historyError".to_string()),
-                    next: None,
-                });
+        let commits_requested = config.hotspots.max_commits;
+        let limit = config.hotspots.limit;
+        if let Some(stop) = poll_overall_stop(overall_deadline, &cancel) {
+            eprint_bridge_export_budget(stop);
+            datasets.push(ExportDataset {
+                name: "hotspots".to_string(),
+                requested: true,
+                included: false,
+                count: 0,
+                source: Some("live".to_string()),
+                commits_requested: Some(commits_requested),
+                commits_walked: None,
+                stop: completeness_stop_token(stop).map(str::to_string),
+                limit: Some(limit),
+                filter: Some(filter),
+                empty_reason: None,
+                next: None,
+            });
+        } else {
+            let discovered = gix::discover(&layout.root).into_diagnostic()?;
+            let history_provider = GixHistoryProvider::new(&discovered);
+            let query = HotspotQuery {
+                limit,
+                commits: commits_requested,
+                decay_half_life: config.hotspots.decay_half_life,
+                dir_filters: args.scope.clone().unwrap_or_default(),
+                budget: Some(AnalysisBudget::capped_by_overall(
+                    config.hotspots.history_budget_secs,
+                    overall_deadline,
+                    Arc::clone(&cancel),
+                )),
+                skip_unindexed_complexity_fallback: overall_deadline.is_some(),
+                ..HotspotQuery::default()
+            };
+            match hotspots_fn(&storage, &history_provider, &query) {
+                Ok(calc) => {
+                    let count = calc.hotspots.len();
+                    let empty_reason = (count == 0 && calc.walk_stop == HistoryWalkStop::Complete)
+                        .then(|| "noMatches".to_string());
+                    if calc.walk_stop == HistoryWalkStop::Budget {
+                        eprint_bridge_export_budget(CompletenessStop::Budget);
+                    }
+                    datasets.push(ExportDataset {
+                        name: "hotspots".to_string(),
+                        requested: true,
+                        included: true,
+                        count,
+                        source: Some("live".to_string()),
+                        commits_requested: Some(query.commits),
+                        commits_walked: Some(calc.commits_walked),
+                        stop: walk_stop_token(calc.walk_stop).map(str::to_string),
+                        limit: Some(query.limit),
+                        filter: Some(filter),
+                        empty_reason,
+                        next: None,
+                    });
+                    hotspots = calc.hotspots;
+                }
+                Err(_) => {
+                    datasets.push(ExportDataset {
+                        name: "hotspots".to_string(),
+                        requested: true,
+                        included: false,
+                        count: 0,
+                        source: Some("live".to_string()),
+                        commits_requested: Some(query.commits),
+                        commits_walked: None,
+                        stop: None,
+                        limit: Some(query.limit),
+                        filter: Some(filter),
+                        empty_reason: Some("historyError".to_string()),
+                        next: None,
+                    });
+                }
             }
         }
     }
@@ -333,6 +437,7 @@ where
                     let detail = row
                         .empty_reason
                         .as_deref()
+                        .or(row.stop.as_deref())
                         .or(row.source.as_deref())
                         .unwrap_or("-");
                     println!("Dataset: {} {} ({})", row.name, row.count, detail);
@@ -380,6 +485,24 @@ fn walk_stop_token(stop: HistoryWalkStop) -> Option<&'static str> {
         HistoryWalkStop::Budget => Some("budget"),
         HistoryWalkStop::Cancelled => Some("cancelled"),
     }
+}
+
+fn completeness_stop_token(stop: CompletenessStop) -> Option<&'static str> {
+    match stop {
+        CompletenessStop::Budget => Some("budget"),
+        CompletenessStop::Cancelled => Some("cancelled"),
+        CompletenessStop::Error => None,
+    }
+}
+
+fn eprint_bridge_export_budget(stop: CompletenessStop) {
+    if let Some(token) = bridge_export_budget_token(stop) {
+        eprintln!("{token}");
+    }
+}
+
+fn bridge_export_budget_token(stop: CompletenessStop) -> Option<&'static str> {
+    (stop == CompletenessStop::Budget).then_some(BRIDGE_EXPORT_BUDGET_WARN)
 }
 
 fn dataset_count(datasets: &[ExportDataset], name: &str) -> usize {
@@ -481,6 +604,7 @@ mod tests {
             scope: None,
             madr: false,
             json: false,
+            timeout: None,
         }
     }
 
@@ -496,6 +620,9 @@ mod tests {
         let cli = TestCli::parse_from(["test", "--hotspots", "--ledger", "--out", "out.json"]);
         assert!(cli.export.hotspots);
         assert!(cli.export.ledger);
+        let timeout_only = TestCli::parse_from(["test", "--timeout", "5"]);
+        assert_eq!(timeout_only.export.timeout, Some(5));
+        assert!(!timeout_only.export.hotspots);
         assert_eq!(cli.export.out_path, Some("out.json".to_string()));
     }
 
@@ -794,7 +921,16 @@ mod tests {
         a.ledger = true;
         a.json = true;
         a.out_path = Some(out.to_string_lossy().to_string());
-        execute_export(a).expect("export");
+        execute_export_with(
+            a,
+            |s, h, q| crate::impact::hotspots::calculate_hotspots_detailed(s, h, q),
+            |s| {
+                let db = LedgerDb::new(s.get_connection());
+                db.get_recent_ledger_entries_paginated(LEDGER_PAGE, 0)
+                    .map_err(|e| miette!("{e}"))
+            },
+        )
+        .expect("export");
         let raw = fs::read_to_string(&out).expect("read");
         let v: serde_json::Value = serde_json::from_str(&raw).expect("json");
         let datasets = v["payload"]["datasets"].as_array().expect("datasets");
@@ -838,7 +974,12 @@ mod tests {
         a.hotspots = true;
         a.json = true;
         a.out_path = Some(out.to_string_lossy().to_string());
-        execute_export(a).expect("export");
+        execute_export_with(
+            a,
+            |s, h, q| crate::impact::hotspots::calculate_hotspots_detailed(s, h, q),
+            |_s| Ok(Vec::new()),
+        )
+        .expect("export");
         let datasets = snapshot_datasets(&out);
         let hotspots = datasets
             .iter()
@@ -850,5 +991,188 @@ mod tests {
         let raw = fs::read_to_string(&out).expect("read");
         let v: serde_json::Value = serde_json::from_str(&raw).expect("json");
         assert_eq!(v["payload"]["metadata"]["hotspot_count"], "0");
+    }
+
+    #[test]
+    fn bridge_export_budget_token__budget_only_not_prospective() {
+        assert_eq!(
+            bridge_export_budget_token(CompletenessStop::Budget),
+            Some(BRIDGE_EXPORT_BUDGET_WARN)
+        );
+        assert_eq!(
+            bridge_export_budget_token(CompletenessStop::Cancelled),
+            None
+        );
+        assert_ne!(
+            BRIDGE_EXPORT_BUDGET_WARN,
+            crate::impact::budget::PROSPECTIVE_BUDGET_WARN
+        );
+    }
+
+    #[test]
+    #[serial(cwd)]
+    fn export_hotspots__expired_overall__skip_open_stop_budget() {
+        let (dir, _cwd) = init_git_export_fixture();
+        let out = dir.path().join("snap.json");
+        let mut a = args();
+        a.hotspots = true;
+        a.json = true;
+        a.out_path = Some(out.to_string_lossy().to_string());
+        let expired = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        execute_export_with_opts(
+            a,
+            ExportRunOpts {
+                overall_deadline_override: Some(expired),
+                ..ExportRunOpts::default()
+            },
+            |_s, _h, _q| unreachable!("skip-open must not start the walk"),
+            |_s| Ok(Vec::new()),
+        )
+        .expect("export still emits");
+        let datasets = snapshot_datasets(&out);
+        let hotspots = datasets
+            .iter()
+            .find(|d| d["name"] == "hotspots")
+            .expect("hotspots row");
+        assert_eq!(hotspots["stop"], "budget");
+        assert_eq!(hotspots["included"], false);
+        assert_eq!(hotspots["count"], 0);
+        assert!(hotspots.get("emptyReason").is_none() || hotspots["emptyReason"].is_null());
+        assert!(hotspots.get("commitsWalked").is_none() || hotspots["commitsWalked"].is_null());
+        assert!(hotspots["commitsRequested"].as_u64().expect("requested") > 0);
+        let raw = fs::read_to_string(&out).expect("read");
+        let v: serde_json::Value = serde_json::from_str(&raw).expect("json");
+        assert_eq!(v["payload"]["metadata"]["hotspot_count"], "0");
+    }
+
+    #[test]
+    #[serial(cwd)]
+    fn export_hotspots__cancel__skip_open_stop_cancelled() {
+        let (dir, _cwd) = init_git_export_fixture();
+        let out = dir.path().join("snap.json");
+        let mut a = args();
+        a.hotspots = true;
+        a.json = true;
+        a.out_path = Some(out.to_string_lossy().to_string());
+        let cancel = Arc::new(AtomicBool::new(true));
+        execute_export_with_opts(
+            a,
+            ExportRunOpts {
+                cancel: Some(cancel),
+                overall_deadline_override: Some(Instant::now() + Duration::from_secs(60)),
+                ..ExportRunOpts::default()
+            },
+            |_s, _h, _q| unreachable!("cancel skip-open must not start the walk"),
+            |_s| Ok(Vec::new()),
+        )
+        .expect("export still emits");
+        let datasets = snapshot_datasets(&out);
+        let hotspots = datasets
+            .iter()
+            .find(|d| d["name"] == "hotspots")
+            .expect("hotspots row");
+        assert_eq!(hotspots["stop"], "cancelled");
+        assert_eq!(hotspots["included"], false);
+        assert!(hotspots.get("emptyReason").is_none() || hotspots["emptyReason"].is_null());
+    }
+
+    #[test]
+    #[serial(cwd)]
+    fn export_hotspots__overall_instant__skips_unindexed_complexity_fallback() {
+        let (dir, _cwd) = init_git_export_fixture();
+        let out = dir.path().join("snap.json");
+        let mut a = args();
+        a.hotspots = true;
+        a.json = true;
+        a.out_path = Some(out.to_string_lossy().to_string());
+        let seen = std::sync::Mutex::new(None);
+        execute_export_with_opts(
+            a,
+            ExportRunOpts {
+                overall_deadline_override: Some(Instant::now() + Duration::from_secs(60)),
+                ..ExportRunOpts::default()
+            },
+            |_s, _h, q| {
+                *seen.lock().expect("lock") = Some(q.skip_unindexed_complexity_fallback);
+                Ok(HotspotCalculation::default())
+            },
+            |_s| Ok(Vec::new()),
+        )
+        .expect("export");
+        assert_eq!(
+            seen.lock().expect("lock").as_ref().copied(),
+            Some(true),
+            "overall Instant must skip unindexed complexity fallback"
+        );
+    }
+
+    #[test]
+    #[serial(cwd)]
+    fn export_hotspots__in_walk_budget_count_0__no_empty_reason_no_matches() {
+        let (dir, _cwd) = init_git_export_fixture();
+        let out = dir.path().join("snap.json");
+        let mut a = args();
+        a.hotspots = true;
+        a.json = true;
+        a.out_path = Some(out.to_string_lossy().to_string());
+        execute_export_with_opts(
+            a,
+            ExportRunOpts {
+                overall_deadline_override: Some(Instant::now() + Duration::from_secs(60)),
+                ..ExportRunOpts::default()
+            },
+            |_s, _h, _q| {
+                Ok(HotspotCalculation {
+                    walk_stop: HistoryWalkStop::Budget,
+                    ..HotspotCalculation::default()
+                })
+            },
+            |_s| Ok(Vec::new()),
+        )
+        .expect("export");
+        let datasets = snapshot_datasets(&out);
+        let hotspots = datasets
+            .iter()
+            .find(|d| d["name"] == "hotspots")
+            .expect("hotspots row");
+        assert_eq!(hotspots["stop"], "budget");
+        assert_eq!(hotspots["count"], 0);
+        assert!(
+            hotspots.get("emptyReason").is_none() || hotspots["emptyReason"].is_null(),
+            "in-walk budget must not stamp noMatches: {hotspots}"
+        );
+    }
+
+    #[test]
+    #[serial(cwd)]
+    fn export_hotspots__timeout_0__skip_flag_false() {
+        let (dir, _cwd) = init_git_export_fixture();
+        let out = dir.path().join("snap.json");
+        let mut a = args();
+        a.hotspots = true;
+        a.json = true;
+        a.timeout = Some(0);
+        a.out_path = Some(out.to_string_lossy().to_string());
+        let seen = std::sync::Mutex::new(None);
+        execute_export_with_opts(
+            a,
+            ExportRunOpts {
+                overall_secs_override: Some(0),
+                ..ExportRunOpts::default()
+            },
+            |_s, _h, q| {
+                *seen.lock().expect("lock") = Some(q.skip_unindexed_complexity_fallback);
+                Ok(HotspotCalculation::default())
+            },
+            |_s| Ok(Vec::new()),
+        )
+        .expect("export");
+        assert_eq!(
+            seen.lock().expect("lock").as_ref().copied(),
+            Some(false),
+            "--timeout 0 must not skip unindexed complexity fallback"
+        );
     }
 }

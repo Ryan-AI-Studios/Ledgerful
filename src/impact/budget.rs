@@ -62,6 +62,18 @@ pub const DEPLOY_OVERALL_BUDGET_ENV: &str = "LEDGERFUL_DEPLOY_OVERALL_BUDGET_SEC
 /// Greppable stderr token when a deploy-impact overall emit deadline fires (0358). Never stdout.
 pub const DEPLOY_BUDGET_WARN: &str = "deploy impact stopped: overall budget";
 
+/// `bridge export --hotspots` overall emit budget (0394). Distinct from
+/// history / prospective / review / hotspots / audit / deploy.
+pub const DEFAULT_BRIDGE_EXPORT_OVERALL_BUDGET_SECS: u64 = 25;
+
+/// Env override for the bridge-export overall emit budget. Unparseable values
+/// warn and fall through.
+pub const BRIDGE_EXPORT_OVERALL_BUDGET_ENV: &str = "LEDGERFUL_BRIDGE_EXPORT_OVERALL_BUDGET_SECS";
+
+/// Greppable stderr token when a bridge-export overall emit deadline fires (0394).
+/// Never stdout. Printed from `bridge/export.rs`, not the orchestrator.
+pub const BRIDGE_EXPORT_BUDGET_WARN: &str = "bridge export stopped: overall budget";
+
 /// Greppable string for 0243 config-load absorb (stderr + tracing).
 pub const CONFIG_LOAD_WARN: &str = "config load failed; using defaults";
 
@@ -411,6 +423,30 @@ pub fn overall_deadline_fired(deadline: Option<Instant>) -> bool {
 
 /// CLI > env > config.toml > 25. Unparseable env warns and falls through.
 /// Distinct from prospective / review / hotspots overall resolvers.
+/// CLI > env > config.toml > 25. Unparseable env warns and falls through.
+/// Distinct from prospective / review / hotspots / audit / deploy resolvers.
+pub fn resolve_bridge_export_overall_budget_secs(
+    cli_timeout: Option<u64>,
+    config_secs: u64,
+) -> u64 {
+    if let Some(cli) = cli_timeout {
+        return cli;
+    }
+    match std::env::var(BRIDGE_EXPORT_OVERALL_BUDGET_ENV) {
+        Ok(raw) if !raw.trim().is_empty() => match raw.trim().parse::<u64>() {
+            Ok(v) => v,
+            Err(_) => {
+                tracing::warn!(
+                    value = %raw,
+                    "{BRIDGE_EXPORT_OVERALL_BUDGET_ENV} is not a valid u64; falling through to config"
+                );
+                config_secs
+            }
+        },
+        _ => config_secs,
+    }
+}
+
 pub fn resolve_audit_overall_budget_secs(cli_timeout: Option<u64>, config_secs: u64) -> u64 {
     if let Some(cli) = cli_timeout {
         return cli;
@@ -944,6 +980,38 @@ mod tests {
         assert_eq!(resolve_audit_overall_budget_secs(None, 25), 25);
         assert_eq!(AUDIT_BUDGET_WARN, "audit stopped: overall budget");
         assert_eq!(DEFAULT_AUDIT_OVERALL_BUDGET_SECS, 25);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    #[serial_test::serial(env)]
+    fn resolve_bridge_export_overall_budget_secs__cli_timeout_does_not_write_history_budget() {
+        let _clear = TempEnv::remove(BRIDGE_EXPORT_OVERALL_BUDGET_ENV);
+        let _hist = TempEnv::remove(HISTORY_BUDGET_ENV);
+        assert_eq!(resolve_bridge_export_overall_budget_secs(None, 25), 25);
+        assert_eq!(resolve_bridge_export_overall_budget_secs(Some(0), 25), 0);
+        assert_eq!(resolve_bridge_export_overall_budget_secs(Some(5), 25), 5);
+        assert_eq!(resolve_history_budget_secs(None, 45), 45);
+        let _env = TempEnv::set(BRIDGE_EXPORT_OVERALL_BUDGET_ENV, "12");
+        assert_eq!(resolve_bridge_export_overall_budget_secs(None, 25), 12);
+        assert_eq!(resolve_history_budget_secs(None, 45), 45);
+        drop(_env);
+        let _bad = TempEnv::set(BRIDGE_EXPORT_OVERALL_BUDGET_ENV, "nope");
+        assert_eq!(resolve_bridge_export_overall_budget_secs(None, 25), 25);
+        assert_eq!(
+            BRIDGE_EXPORT_BUDGET_WARN,
+            "bridge export stopped: overall budget"
+        );
+        assert_ne!(BRIDGE_EXPORT_BUDGET_WARN, PROSPECTIVE_BUDGET_WARN);
+        assert_eq!(DEFAULT_BRIDGE_EXPORT_OVERALL_BUDGET_SECS, 25);
+        assert_eq!(
+            overall_stop_stderr_token("working_tree"),
+            Some(PROSPECTIVE_BUDGET_WARN)
+        );
+        assert_eq!(
+            overall_stop_stderr_token("bridge_export"),
+            Some(PROSPECTIVE_BUDGET_WARN)
+        );
     }
 
     #[test]

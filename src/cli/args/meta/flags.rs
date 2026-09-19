@@ -1453,6 +1453,7 @@ impl Commands {
                     scope,
                     madr,
                     json,
+                    timeout,
                 } => {
                     if out.is_some() {
                         f.push("out");
@@ -1477,6 +1478,9 @@ impl Commands {
                     }
                     if *json {
                         f.push("json");
+                    }
+                    if timeout.is_some() {
+                        f.push("timeout");
                     }
                 }
                 BridgeCommands::Import { .. } => {

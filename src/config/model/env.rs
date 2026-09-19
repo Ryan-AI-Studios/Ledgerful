@@ -243,6 +243,7 @@ mod tests {
         let raw = BridgeConfig {
             enabled: true,
             provider_command: "ai-brains".to_string(),
+            export_overall_budget_secs: 25,
         };
         let resolved = resolve_bridge_config_with(&raw, &env_reader);
 

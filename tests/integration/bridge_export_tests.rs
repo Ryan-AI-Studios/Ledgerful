@@ -62,6 +62,10 @@ fn test_bridge_export_subcommand_exists() {
             || stdout.contains("JSON snapshot"),
         "help about should not claim NDJSON-only: {stdout}"
     );
+    assert!(
+        stdout.contains("--timeout"),
+        "export --help must list --timeout: {stdout}"
+    );
 }
 
 #[test]

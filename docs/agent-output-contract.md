@@ -52,7 +52,7 @@ contract and follows `LEDGERFUL_TABLE_STYLE`. Purity inventory unchanged
 | `search --json` | yes | yes | 0136 envelope; empty results OK. Constructor `Err` sets existing `semantic.error` and does not emit Ready+empty readiness (0377). |
 | `search-trigrams --json` | yes (0352) | yes | schemaVersion 1 object `kind: "searchTrigrams"`. Hidden CLI. Count-backed `totalMatching` is **not** an 0136 `search` key. `emptyReason` omit when `resultCount > 0`. `next` omit unless runnable (`ledgerful index` or `ledgerful search {accepted…}`). No `line`/`content`. CLI-only; no MCP. |
 | `bridge query --json` | yes (0366) | yes (exit 0) | Hidden CLI. schemaVersion 1 object `kind: "bridgeQuery"`. Closed `status`: `disabled` \| `unavailable` \| `failed` \| `empty` \| `populated`. `ok` agrees with process exit (`disabled`/`empty`/`populated` → 0; `unavailable`/`failed` → 1 after JSON). Omit-empty `source` (`ipc` \| `cli`), `providerCommand`, `resultCount`, `results`, `skippedLines`, `message`, `next`. `results[]` only on `populated`. Not BridgeRecord NDJSON (0136 `--json-lines`). CLI-only; no MCP. |
-| `bridge export --json` / `--stdout` / `-o -` | yes (0367) | yes (exit 0) | Hidden CLI. **Not** `kind: bridgeExport`. Body is one BridgeRecord **0.3** Snapshot. Additive camelCase `payload.datasets[]` (always `impact` plus requested `--hotspots`/`--ledger`/`--madr`). `--json` with no `--out` implies stdout (no default `.ledgerful` write). `--json --out <path>` writes the file and leaves stdout empty. `-o -` is stdout. `--stdout` + `--out <path>` errors. `--madr` row is `notWired`. Compact one-line is NDJSON-compatible; pretty `--json` is not importable as NDJSON lines. CLI-only; no MCP. |
+| `bridge export --json` / `--stdout` / `-o -` | yes (0367, 0394) | yes (exit 0) | Hidden CLI. **Not** `kind: bridgeExport`. Body is one BridgeRecord **0.3** Snapshot. Additive camelCase `payload.datasets[]` (always `impact` plus requested `--hotspots`/`--ledger`/`--madr`). `--timeout` is overall emit for `--hotspots` only (ignored otherwise; CLI > env `LEDGERFUL_BRIDGE_EXPORT_OVERALL_BUDGET_SECS` > `[bridge] export_overall_budget_secs` > 25; `0` disables). Skip-open / in-walk budget sets omit-empty `stop` (`budget` \| `cancelled`) and does **not** stamp `emptyReason: noMatches`. `--json` with no `--out` implies stdout (no default `.ledgerful` write). `--json --out <path>` writes the file and leaves stdout empty. `-o -` is stdout. `--stdout` + `--out <path>` errors. `--madr` row is `notWired`. Compact one-line is NDJSON-compatible; pretty `--json` is not importable as NDJSON lines. CLI-only; no MCP. |
 | `verify --json` | yes | yes* | plan-execution payload; see rejected combos |
 | `index --check --json` | yes | yes (0149) | schemaVersion 1 + `kind: "indexCheck"` camelCase DTO (0207); Info suppressed under json; Error still on stderr |
 | `index --repair-metadata --dry-run --json` | yes (0371) | yes (exit 0) | schemaVersion 1 object `kind: "indexRepairPreview"`. Always `executed: false` + `dryRun: true`. Omit `ok`. Nested age-only camelCase `assessment` (always `state` / `source` / `indexedFiles` / `staleFiles` / `unindexedFiles`; omit-empty `emptyReason` / `lastIndexedAt` / `daysSinceIndexed` / `samplePaths` / `warnings`). **Omit `emptyDiagnostics`.** `staleFiles` / `unindexedFiles` are age-only zeros — not a content-drift verdict. Locked sorted `proposed[]`: `force full index`, `replace metadata if successful`. Pretty JSON + one trailing newline. Preview never writes (no shadow / no metadata mutation). Not `kind: indexCheck`. Human `--dry-run` copy unchanged. Executed `--yes` repair unchanged. CLI-only; no MCP. |
@@ -1262,8 +1262,18 @@ Row set: always `impact`, plus one row per requested flag
 | `stop` | omit-empty; hotspots only; `budget` \| `cancelled` |
 | `limit` | omit-empty; hotspots + ledger |
 | `filter` | omit-empty; hotspots; `"unfiltered"` or comma-joined prefixes |
-| `emptyReason` | omit-empty: `noMatches` \| `historyError` \| `ledgerError` \| `notWired` |
+| `emptyReason` | omit-empty: `noMatches` \| `historyError` \| `ledgerError` \| `notWired`. `noMatches` only when the `--hotspots` walk **completed** with count 0. Skip-open and in-walk budget/cancel **omit** it. |
 | `next` | omit-empty; `--madr` is `ledgerful ledger adr export` |
+
+`--timeout` (0394) is overall emit for `--hotspots` only (ignored without
+`--hotspots`). Resolution: CLI > env `LEDGERFUL_BRIDGE_EXPORT_OVERALL_BUDGET_SECS`
+> `[bridge] export_overall_budget_secs` > **25**. `0` disables the wall clock;
+cancel still works. Skip-open (Instant/cancel already fired): `included: false`,
+`count: 0`, `stop: budget|cancelled`, `commitsRequested` set, `commitsWalked`
+omitted, `emptyReason` omitted. Stderr `bridge export stopped: overall budget`
+on budget only (never stdout; never `PROSPECTIVE_BUDGET_WARN`). When `--hotspots`
+owns the walk, orchestrator git-history enrichment is skipped (`payload.impact`
+hotspots/couplings stay empty; `payload.hotspots` is the requested dataset).
 
 `--json` with no `--out` implies stdout. `--json --out <path>` writes the file
 and leaves stdout empty. `-o -` is stdout (not a file named `-`).

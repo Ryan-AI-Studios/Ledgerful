@@ -25,6 +25,11 @@ pub struct BridgeConfig {
     /// and emit `BridgeRecord` NDJSON lines on stdout.
     #[serde(default = "default_provider_command")]
     pub provider_command: String,
+
+    /// Overall emit budget seconds for `bridge export --hotspots` (0394).
+    /// `0` disables the wall clock. Distinct from `[hotspots] history_budget_secs`.
+    #[serde(default = "default_export_overall_budget_secs")]
+    pub export_overall_budget_secs: u64,
 }
 
 const fn default_enabled() -> bool {
@@ -35,11 +40,16 @@ fn default_provider_command() -> String {
     "ai-brains".to_string()
 }
 
+const fn default_export_overall_budget_secs() -> u64 {
+    crate::impact::budget::DEFAULT_BRIDGE_EXPORT_OVERALL_BUDGET_SECS
+}
+
 impl Default for BridgeConfig {
     fn default() -> Self {
         Self {
             enabled: default_enabled(),
             provider_command: default_provider_command(),
+            export_overall_budget_secs: default_export_overall_budget_secs(),
         }
     }
 }
@@ -91,5 +101,17 @@ mod tests {
     fn omitted_bridge_section_defaults() {
         let config: Config = toml::from_str("").unwrap();
         assert_eq!(config.bridge.provider_command, "ai-brains");
+        assert_eq!(config.bridge.export_overall_budget_secs, 25);
+    }
+
+    #[test]
+    fn export_overall_budget_secs_deserializes() {
+        let toml_str = r#"
+            [bridge]
+            export_overall_budget_secs = 15
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.bridge.export_overall_budget_secs, 15);
+        assert!(!config.bridge.enabled);
     }
 }
