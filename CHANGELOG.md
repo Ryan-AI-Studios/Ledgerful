@@ -6,7 +6,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Hotspot explain contribution evidence (0393):** bounded
+  `hotspots explain` names contributing commit ids (cap 5) or
+  omit-empty `emptyReason: notInWindow` when the file is absent
+  from a complete window. `--days` copy uses days, not the default
+  commit count.
+
 ### Fixed
+
+- **Hotspot explain score vs restored complexity (0393):**
+  `hotspots explain` recomputes `score` from the indexed complexity
+  restored onto the Metrics line, not walk zeros after an
+  unindexed skip.
 
 - **Unscoped ledger audit emit during walk (0392):** unscoped
   `audit` / `ledger audit` reuse `poll_overall_stop` (cancel-honest

@@ -1807,6 +1807,16 @@ fn hotspots_explain_json_envelope_kind() {
         Vec::new(),
         Some("temporal couplings untrusted: overall budget".into()),
         Some(&c),
+        &[],
+        None,
+    );
+    assert!(
+        v.get("emptyReason").is_none(),
+        "skip-open must omit emptyReason: {v}"
+    );
+    assert!(
+        v.get("contributingCommits").is_none(),
+        "skip-open must omit contributingCommits: {v}"
     );
     assert_eq!(v["schemaVersion"], 1);
     assert_eq!(v["kind"], "hotspotExplanation");
@@ -1816,6 +1826,177 @@ fn hotspots_explain_json_envelope_kind() {
     assert_eq!(
         v["couplingsWarning"],
         "temporal couplings untrusted: overall budget"
+    );
+}
+
+fn init_git_with_file(root: &std::path::Path, rel: &str, contents: &str) -> String {
+    use std::fs;
+    use std::process::Command;
+    assert!(
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    Command::new("git")
+        .args(["config", "user.email", "t@t.com"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "t"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    if let Some(parent) = std::path::Path::new(rel).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(root.join(parent)).unwrap();
+    }
+    fs::write(root.join(rel), contents).unwrap();
+    assert!(
+        Command::new("git")
+            .args(["add", rel])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["commit", "-m", "first"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let sha = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&sha.stdout).trim().to_string()
+}
+
+fn init_sqlite(root: &std::path::Path) {
+    use crate::state::layout::Layout;
+    use crate::state::storage::StorageManager;
+    use camino::Utf8Path;
+    let root = Utf8Path::from_path(root).expect("utf8");
+    let layout = Layout::from_roots(root, root.join(".ledgerful"));
+    layout.ensure_state_dir().unwrap();
+    StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+}
+
+#[test]
+#[allow(non_snake_case)]
+#[serial_test::serial(cwd)]
+fn explain_bounded__not_in_window__empty_reason_not_in_window() {
+    use super::{HotspotRunOpts, execute_hotspots_with_opts};
+    use crate::cli::{HotspotArgs, HotspotSubcommands};
+    use crate::tests::DirGuard;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let _sha = init_git_with_file(root, "README.md", "one\n");
+    init_sqlite(root);
+    let _guard = DirGuard::new(root);
+    let mut buf = Vec::new();
+    let args = HotspotArgs {
+        command: Some(HotspotSubcommands::Explain {
+            entity: "src/absent.rs".into(),
+            json: true,
+        }),
+        commits: Some(20),
+        timeout: Some(5),
+        ..Default::default()
+    };
+    execute_hotspots_with_opts(args, HotspotRunOpts::default(), Some(&mut buf)).expect("emit");
+    let stdout = String::from_utf8_lossy(&buf);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect(&stdout);
+    assert_eq!(v["kind"], "hotspotExplanation");
+    assert_eq!(v["schemaVersion"], 1);
+    assert_eq!(v["frequency"], 0.0);
+    assert_eq!(v["emptyReason"], "notInWindow");
+    assert!(
+        v.get("contributingCommits").is_none(),
+        "notInWindow must omit contributingCommits: {v}"
+    );
+    assert!(v.get("score").is_none(), "not in window omits score: {v}");
+}
+
+#[test]
+#[allow(non_snake_case)]
+#[serial_test::serial(cwd)]
+fn explain_bounded__in_window__names_contributing_commit() {
+    use super::{HotspotRunOpts, execute_hotspots_with_opts};
+    use crate::cli::{HotspotArgs, HotspotSubcommands};
+    use crate::tests::DirGuard;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let sha = init_git_with_file(root, "src/a.rs", "fn a() {}\n");
+    init_sqlite(root);
+    let _guard = DirGuard::new(root);
+    let mut buf = Vec::new();
+    let args = HotspotArgs {
+        command: Some(HotspotSubcommands::Explain {
+            entity: "src/a.rs".into(),
+            json: true,
+        }),
+        commits: Some(20),
+        timeout: Some(5),
+        ..Default::default()
+    };
+    execute_hotspots_with_opts(args, HotspotRunOpts::default(), Some(&mut buf)).expect("emit");
+    let stdout = String::from_utf8_lossy(&buf);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect(&stdout);
+    assert_eq!(v["kind"], "hotspotExplanation");
+    assert!(
+        v.get("emptyReason").is_none(),
+        "in-window must omit emptyReason: {v}"
+    );
+    let ids: Vec<String> = v["contributingCommits"]
+        .as_array()
+        .expect("contributingCommits")
+        .iter()
+        .map(|c| c["id"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert!(ids.iter().any(|id| id == &sha), "expected {sha} in {ids:?}");
+}
+
+#[test]
+#[allow(non_snake_case)]
+#[serial_test::serial(cwd)]
+fn explain_bounded__days_window__not_in_window_names_days() {
+    use super::{HotspotRunOpts, execute_hotspots_with_opts};
+    use crate::cli::{HotspotArgs, HotspotSubcommands};
+    use crate::tests::DirGuard;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let _sha = init_git_with_file(root, "README.md", "one\n");
+    init_sqlite(root);
+    let _guard = DirGuard::new(root);
+    let mut buf = Vec::new();
+    let args = HotspotArgs {
+        command: Some(HotspotSubcommands::Explain {
+            entity: "src/absent.rs".into(),
+            json: true,
+        }),
+        days: Some(1),
+        timeout: Some(5),
+        ..Default::default()
+    };
+    execute_hotspots_with_opts(args, HotspotRunOpts::default(), Some(&mut buf)).expect("emit");
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&buf).trim()).expect("json");
+    assert_eq!(v["emptyReason"], "notInWindow");
+    assert_eq!(
+        super::explain::not_in_window_human(Some(1), 500),
+        "not in last 1 days"
     );
 }
 
