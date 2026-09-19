@@ -8,10 +8,12 @@ use gix::object::tree::diff::ChangeDetached;
 use miette::Result;
 use std::collections::{HashMap, HashSet};
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct CommitFileSet {
     pub files: HashSet<Utf8PathBuf>,
     pub is_merge: bool,
+    /// Hex id when the walk recorded one (`None` in mocks).
+    pub id: Option<String>,
 }
 
 /// Result of a budgeted first-parent (or all-parents) walk.
@@ -261,7 +263,11 @@ impl<'repo> HistoryProvider for GixHistoryProvider<'repo> {
                 }
             }
 
-            history.push(CommitFileSet { files, is_merge });
+            history.push(CommitFileSet {
+                files,
+                is_merge,
+                id: Some(info.id().to_string()),
+            });
         }
 
         let commits_walked = history.len();
@@ -542,6 +548,7 @@ mod tests {
                 CommitFileSet {
                     files,
                     is_merge: false,
+                    id: None,
                 }
             })
             .collect()
@@ -674,6 +681,7 @@ mod tests {
             commits.push(CommitFileSet {
                 files,
                 is_merge: false,
+                id: None,
             });
         }
 
@@ -716,6 +724,7 @@ mod tests {
             commits.push(CommitFileSet {
                 files,
                 is_merge: false,
+                id: None,
             });
         }
 
@@ -758,6 +767,7 @@ mod tests {
             commits.push(CommitFileSet {
                 files,
                 is_merge: false,
+                id: None,
             });
         }
         for _ in 0..5 {
@@ -766,6 +776,7 @@ mod tests {
             commits.push(CommitFileSet {
                 files,
                 is_merge: false,
+                id: None,
             });
         }
         for _ in 0..5 {
@@ -775,6 +786,7 @@ mod tests {
             commits.push(CommitFileSet {
                 files,
                 is_merge: false,
+                id: None,
             });
         }
         for _ in 0..5 {
@@ -783,6 +795,7 @@ mod tests {
             commits.push(CommitFileSet {
                 files,
                 is_merge: false,
+                id: None,
             });
         }
 

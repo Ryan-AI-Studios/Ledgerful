@@ -38,6 +38,7 @@ fn test_temporal_coupling_logic() {
         history.push(CommitFileSet {
             files,
             is_merge: false,
+            id: None,
         });
     }
 
@@ -78,6 +79,7 @@ fn test_temporal_coupling_threshold() {
         history.push(CommitFileSet {
             files,
             is_merge: false,
+            id: None,
         });
     }
 
@@ -109,6 +111,7 @@ fn test_insufficient_history_error() {
         history.push(CommitFileSet {
             files: HashSet::new(),
             is_merge: false,
+            id: None,
         });
     }
 

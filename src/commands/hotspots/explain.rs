@@ -2,14 +2,14 @@ use crate::commands::helpers::get_layout;
 use crate::config::load_config;
 use crate::config::model::Config;
 use crate::impact::budget::{
-    AnalysisBudget, AnalysisCompleteness, completeness_for_overall, is_overall_stop,
-    poll_overall_stop,
+    AnalysisBudget, AnalysisCompleteness, HistoryWalkStop, completeness_for_overall,
+    is_overall_stop, poll_overall_stop,
 };
 use crate::impact::hotspots::{
     HotspotInterpretation, HotspotQuery, calculate_hotspots_detailed,
     compute_hotspot_score_breakdown_from_hotspots,
 };
-use crate::impact::packet::TemporalCoupling;
+use crate::impact::packet::{Hotspot, TemporalCoupling};
 use crate::impact::temporal::{GixHistoryProvider, TemporalEngine};
 use crate::state::storage::StorageManager;
 use miette::Result;
@@ -27,6 +27,9 @@ pub struct HotspotExplanation {
     /// Greppable reason the couplings list is omitted/untrusted. `None` means trusted.
     pub couplings_warning: Option<String>,
     pub score_breakdown: Option<crate::impact::hotspots::HotspotScoreBreakdown>,
+    pub contributing_commits: Vec<String>,
+    pub empty_reason: Option<String>,
+    pub not_in_window_copy: Option<String>,
 }
 
 pub fn compute_hotspot_explanation(
@@ -77,6 +80,9 @@ pub(crate) fn compute_hotspot_explanation_in(
                 couplings: Vec::new(),
                 couplings_warning: Some("temporal couplings untrusted: overall budget".to_string()),
                 score_breakdown: None,
+                contributing_commits: Vec::new(),
+                empty_reason: None,
+                not_in_window_copy: None,
             },
             completeness: Some(completeness_for_overall(
                 stop,
@@ -98,6 +104,7 @@ pub(crate) fn compute_hotspot_explanation_in(
             cancel.clone(),
         )),
         skip_unindexed_complexity_fallback: overall_deadline.is_some(),
+        record_commits_for: Some(normalized_entity.replace('\\', "/")),
         ..Default::default()
     };
     let calculated = calculate_hotspots_detailed(storage, &history_provider, &query)?;
@@ -177,11 +184,27 @@ pub(crate) fn compute_hotspot_explanation_in(
         (entity_couplings, warning)
     };
 
+    let mut scored = hotspots.clone();
+    let _ = patch_restored_complexity(&mut scored, &normalized_entity, complexity);
     let score_breakdown = compute_hotspot_score_breakdown_from_hotspots(
-        &hotspots,
+        &scored,
         &normalized_entity,
         entity_couplings.len(),
     );
+
+    let mut contributing_commits = calculated.contributing_commits;
+    contributing_commits.truncate(5);
+    let empty_reason = if calculated.walk_stop == HistoryWalkStop::Complete
+        && frequency == 0.0
+        && contributing_commits.is_empty()
+    {
+        Some("notInWindow".to_string())
+    } else {
+        None
+    };
+    let not_in_window_copy = empty_reason
+        .as_ref()
+        .map(|_| not_in_window_human(query.days, query.commits));
 
     Ok(HotspotExplanationRun {
         explanation: HotspotExplanation {
@@ -191,9 +214,41 @@ pub(crate) fn compute_hotspot_explanation_in(
             couplings: entity_couplings,
             couplings_warning,
             score_breakdown,
+            contributing_commits,
+            empty_reason,
+            not_in_window_copy,
         },
         completeness,
     })
+}
+
+/// Patch walk complexity to the restored indexed value before scoring.
+pub(super) fn patch_restored_complexity(
+    hotspots: &mut [Hotspot],
+    entity: &str,
+    restored: i32,
+) -> bool {
+    let entity_normalized = entity.replace('\\', "/");
+    if let Some(h) = hotspots.iter_mut().find(|h| {
+        let lossy = h.path.to_string_lossy();
+        lossy == entity || lossy.replace('\\', "/") == entity_normalized
+    }) {
+        h.complexity = restored;
+        true
+    } else {
+        false
+    }
+}
+
+pub(super) fn not_in_window_human(days: Option<u64>, commits: usize) -> String {
+    match days {
+        Some(d) => format!("not in last {d} days"),
+        None => format!("not in last {commits} commits"),
+    }
+}
+
+pub(super) fn short_commit_id(id: &str) -> &str {
+    &id[..id.len().min(8)]
 }
 
 pub(super) fn annotate_couplings(
@@ -283,10 +338,20 @@ struct HotspotExplanationEnvelope {
     couplings: Vec<TemporalCoupling>,
     #[serde(skip_serializing_if = "Option::is_none")]
     couplings_warning: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    contributing_commits: Vec<ContributingCommitJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    empty_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     completeness: Option<AnalysisCompleteness>,
 }
 
+#[derive(Debug, Serialize)]
+struct ContributingCommitJson {
+    id: String,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn explanation_json_envelope(
     entity: &str,
     complexity: i32,
@@ -295,6 +360,8 @@ pub(super) fn explanation_json_envelope(
     couplings: Vec<TemporalCoupling>,
     couplings_warning: Option<String>,
     completeness: Option<&AnalysisCompleteness>,
+    contributing_commits: &[String],
+    empty_reason: Option<&str>,
 ) -> serde_json::Value {
     let envelope = HotspotExplanationEnvelope {
         schema_version: 1,
@@ -306,6 +373,11 @@ pub(super) fn explanation_json_envelope(
         display_score: breakdown.map(|b| b.final_score),
         couplings,
         couplings_warning,
+        contributing_commits: contributing_commits
+            .iter()
+            .map(|id| ContributingCommitJson { id: id.clone() })
+            .collect(),
+        empty_reason: empty_reason.map(str::to_string),
         completeness: completeness.cloned(),
     };
     serde_json::to_value(envelope).unwrap_or(serde_json::Value::Null)
@@ -346,6 +418,8 @@ pub(super) fn execute_hotspots_explain(
             run.explanation.couplings.clone(),
             run.explanation.couplings_warning.clone(),
             run.completeness.as_ref(),
+            &run.explanation.contributing_commits,
+            run.explanation.empty_reason.as_deref(),
         );
         return super::write_json(&output, json_out);
     }
@@ -356,13 +430,26 @@ pub(super) fn execute_hotspots_explain(
 
     println!("\nMetrics:");
     println!("  Complexity: {}", explanation.complexity);
-    println!(
-        "  Change Frequency (weighted): {:.2}",
-        explanation.frequency
-    );
+    if let Some(copy) = &explanation.not_in_window_copy {
+        println!(
+            "  Change Frequency (weighted): {:.2} ({copy})",
+            explanation.frequency
+        );
+    } else {
+        println!(
+            "  Change Frequency (weighted): {:.2}",
+            explanation.frequency
+        );
+    }
     match &explanation.couplings_warning {
         Some(warning) => println!("  Temporal Couplings: untrusted ({warning})"),
         None => println!("  Temporal Couplings: {}", explanation.couplings.len()),
+    }
+    if !explanation.contributing_commits.is_empty() {
+        println!("\nSource commits:");
+        for id in &explanation.contributing_commits {
+            println!("  {}", short_commit_id(id));
+        }
     }
 
     if let Some(breakdown) = &explanation.score_breakdown {
@@ -429,6 +516,61 @@ mod tests {
         assert!(
             warning.contains('3') && warning.contains("10"),
             "warning should include found/required: {warning}"
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn not_in_window_human__days_vs_commits() {
+        assert_eq!(
+            super::not_in_window_human(Some(1), 500),
+            "not in last 1 days"
+        );
+        assert_eq!(
+            super::not_in_window_human(None, 20),
+            "not in last 20 commits"
+        );
+        assert_eq!(
+            super::not_in_window_human(None, 500),
+            "not in last 500 commits"
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn short_commit_id__min_eight() {
+        assert_eq!(super::short_commit_id("abc"), "abc");
+        assert_eq!(super::short_commit_id("0123456789abcdef"), "01234567");
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn patch_restored_complexity__score_uses_restored() {
+        use crate::impact::hotspots::compute_hotspot_score_breakdown_from_hotspots;
+        use crate::impact::packet::Hotspot;
+        use std::path::PathBuf;
+
+        let mut hotspots = vec![Hotspot {
+            path: PathBuf::from("src/a.rs"),
+            score: 0.0,
+            display_score: 0.0,
+            complexity: 0,
+            frequency: 1.0,
+            centrality: None,
+        }];
+        assert!(super::patch_restored_complexity(
+            &mut hotspots,
+            "src/a.rs",
+            6
+        ));
+        assert_eq!(hotspots[0].complexity, 6);
+        let breakdown = compute_hotspot_score_breakdown_from_hotspots(&hotspots, "src/a.rs", 0)
+            .expect("matching hotspot");
+        assert_eq!(breakdown.complexity, 6);
+        assert!(
+            breakdown.base_score > 0.0,
+            "restored complexity must contribute to score, got {}",
+            breakdown.base_score
         );
     }
 }

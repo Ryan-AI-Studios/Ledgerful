@@ -214,6 +214,8 @@ fn emit_overall_skip_open(
                 Vec::new(),
                 Some("temporal couplings untrusted: overall budget".to_string()),
                 Some(&completeness),
+                &[],
+                None,
             );
             write_json(&output, json_out)?;
         } else {

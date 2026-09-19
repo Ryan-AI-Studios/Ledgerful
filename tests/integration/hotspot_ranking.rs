@@ -521,5 +521,6 @@ fn commit(paths: &[&str]) -> CommitFileSet {
     CommitFileSet {
         files: paths.iter().map(Utf8PathBuf::from).collect::<HashSet<_>>(),
         is_merge: false,
+        id: None,
     }
 }

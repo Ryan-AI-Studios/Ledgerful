@@ -61,7 +61,7 @@ contract and follows `LEDGERFUL_TABLE_STYLE`. Purity inventory unchanged
 | `dead-code --json` | yes (0149) | yes | schemaVersion 1 envelope; see rejected combos |
 | `hotspots --json` | yes | yes | schemaVersion 1 object; collection `files`; list and `--semantic` echo `limit` (0207). Additive `completeness` (0308) only when the history walk stops early (`stop`: `budget`\|`cancelled`\|`error`); omitted on a complete window. Additive `provenance` (0309) is **always** on the live list (`source: live`; `commitsRequested`; `daysRequested` only with `--days`; `limit`; `filter`; `head` when known; `snapshotAt`/`snapshotAgeSecs` when `hotspot_history` has a row). `--semantic --json` omits `provenance`. Per-file `presence: "historical"` is emit-time only when HEAD is resolvable and the ranked path is absent from HEAD (omit when current, when HEAD is unborn/unresolvable, or on `--semantic`). CLI default list omits test/example/bench paths (0222; `--include tests` restores) **and** markdown (0293; `--include docs` is a frequency lane) **and** vendored `deps_src`/`vendor`/… (0297; `--include vendor` restores `f×c`). **`score` is 0–1**; `displayScore` is ln display. No `scoreUnit`. **MCP `hotspots` stays an in-process array** and stays unfiltered. `--semantic` ignores `--include`. `--timeout` is the **overall list/explain emit** budget (default 25s; `0` disables; env `LEDGERFUL_HOTSPOTS_OVERALL_BUDGET_SECS` / `[hotspots] overall_budget_secs`). History stays `[hotspots] history_budget_secs` (default 45) / `LEDGERFUL_HISTORY_BUDGET_SECS`, capped by the overall Instant. Additive `completeness.scope=overall` + `stage` slug when that deadline fires **or cancel wins** (`stop`: `budget`\|`cancelled`); list/explain stages include `storage` / `git` / `semantic` / `hotspots` / `coupling`. History-only 0308 objects omit `scope`. Token `hotspots stopped: overall budget` is stderr-only on overall **budget** stop (not cancel). Place `--timeout` / `--commits` **before** `explain`. `--semantic` honors the same overall Instant. `hotspots trend` / `hotspots budget` ignore parent `--timeout` (documented no-op). |
 | `hotspots trend --json` | yes (0151) | yes | schemaVersion 1; modes summary/full/entity; additive `provenance` (0309, `source: trends`) always present — see schema below |
-| `hotspots explain --json` | yes (0349) | yes | schemaVersion 1 object `kind: "hotspotExplanation"`. Parent `hotspots --json explain PATH` **or** `hotspots explain PATH --json`. `--timeout` / `--commits` / `--days` stay on the parent (place them **before** `explain`). Additive omit-empty `completeness` (0347 tokens). `score` is 0–1 when a breakdown exists; `displayScore` is ln. `couplingsWarning` omit-empty (overall skip is untrusted, not a trusted empty list). No MCP tool. See schema below. |
+| `hotspots explain --json` | yes (0349) | yes | schemaVersion 1 object `kind: "hotspotExplanation"`. Parent `hotspots --json explain PATH` **or** `hotspots explain PATH --json`. `--timeout` / `--commits` / `--days` stay on the parent (place them **before** `explain`). Additive omit-empty `completeness` (0347 tokens). `score` is 0–1 when a breakdown exists; `displayScore` is ln. `couplingsWarning` omit-empty (overall skip is untrusted, not a trusted empty list). Additive omit-empty `contributingCommits[]` `{id}` (at most 5 most-recent, not a full listing) and omit-empty `emptyReason: notInWindow` when a complete window does not touch the file. No MCP tool. See schema below. |
 | `hotspots budget --json` | yes | yes | Versionless object (no `schemaVersion`). `status`: `OK` \| `VIOLATION` \| `NO_DATA` \| `NOT_CONFIGURED`. Always `dataset: "hotspot_history"` and `scoreUnit: "score"` (persisted `hotspot_history.score`, 0–1). `threshold` + `thresholdSource` (`cli` \| `config` \| `default`) omit on `NOT_CONFIGURED`. Informational default threshold **0.5**. `--fail` is the only exit-1 gate and requires `--threshold` or `[hotspots] budget_threshold`. Only `status == "OK"` is in-budget. Always `evaluated` + `violations[]` (`path` / `score` / `threshold`). Additive `snapshotAt` / `snapshotAgeSecs` / `head` / `legacyScoreCount` / `skippedNonFinite`. Omit-empty `emptyReason` (`noSnapshot` \| `allNonFinite`) and `next` (`ledgerful hotspots --snapshot`) only on `NO_DATA` (`next` only for `noSnapshot`; print-only, do not auto-run). No `provenance`. List / session / trend / MCP / `GET /api/hotspots` stay without `scoreUnit`. See schema below. |
 | `endpoints --json` | yes | yes | schemaVersion 1 object; collection `results` (0207). Always echoes `includeFixtures` + `fixturesOmitted` (empty and populated). Default omits test-path + `route_source=TEST`; `--include-fixtures` restores. Post-omit product-empty without `--changed` is `emptyReason: noMatches` (after the current SQL/filter + omit — not a catalog-wide “zero product routes” claim). `--changed` empty stays `cleanDiff`. Additive item keys: `registrationFile`, `handlerFile`, `handlerUnresolvedReason`, `mountPrefix`, `mountedPath`, `mountProvenance`, `authSource: "inferred"`, `authParse`/`consumersParse`. MCP `endpoints_changed` re-execs CLI default omit (no extra flags) |
 | `symbols --json` | yes (0163) | yes | schemaVersion **1** inventory; path/changed/kind/pub filters; COUNT-backed `totalMatching`; optional `indexStatus`; see schema below |
@@ -649,9 +649,11 @@ ledgerful hotspots trend --entity src/lib.rs --json
 
 ## `hotspots explain --json` schema (v1)
 
-Track **0349**. One object. Human remains the default. Overall stop copies
+Track **0349** / **0393**. One object. Human remains the default. Overall stop copies
 `AnalysisCompleteness` (`scope: overall`, `stage` slug). Couplings skipped for
-budget use `couplingsWarning`, not a trusted empty list.
+budget use `couplingsWarning`, not a trusted empty list. `contributingCommits`
+is at most 5 most-recent ids (not a complete listing). `emptyReason:
+notInWindow` is explain-local (not the shared list-envelope enum).
 
 ```json
 {
@@ -664,6 +666,8 @@ budget use `couplingsWarning`, not a trusted empty list.
   "displayScore": 4.39,
   "couplings": [],
   "couplingsWarning": "temporal couplings untrusted: overall budget",
+  "contributingCommits": [{ "id": "abcdef0123456789" }],
+  "emptyReason": "notInWindow",
   "completeness": {
     "stop": "budget",
     "scope": "overall",

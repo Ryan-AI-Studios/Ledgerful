@@ -137,6 +137,9 @@ pub struct HotspotQuery {
     /// `MAX(snapshot_id)` subquery). Set when an overall emit Instant is
     /// present so a complete git walk cannot stall 60s+ on historical paths.
     pub skip_unindexed_complexity_fallback: bool,
+    /// 0393: when set, collect eligible non-merge commit ids whose files
+    /// contain this slash-normalized path. List / enrichment leave `None`.
+    pub record_commits_for: Option<String>,
 }
 
 /// Ranked hotspot list plus how many candidate paths were omitted when
@@ -151,6 +154,8 @@ pub struct HotspotCalculation {
     pub walk_stop: HistoryWalkStop,
     pub commits_walked: usize,
     pub head: Option<String>,
+    /// Eligible non-merge ids for `record_commits_for` (empty unless asked).
+    pub contributing_commits: Vec<String>,
 }
 
 /// Directory components excluded in addition to topology `TEST_PATTERNS`.
@@ -274,6 +279,11 @@ pub fn calculate_hotspots_detailed(
 
     let mut frequency_map: HashMap<Utf8PathBuf, f64> = HashMap::new();
     let mut total_eligible_commits = 0;
+    let mut contributing_commits = Vec::new();
+    let record_for = query
+        .record_commits_for
+        .as_ref()
+        .map(|s| s.replace('\\', "/"));
 
     let half_life = query.decay_half_life as f64;
 
@@ -282,6 +292,15 @@ pub fn calculate_hotspots_detailed(
             continue;
         }
         total_eligible_commits += 1;
+        if let Some(target) = record_for.as_ref()
+            && commit_set
+                .files
+                .iter()
+                .any(|f| f.as_str().replace('\\', "/") == *target)
+            && let Some(id) = &commit_set.id
+        {
+            contributing_commits.push(id.clone());
+        }
 
         // Exponential decay: most recent commit (idx 0) gets weight 1.0
         let weight = if half_life > 0.0 {
@@ -331,6 +350,7 @@ pub fn calculate_hotspots_detailed(
             walk_stop: walk.stop,
             commits_walked: walk.commits_walked,
             head: walk.head,
+            contributing_commits,
             ..HotspotCalculation::default()
         });
     }
@@ -462,6 +482,7 @@ pub fn calculate_hotspots_detailed(
         walk_stop: walk.stop,
         commits_walked: walk.commits_walked,
         head: walk.head,
+        contributing_commits,
     })
 }
 
@@ -868,6 +889,7 @@ mod tests {
                 Ok(vec![CommitFileSet {
                     files,
                     is_merge: false,
+                    id: None,
                 }])
             }
             fn get_history_budgeted(
@@ -952,6 +974,7 @@ mod tests {
             Ok(vec![crate::impact::temporal::CommitFileSet {
                 files,
                 is_merge: false,
+                id: None,
             }])
         }
     }
