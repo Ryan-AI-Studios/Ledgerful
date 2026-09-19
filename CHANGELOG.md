@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Range review emit during walk (0390):** `review` reuses
+  `poll_overall_stop` during the pipeline (not only when tests
+  inject an already-expired Instant) and skips test-gaps /
+  affected-flows once overall already fired. Overall-stop still
+  emits 0348 `completeness.scope=overall` and does not rewrite
+  `latest-impact.json`.
+
 - **Prospective emit during walk (0389):** `change-context` /
   `impact` / `scan --impact --paths` poll `poll_overall_stop`
   while enrichment is in flight (not only when tests inject an

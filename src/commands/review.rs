@@ -12,7 +12,7 @@ use crate::git::repo::{get_head_info, open_repo};
 use crate::git::{ChangeType, FileChange, RepoSnapshot};
 use crate::impact::budget::{
     AnalysisCompleteness, CompletenessScope, CompletenessStop, REVIEW_BUDGET_WARN,
-    completeness_for_overall, is_overall_stop, resolve_review_budget_secs,
+    completeness_for_overall, is_overall_stop, poll_overall_stop, resolve_review_budget_secs,
 };
 use crate::impact::enrichment::affected_flows::AffectedFlowsReport;
 use crate::impact::enrichment::test_gaps::TestGapsReport;
@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 pub const REVIEW_SCHEMA_VERSION: u32 = 1;
@@ -433,11 +433,7 @@ pub fn execute_review_in(
         completeness = merge_completeness(
             completeness,
             Some(completeness_for_overall(
-                if cancel.load(Ordering::Relaxed) {
-                    CompletenessStop::Cancelled
-                } else {
-                    CompletenessStop::Budget
-                },
+                github_skip_stop(deadline, &cancel),
                 budget_secs,
                 "github",
             )),
@@ -614,6 +610,7 @@ fn compose_impact(
     let files_scanned = snapshot.changes.len();
     let files_total = params.files_total;
     let files_changed_truncated = params.files_changed_truncated;
+    let cancel = Arc::clone(&params.cancel);
     let impact = crate::commands::impact::compute_impact_from_snapshot_in_memory_with_history(
         storage,
         config,
@@ -624,7 +621,7 @@ fn compose_impact(
         Vec::new(),
         crate::impact::orchestrator::ImpactHistoryOpts {
             skip_git_history_enrichment: false,
-            cancel: params.cancel,
+            cancel,
             overall_budget_secs: params.overall_budget_secs,
             overall_deadline: params.overall_deadline,
         },
@@ -673,10 +670,26 @@ fn compose_impact(
         ),
     };
 
-    let gaps = compute_pr_scan_test_gaps(layout, snapshot);
-    let tests = tests_from_gaps(&gaps);
-    let flows = compute_pr_scan_affected_flows(layout, snapshot);
-    let contracts = contracts_from_flows(&flows);
+    let (tests, contracts) = match completeness.as_ref().filter(|c| is_overall_stop(c)) {
+        Some(c) => (
+            ReviewTests {
+                status: "unavailable".to_string(),
+                exercising: Vec::new(),
+                untested: Vec::new(),
+                notes: Some(blast_reason_for(c)),
+            },
+            ReviewContracts {
+                status: "unavailable".to_string(),
+                items: Vec::new(),
+                truncated: false,
+            },
+        ),
+        None => {
+            let gaps = compute_pr_scan_test_gaps(layout, snapshot);
+            let flows = compute_pr_scan_affected_flows(layout, snapshot);
+            (tests_from_gaps(&gaps), contracts_from_flows(&flows))
+        }
+    };
     (blast, symbols, tests, contracts, completeness)
 }
 
@@ -699,21 +712,8 @@ fn overall_stage_stop(
     budget_secs: Option<u64>,
     stage: &str,
 ) -> Option<AnalysisCompleteness> {
-    if cancel.load(Ordering::Relaxed) {
-        return Some(completeness_for_overall(
-            CompletenessStop::Cancelled,
-            budget_secs,
-            stage,
-        ));
-    }
-    if deadline.is_some_and(|d| Instant::now() >= d) {
-        return Some(completeness_for_overall(
-            CompletenessStop::Budget,
-            budget_secs,
-            stage,
-        ));
-    }
-    None
+    poll_overall_stop(deadline, cancel)
+        .map(|stop| completeness_for_overall(stop, budget_secs, stage))
 }
 
 fn merge_completeness(
@@ -750,13 +750,12 @@ fn remaining_until(deadline: Option<Instant>) -> Option<Duration> {
 }
 
 fn github_helpers_should_skip(deadline: Option<Instant>, cancel: &AtomicBool) -> bool {
-    if cancel.load(Ordering::Relaxed) {
-        return true;
-    }
-    if deadline.is_some_and(|d| Instant::now() >= d) {
-        return true;
-    }
-    should_skip_github_for_deadline(remaining_until(deadline), 2)
+    poll_overall_stop(deadline, cancel).is_some()
+        || should_skip_github_for_deadline(remaining_until(deadline), 2)
+}
+
+fn github_skip_stop(deadline: Option<Instant>, cancel: &AtomicBool) -> CompletenessStop {
+    poll_overall_stop(deadline, cancel).unwrap_or(CompletenessStop::Budget)
 }
 
 struct DeadlineCancel<'a> {
@@ -1721,6 +1720,7 @@ mod tests {
     use clap::{CommandFactory, Parser};
     use std::fs;
     use std::process::Command;
+    use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::time::{Duration, Instant};
     use tempfile::tempdir;
@@ -1886,6 +1886,139 @@ mod tests {
         )
         .expect("stop");
         assert_eq!(c.stage.as_deref(), Some("ledger_search"));
+    }
+
+    #[test]
+    fn review_pipeline__overall_stage_stop_delegates_to_poll_overall_stop() {
+        let idle = AtomicBool::new(false);
+        let cancelled = AtomicBool::new(true);
+        let future = Instant::now() + Duration::from_secs(60);
+        assert!(overall_stage_stop(Some(future), &idle, Some(25), "git").is_none());
+        let budget =
+            overall_stage_stop(Some(expired_deadline()), &idle, Some(25), "git").expect("budget");
+        assert_eq!(budget.stop, CompletenessStop::Budget);
+        let cancel = overall_stage_stop(Some(future), &cancelled, Some(25), "git").expect("cancel");
+        assert_eq!(cancel.stop, CompletenessStop::Cancelled);
+        let cancel_over_budget =
+            overall_stage_stop(Some(expired_deadline()), &cancelled, Some(25), "git")
+                .expect("cancel-wins");
+        assert_eq!(cancel_over_budget.stop, CompletenessStop::Cancelled);
+    }
+
+    #[test]
+    fn review_pipeline__github_skip_cancel_wins_stage_github() {
+        let cancelled = AtomicBool::new(true);
+        let future = Instant::now() + Duration::from_secs(60);
+        assert!(github_helpers_should_skip(Some(future), &cancelled));
+        assert_eq!(
+            github_skip_stop(Some(future), &cancelled),
+            CompletenessStop::Cancelled
+        );
+        let idle = AtomicBool::new(false);
+        assert_eq!(
+            github_skip_stop(Some(expired_deadline()), &idle),
+            CompletenessStop::Budget
+        );
+        let github = completeness_for_overall(
+            github_skip_stop(Some(future), &cancelled),
+            Some(25),
+            "github",
+        );
+        assert_eq!(github.stage.as_deref(), Some("github"));
+        assert_eq!(github.stop, CompletenessStop::Cancelled);
+        let federated = completeness_for_overall(CompletenessStop::Budget, Some(25), "federated");
+        let merged = merge_completeness(Some(federated), Some(github));
+        assert_eq!(
+            merged.as_ref().and_then(|c| c.stage.as_deref()),
+            Some("federated")
+        );
+    }
+
+    #[test]
+    fn compose_impact__overall_stop_skips_test_gaps_and_affected_flows() {
+        let (_tmp, layout, work, config) = harness_with_storage();
+        let storage = StorageManager::open_read_only_sqlite_only(&layout).expect("ro");
+        let (base_ref, head_ref, git_range) = parse_review_range("HEAD~1..HEAD").expect("range");
+        let raw = files_changed_between(&work, &git_range, &base_ref).expect("diff");
+        let snapshot = build_range_snapshot(&work, raw, &head_ref);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (_blast, _symbols, tests, contracts, completeness) = compose_impact(
+            &layout,
+            &work,
+            &config,
+            &storage,
+            &snapshot,
+            ComposeParams {
+                files_total: snapshot.changes.len(),
+                files_changed_truncated: false,
+                cancel,
+                overall_deadline: Some(expired_deadline()),
+                overall_budget_secs: Some(25),
+            },
+        );
+        assert!(
+            completeness.as_ref().is_some_and(is_overall_stop),
+            "compose must stop overall: {completeness:?}"
+        );
+        assert_eq!(tests.status, "unavailable");
+        assert!(
+            tests.exercising.is_empty(),
+            "skip must not populate exercising: {:?}",
+            tests.exercising
+        );
+        assert!(
+            tests
+                .notes
+                .as_deref()
+                .is_some_and(|n| n.contains("overall analysis stopped")),
+            "budget skip notes: {:?}",
+            tests.notes
+        );
+        assert!(
+            !tests
+                .notes
+                .as_deref()
+                .is_some_and(|n| n.contains("ledger.db unavailable")),
+            "budget skip must not claim missing db: {:?}",
+            tests.notes
+        );
+        assert_eq!(contracts.status, "unavailable");
+        assert!(
+            contracts.items.is_empty(),
+            "skip must not populate contracts: {:?}",
+            contracts.items
+        );
+    }
+
+    #[test]
+    fn review_one_commit__future_instant__emits_scope_overall() {
+        let started = Instant::now();
+        let (_tmp, layout, work, config) = harness_with_storage();
+        let (result, stdout) = run(
+            &layout,
+            &work,
+            &config,
+            ReviewOpts {
+                range: "HEAD~1..HEAD".to_string(),
+                json: true,
+                overall_deadline_override: Some(Instant::now() + Duration::from_millis(1)),
+                ..Default::default()
+            },
+        );
+        assert!(result.is_ok(), "{result:?}\n{stdout}");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed <= Duration::from_secs(5),
+            "future Instant must emit in ≤5s, took {elapsed:?}"
+        );
+        let env = parse_env(&stdout);
+        assert_eq!(env.kind, "review");
+        assert_eq!(
+            env.completeness.as_ref().and_then(|c| c.scope),
+            Some(CompletenessScope::Overall),
+            "future Instant must set scope=overall: {:?}",
+            env.completeness
+        );
     }
 
     #[test]
