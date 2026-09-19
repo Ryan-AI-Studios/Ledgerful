@@ -11,6 +11,15 @@ pub struct BillingAccount {
 }
 "#;
 
+const LEDGER_MAPPER_SRC: &str = r#"pub struct LedgerEntry {
+    pub id: i64,
+}
+
+fn map_ledger_entry(row: &rusqlite::Row) -> rusqlite::Result<LedgerEntry> {
+    Ok(LedgerEntry { id: row.get(0)? })
+}
+"#;
+
 fn parse_object(stdout: &str, label: &str) -> Value {
     let v: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("{label} stdout must parse as JSON: {e}\n{stdout}"));
@@ -131,6 +140,125 @@ pub struct BillingAccount {
     assert_eq!(row["name"], "BillingAccount");
     assert_eq!(row["is_changed"], true);
     assert_eq!(row["file_path"], "src/billing.rs");
+    assert_eq!(row["fieldImpact"], "unsupported");
+
+    assert!(
+        !root
+            .join(".ledgerful")
+            .join("reports")
+            .join("latest-impact.json")
+            .exists(),
+        "must not write reports/latest-impact.json"
+    );
+    assert!(
+        !root.join(".ledgerful").join("latest-impact.json").exists(),
+        "must not write .ledgerful/latest-impact.json"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn data_models_row_mapper_list_and_changed_is_changed__slow() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src").join("ledger.rs"), LEDGER_MAPPER_SRC).unwrap();
+    git_add_and_commit(root, "initial");
+
+    let (stdout, stderr, code) = run_ni(root, &["init"]);
+    assert_eq!(code, 0, "init failed stdout={stdout} stderr={stderr}");
+    git_add_and_commit(root, "post-init clean");
+
+    let (stdout, stderr, code) = run_ni(root, &["index", "--incremental"]);
+    assert_eq!(
+        code, 0,
+        "index --incremental failed stdout={stdout} stderr={stderr}"
+    );
+
+    let (stdout, stderr, code) = run_ni(root, &["data-models", "list", "--json"]);
+    assert_eq!(
+        code, 0,
+        "list --json failed stdout={stdout} stderr={stderr}"
+    );
+    let list = parse_object(&stdout, "list --json");
+    assert!(
+        list["resultCount"].as_u64().unwrap_or(0) >= 1,
+        "expected extracted LedgerEntry: {list}"
+    );
+    let names: Vec<&str> = list["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"LedgerEntry"),
+        "list must extract LedgerEntry, got {names:?} stdout={stdout}"
+    );
+    let entry = list["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|m| m["name"] == "LedgerEntry")
+        .expect("LedgerEntry row");
+    assert_eq!(entry["kind"], "SCHEMA");
+    assert_eq!(entry["fieldImpact"], "unsupported");
+    assert_eq!(entry["file_path"], "src/ledger.rs");
+    assert!(
+        list["notWired"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|v| v == "sqlMigrations"),
+        "notWired: {}",
+        list["notWired"]
+    );
+
+    let (stdout, stderr, code) = run_ni(root, &["data-models", "impact", "--changed", "--json"]);
+    assert_eq!(
+        code, 0,
+        "pre-dirty --changed failed stdout={stdout} stderr={stderr}"
+    );
+    let clean = parse_object(&stdout, "pre-dirty --changed");
+    assert_eq!(clean["emptyReason"], "cleanDiff", "{clean}");
+    assert_eq!(clean["resultCount"], 0, "{clean}");
+
+    fs::write(
+        root.join("src").join("ledger.rs"),
+        r#"pub struct LedgerEntry {
+    pub id: i64,
+    pub name: String,
+}
+
+fn map_ledger_entry(row: &rusqlite::Row) -> rusqlite::Result<LedgerEntry> {
+    Ok(LedgerEntry {
+        id: row.get(0)?,
+        name: row.get(1)?,
+    })
+}
+"#,
+    )
+    .unwrap();
+
+    let (stdout, stderr, code) = run_ni(root, &["data-models", "impact", "--changed", "--json"]);
+    assert_eq!(
+        code, 0,
+        "dirty --changed failed stdout={stdout} stderr={stderr}"
+    );
+    let dirty = parse_object(&stdout, "dirty --changed");
+    assert!(
+        dirty["resultCount"].as_u64().unwrap_or(0) >= 1,
+        "dirty --changed must include LedgerEntry: {dirty}"
+    );
+    let row = dirty["impacted"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|m| m["name"] == "LedgerEntry")
+        .expect("LedgerEntry impacted row");
+    assert_eq!(row["is_changed"], true);
+    assert_eq!(row["file_path"], "src/ledger.rs");
     assert_eq!(row["fieldImpact"], "unsupported");
 
     assert!(

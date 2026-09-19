@@ -114,7 +114,7 @@ Read-only inventory of six advanced surfaces (ready / empty / gated). Alias: `to
 
 ## `ledgerful data-models list` / `impact`
 
-Product inventory of extracted persistence models (Rust `FromRow`/`Queryable`/`Insertable`, Go json-tagged structs, TypeScript `@Entity` or model-dir types, Python model-path classes). Default omits fixture/test-path rows; `--include-fixtures` restores. SQL migrations are **not** extracted. `--changed` is a dirty-path filter over indexed models, not field-level diffs (`fieldImpact: unsupported`). `--json`: schemaVersion 1; collections `models` / `impacted`; always `supportedExtractors` / `notWired`; omit-empty `next`.
+Product inventory of extracted persistence models (Rust `FromRow`/`Queryable`/`Insertable` **and** rusqlite `Row` mappers / `query_map` struct construction, Go json-tagged structs, TypeScript `@Entity` or model-dir types, Python model-path classes). Token `rustPersistenceDerive` covers both derive-idents and Row mappers. Default omits fixture/test-path rows; `--include-fixtures` restores. SQL migrations are **not** extracted. `--changed` is a dirty-path filter over indexed models, not field-level diffs (`fieldImpact: unsupported`). `--json`: schemaVersion 1; collections `models` / `impacted`; always `supportedExtractors` / `notWired`; omit-empty `next`.
 
 ## `ledgerful ci list`
 

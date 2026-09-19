@@ -197,12 +197,13 @@ const SUPPORTED_EXTRACTORS: &[&str] = &[
 
 const NOT_WIRED: &[&str] = &["cppWalker", "javascript", "sqlMigrations"];
 
-const PRODUCT_EMPTY_EXTRACTOR_SENTENCE: &str = "Rust persistence derives (FromRow, Queryable, Insertable) are extracted; SQL migrations are not.";
+const PRODUCT_EMPTY_EXTRACTOR_SENTENCE: &str = "Rust persistence derives (FromRow, Queryable, Insertable) and rusqlite Row mappers are extracted; SQL migrations are not.";
 
-const LIST_HUMAN_TRULY_EMPTY_EXTRACTOR_LINE: &str = "Rust persistence derives (FromRow, Queryable, Insertable), Go json-tagged structs, TypeScript @Entity or model-dir types, and Python model-path classes are extracted; SQL migrations are not.";
+const LIST_HUMAN_TRULY_EMPTY_EXTRACTOR_LINE: &str = "Rust persistence derives (FromRow, Queryable, Insertable) and rusqlite Row mappers, Go json-tagged structs, TypeScript @Entity or model-dir types, and Python model-path classes are extracted; SQL migrations are not.";
 
 const NO_INDEXED_DATA_MESSAGE: &str = "No data models indexed. Extracted from Rust \
-persistence derives (FromRow, Queryable, Insertable), \
+persistence derives (FromRow, Queryable, Insertable) \
+and rusqlite Row mappers, \
 Go json-tagged structs, TypeScript @Entity or \
 model-dir types, and Python model-path classes. SQL \
 migrations are not extracted. Run `ledgerful index \
@@ -1196,6 +1197,7 @@ mod tests {
         assert!(!message.contains("and migration files"));
         assert!(message.contains("SQL migrations are not extracted"));
         assert!(message.contains("FromRow"));
+        assert!(message.contains("rusqlite Row mappers"));
     }
 
     #[test]
@@ -1205,6 +1207,7 @@ mod tests {
         assert!(message.contains("1 fixture models omitted"));
         assert!(message.contains(PRODUCT_EMPTY_EXTRACTOR_SENTENCE));
         assert!(message.contains("FromRow, Queryable, Insertable"));
+        assert!(message.contains("rusqlite Row mappers"));
         assert!(message.contains("SQL migrations are not"));
         assert!(!message.contains("SQL table definitions"));
     }
@@ -1216,6 +1219,7 @@ mod tests {
         assert_eq!(first, "  No data models indexed.");
         assert!(second.starts_with("  Rust persistence derives"));
         assert!(second.contains("FromRow, Queryable, Insertable"));
+        assert!(second.contains("rusqlite Row mappers"));
         assert!(second.contains("Go json-tagged structs"));
         assert!(second.contains("SQL migrations are not."));
         assert!(!second.contains("SQL table definitions"));

@@ -61,13 +61,15 @@ Understand the "blast radius" of any change before it is committed.
         names `defaultPatterns` and `classifiers`. `--timeout` on
         `impact` is the overall emit budget (default 25s). Helm and
         CiWorkflow classify only when a user glob matches.
-    *   **Data-model extract inspectability (0357):** `data-models list` /
+    *   **Data-model extract inspectability (0357 / 0398):** `data-models list` /
         `impact` always name supported extractors (Rust persistence
-        derives, Go json-tagged structs, TypeScript entity/model-dir,
-        Python model-path) and `notWired` limits (SQL migrations, C++
-        walker, JavaScript). Product-empty copy does not claim
-        SQL/migrations are extracted. `--changed` is dirty-path ∩
-        indexed models; field-level impact stays `unsupported`.
+        derives and rusqlite `Row` mappers, Go json-tagged structs,
+        TypeScript entity/model-dir, Python model-path) and `notWired`
+        limits (SQL migrations, C++ walker, JavaScript). Default list on
+        a rusqlite product tree is a non-empty inventory. Product-empty
+        copy does not claim SQL/migrations are extracted. `--changed` is
+        dirty-path ∩ indexed models; field-level impact stays
+        `unsupported`.
     *   **Observability**: Trace config drift and SDK dependency detection.
         Coverage inventory reads repo-root `observability/` OpenSLO
         (`kind: Service` + matching SLO, or `[services]`) after
