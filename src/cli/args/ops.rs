@@ -312,7 +312,7 @@ pub struct TimingsCliArgs {
     /// Filter --inner / --flame to a specific command name
     #[arg(long, value_name = "NAME")]
     pub command: Option<String>,
-    /// Emit Brendan Gregg collapsed-stack text (speedscope-compatible)
+    /// Emit Brendan Gregg collapsed stacks; last field is exclusive milliseconds
     #[arg(long)]
     pub flame: bool,
     /// One-sentence explanation for a command (with week-over-week delta)

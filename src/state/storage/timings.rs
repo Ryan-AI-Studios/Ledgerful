@@ -1793,6 +1793,54 @@ mod tests {
     }
 
     #[test]
+    fn fold_flame_stacks_includes_new_search_stage_names() {
+        let names = [
+            "config_load",
+            "storage_open",
+            "index_open",
+            "semantic_ready",
+        ];
+        let mut rows = vec![TimingRow {
+            run_id: "r1".into(),
+            ts_utc: "2026-09-19T00:00:00.000Z".into(),
+            command: "search".into(),
+            duration_ms: 400,
+            exit_code: 0,
+            repo_size_bytes: None,
+            argv_hash: None,
+            ledger_tx_id: None,
+            parent_span_id: None,
+            span_name: None,
+            notes: None,
+        }];
+        for (i, name) in names.iter().enumerate() {
+            let id = format!("r1:{i}");
+            rows.push(TimingRow {
+                run_id: "r1".into(),
+                ts_utc: "2026-09-19T00:00:00.000Z".into(),
+                command: "search".into(),
+                duration_ms: 20,
+                exit_code: 0,
+                repo_size_bytes: None,
+                argv_hash: None,
+                ledger_tx_id: None,
+                parent_span_id: None,
+                span_name: Some((*name).into()),
+                notes: notes_span(&id),
+            });
+        }
+        let fold = fold_flame_stacks(&rows, None);
+        for name in names {
+            let needle = format!("search;{name} ");
+            assert!(
+                fold.collapsed.lines().any(|l| l.starts_with(&needle)),
+                "missing {needle} in {}",
+                fold.collapsed
+            );
+        }
+    }
+
+    #[test]
     fn single_argv_hash_all_unhashed_is_none() {
         let samples: Vec<TimingSample> = (0..5)
             .map(|_| sample_with("x", "hotspots", 100, 0, None))

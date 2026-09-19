@@ -143,7 +143,7 @@ Deep visibility into the engineering context of the repository.
 *   **Data-Flow Coupling**: Flags call chains where route handlers and their data models co-change.
 *   **CI Pipeline Awareness**: Detects and surfaces risk when CI configuration itself changes or co-changes with source code. `ci list` `triggers[]` records GitHub event names for children at the standard two-space `on:` indent even when the mapping value is inline (`push: {branches: [main]}`, `push: null`, `workflow_dispatch: {}`). Nested filter keys are not events. GHA `triggers: []` can mean no `on:` **or** an unrecognized shape (whole-line `on: {…}`, four-space children).
 *   **ADR Staleness**: Flags retrieved architectural decisions that exceed age thresholds or lack recent updates.
-*   **Command timings inner/flame (0364)**: `timings --inner` groups spans by command and names uninstrumented time; capture ignores non-`ledgerful` tracing targets. `timings --flame` folds identical stacks and walks parent spans. Historical tokio-class rows are not rewritten.
+*   **Command timings inner/flame (0364 / 0396)**: `timings --inner` groups spans by command and names uninstrumented time; capture ignores non-`ledgerful` tracing targets. `timings --flame` folds identical stacks and walks parent spans; the last field is exclusive milliseconds summed over `--days` (stderr legend; JSON `weight_unit` / `window_days`). Search records eight stage names. Historical tokio-class rows are not rewritten.
 
 ## 6. AI & LLM Integration
 
