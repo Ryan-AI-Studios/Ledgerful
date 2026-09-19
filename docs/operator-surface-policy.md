@@ -96,9 +96,9 @@ Clone-durable content (Phase A) lives in git:
   `tests/fixtures/policies/dogfood_policy.cedar` into `policies/`.
 
 Expected `ledgerful surfaces` on this checkout after Phase A index, without flipping
-coverage: **2 gated · 2 empty · 2 ready** (services + deploy gated; observability empty;
-data-models empty — the Go sample is a fixture omitted from default `data-models list`;
-schema + security ready).
+coverage: **2 gated · 1 empty · 3 ready** (services + deploy gated; observability empty;
+data-models **ready** from rusqlite `Row` mappers on default `data-models list`;
+schema + security ready). The Go sample remains a fixture omitted from the default list.
 
 ### Phase B — local `[services]` recipe (not clone-durable)
 

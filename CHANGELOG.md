@@ -16,6 +16,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Data-model rusqlite Row extraction (0398):** default `data-models list`
+  extracts rusqlite `Row` mapper functions and `query_map` struct
+  construction in addition to FromRow/Queryable/Insertable. SQL
+  migrations stay `notWired`. Token `rustPersistenceDerive` is unchanged
+  and now also names those mappers.
+
 - **Services default usable evidence (0397):** gated `services list`
   persist-empty fills from the same non-writing infer as `--preview`
   (`preview: true`; human title `Service topology preview (not persisted)`).
