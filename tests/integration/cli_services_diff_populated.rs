@@ -181,6 +181,13 @@ root = "src/billing"
         results.iter().any(|row| row["service"] == "billing-api"),
         "expected billing-api, got: {pstdout}"
     );
+    assert!(
+        results.iter().all(|row| {
+            let name = row["service"].as_str().unwrap_or("");
+            !matches!(name, "BUILDER" | "METHOD_CALL" | "TEST" | "APP_METHOD")
+        }),
+        "preview must omit kind tokens: {pstdout}"
+    );
 
     let layout = ledgerful::state::layout::Layout::new(root.to_string_lossy().as_ref());
     assert!(
@@ -192,11 +199,48 @@ root = "src/billing"
     assert!(ok, "services list --json failed: stderr={stderr}");
     let v: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("services JSON: {e}\n{stdout}"));
-    assert_eq!(v["emptyReason"], "disabledByConfig");
-    assert_eq!(v["resultCount"], 0);
+    assert!(
+        v.get("emptyReason").is_none(),
+        "fill must omit emptyReason: {stdout}"
+    );
+    assert!(
+        v["resultCount"].as_u64().unwrap_or(0) >= 1,
+        "gated persist-empty fill must populate: {stdout}"
+    );
+    assert_eq!(v["preview"], true);
     assert_eq!(v["inferenceState"], "disabledGlobally");
-    assert!(v.get("preview").is_none());
     assert_eq!(v["declared"][0]["name"], "billing-api");
+    assert!(
+        !layout.cli_session_file().is_file(),
+        "gated fill must not write cli-session.json"
+    );
+    let results = v["results"]
+        .as_array()
+        .unwrap_or_else(|| panic!("results: {stdout}"));
+    assert!(
+        results.iter().any(|row| row["service"] == "billing-api"),
+        "expected billing-api, got: {stdout}"
+    );
+    assert!(
+        results
+            .iter()
+            .any(|row| row["file_count"].as_i64().unwrap_or(0) > 0),
+        "DoD-1 requires a product row with file_count > 0, not only declared extras: {stdout}"
+    );
+    assert!(
+        results.iter().all(|row| {
+            let name = row["service"].as_str().unwrap_or("");
+            !matches!(name, "BUILDER" | "METHOD_CALL" | "TEST" | "APP_METHOD")
+        }),
+        "kind tokens must be omitted: {stdout}"
+    );
+
+    let (hstdout, hstderr, hok) = run_bin(root, &["services", "list"]);
+    assert!(hok, "services list human failed: stderr={hstderr}");
+    assert!(
+        hstdout.contains("Service topology preview (not persisted)"),
+        "human title: {hstdout}"
+    );
 
     let storage = ledgerful::state::storage::StorageManager::init(
         layout.state_subdir().join("ledger.db").as_std_path(),
@@ -248,5 +292,89 @@ root = "src/billing"
     assert!(
         !stdout.contains('{'),
         "human preview must not dump JSON: {stdout}"
+    );
+}
+
+#[test]
+fn services_gated_truly_empty_keeps_disabled_by_config() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("README.md"), "empty\n").unwrap();
+    git_add_and_commit(root, "initial");
+    let (init_out, init_err, init_ok) = run_bin(root, &["init"]);
+    assert!(init_ok, "init failed: stdout={init_out} stderr={init_err}");
+    fs::write(
+        root.join(".ledgerful").join("config.toml"),
+        r#"
+[coverage]
+enabled = false
+
+[coverage.services]
+enabled = true
+"#,
+    )
+    .unwrap();
+    let (stdout, stderr, ok) = run_bin(root, &["services", "list", "--json"]);
+    assert!(ok, "services list --json failed: stderr={stderr}");
+    let v: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("services JSON: {e}\n{stdout}"));
+    assert_eq!(v["emptyReason"], "disabledByConfig");
+    assert_eq!(v["resultCount"], 0);
+    assert_eq!(v["inferenceState"], "disabledGlobally");
+    assert!(
+        v.get("preview").is_none(),
+        "truly empty must omit preview: {stdout}"
+    );
+}
+
+#[test]
+fn services_enabled_persist_empty_does_not_fill() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    write_http_fixture(root);
+    git_add_and_commit(root, "initial");
+    let (init_out, init_err, init_ok) = run_bin(root, &["init"]);
+    assert!(init_ok, "init failed: stdout={init_out} stderr={init_err}");
+    fs::write(
+        root.join(".ledgerful").join("config.toml"),
+        r#"
+[coverage]
+enabled = false
+
+[coverage.services]
+enabled = true
+"#,
+    )
+    .unwrap();
+    let (idx_out, idx_err, idx_ok) = run_bin(root, &["index", "--incremental"]);
+    assert!(
+        idx_ok,
+        "index --incremental failed: stdout={idx_out} stderr={idx_err}"
+    );
+    fs::write(
+        root.join(".ledgerful").join("config.toml"),
+        r#"
+[coverage]
+enabled = true
+
+[coverage.services]
+enabled = true
+"#,
+    )
+    .unwrap();
+    let (stdout, stderr, ok) = run_bin(root, &["services", "list", "--json"]);
+    assert!(ok, "services list --json failed: stderr={stderr}");
+    let v: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("services JSON: {e}\n{stdout}"));
+    assert!(
+        v.get("preview").is_none(),
+        "enabled persist-empty must not fill: {stdout}"
+    );
+    let reason = v.get("emptyReason").and_then(|x| x.as_str());
+    assert!(
+        matches!(reason, Some("noIndexedData" | "staleIndex" | "noMatches")),
+        "enabled persist-empty must keep index-advice emptyReason, got {reason:?}: {stdout}"
     );
 }

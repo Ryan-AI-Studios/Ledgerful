@@ -16,6 +16,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Services default usable evidence (0397):** gated `services list`
+  persist-empty fills from the same non-writing infer as `--preview`
+  (`preview: true`; human title `Service topology preview (not persisted)`).
+  Kind-token names (`BUILDER`, `TEST`, `METHOD_CALL`, `DECORATOR`,
+  `APP_METHOD`) are omitted. Persist inference still follows coverage;
+  `--preview` still never writes `service_name`. Surfaces stay persist-only
+  readiness.
+
 - **Flame exclusive-ms units (0396):** `timings --flame` documents exclusive
   milliseconds (stderr legend; JSON omit-empty `weight_unit` /
   `window_days`). Search records `config_load`, `storage_open`,

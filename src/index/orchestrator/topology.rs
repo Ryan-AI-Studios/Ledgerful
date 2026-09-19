@@ -446,14 +446,20 @@ fn collect_inferred_services(
     storage: &crate::state::storage::StorageManager,
     declared: &[crate::config::model::ServiceDefinition],
 ) -> Result<Vec<crate::impact::packet::Service>> {
-    use crate::coverage::services::{DataModelSource, DirectoryTopology, infer_services};
+    use crate::coverage::services::{
+        ApiRouteSource, DataModelSource, DirectoryTopology, infer_services,
+    };
     use crate::impact::packet::{ApiRoute, DataModel};
     use crate::index::call_graph::CallGraph;
     let (routes, data_models) = {
         let conn = storage.get_connection();
-        let mut route_stmt = conn.prepare("SELECT method, path_pattern, handler_symbol_name, framework, route_source, mount_prefix, is_dynamic, route_confidence, evidence, \
-                                               auth_requirements, schema_refs, owning_service, consumers FROM api_routes").into_diagnostic()?;
-        let routes: Vec<ApiRoute> = route_stmt
+        let mut route_stmt = conn.prepare(
+            "SELECT ar.method, ar.path_pattern, ar.handler_symbol_name, ar.framework, ar.route_source, \
+             ar.mount_prefix, ar.is_dynamic, ar.route_confidence, ar.evidence, \
+             ar.auth_requirements, ar.schema_refs, ar.owning_service, ar.consumers, pf.file_path \
+             FROM api_routes ar LEFT JOIN project_files pf ON ar.handler_file_id = pf.id",
+        ).into_diagnostic()?;
+        let routes: Vec<ApiRouteSource> = route_stmt
             .query_map([], |row| {
                 let auth_raw: Option<String> = row.get(9)?;
                 let schema_raw: Option<String> = row.get(10)?;
@@ -463,20 +469,23 @@ fn collect_inferred_services(
                 let schema_refs = schema_raw.and_then(|s| serde_json::from_str(&s).ok());
                 let consumers = consumers_raw.and_then(|s| serde_json::from_str(&s).ok());
 
-                Ok(ApiRoute {
-                    method: row.get(0)?,
-                    path_pattern: row.get(1)?,
-                    handler_symbol_name: row.get(2)?,
-                    framework: row.get(3)?,
-                    route_source: row.get(4)?,
-                    mount_prefix: row.get(5)?,
-                    is_dynamic: row.get::<_, i32>(6)? != 0,
-                    route_confidence: row.get(7)?,
-                    evidence: row.get(8)?,
-                    auth_requirements,
-                    schema_refs,
-                    owning_service: row.get(11)?,
-                    consumers,
+                Ok(ApiRouteSource {
+                    route: ApiRoute {
+                        method: row.get(0)?,
+                        path_pattern: row.get(1)?,
+                        handler_symbol_name: row.get(2)?,
+                        framework: row.get(3)?,
+                        route_source: row.get(4)?,
+                        mount_prefix: row.get(5)?,
+                        is_dynamic: row.get::<_, i32>(6)? != 0,
+                        route_confidence: row.get(7)?,
+                        evidence: row.get(8)?,
+                        auth_requirements,
+                        schema_refs,
+                        owning_service: row.get(11)?,
+                        consumers,
+                    },
+                    registration_file_path: row.get(13)?,
                 })
             })
             .into_diagnostic()?

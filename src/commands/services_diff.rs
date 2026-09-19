@@ -41,18 +41,34 @@ pub fn execute_services_diff(
 ) -> Result<()> {
     let layout = get_layout()?;
     let storage = StorageManager::open_read_only(&layout)?;
-    let rows = if args.preview {
-        build_preview_rows(&storage, config, args.full)?
+    let gated = matches!(
+        config.coverage.service_inference_state(),
+        ServiceInferenceState::DisabledGlobally | ServiceInferenceState::DisabledForServices
+    );
+    let (rows, is_preview) = if args.preview {
+        (build_preview_rows(&storage, config, args.full)?, true)
     } else {
-        build_persist_rows(&storage, config, args.full)?
+        let persist = build_persist_rows(&storage, config, args.full)?;
+        if persist.is_empty() && gated {
+            let filled = build_preview_rows(&storage, config, args.full)?;
+            let is_preview = !filled.is_empty();
+            (filled, is_preview)
+        } else {
+            (persist, false)
+        }
     };
 
     if args.json {
-        emit_json(&storage, config, &layout, &args, &rows)?;
+        emit_json(&storage, config, &layout, &args, &rows, is_preview)?;
     } else {
-        emit_human(&storage, config, &layout, &args, &rows)?;
+        emit_human(&storage, config, &layout, &args, &rows, is_preview)?;
     }
     Ok(())
+}
+
+fn keep_emitted_service_name(name: &str, config: &crate::config::model::Config) -> bool {
+    !crate::coverage::services::is_route_source_kind_token(name)
+        || config.services.definitions.iter().any(|d| d.name == name)
 }
 
 fn inference_state_json(state: ServiceInferenceState) -> &'static str {
@@ -264,6 +280,9 @@ fn build_persist_rows(
     drop(stmt);
     let mut rows = Vec::new();
     for (name, files, routes) in collected {
+        if !keep_emitted_service_name(&name, config) {
+            continue;
+        }
         let source = source_for(&name, config, false);
         let root = declared_root(&name, config);
         let (file_list, files_truncated) = if full {
@@ -295,6 +314,9 @@ fn build_preview_rows(
     let mut rows = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for svc in &inferred {
+        if !keep_emitted_service_name(&svc.name, config) {
+            continue;
+        }
         seen.insert(svc.name.clone());
         let key = service_partition_key(svc);
         let files = file_map.get(&key).cloned().unwrap_or_default();
@@ -392,13 +414,14 @@ fn emit_json(
     layout: &crate::state::layout::Layout,
     args: &ServicesDiffArgs,
     rows: &[ServiceRow],
+    is_preview: bool,
 ) -> Result<()> {
     let results: Vec<serde_json::Value> = rows.iter().map(|r| row_json(r, args.full)).collect();
     let mut output = crate::output::empty::format_json_empty_state(results, "results", || {
         empty_state_message(storage, config)
     });
-    output = decorate_envelope(output, config, args.preview);
-    let pending_session = if !args.preview
+    output = decorate_envelope(output, config, is_preview);
+    let pending_session = if !is_preview
         && output.get("emptyReason").is_some()
         && let Some(id) = notice_id_for_services(config.coverage.service_inference_state())
     {
@@ -406,7 +429,7 @@ fn emit_json(
         let mut session = CliSession::load(layout, env_session_id().as_deref(), Utc::now());
         let applied = apply_empty_notice(&mut session, id, &full, output);
         output = applied.json;
-        output = decorate_envelope(output, config, args.preview);
+        output = decorate_envelope(output, config, is_preview);
         Some(session)
     } else {
         None
@@ -427,15 +450,16 @@ fn emit_human(
     layout: &crate::state::layout::Layout,
     args: &ServicesDiffArgs,
     rows: &[ServiceRow],
+    is_preview: bool,
 ) -> Result<()> {
-    let title = human_title(args.preview);
+    let title = human_title(is_preview);
     println!(
         "{}",
         title.if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
     );
     if rows.is_empty() {
         let (_, full) = empty_state_message(storage, config);
-        let (msg, pending_session) = if !args.preview
+        let (msg, pending_session) = if !is_preview
             && let Some(id) = notice_id_for_services(config.coverage.service_inference_state())
         {
             let mut session = CliSession::load(layout, env_session_id().as_deref(), Utc::now());
@@ -758,5 +782,21 @@ mod services_diff_unit_tests {
         assert_eq!(before, after, "preview must not rewrite service_name");
         assert_eq!(before.0, 1);
         assert_eq!(before.1, "existing");
+    }
+
+    #[test]
+    fn keep_emitted_service_name_omits_kind_tokens_unless_declared() {
+        let mut config = Config::default();
+        assert!(!keep_emitted_service_name("BUILDER", &config));
+        assert!(!keep_emitted_service_name("TEST", &config));
+        assert!(!keep_emitted_service_name("APP_METHOD", &config));
+        assert!(keep_emitted_service_name("billing-api", &config));
+        assert!(keep_emitted_service_name("web", &config));
+        config
+            .services
+            .definitions
+            .push(sample_def("TEST", "src/testsvc"));
+        assert!(keep_emitted_service_name("TEST", &config));
+        assert!(!keep_emitted_service_name("BUILDER", &config));
     }
 }
