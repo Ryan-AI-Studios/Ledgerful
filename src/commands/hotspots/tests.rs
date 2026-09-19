@@ -1467,6 +1467,7 @@ fn hotspots_config_default__overall_25_history_45() {
 #[allow(non_snake_case)]
 fn hotspots_list__completeness_history_only_copy_omits_scope() {
     use crate::impact::budget::{CompletenessFilter, CompletenessScope, HistoryWalkStop};
+    let idle = std::sync::atomic::AtomicBool::new(false);
     let c = super::list::list_completeness_after_walk(
         HistoryWalkStop::Budget,
         500,
@@ -1477,6 +1478,7 @@ fn hotspots_list__completeness_history_only_copy_omits_scope() {
         45,
         None,
         25,
+        &idle,
     )
     .expect("history completeness");
     assert!(c.scope.is_none() || c.scope != Some(CompletenessScope::Overall));
@@ -1494,6 +1496,7 @@ fn hotspots_list__overall_stop_not_overwritten_by_later_history_object() {
         .checked_sub(std::time::Duration::from_secs(1))
         .unwrap_or_else(std::time::Instant::now);
     assert!(overall_deadline_fired(Some(expired)));
+    let idle = std::sync::atomic::AtomicBool::new(false);
     let c = super::list::list_completeness_after_walk(
         HistoryWalkStop::Budget,
         500,
@@ -1504,12 +1507,291 @@ fn hotspots_list__overall_stop_not_overwritten_by_later_history_object() {
         45,
         Some(expired),
         25,
+        &idle,
     )
     .expect("overall");
     assert_eq!(c.scope, Some(CompletenessScope::Overall));
     assert_eq!(c.stop, CompletenessStop::Budget);
     assert_eq!(c.stage.as_deref(), Some("hotspots"));
     assert_eq!(c.budget_secs, Some(25));
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn hotspots_list__cancel_after_storage__emits_scope_overall_stop_cancelled() {
+    use crate::impact::budget::{
+        CompletenessFilter, CompletenessScope, CompletenessStop, HistoryWalkStop,
+    };
+    let future = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let cancel = std::sync::atomic::AtomicBool::new(true);
+    let c = super::list::list_completeness_after_walk(
+        HistoryWalkStop::Cancelled,
+        500,
+        0,
+        None,
+        CompletenessFilter::Default,
+        Some("abc".into()),
+        45,
+        Some(future),
+        25,
+        &cancel,
+    )
+    .expect("overall cancel");
+    assert_eq!(c.scope, Some(CompletenessScope::Overall));
+    assert_eq!(c.stop, CompletenessStop::Cancelled);
+    assert_eq!(c.stage.as_deref(), Some("hotspots"));
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn hotspots_list__cancel_after_storage_open__git_gate_stop_cancelled() {
+    use crate::cli::HotspotArgs;
+    use crate::git::repo::open_repo;
+    use crate::state::layout::Layout;
+    use crate::state::storage::StorageManager;
+    use camino::Utf8Path;
+    use std::fs;
+    use std::process::Command;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::time::{Duration, Instant};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root_path = tmp.path();
+    assert!(
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(root_path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    Command::new("git")
+        .args(["config", "user.email", "t@t.com"])
+        .current_dir(root_path)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "t"])
+        .current_dir(root_path)
+        .status()
+        .unwrap();
+    fs::write(root_path.join("README.md"), "one\n").unwrap();
+    assert!(
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(root_path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["commit", "-m", "first"])
+            .current_dir(root_path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let root = Utf8Path::from_path(root_path).expect("utf8");
+    let layout = Layout::from_roots(root, root.join(".ledgerful"));
+    layout.ensure_state_dir().unwrap();
+    StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    let storage = StorageManager::open_read_only_sqlite_only(&layout).expect("ro");
+    let repo = open_repo(root_path).expect("repo");
+    let config = crate::config::model::Config::default();
+    let mut buf = Vec::new();
+    super::list::execute_hotspots_list(
+        HotspotArgs {
+            json: true,
+            limit: Some(5),
+            snapshot: true,
+            ..Default::default()
+        },
+        &storage,
+        &repo,
+        &config,
+        &layout,
+        Arc::new(AtomicBool::new(true)),
+        Some(Instant::now() + Duration::from_secs(60)),
+        25,
+        Some(&mut buf),
+    )
+    .expect("emit");
+    let stdout = String::from_utf8_lossy(&buf);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect(&stdout);
+    assert_eq!(v["completeness"]["scope"], "overall");
+    assert_eq!(v["completeness"]["stop"], "cancelled");
+    assert!(
+        latest_hotspot_history_timestamp(&storage).is_none(),
+        "cancel after storage must skip snapshot persist"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn hotspots_explain__cancel_after_storage_open__stop_cancelled_skips_couplings() {
+    use crate::git::repo::open_repo;
+    use crate::state::layout::Layout;
+    use crate::state::storage::StorageManager;
+    use camino::Utf8Path;
+    use std::fs;
+    use std::process::Command;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::time::{Duration, Instant};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root_path = tmp.path();
+    assert!(
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(root_path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    Command::new("git")
+        .args(["config", "user.email", "t@t.com"])
+        .current_dir(root_path)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "t"])
+        .current_dir(root_path)
+        .status()
+        .unwrap();
+    fs::write(root_path.join("README.md"), "one\n").unwrap();
+    assert!(
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(root_path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["commit", "-m", "first"])
+            .current_dir(root_path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let root = Utf8Path::from_path(root_path).expect("utf8");
+    let layout = Layout::from_roots(root, root.join(".ledgerful"));
+    layout.ensure_state_dir().unwrap();
+    StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    let storage = StorageManager::open_read_only_sqlite_only(&layout).expect("ro");
+    let repo = open_repo(root_path).expect("repo");
+    let config = crate::config::model::Config::default();
+    let run = super::explain::compute_hotspot_explanation_in(
+        &storage,
+        "README.md",
+        &repo,
+        &config,
+        None,
+        None,
+        Some(Arc::new(AtomicBool::new(true))),
+        Some(Instant::now() + Duration::from_secs(60)),
+        25,
+    )
+    .expect("emit");
+    let c = run.completeness.expect("completeness");
+    assert_eq!(
+        c.scope,
+        Some(crate::impact::budget::CompletenessScope::Overall)
+    );
+    assert_eq!(c.stop, crate::impact::budget::CompletenessStop::Cancelled);
+    assert!(run.explanation.couplings.is_empty());
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn hotspots__eprint_overall_stop_if_budget__cancelled_is_silent() {
+    use crate::impact::budget::{CompletenessStop, completeness_for_overall};
+    let cancelled = completeness_for_overall(CompletenessStop::Cancelled, Some(25), "git");
+    let budget = completeness_for_overall(CompletenessStop::Budget, Some(25), "git");
+    assert!(!super::should_eprint_hotspots_overall_stop(Some(
+        &cancelled
+    )));
+    assert!(super::should_eprint_hotspots_overall_stop(Some(&budget)));
+    assert!(!super::should_eprint_hotspots_overall_stop(None));
+}
+
+#[test]
+#[allow(non_snake_case)]
+#[serial_test::serial(cwd)]
+fn hotspots_list__future_instant_entry__emits_scope_overall_under_5s() {
+    use super::{HotspotRunOpts, execute_hotspots_with_opts};
+    use crate::cli::HotspotArgs;
+    use crate::tests::DirGuard;
+    use std::fs;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    let started = Instant::now();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    assert!(
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    Command::new("git")
+        .args(["config", "user.email", "t@t.com"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "t"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    fs::write(root.join("README.md"), "one\n").unwrap();
+    assert!(
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["commit", "-m", "first"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let _guard = DirGuard::new(root);
+    let mut buf = Vec::new();
+    let args = HotspotArgs {
+        json: true,
+        limit: Some(5),
+        ..Default::default()
+    };
+    execute_hotspots_with_opts(
+        args,
+        HotspotRunOpts {
+            overall_deadline_override: Some(Instant::now() + Duration::from_millis(1)),
+            ..Default::default()
+        },
+        Some(&mut buf),
+    )
+    .expect("emit");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed <= Duration::from_secs(5),
+        "1ms Instant must emit in ≤5s, took {elapsed:?}"
+    );
+    let stdout = String::from_utf8_lossy(&buf);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect(&stdout);
+    assert_eq!(v["completeness"]["scope"], "overall");
 }
 
 #[test]
@@ -1690,6 +1972,155 @@ fn hotspots_explain__overall_expired__emits_json_kind_hotspot_explanation() {
         v["couplingsWarning"],
         "temporal couplings untrusted: overall budget"
     );
+}
+
+#[test]
+#[allow(non_snake_case)]
+#[serial_test::serial(cwd)]
+fn hotspots_list__cancel_wins_future_instant__emits_scope_overall_stop_cancelled() {
+    use super::{HotspotRunOpts, execute_hotspots_with_opts};
+    use crate::cli::HotspotArgs;
+    use crate::tests::DirGuard;
+    use std::fs;
+    use std::process::Command;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::time::{Duration, Instant};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    assert!(
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    Command::new("git")
+        .args(["config", "user.email", "t@t.com"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "t"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    fs::write(root.join("README.md"), "one\n").unwrap();
+    assert!(
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["commit", "-m", "first"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let _guard = DirGuard::new(root);
+    let mut buf = Vec::new();
+    let args = HotspotArgs {
+        json: true,
+        limit: Some(5),
+        ..Default::default()
+    };
+    execute_hotspots_with_opts(
+        args,
+        HotspotRunOpts {
+            cancel: Some(Arc::new(AtomicBool::new(true))),
+            overall_deadline_override: Some(Instant::now() + Duration::from_secs(60)),
+        },
+        Some(&mut buf),
+    )
+    .expect("emit");
+    let stdout = String::from_utf8_lossy(&buf);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect(&stdout);
+    assert_eq!(v["completeness"]["scope"], "overall");
+    assert_eq!(v["completeness"]["stop"], "cancelled");
+    assert_eq!(v["files"].as_array().map(Vec::len), Some(0));
+}
+
+#[test]
+#[allow(non_snake_case)]
+#[serial_test::serial(cwd)]
+fn hotspots_explain__cancel_wins_future_instant__emits_stop_cancelled() {
+    use super::{HotspotRunOpts, execute_hotspots_with_opts};
+    use crate::cli::{HotspotArgs, HotspotSubcommands};
+    use crate::tests::DirGuard;
+    use std::fs;
+    use std::process::Command;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::time::{Duration, Instant};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    assert!(
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    Command::new("git")
+        .args(["config", "user.email", "t@t.com"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "t"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    fs::write(root.join("README.md"), "one\n").unwrap();
+    assert!(
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["commit", "-m", "first"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let _guard = DirGuard::new(root);
+    let mut buf = Vec::new();
+    let args = HotspotArgs {
+        command: Some(HotspotSubcommands::Explain {
+            entity: "README.md".into(),
+            json: true,
+        }),
+        ..Default::default()
+    };
+    execute_hotspots_with_opts(
+        args,
+        HotspotRunOpts {
+            cancel: Some(Arc::new(AtomicBool::new(true))),
+            overall_deadline_override: Some(Instant::now() + Duration::from_secs(60)),
+        },
+        Some(&mut buf),
+    )
+    .expect("emit");
+    let stdout = String::from_utf8_lossy(&buf);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect(&stdout);
+    assert_eq!(v["kind"], "hotspotExplanation");
+    assert_eq!(v["completeness"]["scope"], "overall");
+    assert_eq!(v["completeness"]["stop"], "cancelled");
+    assert!(v["couplings"].as_array().is_some_and(|c| c.is_empty()));
 }
 
 #[test]

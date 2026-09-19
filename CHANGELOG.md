@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Hotspots list/explain emit during walk (0391):** default
+  `hotspots` list and unbounded `hotspots explain` reuse
+  `poll_overall_stop` (cancel-honest `completeness.stop`) and skip
+  the unindexed complexity fallback when an overall Instant is set.
+  Stderr `hotspots stopped: overall budget` prints only on budget
+  stops.
+
 - **Range review emit during walk (0390):** `review` reuses
   `poll_overall_stop` during the pipeline (not only when tests
   inject an already-expired Instant) and skips test-gaps /

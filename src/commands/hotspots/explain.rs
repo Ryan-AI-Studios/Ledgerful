@@ -2,8 +2,8 @@ use crate::commands::helpers::get_layout;
 use crate::config::load_config;
 use crate::config::model::Config;
 use crate::impact::budget::{
-    AnalysisBudget, AnalysisCompleteness, CompletenessStop, completeness_for_overall,
-    is_overall_stop, overall_deadline_fired,
+    AnalysisBudget, AnalysisCompleteness, completeness_for_overall, is_overall_stop,
+    poll_overall_stop,
 };
 use crate::impact::hotspots::{
     HotspotInterpretation, HotspotQuery, calculate_hotspots_detailed,
@@ -66,8 +66,9 @@ pub(crate) fn compute_hotspot_explanation_in(
 
     let conn = storage.get_connection();
     let indexed = complexity_for_entity_path(conn, &normalized_entity)?;
+    let cancel = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
 
-    if overall_deadline_fired(overall_deadline) {
+    if let Some(stop) = poll_overall_stop(overall_deadline, &cancel) {
         return Ok(HotspotExplanationRun {
             explanation: HotspotExplanation {
                 normalized_entity,
@@ -78,14 +79,12 @@ pub(crate) fn compute_hotspot_explanation_in(
                 score_breakdown: None,
             },
             completeness: Some(completeness_for_overall(
-                CompletenessStop::Budget,
+                stop,
                 Some(overall_secs).filter(|s| *s > 0),
                 "git",
             )),
         });
     }
-
-    let cancel = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
     let history_provider = GixHistoryProvider::new(repo);
     let query = HotspotQuery {
         exact_file: None,
@@ -98,6 +97,7 @@ pub(crate) fn compute_hotspot_explanation_in(
             overall_deadline,
             cancel.clone(),
         )),
+        skip_unindexed_complexity_fallback: overall_deadline.is_some(),
         ..Default::default()
     };
     let calculated = calculate_hotspots_detailed(storage, &history_provider, &query)?;
@@ -108,7 +108,15 @@ pub(crate) fn compute_hotspot_explanation_in(
         lossy == normalized_entity || lossy.replace('\\', "/") == entity_normalized
     });
     let frequency = matching.map(|h| h.frequency).unwrap_or(0.0);
-    let complexity = matching.map(|h| h.complexity).unwrap_or(indexed);
+    let complexity = matching
+        .map(|h| {
+            if h.complexity > 0 {
+                h.complexity
+            } else {
+                indexed
+            }
+        })
+        .unwrap_or(indexed);
 
     let mut completeness = super::list::list_completeness_after_walk(
         calculated.walk_stop,
@@ -120,14 +128,17 @@ pub(crate) fn compute_hotspot_explanation_in(
         config.hotspots.history_budget_secs,
         overall_deadline,
         overall_secs,
+        &cancel,
     );
 
-    let skip_couplings = overall_deadline_fired(overall_deadline)
-        || completeness.as_ref().is_some_and(is_overall_stop);
+    let skip_stop = poll_overall_stop(overall_deadline, &cancel);
+    let skip_couplings = skip_stop.is_some() || completeness.as_ref().is_some_and(is_overall_stop);
     let (entity_couplings, couplings_warning) = if skip_couplings {
-        if completeness.as_ref().is_none_or(|c| c.scope.is_none()) {
+        if let Some(stop) = skip_stop
+            && completeness.as_ref().is_none_or(|c| c.scope.is_none())
+        {
             completeness = Some(completeness_for_overall(
-                CompletenessStop::Budget,
+                stop,
                 Some(overall_secs).filter(|s| *s > 0),
                 "coupling",
             ));
@@ -141,13 +152,13 @@ pub(crate) fn compute_hotspot_explanation_in(
         let (couplings, mut warning) =
             annotate_couplings(engine.calculate_couplings_budgeted(Some(&AnalysisBudget {
                 deadline: overall_deadline,
-                cancel,
+                cancel: cancel.clone(),
                 budget_secs: Some(overall_secs).filter(|s| *s > 0),
             })));
-        if overall_deadline_fired(overall_deadline) {
+        if let Some(stop) = poll_overall_stop(overall_deadline, &cancel) {
             if completeness.as_ref().is_none_or(|c| c.scope.is_none()) {
                 completeness = Some(completeness_for_overall(
-                    CompletenessStop::Budget,
+                    stop,
                     Some(overall_secs).filter(|s| *s > 0),
                     "coupling",
                 ));
@@ -325,9 +336,7 @@ pub(super) fn execute_hotspots_explain(
         overall_deadline,
         overall_secs,
     )?;
-    if run.completeness.as_ref().is_some_and(is_overall_stop) {
-        super::eprint_hotspots_overall_stop();
-    }
+    super::eprint_hotspots_overall_stop_if_budget(run.completeness.as_ref());
     if json {
         let output = explanation_json_envelope(
             &run.explanation.normalized_entity,
