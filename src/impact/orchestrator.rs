@@ -1053,7 +1053,9 @@ mod tests {
         let started = Instant::now();
         let opts = ImpactHistoryOpts {
             overall_budget_secs: Some(1),
-            overall_deadline: Some(Instant::now() + Duration::from_millis(150)),
+            // 1ms stays in the future at entry (not 0347 expired-at-entry) but
+            // fires during the first builtin on fast CI hosts (Ubuntu ~60ms).
+            overall_deadline: Some(Instant::now() + Duration::from_millis(1)),
             ..ImpactHistoryOpts::default()
         };
         ImpactOrchestrator::with_builtins()
