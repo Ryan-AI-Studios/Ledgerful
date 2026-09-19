@@ -14,6 +14,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   from a complete window. `--days` copy uses days, not the default
   commit count.
 
+### Changed
+
+- **Ask gather mix (0395):** `ask --semantic` always blends Tantivy
+  lexical hits with nonempty vectors, rewrites definition-shaped NL
+  to identifiers (`project_symbols.symbol_name` JOIN
+  `project_files`), and fuses vectors + FTS + `search_term_exact`
+  with unweighted RRF (`k=60`). `[Evidence]` keeps the 0312 four
+  tokens; omit-empty `structural=N` when the symbol list contributed.
+  Cold completion still degrades to retrieved context (not the empty-
+  evidence refuse).
+
 ### Fixed
 
 - **Bridge export `--hotspots` hang (0394):** `bridge export --stdout

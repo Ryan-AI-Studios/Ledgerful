@@ -3,6 +3,7 @@ pub(crate) mod context;
 pub(crate) mod execute;
 pub(crate) mod gather;
 pub(crate) mod legacy_complete;
+pub(crate) mod mix;
 pub(crate) mod render;
 
 // Re-export the public API surface so existing `crate::commands::ask::*`

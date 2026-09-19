@@ -242,6 +242,7 @@ index, or parse **stdout only** (not `2>&1`) when combining `--json --auto-index
 | Product lines from `cli_summary` at `info!` | **stdout** (level-split writer) |
 | Diagnostics from `cli_summary` at `warn!` / `error!` | **stderr** |
 | Progress / backend chatter (`ask`, retries) | **stderr** |
+| `ask` `[Evidence]` line (0312 / 0395) | **stderr** | Human-only. Four tokens `semantic=N bm25=N kg=N snippets=N`. `bm25` is the pre-fusion Tantivy kept-list size (always-blend; nonzero when FTS ran even if vectors were nonempty). `semantic` excludes `source` starting with `Knowledge Graph`. Omit-empty ` structural=N` when the symbol/`search_term_exact` list contributed. `snippets` is the **post-fusion** truncated chunk count (sum of origin counters may exceed it). No `ask --json`. |
 | Hard signature failures (`INVALID`, required `UNSIGNED`) | **stderr** (raw `eprintln!`) |
 | Non-`cli_summary` progress `INFO` under machine mode | **suppressed** (normal_layer max `WARN`) |
 | Non-`cli_summary` diagnostic `INFO` under default human (no `-v`, no `RUST_LOG`) | **suppressed** (0154: normal_layer max **WARN**) |

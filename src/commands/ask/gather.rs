@@ -3,12 +3,18 @@
 //! Backend validation stays in `execute.rs` (routing/readiness, not gather).
 
 use crate::commands::ask::context::{SemanticGather, WORKING_TREE_NO_PENDING_CHANGES};
+use crate::commands::ask::mix::{
+    CandidateOrigin, RankedListItem, SymbolRow, content_words, extract_identifier_candidates,
+    is_definition_shaped, is_kg_source, rewrite_identifiers, rrf_merge, split_ranked_source,
+};
 use crate::commands::ask::{
     fetch_kg_bm25, fetch_kg_neighborhood, gather_semantic_chunks, should_prune_impact,
 };
 use crate::config::model::Config;
 use crate::impact::packet::ImpactPacket;
 use crate::local_model::pruner::{self, RankedChunk};
+use crate::search::TantivySearchEngine;
+use crate::search::tantivy_engine::normalize_search_path;
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use miette::Result;
@@ -40,7 +46,7 @@ pub(crate) struct GatherResult {
     pub evidence: EvidenceCounts,
 }
 
-/// Pinned stderr evidence tokens (0312).
+/// Pinned stderr evidence tokens (0312). `structural` is omit-empty (0395).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct EvidenceCounts {
     pub semantic: usize,
@@ -48,13 +54,25 @@ pub(crate) struct EvidenceCounts {
     pub kg: usize,
     pub snippets: usize,
     pub read_failed: usize,
+    pub structural: usize,
 }
 
 pub(crate) fn format_evidence_line(counts: &EvidenceCounts) -> String {
-    format!(
+    let mut line = format!(
         "[Evidence] semantic={} bm25={} kg={} snippets={}",
         counts.semantic, counts.bm25, counts.kg, counts.snippets
-    )
+    );
+    if counts.structural > 0 {
+        line.push_str(&format!(" structural={}", counts.structural));
+    }
+    line
+}
+
+/// Hermetic inject for Ask mix (0395). CLI path uses [`GatherMixOpts::default`].
+#[derive(Default)]
+pub(crate) struct GatherMixOpts {
+    pub semantic_override: Option<SemanticGather>,
+    pub symbol_rows_override: Option<Vec<SymbolRow>>,
 }
 
 /// Auto-scan / latest packet / prune / QueryIntent / stale-warn / bridge
@@ -234,6 +252,32 @@ pub(crate) fn gather_semantic_and_kg(
     limit: usize,
     no_kg_fallback: bool,
 ) {
+    gather_semantic_and_kg_with(
+        gathered,
+        storage,
+        layout,
+        config,
+        semantic,
+        auto_index,
+        limit,
+        no_kg_fallback,
+        GatherMixOpts::default(),
+    );
+}
+
+/// Core gather with injectable semantic chunks / symbol rows (0395).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn gather_semantic_and_kg_with(
+    gathered: &mut GatherResult,
+    storage: &StorageManager,
+    layout: &Layout,
+    config: &Config,
+    semantic: bool,
+    auto_index: bool,
+    limit: usize,
+    no_kg_fallback: bool,
+    opts: GatherMixOpts,
+) {
     // 0096 DoD-5: removed interactive `index --semantic` prompt (same defect as
     // search — named semantic index, ran non-semantic incremental; re-prompted
     // forever on empty repos). State-driven warnings replace it.
@@ -271,31 +315,28 @@ pub(crate) fn gather_semantic_and_kg(
     }
 
     // DoD-4/8: never treat embed/query Err as "no semantic matches".
-    // Track gather kind (without holding chunks) for honest KG-fallback notes.
     let mut evidence = EvidenceCounts::default();
-    let (mut relevant_chunks, semantic_gather_kind) = match gather_semantic_chunks(
-        storage,
-        layout.root.as_std_path(),
-        &gathered.query_string,
-        limit,
-        &config.local_model,
-        gathered.is_global,
-    ) {
+    let semantic_result = match opts.semantic_override {
+        Some(over) => over,
+        None => gather_semantic_chunks(
+            storage,
+            layout.root.as_std_path(),
+            &gathered.query_string,
+            limit,
+            &config.local_model,
+            gathered.is_global,
+        ),
+    };
+    let (semantic_chunks, semantic_gather_kind) = match semantic_result {
         SemanticGather::Chunks {
             chunks,
             read_failed,
         } => {
             evidence.read_failed = read_failed;
-            evidence.semantic = chunks
-                .iter()
-                .filter(|c| !c.source.starts_with("Knowledge Graph"))
-                .count();
-            evidence.kg = chunks.len().saturating_sub(evidence.semantic);
             (chunks, SemanticGatherKind::Succeeded)
         }
         SemanticGather::Skipped { reason } => {
             tracing::warn!("Semantic context skipped: {reason}");
-            // Readiness messages already cover NotConfigured; keep a debug trail only.
             (Vec::new(), SemanticGatherKind::Skipped)
         }
         SemanticGather::Failed { reason } => {
@@ -309,26 +350,86 @@ pub(crate) fn gather_semantic_and_kg(
         }
     };
 
-    if relevant_chunks.is_empty() {
-        relevant_chunks = tantivy_fallback_chunks(layout, &gathered.query_string, limit);
-        evidence.bm25 = relevant_chunks.len();
-
-        if relevant_chunks.is_empty() {
-            relevant_chunks = pruner::query_relevant_chunks(
-                &gathered.query_string,
-                &config.local_model,
-                storage.get_connection(),
-                limit,
-                config.local_model.chunk_min_similarity,
-                config.local_model.chunk_dedup_threshold,
-            )
-            .unwrap_or_else(|e| {
-                tracing::warn!("Chunk retrieval failed: {e}, proceeding without chunks");
-                Vec::new()
-            });
+    let mut kg_chunks: Vec<RankedChunk> = Vec::new();
+    let mut vector_items: Vec<RankedListItem> = Vec::new();
+    for chunk in semantic_chunks {
+        if is_kg_source(&chunk.source) {
+            kg_chunks.push(chunk);
+            continue;
         }
+        let (path, symbol_name) = split_ranked_source(&chunk.source);
+        vector_items.push(RankedListItem {
+            path,
+            symbol_name,
+            content: chunk.content,
+        });
+    }
+    evidence.semantic = vector_items.len();
+    evidence.kg = kg_chunks.len();
 
-        // KG Fallback logic — wording must not claim "index empty" on failure/skip.
+    let engine = TantivySearchEngine::open_or_create(layout.search_index_dir().as_std_path()).ok();
+    let fts_chunks = match engine.as_ref() {
+        Some(eng) => tantivy_fallback_chunks_with(eng, &gathered.query_string, limit),
+        None => Vec::new(),
+    };
+    evidence.bm25 = fts_chunks.len();
+    let fts_items: Vec<RankedListItem> = fts_chunks
+        .into_iter()
+        .map(|chunk| {
+            let (path, symbol_name) = split_ranked_source(&chunk.source);
+            RankedListItem {
+                path,
+                symbol_name,
+                content: chunk.content,
+            }
+        })
+        .collect();
+
+    let explicit_ids = extract_identifier_candidates(&gathered.query_string);
+    let definition_shaped = is_definition_shaped(&gathered.query_string);
+    let mut structural_items: Vec<RankedListItem> = Vec::new();
+    if !explicit_ids.is_empty() || definition_shaped || opts.symbol_rows_override.is_some() {
+        let rows = match opts.symbol_rows_override {
+            Some(rows) => rows,
+            None if definition_shaped => lookup_symbols_by_content_words(
+                storage.get_connection(),
+                &content_words(&gathered.query_string),
+            ),
+            None => Vec::new(),
+        };
+        let names = rewrite_identifiers(&gathered.query_string, &rows);
+        if let Some(eng) = engine.as_ref() {
+            structural_items = structural_chunks_with(eng, &names, limit);
+        }
+    }
+    evidence.structural = structural_items.len();
+
+    let mut lists: Vec<(CandidateOrigin, Vec<RankedListItem>)> = Vec::new();
+    if !vector_items.is_empty() {
+        lists.push((CandidateOrigin::Vector, vector_items));
+    }
+    if !fts_items.is_empty() {
+        lists.push((CandidateOrigin::Fts, fts_items));
+    }
+    if !structural_items.is_empty() {
+        lists.push((CandidateOrigin::Structural, structural_items));
+    }
+    let mut relevant_chunks = rrf_merge(&lists, limit);
+
+    if relevant_chunks.is_empty() {
+        relevant_chunks = pruner::query_relevant_chunks(
+            &gathered.query_string,
+            &config.local_model,
+            storage.get_connection(),
+            limit,
+            config.local_model.chunk_min_similarity,
+            config.local_model.chunk_dedup_threshold,
+        )
+        .unwrap_or_else(|e| {
+            tracing::warn!("Chunk retrieval failed: {e}, proceeding without chunks");
+            Vec::new()
+        });
+
         if gathered.is_global
             && relevant_chunks.is_empty()
             && !no_kg_fallback
@@ -355,7 +456,6 @@ pub(crate) fn gather_semantic_and_kg(
             evidence.kg += 1;
         }
 
-        // CR7: Apply KG neighborhood to pruner fallback chunks as well.
         if gathered.is_global
             && !relevant_chunks.is_empty()
             && let Some(cozo) = storage.cozo()
@@ -368,10 +468,15 @@ pub(crate) fn gather_semantic_and_kg(
                 relevant_chunks.push(pruner::RankedChunk {
                     source: "Knowledge Graph".to_string(),
                     content: kg_ctx,
-                    score: 1.0,
+                    score: 0.0,
                 });
                 evidence.kg += 1;
             }
+        }
+    } else if gathered.is_global {
+        for mut kg in kg_chunks {
+            kg.score = 0.0;
+            relevant_chunks.push(kg);
         }
     }
 
@@ -403,15 +508,15 @@ fn keep_max_ranked_chunk(
         });
 }
 
-fn tantivy_fallback_chunks(layout: &Layout, query: &str, limit: usize) -> Vec<RankedChunk> {
-    let Ok(engine) =
-        crate::search::TantivySearchEngine::open_or_create(layout.search_index_dir().as_std_path())
-    else {
-        return Vec::new();
-    };
+fn tantivy_fallback_chunks_with(
+    engine: &TantivySearchEngine,
+    query: &str,
+    limit: usize,
+) -> Vec<RankedChunk> {
     let mut queries = Vec::new();
-    if !query.trim().is_empty() {
-        queries.push(query.to_string());
+    let trimmed = query.trim();
+    if !trimmed.is_empty() && !crate::commands::search::is_regex_likely(trimmed) {
+        queries.push(trimmed.to_string());
     }
     queries.extend(crate::commands::search::tokenize_search_query(query));
     let mut merged: std::collections::BTreeMap<String, RankedChunk> =
@@ -421,7 +526,7 @@ fn tantivy_fallback_chunks(layout: &Layout, query: &str, limit: usize) -> Vec<Ra
             continue;
         };
         for hit in hits {
-            let path = crate::search::tantivy_engine::normalize_search_path(&hit.path);
+            let path = normalize_search_path(&hit.path);
             let content = hit.snippet.unwrap_or_default();
             if content.is_empty() {
                 continue;
@@ -437,6 +542,70 @@ fn tantivy_fallback_chunks(layout: &Layout, query: &str, limit: usize) -> Vec<Ra
             .then_with(|| a.source.cmp(&b.source))
     });
     out.truncate(limit);
+    out
+}
+
+fn structural_chunks_with(
+    engine: &TantivySearchEngine,
+    names: &[String],
+    limit: usize,
+) -> Vec<RankedListItem> {
+    let mut out: Vec<RankedListItem> = Vec::new();
+    let per = limit.saturating_mul(2).max(1);
+    for name in names {
+        let Ok(hits) = engine.search_term_exact(name, per) else {
+            continue;
+        };
+        for hit in hits {
+            let content = hit
+                .snippet
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| format!("{}::{}", normalize_search_path(&hit.path), name));
+            out.push(RankedListItem {
+                path: normalize_search_path(&hit.path),
+                symbol_name: Some(name.clone()),
+                content,
+            });
+        }
+    }
+    out
+}
+
+fn lookup_symbols_by_content_words(
+    conn: &rusqlite::Connection,
+    words: &[String],
+) -> Vec<SymbolRow> {
+    let mut out: Vec<SymbolRow> = Vec::new();
+    let sql = "SELECT pf.file_path, ps.symbol_name, ps.symbol_kind
+         FROM project_symbols ps
+         JOIN project_files pf ON ps.file_id = pf.id
+         WHERE instr(lower(ps.symbol_name), lower(?1)) > 0
+         ORDER BY (CASE WHEN instr(lower(pf.file_path), 'config') > 0 THEN 0 ELSE 1 END) ASC,
+                  (CASE WHEN ps.symbol_kind IN ('Function', 'Method') THEN 0 ELSE 1 END) ASC,
+                  length(ps.symbol_name) ASC,
+                  ps.symbol_name ASC
+         LIMIT 32";
+    for word in words {
+        if word.is_empty() {
+            continue;
+        }
+        let pat = word.as_str();
+        let Ok(mut stmt) = conn.prepare(sql) else {
+            continue;
+        };
+        let Ok(rows) = stmt.query_map([&pat], |row| {
+            Ok(SymbolRow {
+                path: row.get::<_, String>(0)?,
+                name: row.get::<_, String>(1)?,
+                kind: row.get::<_, String>(2).unwrap_or_else(|_| String::new()),
+            })
+        }) else {
+            continue;
+        };
+        for row in rows.flatten() {
+            out.push(row);
+        }
+    }
     out
 }
 
@@ -554,8 +723,225 @@ mod tests {
             kg: 3,
             snippets: 4,
             read_failed: 0,
+            structural: 0,
         });
         assert_eq!(line, "[Evidence] semantic=1 bm25=2 kg=3 snippets=4");
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn format_evidence_line__structural_omit_empty() {
+        let none = format_evidence_line(&EvidenceCounts {
+            semantic: 2,
+            bm25: 1,
+            kg: 0,
+            snippets: 3,
+            read_failed: 0,
+            structural: 0,
+        });
+        assert_eq!(none, "[Evidence] semantic=2 bm25=1 kg=0 snippets=3");
+        let some = format_evidence_line(&EvidenceCounts {
+            semantic: 2,
+            bm25: 1,
+            kg: 0,
+            snippets: 3,
+            read_failed: 0,
+            structural: 4,
+        });
+        assert_eq!(
+            some,
+            "[Evidence] semantic=2 bm25=1 kg=0 snippets=3 structural=4"
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn evidence__pre_fusion_lists_may_exceed_snippets() {
+        let counts = EvidenceCounts {
+            semantic: 2,
+            bm25: 2,
+            kg: 1,
+            snippets: 3,
+            read_failed: 0,
+            structural: 2,
+        };
+        assert!(
+            counts.semantic + counts.bm25 + counts.kg + counts.structural > counts.snippets,
+            "pre-fusion list sizes may exceed post-fusion snippets"
+        );
+        let line = format_evidence_line(&counts);
+        assert!(line.contains("structural=2"));
+        assert!(line.contains("snippets=3"));
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn lookup_symbols_by_content_words__uses_symbol_name_join() {
+        let dir = tempdir().expect("tempdir");
+        let root = camino::Utf8Path::from_path(dir.path()).expect("utf8");
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().expect("state");
+        let storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())
+            .expect("storage");
+        {
+            let conn = storage.get_connection();
+            conn.execute(
+                "INSERT INTO project_files (id, file_path, last_indexed_at) VALUES
+                 (1, 'src/commands/config_verify.rs', '2026-01-01T00:00:00Z'),
+                 (2, 'src/ledger/db.rs', '2026-01-01T00:00:00Z'),
+                 (3, 'src/ledger/provenance.rs', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .expect("files");
+            conn.execute(
+                "INSERT INTO project_symbols (id, file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at) VALUES
+                 (1, 1, 'apply_provenance', 'apply_provenance', 'Function', '2026-01-01T00:00:00Z'),
+                 (2, 2, 'find_transactions_by_file', 'find_transactions_by_file', 'Function', '2026-01-01T00:00:00Z'),
+                 (3, 3, 'ProvenanceAction', 'ProvenanceAction', 'Enum', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .expect("symbols");
+            let rows = lookup_symbols_by_content_words(conn, &["provenance".into()]);
+            assert!(
+                rows.iter().any(|r| r.name == "apply_provenance"),
+                "JOIN symbol_name must find apply_provenance: {:?}",
+                rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>()
+            );
+            assert!(
+                rows.iter().all(|r| !r.path.is_empty()),
+                "file_path comes from project_files JOIN"
+            );
+        }
+        storage.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn gather_semantic_and_kg__nonempty_vectors__still_runs_tantivy() {
+        use crate::search::trigram::extract_trigrams;
+        use tantivy::TantivyDocument;
+
+        let dir = tempdir().expect("tempdir");
+        init_repo_with_commit(dir.path());
+        let root = camino::Utf8Path::from_path(dir.path()).expect("utf8");
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().expect("state");
+        let storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())
+            .expect("storage");
+
+        let engine = TantivySearchEngine::open_or_create(layout.search_index_dir().as_std_path())
+            .expect("engine");
+        {
+            let schema = engine.schema();
+            let path_field = schema.get_field("path").expect("path");
+            let content_field = schema.get_field("content").expect("content");
+            let line_count_field = schema.get_field("line_count").expect("line_count");
+            let trigrams_field = schema.get_field("trigrams").expect("trigrams");
+            let mut writer = engine.get_writer(15_000_000).expect("writer");
+            let docs = [
+                (
+                    "src/commands/config_verify.rs",
+                    "fn apply_provenance(row: &mut ConfigRow, ctx: &ProvenanceContext) { }",
+                ),
+                (
+                    "src/ledger/provenance.rs",
+                    "provenance provenance provenance token provenance ledger",
+                ),
+            ];
+            for (path, content) in docs {
+                let tgrams_str = extract_trigrams(content)
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let mut doc = TantivyDocument::default();
+                doc.add_text(path_field, path);
+                doc.add_text(content_field, content);
+                doc.add_u64(line_count_field, 1);
+                doc.add_text(trigrams_field, &tgrams_str);
+                writer.add_document(doc).expect("add");
+            }
+            writer.commit().expect("commit");
+            engine.reload_reader().expect("reload");
+        }
+
+        let mut gathered = GatherResult {
+            latest_packet: ImpactPacket::default(),
+            is_global: true,
+            had_real_packet: false,
+            fresh_packet: true,
+            pruned_for_intent: false,
+            live_tree_clean: true,
+            query_string: "Where is configuration provenance resolved? Cite file paths.".into(),
+            relevant_chunks: Vec::new(),
+            semantic_gather_kind: SemanticGatherKind::Skipped,
+            evidence: EvidenceCounts::default(),
+        };
+        let config = Config::default();
+        gather_semantic_and_kg_with(
+            &mut gathered,
+            &storage,
+            &layout,
+            &config,
+            true,
+            false,
+            3,
+            true,
+            GatherMixOpts {
+                semantic_override: Some(SemanticGather::Chunks {
+                    chunks: vec![
+                        RankedChunk {
+                            source: "src/ledger/db.rs::mod".into(),
+                            content: "mod provenance;".into(),
+                            score: 0.78,
+                        },
+                        RankedChunk {
+                            source: "Knowledge Graph".into(),
+                            content: "Knowledge Graph Relationships:\n- x calls y".into(),
+                            score: 1.0,
+                        },
+                    ],
+                    read_failed: 0,
+                }),
+                symbol_rows_override: Some(vec![
+                    SymbolRow {
+                        name: "apply_provenance".into(),
+                        path: "src/commands/config_verify.rs".into(),
+                        kind: "Function".into(),
+                    },
+                    SymbolRow {
+                        name: "find_transactions_by_file".into(),
+                        path: "src/ledger/db.rs".into(),
+                        kind: "Function".into(),
+                    },
+                ]),
+            },
+        );
+        assert!(
+            gathered.evidence.bm25 > 0,
+            "nonempty vectors must not skip Tantivy: {:?}",
+            gathered.evidence
+        );
+        assert!(
+            gathered
+                .relevant_chunks
+                .iter()
+                .any(|c| c.source.contains("config_verify.rs")),
+            "fused snippets must include config_verify.rs: {:?}",
+            gathered
+                .relevant_chunks
+                .iter()
+                .map(|c| c.source.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(gathered.evidence.semantic, 1, "KG excluded from semantic");
+        let kg = gathered
+            .relevant_chunks
+            .iter()
+            .find(|c| c.source.starts_with("Knowledge Graph"));
+        if let Some(kg) = kg {
+            assert!(kg.score < 0.001, "KG must not steal rank-1: {}", kg.score);
+        }
+        storage.shutdown().expect("shutdown");
     }
 
     #[test]
