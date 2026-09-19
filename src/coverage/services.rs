@@ -367,13 +367,48 @@ pub struct DataModelSource {
     pub source_path: String,
 }
 
+/// Route plus the registration file path (JOIN `api_routes.handler_file_id`).
+/// Do not add this field to serialized `ApiRoute`.
+#[derive(Debug, Clone)]
+pub struct ApiRouteSource {
+    pub route: ApiRoute,
+    pub registration_file_path: Option<String>,
+}
+
+impl ApiRouteSource {
+    /// Test helper: treat `route.route_source` as a file path (legacy unit fixtures).
+    pub fn from_route(route: ApiRoute) -> Self {
+        let registration_file_path = Some(route.route_source.clone());
+        Self {
+            route,
+            registration_file_path,
+        }
+    }
+}
+
 pub struct DirectoryTopology {
     pub classifications: Vec<DirectoryClassification>,
 }
 
+/// Live `api_routes.route_source` tokens plus `CallKind::as_str` belt.
+pub fn is_route_source_kind_token(name: &str) -> bool {
+    matches!(
+        name,
+        "BUILDER"
+            | "TEST"
+            | "METHOD_CALL"
+            | "DECORATOR"
+            | "APP_METHOD"
+            | "DIRECT"
+            | "TRAIT_DISPATCH"
+            | "DYNAMIC"
+            | "EXTERNAL"
+    )
+}
+
 /// Infer service boundaries from routes, call graph, and directory topology.
 pub fn infer_services(
-    routes: &[ApiRoute],
+    routes: &[ApiRouteSource],
     data_models: &[DataModelSource],
     call_graph: &CallGraph,
     topology: &DirectoryTopology,
@@ -408,17 +443,32 @@ pub fn infer_services(
         service_groups.insert(path, (ds.name.clone(), Vec::new(), Vec::new()));
     }
 
-    // 1. Group routes by their service root directory
-    for route in routes {
-        let (root_dir, name) = find_best_service_root(Path::new(&route.route_source), topology);
+    // 1. Group routes by registration file (never by route_source kind tokens).
+    let mut skipped_unresolved = 0usize;
+    for src in routes {
+        let Some(path) = src.registration_file_path.as_deref() else {
+            skipped_unresolved += 1;
+            continue;
+        };
+        if is_route_source_kind_token(path) {
+            skipped_unresolved += 1;
+            continue;
+        }
+        let (root_dir, name) = find_best_service_root(Path::new(path), topology);
         let entry = service_groups
             .entry(root_dir)
             .or_insert_with(|| (name, Vec::new(), Vec::new()));
-        if let Some(handler) = &route.handler_symbol_name
+        if let Some(handler) = &src.route.handler_symbol_name
             && !entry.1.contains(handler)
         {
             entry.1.push(handler.clone());
         }
+    }
+    if skipped_unresolved > 0 {
+        tracing::debug!(
+            skipped = skipped_unresolved,
+            "skipped routes without a usable registration file path"
+        );
     }
 
     // 1.5 Detect "worker" services using CallGraph (background logic with no routes)
@@ -681,6 +731,10 @@ mod tests {
     use crate::index::call_graph::{CallEdge, CallKind, ResolutionStatus};
     use crate::index::topology::DirectoryRole;
 
+    fn wrap_routes(routes: Vec<ApiRoute>) -> Vec<ApiRouteSource> {
+        routes.into_iter().map(ApiRouteSource::from_route).collect()
+    }
+
     #[test]
     fn test_infer_services_directory_naming() {
         let routes = vec![ApiRoute {
@@ -708,7 +762,7 @@ mod tests {
         };
         let call_graph = CallGraph { edges: Vec::new() };
 
-        let services = infer_services(&routes, &[], &call_graph, &topology, &[]);
+        let services = infer_services(&wrap_routes(routes), &[], &call_graph, &topology, &[]);
         assert_eq!(services.len(), 1);
         assert_eq!(services[0].name, "users");
     }
@@ -740,7 +794,7 @@ mod tests {
         };
         let call_graph = CallGraph { edges: Vec::new() };
 
-        let services = infer_services(&routes, &[], &call_graph, &topology, &[]);
+        let services = infer_services(&wrap_routes(routes), &[], &call_graph, &topology, &[]);
         assert_eq!(services.len(), 1);
         assert_eq!(services[0].name, "src");
     }
@@ -799,7 +853,7 @@ mod tests {
         };
         let call_graph = CallGraph { edges: Vec::new() };
 
-        let services = infer_services(&routes, &[], &call_graph, &topology, &[]);
+        let services = infer_services(&wrap_routes(routes), &[], &call_graph, &topology, &[]);
         assert_eq!(services.len(), 1);
         assert_eq!(services[0].name, "users");
         assert_eq!(services[0].directory, PathBuf::from("src/api/users"));
@@ -836,7 +890,13 @@ mod tests {
         };
         let call_graph = CallGraph { edges: Vec::new() };
 
-        let services = infer_services(&routes, &data_models, &call_graph, &topology, &[]);
+        let services = infer_services(
+            &wrap_routes(routes),
+            &data_models,
+            &call_graph,
+            &topology,
+            &[],
+        );
         assert_eq!(services.len(), 1);
         assert_eq!(services[0].data_models, vec!["User".to_string()]);
     }
@@ -872,12 +932,95 @@ mod tests {
         };
         let call_graph = CallGraph { edges: Vec::new() };
 
-        let services = infer_services(&routes, &[], &call_graph, &topology, &[]);
+        let services = infer_services(&wrap_routes(routes), &[], &call_graph, &topology, &[]);
 
         std::env::set_current_dir(old_cwd).unwrap();
 
         assert_eq!(services.len(), 1);
         assert_eq!(services[0].name, "from-json");
+    }
+
+    #[test]
+    fn is_route_source_kind_token_locked_nine_literals() {
+        for name in [
+            "BUILDER",
+            "TEST",
+            "METHOD_CALL",
+            "DECORATOR",
+            "APP_METHOD",
+            "DIRECT",
+            "TRAIT_DISPATCH",
+            "DYNAMIC",
+            "EXTERNAL",
+        ] {
+            assert!(is_route_source_kind_token(name), "{name}");
+        }
+        for name in ["tests", "web", "billing-api", "builder"] {
+            assert!(!is_route_source_kind_token(name), "{name}");
+        }
+    }
+
+    fn sample_route(route_source: &str, handler: &str) -> ApiRoute {
+        ApiRoute {
+            method: "GET".to_string(),
+            path_pattern: "/billing/health".to_string(),
+            handler_symbol_name: Some(handler.to_string()),
+            framework: "axum".to_string(),
+            route_source: route_source.to_string(),
+            mount_prefix: None,
+            is_dynamic: false,
+            route_confidence: 1.0,
+            evidence: String::new(),
+            auth_requirements: None,
+            schema_refs: None,
+            owning_service: None,
+            consumers: None,
+        }
+    }
+
+    #[test]
+    fn infer_services_groups_builder_token_by_registration_file() {
+        let sources = vec![ApiRouteSource {
+            route: sample_route("BUILDER", "health"),
+            registration_file_path: Some("src/billing/mod.rs".to_string()),
+        }];
+        let topology = DirectoryTopology {
+            classifications: vec![],
+        };
+        let services = infer_services(
+            &sources,
+            &[],
+            &CallGraph { edges: Vec::new() },
+            &topology,
+            &[],
+        );
+        assert!(
+            services.iter().all(|s| s.name != "BUILDER"),
+            "got: {:?}",
+            services.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0].name, "billing");
+        assert_eq!(services[0].directory, PathBuf::from("src/billing"));
+    }
+
+    #[test]
+    fn infer_services_skips_missing_registration_path() {
+        let sources = vec![ApiRouteSource {
+            route: sample_route("BUILDER", "health"),
+            registration_file_path: None,
+        }];
+        let topology = DirectoryTopology {
+            classifications: vec![],
+        };
+        let services = infer_services(
+            &sources,
+            &[],
+            &CallGraph { edges: Vec::new() },
+            &topology,
+            &[],
+        );
+        assert!(services.is_empty(), "got: {:?}", services);
     }
 
     #[test]

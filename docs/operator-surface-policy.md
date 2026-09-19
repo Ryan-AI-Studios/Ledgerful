@@ -68,7 +68,7 @@ The goal is not novelty. The goal is to match the baseline operator expectations
 
 ## Current Repo Policy Decisions
 
-- `services list` (alias `diff`) remains config-aware and intentionally follows the repo's current `coverage.enabled` policy. This document does not require enabling service inference by default.
+- `services list` (alias `diff`) persist assignment remains config-aware and follows the repo's current `coverage.enabled` policy. A gated persist-empty default list may show a **non-writing** preview (`preview: true`) so operators get usable topology without `config set`. That fill does not persist `service_name` and does not make `surfaces` services ready. This document does not require enabling service inference by default.
 - Dogfooding optional surfaces should use the committed pack (env schema + Cedar) plus focused tests. Do not silently flip product `coverage.enabled` (or deploy) for unrelated workflows. `[services]` remains a local-only recipe (`.ledgerful/` is gitignored).
 
 ## Enforcement Direction
