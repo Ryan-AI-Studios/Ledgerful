@@ -2,8 +2,8 @@ use crate::cli::{HotspotArgs, HotspotSubcommands};
 use crate::commands::helpers::get_layout;
 use crate::git::repo::open_repo;
 use crate::impact::budget::{
-    HOTSPOTS_BUDGET_WARN, completeness_for_overall, install_cancel_flag, overall_deadline_fired,
-    resolve_hotspots_overall_budget_secs,
+    CompletenessStop, HOTSPOTS_BUDGET_WARN, completeness_for_overall, install_cancel_flag,
+    is_overall_stop, poll_overall_stop, resolve_hotspots_overall_budget_secs,
 };
 use crate::index::warn_if_stale;
 use crate::state::storage::StorageManager;
@@ -79,9 +79,9 @@ pub(crate) fn execute_hotspots_with_opts(
         None
     };
 
-    if list_or_explain && overall_deadline_fired(overall_deadline) {
+    if list_or_explain && let Some(stop) = poll_overall_stop(overall_deadline, &cancel) {
         let stage = if args.semantic { "semantic" } else { "storage" };
-        return emit_overall_skip_open(&args, overall_secs, stage, json_out.as_deref_mut());
+        return emit_overall_skip_open(&args, overall_secs, stage, stop, json_out.as_deref_mut());
     }
 
     let threshold_days = config.index.stale_threshold_days;
@@ -194,6 +194,7 @@ fn emit_overall_skip_open(
     args: &HotspotArgs,
     overall_secs: u64,
     stage: &str,
+    stop: CompletenessStop,
     json_out: Option<&mut Vec<u8>>,
 ) -> Result<()> {
     let json = args.json
@@ -201,12 +202,8 @@ fn emit_overall_skip_open(
             &args.command,
             Some(HotspotSubcommands::Explain { json: true, .. })
         );
-    let completeness = completeness_for_overall(
-        crate::impact::budget::CompletenessStop::Budget,
-        Some(overall_secs).filter(|s| *s > 0),
-        stage,
-    );
-    eprint_hotspots_overall_stop();
+    let completeness = completeness_for_overall(stop, Some(overall_secs).filter(|s| *s > 0), stage);
+    eprint_hotspots_overall_stop_if_budget(Some(&completeness));
     if json {
         if let Some(HotspotSubcommands::Explain { entity, .. }) = &args.command {
             let output = explain::explanation_json_envelope(
@@ -230,13 +227,32 @@ fn emit_overall_skip_open(
             write_json(&output, json_out)?;
         }
     } else if matches!(&args.command, Some(HotspotSubcommands::Explain { .. })) {
-        println!("Hotspot analysis stopped: overall budget ({stage}).");
+        let reason = if stop == CompletenessStop::Cancelled {
+            "cancelled"
+        } else {
+            "overall budget"
+        };
+        println!("Hotspot analysis stopped: {reason} ({stage}).");
     }
     Ok(())
 }
 
 pub(super) fn eprint_hotspots_overall_stop() {
     eprintln!("{HOTSPOTS_BUDGET_WARN}");
+}
+
+pub(super) fn should_eprint_hotspots_overall_stop(
+    completeness: Option<&crate::impact::budget::AnalysisCompleteness>,
+) -> bool {
+    completeness.is_some_and(|c| c.stop == CompletenessStop::Budget && is_overall_stop(c))
+}
+
+pub(super) fn eprint_hotspots_overall_stop_if_budget(
+    completeness: Option<&crate::impact::budget::AnalysisCompleteness>,
+) {
+    if should_eprint_hotspots_overall_stop(completeness) {
+        eprint_hotspots_overall_stop();
+    }
 }
 
 pub(super) fn write_json(value: &serde_json::Value, json_out: Option<&mut Vec<u8>>) -> Result<()> {

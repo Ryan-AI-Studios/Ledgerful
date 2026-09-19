@@ -3,7 +3,7 @@ use crate::git::blob::head_path_exists;
 use crate::impact::budget::{
     AnalysisBudget, CompletenessStop, HistoryWalkStop, HotspotProvenance, HotspotProvenanceSource,
     completeness_for_overall, completeness_for_walk, eprint_walk_stop, filter_for_cli_include,
-    format_provenance_footer, is_overall_stop, overall_deadline_fired,
+    format_provenance_footer, is_overall_stop, poll_overall_stop,
 };
 use crate::impact::hotspots::{HotspotQuery, calculate_hotspots_detailed};
 use crate::impact::packet::Hotspot;
@@ -129,13 +129,10 @@ pub(super) fn execute_hotspots_list(
     json_out: Option<&mut Vec<u8>>,
 ) -> Result<()> {
     if args.semantic {
-        if overall_deadline_fired(overall_deadline) {
-            let completeness = completeness_for_overall(
-                CompletenessStop::Budget,
-                Some(overall_secs).filter(|s| *s > 0),
-                "semantic",
-            );
-            super::eprint_hotspots_overall_stop();
+        if let Some(stop) = poll_overall_stop(overall_deadline, &cancel) {
+            let completeness =
+                completeness_for_overall(stop, Some(overall_secs).filter(|s| *s > 0), "semantic");
+            super::eprint_hotspots_overall_stop_if_budget(Some(&completeness));
             if args.json {
                 let limit = args.limit.unwrap_or(config.hotspots.limit);
                 let output = wrap_hotspots_list_json_with_completeness(
@@ -174,13 +171,10 @@ pub(super) fn execute_hotspots_list(
         return Ok(());
     }
 
-    if overall_deadline_fired(overall_deadline) {
-        let completeness = completeness_for_overall(
-            CompletenessStop::Budget,
-            Some(overall_secs).filter(|s| *s > 0),
-            "git",
-        );
-        super::eprint_hotspots_overall_stop();
+    if let Some(stop) = poll_overall_stop(overall_deadline, &cancel) {
+        let completeness =
+            completeness_for_overall(stop, Some(overall_secs).filter(|s| *s > 0), "git");
+        super::eprint_hotspots_overall_stop_if_budget(Some(&completeness));
         if args.json {
             let limit = args.limit.unwrap_or(config.hotspots.limit);
             let output = wrap_hotspots_list_json_with_completeness(
@@ -218,6 +212,7 @@ pub(super) fn execute_hotspots_list(
             overall_deadline,
             cancel.clone(),
         )),
+        skip_unindexed_complexity_fallback: overall_deadline.is_some(),
         ..Default::default()
     };
 
@@ -233,10 +228,10 @@ pub(super) fn execute_hotspots_list(
         config.hotspots.history_budget_secs,
         overall_deadline,
         overall_secs,
+        &cancel,
     );
-    if completeness.as_ref().is_some_and(is_overall_stop) {
-        super::eprint_hotspots_overall_stop();
-    } else {
+    super::eprint_hotspots_overall_stop_if_budget(completeness.as_ref());
+    if !completeness.as_ref().is_some_and(is_overall_stop) {
         eprint_walk_stop(
             calculated.walk_stop,
             calculated.commits_walked,
@@ -251,9 +246,19 @@ pub(super) fn execute_hotspots_list(
                 "--snapshot cannot be combined with --include docs (docs lane score is frequency-only; hotspot_history stores f×c)"
             ));
         }
-        if overall_stop || overall_deadline_fired(overall_deadline) {
+        let snapshot_stop = poll_overall_stop(overall_deadline, &cancel);
+        if overall_stop || snapshot_stop.is_some() {
             if !args.json {
-                println!("Hotspot snapshot skipped: overall budget.");
+                let cancelled = snapshot_stop == Some(CompletenessStop::Cancelled)
+                    || completeness
+                        .as_ref()
+                        .is_some_and(|c| c.stop == CompletenessStop::Cancelled);
+                let reason = if cancelled {
+                    "cancelled"
+                } else {
+                    "overall budget"
+                };
+                println!("Hotspot snapshot skipped: {reason}.");
             }
         } else {
             let persist_budget = AnalysisBudget::capped_by_overall(
@@ -333,10 +338,11 @@ pub(super) fn list_completeness_after_walk(
     history_budget_secs: u64,
     overall_deadline: Option<Instant>,
     overall_secs: u64,
+    cancel: &AtomicBool,
 ) -> Option<crate::impact::budget::AnalysisCompleteness> {
-    if overall_deadline_fired(overall_deadline) {
+    if let Some(stop) = poll_overall_stop(overall_deadline, cancel) {
         return Some(completeness_for_overall(
-            CompletenessStop::Budget,
+            stop,
             Some(overall_secs).filter(|s| *s > 0),
             "hotspots",
         ));
