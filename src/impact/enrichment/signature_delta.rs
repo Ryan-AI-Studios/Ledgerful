@@ -430,6 +430,7 @@ mod tests {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
             skip_git_history_enrichment: false,
             history_budget: None,
+            overall_deadline: None,
         };
         let mut packet = ImpactPacket::default();
         SignatureDeltaProvider
@@ -451,6 +452,7 @@ mod tests {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
             skip_git_history_enrichment: false,
             history_budget: None,
+            overall_deadline: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![changed_file(
@@ -492,6 +494,7 @@ mod tests {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
             skip_git_history_enrichment: false,
             history_budget: None,
+            overall_deadline: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![changed_file(
@@ -539,6 +542,7 @@ mod tests {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
             skip_git_history_enrichment: false,
             history_budget: None,
+            overall_deadline: None,
         };
         // Packet path for Deleted: symbols None (map_snapshot_to_packet behavior).
         let mut packet = ImpactPacket {
@@ -581,6 +585,7 @@ mod tests {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
             skip_git_history_enrichment: false,
             history_budget: None,
+            overall_deadline: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![changed_file(
@@ -623,6 +628,7 @@ mod tests {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
             skip_git_history_enrichment: false,
             history_budget: None,
+            overall_deadline: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![changed_file(
@@ -735,6 +741,7 @@ mod tests {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
             skip_git_history_enrichment: false,
             history_budget: None,
+            overall_deadline: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![changed_file("app.py", "Modified", None, Some(curr_syms))],
@@ -781,6 +788,7 @@ mod tests {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
             skip_git_history_enrichment: false,
             history_budget: None,
+            overall_deadline: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![changed_file("app.py", "Modified", None, Some(curr_syms))],
@@ -817,6 +825,7 @@ mod tests {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
             skip_git_history_enrichment: false,
             history_budget: None,
+            overall_deadline: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![changed_file("app.py", "Modified", None, Some(curr_syms))],
@@ -859,6 +868,7 @@ mod tests {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
             skip_git_history_enrichment: false,
             history_budget: None,
+            overall_deadline: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![changed_file("app.ts", "Modified", None, Some(curr_syms))],
@@ -903,6 +913,7 @@ mod tests {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
             skip_git_history_enrichment: false,
             history_budget: None,
+            overall_deadline: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![changed_file("app.ts", "Modified", None, Some(curr_syms))],
@@ -942,6 +953,7 @@ mod tests {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
             skip_git_history_enrichment: false,
             history_budget: None,
+            overall_deadline: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![changed_file("app.ts", "Modified", None, Some(curr_syms))],
@@ -988,6 +1000,7 @@ mod tests {
                 deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
                 skip_git_history_enrichment: false,
                 history_budget: None,
+                overall_deadline: None,
             };
             let mut packet = ImpactPacket {
                 changes: vec![changed_file("app.py", "Modified", None, Some(curr_syms))],
@@ -1035,6 +1048,7 @@ mod tests {
                 deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
                 skip_git_history_enrichment: false,
                 history_budget: None,
+                overall_deadline: None,
             };
             let mut packet = ImpactPacket {
                 changes: vec![changed_file("app.ts", "Modified", None, Some(curr_syms))],

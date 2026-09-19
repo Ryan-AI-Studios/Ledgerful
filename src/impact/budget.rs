@@ -138,12 +138,30 @@ impl AnalysisBudget {
     }
 
     pub fn should_stop(&self) -> Option<HistoryWalkStop> {
-        if self.cancel.load(Ordering::Relaxed) {
-            return Some(HistoryWalkStop::Cancelled);
+        match poll_overall_stop(self.deadline, &self.cancel) {
+            Some(CompletenessStop::Cancelled) => Some(HistoryWalkStop::Cancelled),
+            Some(CompletenessStop::Budget) => Some(HistoryWalkStop::Budget),
+            Some(CompletenessStop::Error) | None => None,
         }
-        if self.deadline.is_some_and(|d| Instant::now() >= d) {
-            return Some(HistoryWalkStop::Budget);
-        }
+    }
+}
+
+/// Cooperative overall-emit poll (0389). Cancel wins over budget.
+/// `None` means continue. 0390–0392 must reuse this helper — do not fork
+/// a third Instant checker. Pass **`opts.overall_deadline`**, never the
+/// 0034 `EnrichmentContext.deadline` federation backstop.
+///
+/// Review (`analysis_mode == "range"`) must not print
+/// [`PROSPECTIVE_BUDGET_WARN`]; see [`overall_stop_stderr_token`].
+pub fn poll_overall_stop(
+    deadline: Option<Instant>,
+    cancel: &AtomicBool,
+) -> Option<CompletenessStop> {
+    if cancel.load(Ordering::Relaxed) {
+        Some(CompletenessStop::Cancelled)
+    } else if overall_deadline_fired(deadline) {
+        Some(CompletenessStop::Budget)
+    } else {
         None
     }
 }
@@ -706,6 +724,50 @@ mod tests {
     #[allow(non_snake_case)]
     fn history_completeness__omits_scope() {
         completeness_omits_walked_on_error();
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn poll_overall_stop__none_when_future() {
+        let cancel = AtomicBool::new(false);
+        let deadline = Some(Instant::now() + Duration::from_secs(30));
+        assert!(poll_overall_stop(deadline, &cancel).is_none());
+        assert!(poll_overall_stop(None, &cancel).is_none());
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn poll_overall_stop__budget_when_elapsed() {
+        let cancel = AtomicBool::new(false);
+        let deadline = Some(
+            Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now),
+        );
+        assert_eq!(
+            poll_overall_stop(deadline, &cancel),
+            Some(CompletenessStop::Budget)
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn poll_overall_stop__cancel_wins() {
+        let cancel = AtomicBool::new(true);
+        let deadline = Some(
+            Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now),
+        );
+        assert_eq!(
+            poll_overall_stop(deadline, &cancel),
+            Some(CompletenessStop::Cancelled)
+        );
+        let future = Some(Instant::now() + Duration::from_secs(30));
+        assert_eq!(
+            poll_overall_stop(future, &cancel),
+            Some(CompletenessStop::Cancelled)
+        );
     }
 
     #[test]

@@ -45,11 +45,20 @@ pub struct EnrichmentContext<'a> {
     /// long-running work (notably `FederatedProvider`) thread this through to
     /// their subprocess/walk so a multi-sibling federated run shares one
     /// deadline instead of each walk getting a fresh budget.
+    ///
+    /// When `opts.overall_deadline` is set this Instant equals that overall
+    /// emit deadline; when it is `None` this is `now + federation.scan_timeout()`
+    /// (default 120s). **Never** pass this field to [`poll_overall_stop`](crate::impact::budget::poll_overall_stop)
+    /// — that helper must see [`Self::overall_deadline`] or it will lie
+    /// `scope=overall` on the 0034 backstop (0389 / OpenCode B1).
     pub deadline: Instant,
     /// Session (0308): skip HotspotProvider and CouplingProvider::enrich_temporal.
     pub skip_git_history_enrichment: bool,
     /// Resolved history-walk budget (0308). Distinct from the 0034 federation backstop.
     pub history_budget: Option<AnalysisBudget>,
+    /// Prospective / explicit `--timeout` overall emit Instant (0389).
+    /// `None` on working-tree without `--timeout`. Distinct from [`Self::deadline`].
+    pub overall_deadline: Option<Instant>,
 }
 
 impl<'a> EnrichmentContext<'a> {

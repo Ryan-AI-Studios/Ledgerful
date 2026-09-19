@@ -282,6 +282,7 @@ mod tests {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
             skip_git_history_enrichment: false,
             history_budget: None,
+            overall_deadline: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![ChangedFile {
@@ -397,6 +398,7 @@ mod tests {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
             skip_git_history_enrichment: false,
             history_budget: None,
+            overall_deadline: None,
         };
         // Changed symbol that does not exist in the index
         let mut packet = ImpactPacket {
@@ -450,6 +452,7 @@ mod tests {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
             skip_git_history_enrichment: false,
             history_budget: None,
+            overall_deadline: None,
         };
 
         let _packet = ImpactPacket {
@@ -544,6 +547,7 @@ mod tests {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
             skip_git_history_enrichment: false,
             history_budget: None,
+            overall_deadline: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![ChangedFile {
@@ -647,6 +651,7 @@ mod tests {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
             skip_git_history_enrichment: false,
             history_budget: None,
+            overall_deadline: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![ChangedFile {

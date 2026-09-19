@@ -398,7 +398,7 @@ fn fetch_hotspot_trend(layout: &Layout, days: u64, limit: usize) -> Result<Hotsp
     let all_paths: Vec<String> = all_paths_set.into_iter().collect();
 
     // Look up complexities once and derive a global maximum for normalization.
-    let complexities = query_file_complexities(&storage, &all_paths)?;
+    let complexities = query_file_complexities(&storage, &all_paths, false)?;
     let max_complexity = complexities.values().copied().max().unwrap_or(0).max(1) as f32;
 
     // Initialise per-file cumulative frequency buckets.

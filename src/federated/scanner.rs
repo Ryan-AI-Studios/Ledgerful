@@ -353,7 +353,7 @@ impl FederatedScanner {
                 // iteration, before the existing load+validate+discover
                 // logic below — never concurrently (see `run_federate_export`
                 // doc for the concurrency-bound rationale).
-                if self.auto_sync {
+                if self.auto_sync && self.deadline_override.is_none_or(|d| Instant::now() < d) {
                     let generated_at = final_path
                         .as_ref()
                         .and_then(|p| self.load_schema(p).ok())

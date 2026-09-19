@@ -3,7 +3,8 @@ use crate::git::{ChangeType, RepoSnapshot};
 use crate::impact::analysis::AnalysisRegistry;
 use crate::impact::budget::{
     AnalysisBudget, CompletenessStop, PROSPECTIVE_BUDGET_WARN, REVIEW_BUDGET_WARN,
-    completeness_for_overall, is_overall_stop, overall_stop_stderr_token, stage_slug_for_provider,
+    completeness_for_overall, is_overall_stop, overall_stop_stderr_token, poll_overall_stop,
+    stage_slug_for_provider,
 };
 use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
 use crate::impact::packet::{ChangedFile, FileAnalysisStatus, ImpactPacket};
@@ -13,7 +14,7 @@ use crate::util::clock::SystemClock;
 use indicatif::{ProgressBar, ProgressStyle};
 use miette::Result;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
@@ -248,8 +249,16 @@ impl ImpactOrchestrator {
         }
 
         // 1. Prepare Context — 0257: ChangedFile.path only (not rename old_path).
+        // 0389 B2 option a: if the overall Instant already fired, skip the
+        // SQLite map (do **not** record completeness here — the provider loop
+        // still stamps the first builtin slug so 0347 keep-green `federated` /
+        // `hotspots` asserts stay). Never return before analysis_registry.run.
         let changed_paths: Vec<_> = packet.changes.iter().map(|c| c.path.as_path()).collect();
-        let file_id_map = storage.get_active_file_id_map_for_paths(&changed_paths)?;
+        let file_id_map = if poll_overall_stop(opts.overall_deadline, &opts.cancel).is_some() {
+            std::collections::HashMap::new()
+        } else {
+            storage.get_active_file_id_map_for_paths(&changed_paths)?
+        };
         let warnings_collector = Arc::new(Mutex::new(Vec::new()));
 
         // 0034: cooperative backstop deadline, computed once and threaded
@@ -284,37 +293,26 @@ impl ImpactOrchestrator {
             deadline,
             skip_git_history_enrichment: opts.skip_git_history_enrichment,
             history_budget,
+            overall_deadline: opts.overall_deadline,
         };
 
         // 2. Execute Enrichment Providers (Resilient Execution)
         for provider in &self.enrichment_providers {
             let name = provider.name();
             let slug = stage_slug_for_provider(name);
-            if opts.cancel.load(Ordering::Relaxed) {
-                apply_overall_stop_unless_present(
-                    packet,
-                    CompletenessStop::Cancelled,
-                    opts.overall_budget_secs,
-                    slug,
-                );
+            if let Some(stop) = poll_overall_stop(opts.overall_deadline, &opts.cancel) {
+                apply_overall_stop_unless_present(packet, stop, opts.overall_budget_secs, slug);
                 break;
             }
-            if Instant::now() >= deadline {
-                if opts.overall_deadline.is_some() {
-                    apply_overall_stop_unless_present(
-                        packet,
-                        CompletenessStop::Budget,
-                        opts.overall_budget_secs,
-                        slug,
-                    );
-                } else {
-                    let msg = format!(
-                        "Impact scan exceeded overall timeout ({}s); stopping before provider '{}'. Partial results retained.",
-                        config.federation.scan_timeout_secs, name
-                    );
-                    warn!("{}", msg);
-                    context.add_warning(msg);
-                }
+            if opts.overall_deadline.is_none() && Instant::now() >= deadline {
+                // 0034 federation backstop only (OpenCode m8). Overall Instant
+                // is handled by poll_overall_stop above.
+                let msg = format!(
+                    "Impact scan exceeded overall timeout ({}s); stopping before provider '{}'. Partial results retained.",
+                    config.federation.scan_timeout_secs, name
+                );
+                warn!("{}", msg);
+                context.add_warning(msg);
                 break;
             }
             debug!("Running enrichment provider: {}", name);
@@ -326,22 +324,8 @@ impl ImpactOrchestrator {
             // In-flight providers are not killed. If the last (or current)
             // provider returns after the overall Instant, still record the
             // stop so persist is skipped and completeness is honest.
-            if opts.cancel.load(Ordering::Relaxed) {
-                apply_overall_stop_unless_present(
-                    packet,
-                    CompletenessStop::Cancelled,
-                    opts.overall_budget_secs,
-                    slug,
-                );
-                break;
-            }
-            if opts.overall_deadline.is_some() && Instant::now() >= deadline {
-                apply_overall_stop_unless_present(
-                    packet,
-                    CompletenessStop::Budget,
-                    opts.overall_budget_secs,
-                    slug,
-                );
+            if let Some(stop) = poll_overall_stop(opts.overall_deadline, &opts.cancel) {
+                apply_overall_stop_unless_present(packet, stop, opts.overall_budget_secs, slug);
                 break;
             }
         }
@@ -369,13 +353,8 @@ impl ImpactOrchestrator {
         };
         self.analysis_registry.run(packet, &rules, config)?;
 
-        if opts.cancel.load(Ordering::Relaxed) {
-            apply_overall_stop_unless_present(
-                packet,
-                CompletenessStop::Cancelled,
-                opts.overall_budget_secs,
-                "analysis",
-            );
+        if let Some(stop) = poll_overall_stop(opts.overall_deadline, &opts.cancel) {
+            apply_overall_stop_unless_present(packet, stop, opts.overall_budget_secs, "analysis");
         }
 
         // 4. Collect Warnings
@@ -958,6 +937,135 @@ mod tests {
     #[allow(non_snake_case)]
     fn prospective_one_file__overall_expired__emits_core_json_with_scope_overall() {
         overall_expired_stops_before_cooperative_provider();
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn prospective_one_file__clock_in_future__polling_provider_emits_scope_overall() {
+        use crate::impact::budget::{
+            CompletenessScope, CompletenessStop, PROSPECTIVE_BUDGET_WARN, poll_overall_stop,
+        };
+        use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
+        use std::sync::atomic::AtomicBool;
+
+        struct PollingSpy;
+        impl EnrichmentProvider for PollingSpy {
+            fn name(&self) -> &'static str {
+                "Federated Intelligence Enrichment Provider"
+            }
+            fn enrich(
+                &self,
+                context: &EnrichmentContext,
+                _packet: &mut ImpactPacket,
+            ) -> Result<()> {
+                let fallback = AtomicBool::new(false);
+                let cancel = context
+                    .history_budget
+                    .as_ref()
+                    .map(|b| b.cancel.as_ref())
+                    .unwrap_or(&fallback);
+                let start = Instant::now();
+                loop {
+                    if poll_overall_stop(context.overall_deadline, cancel).is_some() {
+                        return Ok(());
+                    }
+                    if start.elapsed() > Duration::from_secs(2) {
+                        return Ok(());
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        }
+
+        let (storage, temp) = memory_storage();
+        let config = Config::default();
+        let mut packet = dirty_one_file_packet();
+        packet.analysis_mode = "prospective".to_string();
+        let mut orchestrator = ImpactOrchestrator::new();
+        orchestrator.register_enrichment_provider(Box::new(PollingSpy));
+        let started = Instant::now();
+        let opts = ImpactHistoryOpts {
+            overall_budget_secs: Some(1),
+            overall_deadline: Some(Instant::now() + Duration::from_millis(120)),
+            ..ImpactHistoryOpts::default()
+        };
+        orchestrator
+            .run_with_history_opts(&mut packet, &storage, &config, temp.path(), opts)
+            .expect("future Instant polling provider must return");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "polling provider must emit well under 35s, got {:?}",
+            started.elapsed()
+        );
+        let c = packet.completeness.expect("overall completeness");
+        assert_eq!(c.scope, Some(CompletenessScope::Overall));
+        assert_eq!(c.stop, CompletenessStop::Budget);
+        assert!(
+            !packet
+                .analysis_warnings
+                .iter()
+                .any(|w| w == PROSPECTIVE_BUDGET_WARN)
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn prospective_one_file__with_builtins_future_instant__emits_scope_overall_under_1s() {
+        use crate::impact::budget::CompletenessScope;
+
+        let parent = tempfile::tempdir().unwrap();
+        let repo = parent.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        for args in [
+            ["init"].as_slice(),
+            ["config", "user.email", "t@t.com"].as_slice(),
+            ["config", "user.name", "T"].as_slice(),
+        ] {
+            let st = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .expect("git");
+            assert!(st.success(), "git {args:?}");
+        }
+        std::fs::write(repo.join("src_lib.rs"), "fn f() {}").unwrap();
+        let st = std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(&repo)
+            .status()
+            .expect("git add");
+        assert!(st.success());
+        let st = std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&repo)
+            .status()
+            .expect("git commit");
+        assert!(st.success());
+
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::state::migrations::get_migrations()
+            .to_latest(&mut conn)
+            .unwrap();
+        let storage = StorageManager::init_from_conn(conn);
+        let config = Config::default();
+        let mut packet = dirty_one_file_packet();
+        packet.analysis_mode = "prospective".to_string();
+        let started = Instant::now();
+        let opts = ImpactHistoryOpts {
+            overall_budget_secs: Some(1),
+            overall_deadline: Some(Instant::now() + Duration::from_millis(150)),
+            ..ImpactHistoryOpts::default()
+        };
+        ImpactOrchestrator::with_builtins()
+            .run_with_history_opts(&mut packet, &storage, &config, &repo, opts)
+            .expect("builtins future Instant must return");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "builtins pipeline must emit under 1s, got {:?}",
+            started.elapsed()
+        );
+        let c = packet.completeness.expect("overall completeness");
+        assert_eq!(c.scope, Some(CompletenessScope::Overall));
     }
 
     #[test]
