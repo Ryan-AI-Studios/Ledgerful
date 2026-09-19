@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Unscoped ledger audit emit during walk (0392):** unscoped
+  `audit` / `ledger audit` reuse `poll_overall_stop` (cancel-honest
+  `completeness.stop`) and skip the unindexed complexity fallback
+  when an overall Instant is set (including the omitted-`--timeout`
+  default 25s Instant). Stderr `audit stopped: overall budget`
+  prints only on budget stops. Complete-walk Instant still uses
+  stage `ci_trend`.
+
 - **Hotspots list/explain emit during walk (0391):** default
   `hotspots` list and unbounded `hotspots explain` reuse
   `poll_overall_stop` (cancel-honest `completeness.stop`) and skip

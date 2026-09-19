@@ -9,9 +9,9 @@ use crate::impact::budget::{
     AUDIT_BUDGET_WARN, AnalysisBudget, CompletenessFilter, CompletenessStop, HistoryWalkStop,
     apply_resolved_history_budget, completeness_for_error, completeness_for_overall,
     completeness_for_walk, eprint_walk_stop, install_cancel_flag, is_overall_stop,
-    overall_deadline_fired, resolve_audit_overall_budget_secs,
+    poll_overall_stop, resolve_audit_overall_budget_secs,
 };
-use crate::impact::hotspots::calculate_hotspots_detailed;
+use crate::impact::hotspots::{HotspotQuery, calculate_hotspots_detailed};
 use crate::impact::packet::Hotspot;
 use crate::impact::temporal::GixHistoryProvider;
 use crate::ledger::db::LedgerDb;
@@ -24,7 +24,7 @@ use crate::verify::results::VERIFY_HISTORY;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 fn is_false(v: &bool) -> bool {
@@ -176,40 +176,46 @@ fn empty_project_audit_report(
     }
 }
 
-fn overall_stop_kind(cancel: &AtomicBool) -> CompletenessStop {
-    if cancel.load(Ordering::Relaxed) {
-        CompletenessStop::Cancelled
-    } else {
-        CompletenessStop::Budget
-    }
-}
-
-fn audit_stage_gate_fired(deadline: Option<Instant>, cancel: &AtomicBool) -> bool {
-    cancel.load(Ordering::Relaxed) || overall_deadline_fired(deadline)
-}
-
 fn overall_completeness(
-    cancel: &AtomicBool,
+    stop: CompletenessStop,
     overall_secs: u64,
     stage: &str,
 ) -> crate::impact::budget::AnalysisCompleteness {
-    completeness_for_overall(
-        overall_stop_kind(cancel),
-        Some(overall_secs).filter(|s| *s > 0),
-        stage,
-    )
+    completeness_for_overall(stop, Some(overall_secs).filter(|s| *s > 0), stage)
 }
 
 fn keep_or_set_overall(
     existing: Option<crate::impact::budget::AnalysisCompleteness>,
-    cancel: &AtomicBool,
+    stop: CompletenessStop,
     overall_secs: u64,
     stage: &str,
 ) -> Option<crate::impact::budget::AnalysisCompleteness> {
     if existing.as_ref().is_some_and(is_overall_stop) {
         existing
     } else {
-        Some(overall_completeness(cancel, overall_secs, stage))
+        Some(overall_completeness(stop, overall_secs, stage))
+    }
+}
+
+fn unscoped_audit_hotspot_query(
+    commits: usize,
+    limit: usize,
+    decay_half_life: usize,
+    history_budget_secs: u64,
+    overall_deadline: Option<Instant>,
+    cancel: Arc<AtomicBool>,
+) -> HotspotQuery {
+    HotspotQuery {
+        commits,
+        limit,
+        decay_half_life,
+        budget: Some(AnalysisBudget::capped_by_overall(
+            history_budget_secs,
+            overall_deadline,
+            cancel,
+        )),
+        skip_unindexed_complexity_fallback: overall_deadline.is_some(),
+        ..Default::default()
     }
 }
 
@@ -274,12 +280,12 @@ fn emit_unscoped_report(
 }
 
 fn emit_skip_open_storage(
-    cancel: &AtomicBool,
+    stop: CompletenessStop,
     overall_secs: u64,
     json: bool,
     json_out: Option<&mut Vec<u8>>,
 ) -> Result<()> {
-    let completeness = overall_completeness(cancel, overall_secs, "storage");
+    let completeness = overall_completeness(stop, overall_secs, "storage");
     let stop = completeness.stop;
     let report = empty_project_audit_report(Some(completeness));
     if json {
@@ -299,7 +305,7 @@ fn emit_skip_open_storage(
 }
 
 fn should_eprint_walk_stop(overall_deadline: Option<Instant>, cancel: &AtomicBool) -> bool {
-    !audit_stage_gate_fired(overall_deadline, cancel)
+    poll_overall_stop(overall_deadline, cancel).is_none()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -315,8 +321,8 @@ fn audit_completeness_after_walk(
     cancel: &AtomicBool,
 ) -> Option<crate::impact::budget::AnalysisCompleteness> {
     let walk_complete = matches!(walk_stop, HistoryWalkStop::Complete);
-    if audit_stage_gate_fired(overall_deadline, cancel) && !walk_complete {
-        return Some(overall_completeness(cancel, overall_secs, "hotspots"));
+    if !walk_complete && let Some(stop) = poll_overall_stop(overall_deadline, cancel) {
+        return Some(overall_completeness(stop, overall_secs, "hotspots"));
     }
     completeness_for_walk(
         walk_stop,
@@ -396,8 +402,8 @@ pub(crate) fn execute_ledger_audit_in(
         .overall_deadline_override
         .or_else(|| (overall_secs > 0).then(|| Instant::now() + Duration::from_secs(overall_secs)));
 
-    if audit_stage_gate_fired(overall_deadline, &cancel) {
-        return emit_skip_open_storage(&cancel, overall_secs, json, json_out);
+    if let Some(stop) = poll_overall_stop(overall_deadline, &cancel) {
+        return emit_skip_open_storage(stop, overall_secs, json, json_out);
     }
 
     let storage = StorageManager::open_read_only_sqlite_only(&layout)?;
@@ -449,9 +455,9 @@ fn gather_audit_data(
     let layout = get_layout()?;
     let db = LedgerDb::new(storage.get_connection());
 
-    if audit_stage_gate_fired(overall_deadline, &cancel) {
+    if let Some(stop) = poll_overall_stop(overall_deadline, &cancel) {
         return Ok(empty_project_audit_report(Some(overall_completeness(
-            &cancel,
+            stop,
             overall_secs,
             "velocity",
         ))));
@@ -484,13 +490,13 @@ fn gather_audit_data(
         federated: 0,
     };
 
-    if audit_stage_gate_fired(overall_deadline, &cancel) {
+    if let Some(stop) = poll_overall_stop(overall_deadline, &cancel) {
         return Ok(ProjectAuditReport {
             velocity,
             churn: vec![],
             unaudited_drift: vec![],
             hotspots: vec![],
-            completeness: Some(overall_completeness(&cancel, overall_secs, "federated")),
+            completeness: Some(overall_completeness(stop, overall_secs, "federated")),
             ci_trend: vec![],
             ci_trend_corrupt: false,
             recent_entries: vec![],
@@ -505,13 +511,13 @@ fn gather_audit_data(
         .unwrap_or(0);
     velocity.federated = federated_count;
 
-    if audit_stage_gate_fired(overall_deadline, &cancel) {
+    if let Some(stop) = poll_overall_stop(overall_deadline, &cancel) {
         return Ok(ProjectAuditReport {
             velocity,
             churn: vec![],
             unaudited_drift: vec![],
             hotspots: vec![],
-            completeness: Some(overall_completeness(&cancel, overall_secs, "churn")),
+            completeness: Some(overall_completeness(stop, overall_secs, "churn")),
             ci_trend: vec![],
             ci_trend_corrupt: false,
             recent_entries: vec![],
@@ -544,13 +550,13 @@ fn gather_audit_data(
         vec![]
     };
 
-    if audit_stage_gate_fired(overall_deadline, &cancel) {
+    if let Some(stop) = poll_overall_stop(overall_deadline, &cancel) {
         return Ok(ProjectAuditReport {
             velocity,
             churn,
             unaudited_drift,
             hotspots: vec![],
-            completeness: Some(overall_completeness(&cancel, overall_secs, "hotspots")),
+            completeness: Some(overall_completeness(stop, overall_secs, "hotspots")),
             ci_trend: vec![],
             ci_trend_corrupt: false,
             recent_entries: vec![],
@@ -560,17 +566,14 @@ fn gather_audit_data(
     let discovered = gix::discover(&layout.root).into_diagnostic()?;
     let history_provider = GixHistoryProvider::new(&discovered);
     let commits = config.hotspots.max_commits;
-    let query = crate::impact::hotspots::HotspotQuery {
+    let query = unscoped_audit_hotspot_query(
         commits,
         limit,
-        decay_half_life: config.hotspots.decay_half_life,
-        budget: Some(AnalysisBudget::capped_by_overall(
-            config.hotspots.history_budget_secs,
-            overall_deadline,
-            Arc::clone(&cancel),
-        )),
-        ..Default::default()
-    };
+        config.hotspots.decay_half_life,
+        config.hotspots.history_budget_secs,
+        overall_deadline,
+        Arc::clone(&cancel),
+    );
     let mut walk_complete = false;
     let (hotspots, mut completeness) =
         match calculate_hotspots_detailed(storage, &history_provider, &query) {
@@ -595,8 +598,9 @@ fn gather_audit_data(
             Err(e) => {
                 tracing::warn!(error = %e, "audit hotspots history failed");
                 eprintln!("warning: audit hotspots unavailable: {e}");
-                let completeness = if audit_stage_gate_fired(overall_deadline, &cancel) {
-                    Some(overall_completeness(&cancel, overall_secs, "hotspots"))
+                let completeness = if let Some(stop) = poll_overall_stop(overall_deadline, &cancel)
+                {
+                    Some(overall_completeness(stop, overall_secs, "hotspots"))
                 } else {
                     Some(completeness_for_error(
                         commits as u64,
@@ -609,8 +613,8 @@ fn gather_audit_data(
             }
         };
 
-    if audit_stage_gate_fired(overall_deadline, &cancel) && !walk_complete {
-        completeness = keep_or_set_overall(completeness, &cancel, overall_secs, "hotspots");
+    if !walk_complete && let Some(stop) = poll_overall_stop(overall_deadline, &cancel) {
+        completeness = keep_or_set_overall(completeness, stop, overall_secs, "hotspots");
         return Ok(ProjectAuditReport {
             velocity,
             churn,
@@ -623,8 +627,8 @@ fn gather_audit_data(
         });
     }
 
-    if audit_stage_gate_fired(overall_deadline, &cancel) {
-        completeness = keep_or_set_overall(completeness, &cancel, overall_secs, "ci_trend");
+    if let Some(stop) = poll_overall_stop(overall_deadline, &cancel) {
+        completeness = keep_or_set_overall(completeness, stop, overall_secs, "ci_trend");
         return Ok(ProjectAuditReport {
             velocity,
             churn,
@@ -662,8 +666,8 @@ fn gather_audit_data(
         vec![]
     };
 
-    if audit_stage_gate_fired(overall_deadline, &cancel) {
-        completeness = keep_or_set_overall(completeness, &cancel, overall_secs, "recent");
+    if let Some(stop) = poll_overall_stop(overall_deadline, &cancel) {
+        completeness = keep_or_set_overall(completeness, stop, overall_secs, "recent");
         return Ok(ProjectAuditReport {
             velocity,
             churn,
@@ -682,8 +686,8 @@ fn gather_audit_data(
 
     let recent_entries = audit_entries_from_ledger_entries(&db, recent)?;
 
-    if audit_stage_gate_fired(overall_deadline, &cancel) {
-        completeness = keep_or_set_overall(completeness, &cancel, overall_secs, "recent");
+    if let Some(stop) = poll_overall_stop(overall_deadline, &cancel) {
+        completeness = keep_or_set_overall(completeness, stop, overall_secs, "recent");
     }
 
     Ok(ProjectAuditReport {
@@ -1375,7 +1379,7 @@ mod tests {
         let overall = completeness_for_overall(CompletenessStop::Budget, Some(25), "storage");
         let kept = keep_or_set_overall(
             Some(overall.clone()),
-            &AtomicBool::new(false),
+            CompletenessStop::Budget,
             25,
             "hotspots",
         )
@@ -1391,7 +1395,7 @@ mod tests {
             None,
             Some(45),
         );
-        let overwritten = keep_or_set_overall(history, &AtomicBool::new(false), 25, "hotspots")
+        let overwritten = keep_or_set_overall(history, CompletenessStop::Budget, 25, "hotspots")
             .expect("overwrite history");
         assert!(is_overall_stop(&overwritten));
         assert_eq!(overwritten.stage.as_deref(), Some("hotspots"));
@@ -1841,6 +1845,149 @@ mod tests {
 
     #[test]
     #[allow(non_snake_case)]
+    #[serial_test::serial(cwd)]
+    fn audit_unscoped__cancel_after_storage__emits_scope_overall_stop_cancelled() {
+        use crate::state::layout::Layout;
+        use crate::state::storage::StorageManager;
+        use crate::tests::DirGuard;
+        use camino::Utf8Path;
+        use std::fs;
+        use std::process::Command;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        assert!(
+            Command::new("git")
+                .args(["init", "-b", "main"])
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        Command::new("git")
+            .args(["config", "user.email", "t@t.com"])
+            .current_dir(root)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "t"])
+            .current_dir(root)
+            .status()
+            .unwrap();
+        fs::write(root.join("README.md"), "one\n").unwrap();
+        assert!(
+            Command::new("git")
+                .args(["add", "README.md"])
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args(["commit", "-m", "first"])
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let _guard = DirGuard::new(root);
+        let utf = Utf8Path::from_path(root).expect("utf8");
+        let layout = Layout::from_roots(utf, utf.join(".ledgerful"));
+        layout.ensure_state_dir().unwrap();
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+        let storage = StorageManager::open_read_only_sqlite_only(&layout).expect("ro");
+        let report = gather_audit_data(
+            &storage,
+            false,
+            3,
+            0,
+            crate::config::model::Config::default(),
+            Arc::new(AtomicBool::new(true)),
+            Some(Instant::now() + Duration::from_secs(60)),
+            25,
+        )
+        .expect("emit");
+        let c = report.completeness.expect("completeness");
+        assert!(is_overall_stop(&c));
+        assert_eq!(c.stop, CompletenessStop::Cancelled);
+        assert_eq!(c.stage.as_deref(), Some("velocity"));
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    #[serial_test::serial(cwd)]
+    fn audit_unscoped__future_instant_entry__emits_scope_overall_under_5s() {
+        use crate::tests::DirGuard;
+        use std::fs;
+        use std::process::Command;
+
+        let started = Instant::now();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        assert!(
+            Command::new("git")
+                .args(["init", "-b", "main"])
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        Command::new("git")
+            .args(["config", "user.email", "t@t.com"])
+            .current_dir(root)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "t"])
+            .current_dir(root)
+            .status()
+            .unwrap();
+        fs::write(root.join("README.md"), "one\n").unwrap();
+        assert!(
+            Command::new("git")
+                .args(["add", "README.md"])
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args(["commit", "-m", "first"])
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let _guard = DirGuard::new(root);
+        let mut buf = Vec::new();
+        execute_ledger_audit_in(
+            None,
+            false,
+            3,
+            0,
+            true,
+            None,
+            AuditRunOpts {
+                cancel: Some(Arc::new(AtomicBool::new(false))),
+                overall_deadline_override: Some(Instant::now() + Duration::from_millis(1)),
+            },
+            Some(&mut buf),
+        )
+        .expect("emit");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed <= Duration::from_secs(5),
+            "1ms Instant must emit in ≤5s, took {elapsed:?}"
+        );
+        let stdout = String::from_utf8_lossy(&buf);
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect(&stdout);
+        assert_eq!(v["completeness"]["scope"], "overall");
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
     fn audit_stderr_token__overall_stop__audit_stopped_overall_budget() {
         assert_eq!(AUDIT_BUDGET_WARN, "audit stopped: overall budget");
     }
@@ -1854,18 +2001,22 @@ mod tests {
 
     #[test]
     #[allow(non_snake_case)]
-    fn audit_stage_gate_fired__cancel_or_instant__neither_false() {
-        let idle = AtomicBool::new(false);
-        let cancelled = AtomicBool::new(true);
-        let far = Instant::now() + Duration::from_secs(3600);
-        let expired = Instant::now()
-            .checked_sub(Duration::from_secs(1))
-            .unwrap_or_else(Instant::now);
-        assert!(audit_stage_gate_fired(None, &cancelled));
-        assert!(audit_stage_gate_fired(Some(far), &cancelled));
-        assert!(audit_stage_gate_fired(Some(expired), &idle));
-        assert!(!audit_stage_gate_fired(None, &idle));
-        assert!(!audit_stage_gate_fired(Some(far), &idle));
+    fn audit_unscoped__hotspot_query__overall_instant__skips_unindexed_complexity_fallback() {
+        let idle = Arc::new(AtomicBool::new(false));
+        let with_instant = unscoped_audit_hotspot_query(
+            500,
+            3,
+            30,
+            45,
+            Some(Instant::now() + Duration::from_secs(25)),
+            Arc::clone(&idle),
+        );
+        assert!(
+            with_instant.skip_unindexed_complexity_fallback,
+            "overall Instant must skip the unindexed symbols gap query"
+        );
+        let without = unscoped_audit_hotspot_query(500, 3, 30, 45, None, idle);
+        assert!(!without.skip_unindexed_complexity_fallback);
     }
 
     #[test]
