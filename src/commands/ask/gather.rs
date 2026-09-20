@@ -13,6 +13,7 @@ use crate::commands::ask::{
 use crate::config::model::Config;
 use crate::impact::packet::ImpactPacket;
 use crate::local_model::pruner::{self, RankedChunk};
+use crate::retrieval::query::{QueryIntent, classify_query};
 use crate::search::TantivySearchEngine;
 use crate::search::tantivy_engine::normalize_search_path;
 use crate::state::layout::Layout;
@@ -44,6 +45,10 @@ pub(crate) struct GatherResult {
     pub relevant_chunks: Vec<RankedChunk>,
     pub semantic_gather_kind: SemanticGatherKind,
     pub evidence: EvidenceCounts,
+    /// Skip embed+KG+FTS (LLM-instruction / ping on the global arm).
+    pub gather_skipped_trivial: bool,
+    /// Same `GatherPlan` flag that drives KG neighborhood + banner + prompt.
+    pub include_kg_neighborhood: bool,
 }
 
 /// Pinned stderr evidence tokens (0312). `structural` is omit-empty (0395).
@@ -66,6 +71,135 @@ pub(crate) fn format_evidence_line(counts: &EvidenceCounts) -> String {
         line.push_str(&format!(" structural={}", counts.structural));
     }
     line
+}
+
+const INSTRUCTION_PHRASES: &[&str] = &[
+    "reply with",
+    "respond with",
+    "say only",
+    "output only",
+    "print only",
+    "single word",
+];
+
+const PING_TOKENS: &[&str] = &["pong", "ping", "hello", "hi"];
+
+/// Locked skip-banner suffixes (0405). Not optional.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatherSkipKind {
+    LlmInstruction,
+    Ping,
+}
+
+/// One compute of skip + KG neighborhood (banner/prompt use the same values).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatherPlan {
+    pub skip: bool,
+    pub skip_kind: Option<GatherSkipKind>,
+    pub include_kg_neighborhood: bool,
+}
+
+fn tokenize_ask_query(s: &str) -> Vec<String> {
+    s.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn contains_phrase_tokens(tokens: &[String], phrase: &str) -> bool {
+    let phrase_tokens = tokenize_ask_query(phrase);
+    if phrase_tokens.is_empty() || phrase_tokens.len() > tokens.len() {
+        return false;
+    }
+    tokens
+        .windows(phrase_tokens.len())
+        .any(|window| window == phrase_tokens.as_slice())
+}
+
+pub(crate) fn is_llm_instruction_query(query: &str) -> bool {
+    let tokens = tokenize_ask_query(query);
+    INSTRUCTION_PHRASES
+        .iter()
+        .any(|phrase| contains_phrase_tokens(&tokens, phrase))
+}
+
+pub(crate) fn is_ping_token(query: &str) -> bool {
+    let tokens = tokenize_ask_query(query);
+    matches!(tokens.as_slice(), [t] if PING_TOKENS.contains(&t.as_str()))
+}
+
+/// Skip embed+KG+FTS on the **global** arm for LLM-instruction / ping tokens.
+pub(crate) fn skip_oversized_global_gather(
+    query: &str,
+    explicit_semantic: bool,
+    is_global: bool,
+) -> bool {
+    let instruction = is_llm_instruction_query(query);
+    let ping = is_ping_token(query);
+    is_global
+        && !explicit_semantic
+        && !is_definition_shaped(query)
+        && extract_identifier_candidates(query).is_empty()
+        && classify_query(query) == QueryIntent::Unknown
+        && (instruction || ping)
+}
+
+pub(crate) fn gather_plan(query: &str, explicit_semantic: bool, is_global: bool) -> GatherPlan {
+    let instruction = is_llm_instruction_query(query);
+    let skip = skip_oversized_global_gather(query, explicit_semantic, is_global);
+    let skip_kind = if skip {
+        if instruction {
+            Some(GatherSkipKind::LlmInstruction)
+        } else {
+            Some(GatherSkipKind::Ping)
+        }
+    } else {
+        None
+    };
+    let include_kg_neighborhood = !skip
+        && (explicit_semantic
+            || is_definition_shaped(query)
+            || classify_query(query) == QueryIntent::GlobalConceptual);
+    GatherPlan {
+        skip,
+        skip_kind,
+        include_kg_neighborhood,
+    }
+}
+
+pub(crate) fn format_gather_elapsed_ms(ms: u128) -> String {
+    format!("gather {ms}ms")
+}
+
+pub(crate) fn format_skip_global_banner(kind: GatherSkipKind) -> String {
+    let suffix = match kind {
+        GatherSkipKind::LlmInstruction => "llm-instruction",
+        GatherSkipKind::Ping => "ping",
+    };
+    format!("[Global Mode] {WORKING_TREE_NO_PENDING_CHANGES} — gather skipped ({suffix}).")
+}
+
+pub(crate) fn format_live_clean_gather_banner(include_kg_neighborhood: bool) -> String {
+    if include_kg_neighborhood {
+        format!(
+            "[Global Mode] {WORKING_TREE_NO_PENDING_CHANGES} — querying the full Knowledge Graph for context."
+        )
+    } else {
+        format!(
+            "[Global Mode] {WORKING_TREE_NO_PENDING_CHANGES} — gathering semantic and lexical context."
+        )
+    }
+}
+
+pub(crate) fn global_system_prompt(skip: bool, include_kg_neighborhood: bool) -> &'static str {
+    if skip {
+        "You are Ledgerful, an expert software engineering assistant. Answer the user query directly. No retrieved knowledge graph or semantic context snippets were gathered for this query. Do not invent file paths."
+    } else if include_kg_neighborhood {
+        "You are Ledgerful, an expert software engineering assistant. You act as a codebase oracle answering architectural and implementation questions based on retrieved knowledge graph and semantic context snippets. Provide direct, technical, and accurate answers citing the retrieved snippets where relevant."
+    } else {
+        "You are Ledgerful, an expert software engineering assistant. You act as a codebase oracle answering architectural and implementation questions based on retrieved semantic and lexical context snippets. Provide direct, technical, and accurate answers citing the retrieved snippets where relevant."
+    }
 }
 
 /// Hermetic inject for Ask mix (0395). CLI path uses [`GatherMixOpts::default`].
@@ -237,6 +371,8 @@ pub(crate) fn gather_impact_and_bridge(
         relevant_chunks: Vec::new(),
         semantic_gather_kind: SemanticGatherKind::Skipped,
         evidence: EvidenceCounts::default(),
+        gather_skipped_trivial: false,
+        include_kg_neighborhood: false,
     })
 }
 
@@ -247,7 +383,7 @@ pub(crate) fn gather_semantic_and_kg(
     storage: &StorageManager,
     layout: &Layout,
     config: &Config,
-    semantic: bool,
+    explicit_semantic: bool,
     auto_index: bool,
     limit: usize,
     no_kg_fallback: bool,
@@ -257,7 +393,7 @@ pub(crate) fn gather_semantic_and_kg(
         storage,
         layout,
         config,
-        semantic,
+        explicit_semantic,
         auto_index,
         limit,
         no_kg_fallback,
@@ -272,12 +408,21 @@ pub(crate) fn gather_semantic_and_kg_with(
     storage: &StorageManager,
     layout: &Layout,
     config: &Config,
-    semantic: bool,
+    explicit_semantic: bool,
     auto_index: bool,
     limit: usize,
     no_kg_fallback: bool,
     opts: GatherMixOpts,
 ) {
+    let plan = gather_plan(
+        &gathered.query_string,
+        explicit_semantic,
+        gathered.is_global,
+    );
+    gathered.gather_skipped_trivial = plan.skip;
+    gathered.include_kg_neighborhood = plan.include_kg_neighborhood;
+    let semantic = (explicit_semantic || gathered.is_global) && !plan.skip;
+
     // 0096 DoD-5: removed interactive `index --semantic` prompt (same defect as
     // search — named semantic index, ran non-semantic incremental; re-prompted
     // forever on empty repos). State-driven warnings replace it.
@@ -305,13 +450,20 @@ pub(crate) fn gather_semantic_and_kg_with(
 
         );
     } else if gathered.live_tree_clean && !gathered.pruned_for_intent {
-        eprintln!(
-            "{}",
-            format!(
-                "[Global Mode] {WORKING_TREE_NO_PENDING_CHANGES} — querying the full Knowledge Graph for context."
-            )
-            .if_supports_color(Stream::Stderr, |s| s.cyan())
-        );
+        let line = if let Some(kind) = plan.skip_kind {
+            format_skip_global_banner(kind)
+        } else {
+            format_live_clean_gather_banner(plan.include_kg_neighborhood)
+        };
+        eprintln!("{}", line.if_supports_color(Stream::Stderr, |s| s.cyan()));
+    }
+
+    if plan.skip {
+        gathered.relevant_chunks.clear();
+        gathered.semantic_gather_kind = SemanticGatherKind::Skipped;
+        gathered.evidence = EvidenceCounts::default();
+        eprintln!("{}", format_evidence_line(&gathered.evidence));
+        return;
     }
 
     // DoD-4/8: never treat embed/query Err as "no semantic matches".
@@ -325,6 +477,7 @@ pub(crate) fn gather_semantic_and_kg_with(
             limit,
             &config.local_model,
             gathered.is_global,
+            plan.include_kg_neighborhood,
         ),
     };
     let (semantic_chunks, semantic_gather_kind) = match semantic_result {
@@ -456,7 +609,8 @@ pub(crate) fn gather_semantic_and_kg_with(
             evidence.kg += 1;
         }
 
-        if gathered.is_global
+        if plan.include_kg_neighborhood
+            && gathered.is_global
             && !relevant_chunks.is_empty()
             && let Some(cozo) = storage.cozo()
         {
@@ -816,6 +970,165 @@ mod tests {
     }
 
     #[test]
+    fn skip_oversized_global_gather_pong_instruction_and_ping_token() {
+        assert!(skip_oversized_global_gather(
+            "Reply with the single word pong.",
+            false,
+            true
+        ));
+        assert!(skip_oversized_global_gather("pong", false, true));
+        assert!(skip_oversized_global_gather("hello", false, true));
+        assert!(!skip_oversized_global_gather("architecture", false, true));
+        assert!(!skip_oversized_global_gather("config", false, true));
+        assert!(!skip_oversized_global_gather("MCP", false, true));
+        assert!(!skip_oversized_global_gather(
+            "Where is configuration provenance resolved?",
+            false,
+            true
+        ));
+        assert!(!skip_oversized_global_gather(
+            "what is change-context",
+            false,
+            true
+        ));
+        assert!(!skip_oversized_global_gather("pong", true, true));
+        assert!(!skip_oversized_global_gather("pong", false, false));
+        assert!(!skip_oversized_global_gather("test", false, true));
+        let instruction = gather_plan("Reply with the single word pong.", false, true);
+        assert_eq!(instruction.skip_kind, Some(GatherSkipKind::LlmInstruction));
+        assert!(!instruction.include_kg_neighborhood);
+        let ping = gather_plan("pong", false, true);
+        assert_eq!(ping.skip_kind, Some(GatherSkipKind::Ping));
+        let conceptual = gather_plan("architecture", false, true);
+        assert!(!conceptual.skip);
+        assert!(conceptual.include_kg_neighborhood);
+        let subsystem = gather_plan("config", false, true);
+        assert!(!subsystem.skip);
+        assert!(!subsystem.include_kg_neighborhood);
+    }
+
+    #[test]
+    fn skip_banner_and_gather_elapsed_format_are_locked() {
+        let instruction = format_skip_global_banner(GatherSkipKind::LlmInstruction);
+        assert!(instruction.contains(WORKING_TREE_NO_PENDING_CHANGES));
+        assert!(instruction.contains("gather skipped (llm-instruction)"));
+        assert!(!instruction.contains("full Knowledge Graph"));
+        let ping = format_skip_global_banner(GatherSkipKind::Ping);
+        assert!(ping.contains("gather skipped (ping)"));
+        let kg = format_live_clean_gather_banner(true);
+        assert!(kg.contains("full Knowledge Graph"));
+        let lexical = format_live_clean_gather_banner(false);
+        assert!(lexical.contains("semantic and lexical context"));
+        assert!(!lexical.contains("full Knowledge Graph"));
+        let elapsed = format_gather_elapsed_ms(12);
+        assert!(
+            regex_gather_elapsed().is_match(&elapsed),
+            "elapsed={elapsed}"
+        );
+        let skip_prompt = global_system_prompt(true, false);
+        assert!(
+            !skip_prompt.contains("based on retrieved knowledge graph"),
+            "skip prompt must not claim snippets were gathered"
+        );
+        assert!(skip_prompt.contains("No retrieved knowledge graph"));
+        let kg_prompt = global_system_prompt(false, true);
+        assert!(kg_prompt.contains("knowledge graph"));
+        let lexical_prompt = global_system_prompt(false, false);
+        assert!(!lexical_prompt.contains("knowledge graph"));
+        assert!(lexical_prompt.contains("semantic and lexical"));
+    }
+
+    fn regex_gather_elapsed() -> regex::Regex {
+        regex::Regex::new(r"\bgather \d+ms\b").expect("gather elapsed regex")
+    }
+
+    #[test]
+    fn skip_path_evidence_zeros_and_does_not_embed() {
+        let dir = tempdir().expect("tempdir");
+        init_repo_with_commit(dir.path());
+        let root = camino::Utf8Path::from_path(dir.path()).expect("utf8");
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().expect("state");
+        let storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())
+            .expect("storage");
+        let mut gathered = GatherResult {
+            latest_packet: ImpactPacket::default(),
+            is_global: true,
+            had_real_packet: false,
+            fresh_packet: true,
+            pruned_for_intent: false,
+            live_tree_clean: true,
+            query_string: "Reply with the single word pong.".into(),
+            relevant_chunks: vec![RankedChunk {
+                source: "should-be-cleared".into(),
+                content: "x".into(),
+                score: 1.0,
+            }],
+            semantic_gather_kind: SemanticGatherKind::Succeeded,
+            evidence: EvidenceCounts {
+                semantic: 9,
+                ..EvidenceCounts::default()
+            },
+            gather_skipped_trivial: false,
+            include_kg_neighborhood: false,
+        };
+        gather_semantic_and_kg_with(
+            &mut gathered,
+            &storage,
+            &layout,
+            &Config::default(),
+            false,
+            false,
+            3,
+            true,
+            GatherMixOpts {
+                semantic_override: Some(SemanticGather::Chunks {
+                    chunks: vec![RankedChunk {
+                        source: "must-not-run".into(),
+                        content: "if skip used this, evidence would be nonempty".into(),
+                        score: 0.9,
+                    }],
+                    read_failed: 0,
+                }),
+                symbol_rows_override: None,
+            },
+        );
+        assert!(gathered.gather_skipped_trivial);
+        assert!(!gathered.include_kg_neighborhood);
+        assert!(gathered.relevant_chunks.is_empty());
+        assert_eq!(gathered.evidence, EvidenceCounts::default());
+        assert!(
+            !gathered
+                .relevant_chunks
+                .iter()
+                .any(|c| c.source.starts_with("Knowledge Graph"))
+        );
+        storage.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    fn fallback_neighborhood_site_is_gated_on_include_kg() {
+        let src = include_str!("gather.rs");
+        let fn_at = src
+            .find("fn gather_semantic_and_kg_with")
+            .expect("gather_semantic_and_kg_with");
+        let body = &src[fn_at..];
+        let call_at = body
+            .find("fetch_kg_neighborhood")
+            .expect("pruner-fallback neighborhood call");
+        let window_start = call_at.saturating_sub(400);
+        let window = &body[window_start..call_at];
+        assert!(
+            window.contains("include_kg_neighborhood"),
+            "fetch_kg_neighborhood must sit behind include_kg_neighborhood; window={window}"
+        );
+        assert!(
+            !window.contains("if gathered.is_global\n            && !relevant_chunks.is_empty()"),
+            "must not attach fallback neighborhood on mere is_global"
+        );
+    }
+
+    #[test]
     #[allow(non_snake_case)]
     fn gather_semantic_and_kg__nonempty_vectors__still_runs_tantivy() {
         use crate::search::trigram::extract_trigrams;
@@ -875,6 +1188,8 @@ mod tests {
             relevant_chunks: Vec::new(),
             semantic_gather_kind: SemanticGatherKind::Skipped,
             evidence: EvidenceCounts::default(),
+            gather_skipped_trivial: false,
+            include_kg_neighborhood: false,
         };
         let config = Config::default();
         gather_semantic_and_kg_with(
