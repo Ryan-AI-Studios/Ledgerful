@@ -96,9 +96,12 @@ Clone-durable content (Phase A) lives in git:
   `tests/fixtures/policies/dogfood_policy.cedar` into `policies/`.
 
 Expected `ledgerful surfaces` on this checkout after Phase A index, without flipping
-coverage: **2 gated · 1 empty · 3 ready** (services + deploy gated; observability empty;
-data-models **ready** from rusqlite `Row` mappers on default `data-models list`;
-schema + security ready). The Go sample remains a fixture omitted from the default list.
+coverage: **2 gated · 1 empty · 3 ready** (services + deploy catalog gated;
+observability empty; data-models **ready** from rusqlite `Row` mappers on default
+`data-models list`; schema + security ready). CLI `deploy impact` still classifies
+dirty default-glob manifests on product default (0399); catalog deploy stays
+gated on coverage flags plus indexed `deploy_manifests` (0343). The Go sample
+remains a fixture omitted from the default list.
 
 ### Phase B — local `[services]` recipe (not clone-durable)
 

@@ -48,9 +48,9 @@ pub fn notice_id_for_deploy(
     coverage_enabled: bool,
     deploy_enabled: bool,
 ) -> Option<SessionNoticeId> {
-    if !coverage_enabled {
-        Some(SessionNoticeId::CoverageGlobal)
-    } else if !deploy_enabled {
+    // 0399: deploy-impact empty is classify/`noMatches` when coverage is off.
+    // Cookie only on explicit deploy-section disable (0324).
+    if coverage_enabled && !deploy_enabled {
         Some(SessionNoticeId::CoverageDeploy)
     } else {
         None
@@ -437,10 +437,8 @@ mod tests {
             notice_id_for_deploy(true, false),
             Some(SessionNoticeId::CoverageDeploy)
         );
-        assert_eq!(
-            notice_id_for_deploy(false, true),
-            Some(SessionNoticeId::CoverageGlobal)
-        );
+        assert_eq!(notice_id_for_deploy(false, true), None);
+        assert_eq!(notice_id_for_deploy(false, false), None);
         let (_tmp, layout) = layout_tmp();
         let now = Utc::now();
         let mut session = CliSession::load(&layout, None, now);

@@ -47,20 +47,26 @@ Understand the "blast radius" of any change before it is committed.
         `--fail` still requires `--threshold` or `[hotspots] budget_threshold`.
     *   **Contracts**: OpenAPI/Swagger contract risk matching.
     *   **Infrastructure**: Docker, Kubernetes, Terraform, and Helm manifest awareness.
-        `deploy impact` disabled-by-config empty states name the coverage switch
-        and do not lead with “No deployment impact detected.”
+        `deploy impact` classifies dirty default-glob manifests without flipping
+        coverage. Disabled-by-config empty is only an explicit
+        `coverage.deploy.enabled=false` under global on, and does not lead with
+        “No deployment impact detected.”
         `index --incremental` writes `deploy_manifests` so a deploy-only
         repo (Dockerfile, no HTTP) can show gated `coverage.global`;
         `surfaces` empty `next` (`ledgerful index --incremental`) is honest.
         Catalog `data-models` ready matches default `data-models list`
         product scope; fixture-only is empty with
         `ledgerful data-models list --include-fixtures`.
-    *   **Deploy impact inspectability (0358):** `deploy impact` is a
+    *   **Deploy impact inspectability (0358 / 0399):** `deploy impact` is a
         working-tree git-diff classify (Dockerfile, compose, Terraform,
-        k8s globs). It does not run the impact orchestrator. JSON always
-        names `defaultPatterns` and `classifiers`. `--timeout` on
-        `impact` is the overall emit budget (default 25s). Helm and
-        CiWorkflow classify only when a user glob matches.
+        k8s globs) on product-default coverage (no `config set`). Explicit
+        `coverage.deploy.enabled=false` under global on stays gated. It
+        does not run the impact orchestrator. JSON always names
+        `defaultPatterns` and `classifiers`. `--timeout` on `impact` is
+        the overall emit budget (default 25s). Helm and CiWorkflow
+        classify only when a user glob matches. Surfaces catalog deploy
+        readiness still follows coverage flags plus indexed
+        `deploy_manifests`.
     *   **Data-model extract inspectability (0357 / 0398):** `data-models list` /
         `impact` always name supported extractors (Rust persistence
         derives and rusqlite `Row` mappers, Go json-tagged structs,

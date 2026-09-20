@@ -186,14 +186,79 @@ fn deploy_impact_dockerfile_and_compose_from_root_and_subdir() {
     );
 }
 
-#[test]
-fn deploy_impact_gated_skips_sqlite_growth() {
-    let tmp = tempdir().unwrap();
-    let root = tmp.path();
+fn seed_git_readme(root: &std::path::Path) {
     setup_git_repo(root);
     fs::write(root.join("README.md"), "# temp\n").unwrap();
     git_cmd(root, &["add", "-A"]);
     git_cmd(root, &["commit", "-m", "initial"]);
+}
+
+fn assert_classified_dockerfile_json(stdout: &str, label: &str) {
+    let v = parse_object(stdout, label);
+    assert!(v.get("emptyReason").is_none(), "{v}");
+    assert!(v.get("defaultPatterns").is_some(), "{v}");
+    assert!(v.get("classifiers").is_some(), "{v}");
+    let results = v["results"].as_array().expect("results");
+    assert!(
+        results
+            .iter()
+            .any(|r| r["type"] == "Dockerfile" && r["path"] == "Dockerfile"),
+        "{v}"
+    );
+}
+
+#[test]
+fn deploy_impact_product_default_classifies_dockerfile() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    seed_git_readme(root);
+    write_temp_config(root, false, false);
+    fs::write(root.join("Dockerfile"), "FROM alpine:3.20\n").unwrap();
+
+    let db = root.join(".ledgerful").join("state").join("ledger.db");
+    let cozo = root.join(".ledgerful").join("state").join("ledger.cozo");
+
+    let (ok, stdout, stderr) = run_deploy_impact(root, true);
+    assert!(ok, "product-default --json failed stderr={stderr}");
+    assert_classified_dockerfile_json(&stdout, "product-default-json");
+    assert!(
+        !db.exists(),
+        "product-default classify must not create ledger.db"
+    );
+    assert!(
+        !cozo.exists(),
+        "product-default classify must not create ledger.cozo"
+    );
+
+    let (ok, stdout, stderr) = run_deploy_impact(root, false);
+    assert!(ok, "product-default human failed stderr={stderr}");
+    assert!(
+        stdout.contains("Deployment Manifest Impact"),
+        "human table missing: {stdout}"
+    );
+    assert!(
+        !stdout.contains("No deployment impact detected for current changes."),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn deploy_impact_omitted_config_classifies_dockerfile() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    seed_git_readme(root);
+    fs::write(root.join("Dockerfile"), "FROM alpine:3.20\n").unwrap();
+
+    let (ok, stdout, stderr) = run_deploy_impact(root, true);
+    assert!(ok, "omitted-config --json failed stderr={stderr}");
+    assert_classified_dockerfile_json(&stdout, "omitted-config");
+}
+
+#[test]
+fn deploy_impact_global_off_classifies_without_sqlite() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    seed_git_readme(root);
     write_temp_config(root, false, true);
     fs::write(root.join("Dockerfile"), "FROM alpine:3.20\n").unwrap();
 
@@ -201,11 +266,35 @@ fn deploy_impact_gated_skips_sqlite_growth() {
     let cozo = root.join(".ledgerful").join("state").join("ledger.cozo");
 
     let (ok, stdout, stderr) = run_deploy_impact(root, true);
-    assert!(ok, "gated --json failed stderr={stderr}");
+    assert!(ok, "global-off --json failed stderr={stderr}");
+    assert_classified_dockerfile_json(&stdout, "global-off");
+    assert!(
+        !db.exists(),
+        "global-off classify must not create ledger.db"
+    );
+    assert!(
+        !cozo.exists(),
+        "global-off classify must not create ledger.cozo"
+    );
+}
+
+#[test]
+fn deploy_impact_explicit_deploy_gate_off_skips_sqlite_growth_and_classification() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    seed_git_readme(root);
+    write_temp_config(root, true, false);
+    fs::write(root.join("Dockerfile"), "FROM alpine:3.20\n").unwrap();
+
+    let db = root.join(".ledgerful").join("state").join("ledger.db");
+    let cozo = root.join(".ledgerful").join("state").join("ledger.cozo");
+
+    let (ok, stdout, stderr) = run_deploy_impact(root, true);
+    assert!(ok, "explicit deploy-off --json failed stderr={stderr}");
     assert!(stdout.contains("disabledByConfig"), "{stdout}");
     assert!(
-        !stdout.contains("\"message\": \"No deployment impact detected"),
-        "{stdout}"
+        !stdout.contains("\"type\": \"Dockerfile\""),
+        "explicit deploy-off must not classify: {stdout}"
     );
     assert!(!db.exists(), "gated skip must not create ledger.db");
     assert!(!cozo.exists(), "gated skip must not create ledger.cozo");
