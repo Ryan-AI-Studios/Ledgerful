@@ -4,12 +4,15 @@ use std::path::PathBuf;
 /// Initialize Ledgerful in the current repository.
 #[derive(Args, Debug)]
 pub struct InitArgs {
-    /// Force re-initialization (overwrites existing config)
+    /// Skip adding `.ledgerful/` to `.gitignore` (does not overwrite an existing config)
     #[arg(short, long)]
     pub force: bool,
     /// Start in enforce mode instead of the default observe mode
     #[arg(long)]
     pub enforce: bool,
+    /// Fill product-default coverage/bridge keys and install nightly if missing
+    #[arg(long)]
+    pub operator_pack: bool,
 }
 
 /// Guided onboarding wizard (welcome → init → doctor → first scan → success).

@@ -314,6 +314,11 @@ If an AI agent is asked to use Ledgerful in a repository, it should:
    ledgerful init
    ```
 
+   Bare `init` stays product-default-off (coverage, bridge, nightly, SCIP).
+   Pass `--operator-pack` to fill coverage/bridge and install nightly if
+   missing. `--force` skips adding `.ledgerful/` to `.gitignore`; it does
+   not overwrite an existing config.
+
 5. Run the normal workflow:
 
    ```bash

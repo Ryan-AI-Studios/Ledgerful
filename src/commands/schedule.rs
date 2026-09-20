@@ -4,6 +4,8 @@ use std::env;
 use std::fmt::Write as _;
 use std::fs;
 use std::process::Command;
+#[cfg(windows)]
+use std::process::Stdio;
 
 use crate::commands::helpers::get_layout;
 use crate::state::layout::Layout;
@@ -11,6 +13,37 @@ use crate::state::layout::Layout;
 const TASK_NAME_PREFIX: &str = "LedgerfulNightlyIndex";
 const SCHEDULE_HOUR: &str = "02:00";
 const CRON_SCHEDULE: &str = "0 2 * * *";
+const TEST_NIGHTLY_SEAM_ENV: &str = "LEDGERFUL_TEST_NIGHTLY_SEAM";
+
+/// Result of [`install_nightly_if_missing`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NightlyInstallStatus {
+    Installed,
+    AlreadyInstalled,
+    UnsupportedOs,
+}
+
+/// Install the repo-scoped nightly task only when it is missing.
+///
+/// Pack path: no `/F` overwrite, no crontab rewrite of an existing marker.
+/// `LEDGERFUL_TEST_NIGHTLY_SEAM=fake` reports [`NightlyInstallStatus::Installed`]
+/// without OS calls; `skip` reports [`NightlyInstallStatus::AlreadyInstalled`].
+pub fn install_nightly_if_missing(layout: &Layout) -> Result<NightlyInstallStatus> {
+    if let Ok(seam) = env::var(TEST_NIGHTLY_SEAM_ENV) {
+        let trimmed = seam.trim();
+        if trimmed.eq_ignore_ascii_case("fake") {
+            return Ok(NightlyInstallStatus::Installed);
+        }
+        if trimmed.eq_ignore_ascii_case("skip") {
+            return Ok(NightlyInstallStatus::AlreadyInstalled);
+        }
+    }
+    match env::consts::OS {
+        "windows" => install_nightly_if_missing_windows(layout),
+        "macos" | "linux" => install_nightly_if_missing_unix(layout),
+        _ => Ok(NightlyInstallStatus::UnsupportedOs),
+    }
+}
 
 /// Build a repo-scoped scheduled-task name so multiple repos on the same
 /// machine do not collide (H2 from Claude cross-review). The name is the
@@ -440,8 +473,20 @@ pub fn windows_schtasks_args(
     refuse_cmd_hostile(binary.as_str(), "binary")?;
     refuse_cmd_hostile(log_path.as_str(), "log_path")?;
     refuse_cmd_hostile(task_name, "task_name")?;
+    windows_schtasks_create_args(binary, log_path, task_name, true)
+}
+
+fn windows_schtasks_create_args(
+    binary: &Utf8PathBuf,
+    log_path: &Utf8PathBuf,
+    task_name: &str,
+    force: bool,
+) -> Result<Vec<String>> {
+    refuse_cmd_hostile(binary.as_str(), "binary")?;
+    refuse_cmd_hostile(log_path.as_str(), "log_path")?;
+    refuse_cmd_hostile(task_name, "task_name")?;
     let task_command = format!("\"{}\" schedule run-nightly >\"{}\" 2>&1", binary, log_path);
-    Ok(vec![
+    let mut args = vec![
         "/Create".to_string(),
         "/TN".to_string(),
         task_name.to_string(),
@@ -451,8 +496,62 @@ pub fn windows_schtasks_args(
         "DAILY".to_string(),
         "/ST".to_string(),
         SCHEDULE_HOUR.to_string(),
-        "/F".to_string(),
-    ])
+    ];
+    if force {
+        args.push("/F".to_string());
+    }
+    Ok(args)
+}
+
+#[cfg(windows)]
+fn install_nightly_if_missing_windows(layout: &Layout) -> Result<NightlyInstallStatus> {
+    let name = task_name(&layout.root);
+    if windows_task_present(&name)? {
+        return Ok(NightlyInstallStatus::AlreadyInstalled);
+    }
+    let binary = resolve_ledgerful_binary()?;
+    let log_path = get_log_path(layout);
+    fs::create_dir_all(layout.logs_dir().as_std_path()).into_diagnostic()?;
+    let args = windows_schtasks_create_args(&binary, &log_path, &name, false)?;
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    run_schtasks(&arg_refs)?;
+    Ok(NightlyInstallStatus::Installed)
+}
+
+#[cfg(windows)]
+fn windows_task_present(task_name: &str) -> Result<bool> {
+    let status = Command::new("schtasks.exe")
+        .args(["/Query", "/TN", task_name])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .into_diagnostic()?;
+    Ok(status.success())
+}
+
+#[cfg(not(windows))]
+fn install_nightly_if_missing_windows(_layout: &Layout) -> Result<NightlyInstallStatus> {
+    Ok(NightlyInstallStatus::UnsupportedOs)
+}
+
+#[cfg(unix)]
+fn install_nightly_if_missing_unix(layout: &Layout) -> Result<NightlyInstallStatus> {
+    let marker = cron_marker(&layout.root);
+    let existing = get_current_crontab()?;
+    if existing.lines().any(|line| line.trim() == marker) {
+        return Ok(NightlyInstallStatus::AlreadyInstalled);
+    }
+    let binary = resolve_ledgerful_binary()?;
+    let log_path = get_log_path(layout);
+    fs::create_dir_all(layout.logs_dir().as_std_path()).into_diagnostic()?;
+    let cron_line = unix_cron_line(&binary, &layout.root, &log_path, &marker)?;
+    install_cron_line(&marker, &cron_line)?;
+    Ok(NightlyInstallStatus::Installed)
+}
+
+#[cfg(not(unix))]
+fn install_nightly_if_missing_unix(_layout: &Layout) -> Result<NightlyInstallStatus> {
+    Ok(NightlyInstallStatus::UnsupportedOs)
 }
 
 /// Build the Unix crontab line for the current repo. The `marker` is a
@@ -513,6 +612,49 @@ mod tests {
         assert_eq!(args[7], "/ST");
         assert_eq!(args[8], "02:00");
         assert_eq!(args[9], "/F");
+    }
+
+    #[test]
+    fn windows_schtasks_create_args_omits_force_when_false() {
+        let tmp = tempdir().unwrap();
+        let binary = Utf8PathBuf::from_path_buf(tmp.path().join("ledgerful.exe")).unwrap();
+        let log = Utf8PathBuf::from_path_buf(tmp.path().join("nightly.log")).unwrap();
+        let args = windows_schtasks_create_args(&binary, &log, "LedgerfulNightlyIndex-test", false)
+            .unwrap();
+        assert_eq!(args[0], "/Create");
+        assert!(!args.iter().any(|a| a == "/F"), "{args:?}");
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn nightly_seam_fake_and_skip_do_not_call_os() {
+        mod env_guard {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/integration/common/env_guard.rs"
+            ));
+        }
+        use crate::state::layout::Layout;
+        use camino::Utf8Path;
+        use env_guard::TempEnv;
+
+        let tmp = tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::from_roots(root, root.join(".ledgerful"));
+        {
+            let _seam = TempEnv::set("LEDGERFUL_TEST_NIGHTLY_SEAM", "fake");
+            assert_eq!(
+                install_nightly_if_missing(&layout).unwrap(),
+                NightlyInstallStatus::Installed
+            );
+        }
+        {
+            let _seam = TempEnv::set("LEDGERFUL_TEST_NIGHTLY_SEAM", "skip");
+            assert_eq!(
+                install_nightly_if_missing(&layout).unwrap(),
+                NightlyInstallStatus::AlreadyInstalled
+            );
+        }
     }
 
     #[test]

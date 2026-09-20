@@ -1696,6 +1696,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn init_operator_pack_parses() {
+        let cli = Cli::try_parse_from(["ledgerful", "init", "--operator-pack"]).unwrap();
+        match cli.command {
+            Commands::Init(InitArgs {
+                force,
+                enforce,
+                operator_pack,
+            }) => {
+                assert!(!force);
+                assert!(!enforce);
+                assert!(operator_pack);
+            }
+            other => panic!("expected Init, got {other:?}"),
+        }
+        let bare = Cli::try_parse_from(["ledgerful", "init"]).unwrap();
+        match bare.command {
+            Commands::Init(InitArgs { operator_pack, .. }) => assert!(!operator_pack),
+            other => panic!("expected Init, got {other:?}"),
+        }
+    }
+
     /// Compile-time/API contract test: prove all key facade exports remain public.
     #[test]
     fn facade_exports_reachable() {
@@ -1704,6 +1726,7 @@ mod tests {
             command: Commands::Init(InitArgs {
                 force: false,
                 enforce: false,
+                operator_pack: false,
             }),
             verbose: false,
             quiet: false,

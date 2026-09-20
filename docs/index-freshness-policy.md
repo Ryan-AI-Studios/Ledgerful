@@ -225,5 +225,6 @@ About to scan --impact?
 
 ## Defaults after `init`
 
-`init` alone starts **no** watcher and installs **no** nightly schedule.
-Background work is always user opt-in.
+Bare `init` starts **no** watcher and installs **no** nightly schedule.
+`init --operator-pack` may install nightly if it is missing. There is
+still no watcher from init. Background work is always user opt-in.

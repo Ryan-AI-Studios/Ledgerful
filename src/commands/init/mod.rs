@@ -5,9 +5,10 @@
 
 mod execute;
 mod hooks;
+mod pack;
 mod print;
 
-pub use execute::execute_init;
+pub use execute::{execute_init, execute_init_with};
 
 #[cfg(test)]
 mod tests;
