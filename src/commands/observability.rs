@@ -423,6 +423,29 @@ fn diff_title(preview: bool) -> &'static str {
     }
 }
 
+fn partition_disk_diff(
+    disk: &DiskOpenSlo,
+    changed_files: &std::collections::HashSet<String>,
+) -> (Vec<Value>, Vec<Value>) {
+    let mut changed = Vec::new();
+    let mut unchanged = Vec::new();
+    for (id, label, category, source) in diff_nodes_from_disk(disk) {
+        let is_changed = source
+            .as_deref()
+            .map(|sf| changed_files.contains(sf))
+            .unwrap_or(false);
+        let entry = diff_item(&id, &label, &category, is_changed, source.as_deref());
+        if is_changed {
+            changed.push(entry);
+        } else {
+            unchanged.push(entry);
+        }
+    }
+    sort_diff_entries(&mut changed);
+    sort_diff_entries(&mut unchanged);
+    (changed, unchanged)
+}
+
 fn print_coverage_table(rows: &[(String, i64, i64)]) {
     let mut table = build_premium_table(["Service", "SLOs", "Metrics", "Health"]);
     for (svc, sc, mc) in rows {
@@ -526,7 +549,15 @@ fn execute_coverage(layout: &Layout, json: bool, preview: bool) -> Result<()> {
     let cozo = storage
         .cozo()
         .ok_or_else(|| miette::miette!("CozoDB not available"))?;
-    let final_rows = persist_coverage_rows(cozo)?;
+    let mut final_rows = persist_coverage_rows(cozo)?;
+    let mut is_preview = false;
+    if final_rows.is_empty() {
+        let disk_rows = coverage_rows_from_disk(&disk);
+        if !disk_rows.is_empty() {
+            final_rows = disk_rows;
+            is_preview = true;
+        }
+    }
 
     if !json && final_rows.is_empty() {
         let mut session = CliSession::load(layout, env_session_id().as_deref(), Utc::now());
@@ -585,7 +616,7 @@ fn execute_coverage(layout: &Layout, json: bool, preview: bool) -> Result<()> {
         } else {
             None
         };
-        let map = coverage_json_map(&final_rows, &disk.parse_errors, empty.clone(), false);
+        let map = coverage_json_map(&final_rows, &disk.parse_errors, empty.clone(), is_preview);
         if let Some((_, message)) = empty {
             let mut session = CliSession::load(layout, env_session_id().as_deref(), Utc::now());
             let applied = apply_empty_notice(
@@ -602,7 +633,7 @@ fn execute_coverage(layout: &Layout, json: bool, preview: bool) -> Result<()> {
     } else {
         println!(
             "{}",
-            coverage_title(false)
+            coverage_title(is_preview)
                 .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
         );
         print_coverage_table(&final_rows);
@@ -620,23 +651,7 @@ fn execute_diff(layout: &Layout, json: bool, preview: bool) -> Result<()> {
             .collect();
 
     if preview {
-        let nodes = diff_nodes_from_disk(&disk);
-        let mut changed = Vec::new();
-        let mut unchanged = Vec::new();
-        for (id, label, category, source) in &nodes {
-            let is_changed = source
-                .as_deref()
-                .map(|sf| changed_files.contains(sf))
-                .unwrap_or(false);
-            let entry = diff_item(id, label, category, is_changed, source.as_deref());
-            if is_changed {
-                changed.push(entry);
-            } else {
-                unchanged.push(entry);
-            }
-        }
-        sort_diff_entries(&mut changed);
-        sort_diff_entries(&mut unchanged);
+        let (changed, unchanged) = partition_disk_diff(&disk, &changed_files);
         let indexed = changed.len() + unchanged.len();
         let empty = if changed.is_empty() {
             if indexed == 0 {
@@ -745,7 +760,17 @@ fn execute_diff(layout: &Layout, json: bool, preview: bool) -> Result<()> {
     sort_diff_entries(&mut changed);
     sort_diff_entries(&mut unchanged);
 
-    let indexed = changed.len() + unchanged.len();
+    let mut indexed = changed.len() + unchanged.len();
+    let mut is_preview = false;
+    if indexed == 0 {
+        let (disk_changed, disk_unchanged) = partition_disk_diff(&disk, &changed_files);
+        if !disk_changed.is_empty() || !disk_unchanged.is_empty() {
+            changed = disk_changed;
+            unchanged = disk_unchanged;
+            indexed = changed.len() + unchanged.len();
+            is_preview = true;
+        }
+    }
     let indexed_zero_empty = if changed.is_empty() && indexed == 0 {
         let on_disk = crate::commands::surfaces::repo_root_openslo_present(&layout.root);
         let graph_populated = crate::commands::security::graph_has_any_nodes(cozo)?;
@@ -776,13 +801,13 @@ fn execute_diff(layout: &Layout, json: bool, preview: bool) -> Result<()> {
             indexed,
             &disk.parse_errors,
             empty,
-            false,
+            is_preview,
         );
         crate::output::json::emit(&Value::Object(map))?;
     } else {
         println!(
             "{}",
-            diff_title(false)
+            diff_title(is_preview)
                 .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
         );
         println!("Changed files in diff: {}", changed_files.len());

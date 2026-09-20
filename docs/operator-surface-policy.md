@@ -48,7 +48,7 @@ The goal is not novelty. The goal is to match the baseline operator expectations
    - Repo-local optional surfaces such as observability and security should have at least one checked-in fixture or smokeable path so the repo continuously exercises them.
    - If the main repo intentionally does not enable a subsystem, the repo should still provide fixture-backed verification coverage.
    - **Security (0186-E):** the committed pack at `policies/daemon-api.cedar` **is** default production-facing scan content. Policy 8’s older “isolated from default scans” clause is **superseded for security**. Hermetic fixtures under `tests/fixtures/policies/` remain test-only and are not ingested from that path.
-   - **Observability:** stays fixture-isolated. There is no product OpenSLO under `observability/` (declined). Copy the OpenSLO fixture only for an explicit smoke, then delete it.
+   - **Observability:** stays fixture-isolated. There is no product OpenSLO under `observability/` (declined). CLI persist-empty `coverage` / `diff` fill from copied repo-root YAML without ingest (`preview: true`). Surfaces catalog still requires Cozo ingest. Copy the OpenSLO fixture only for an explicit smoke, then delete it.
 
 9. Provenance should show exactness
    - Provenance surfaces must distinguish exact links from derived or heuristic links.
@@ -123,17 +123,18 @@ steps. Do **not** treat `coverage.deploy.enabled=true` as an 0186 DoD. Product
 
 ### Observability fixture smoke (still isolated)
 
-OpenSLO remains declined as product content. To smoke the parser path only:
+OpenSLO remains declined as product content. CLI persist-empty fill does **not**
+need ingest once YAML is under `observability/`. Catalog / graph smoke still does.
 
 **Run from this repository root.** Fixture paths are relative to the current working
-directory — a missed copy looks like `noIndexedData`, not a missing file.
+directory — a missed copy on persist-empty looks like `noMatches`, not a missing file.
 
 1. Copy the OpenSLO fixture:
    `New-Item -ItemType Directory -Force -Path observability; Copy-Item -Path tests/fixtures/observability/dogfood_slo.yaml -Destination observability/dogfood_slo.yaml`
-2. `ledgerful index --analyze-graph`
-3. `ledgerful observability coverage`
+2. `ledgerful observability coverage` (disk fill, `preview: true`; no analyze-graph)
+3. Optional graph/catalog smoke: `ledgerful index --analyze-graph` then coverage again
 4. Clean up:
-   `Remove-Item -Force -Path observability/dogfood_slo.yaml; ledgerful index --analyze-graph`
+   `Remove-Item -Force -Path observability/dogfood_slo.yaml`; if you ingested, `ledgerful index --analyze-graph`
 
 Hermetic tests still parse `tests/fixtures/policies/dogfood_policy.cedar` and the
 OpenSLO fixture in-place. Those files are **not** default security scan content.

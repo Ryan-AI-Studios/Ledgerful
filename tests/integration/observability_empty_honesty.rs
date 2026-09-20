@@ -154,15 +154,54 @@ fn test_engine_shaped_populated_graph_no_yaml_is_no_matches() {
     );
 }
 
-/// DoD-2 disk-without-ingest: YAML on disk, skip `--analyze-graph` → `noIndexedData`.
+/// Coverage fill misses on SLO-only YAML (no Service) → 0215 `noIndexedData`.
 #[test]
 #[serial(cwd)]
-fn test_disk_without_ingest_is_no_indexed_data() {
+fn test_coverage_slo_only_without_ingest_is_no_indexed_data() {
     let tmp = new_git_repo();
     let root = tmp.path();
-    copy_openslo_fixture(root);
     let _guard = DirGuard::new(root);
     execute_init(false, false).unwrap();
+    fs::create_dir_all(root.join("observability")).unwrap();
+    fs::write(
+        root.join("observability").join("slo.yaml"),
+        "apiVersion: openslo/v1\nkind: SLO\nmetadata:\n  name: solo-slo\nspec:\n  service: missing\n  indicator:\n    thresholdMetric:\n      metricSource:\n        type: prometheus\n        metricQuery: up\n  objectives:\n    - target: 0.99\n",
+    )
+    .unwrap();
+
+    let (stdout, stderr, code) = run_cli(root, &["observability", "coverage", "--json"]);
+    assert_eq!(
+        code, 0,
+        "observability coverage --json must succeed; stdout={stdout} stderr={stderr}"
+    );
+    let v = parse_json(&stdout);
+    assert_eq!(
+        v["emptyReason"].as_str(),
+        Some("noIndexedData"),
+        "SLO-only uningested coverage must stay noIndexedData, got: {v}"
+    );
+    let message = v["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("OpenSLO files on disk but not in the graph"),
+        "disk-without-ingest must use the disk-first sentence, got: {message}"
+    );
+    assert!(v.get("preview").is_none(), "got {v}");
+}
+
+/// Diff fill misses on Service-only YAML (no SLO/metric) → 0215 `noIndexedData`.
+#[test]
+#[serial(cwd)]
+fn test_diff_service_only_without_ingest_is_no_indexed_data() {
+    let tmp = new_git_repo();
+    let root = tmp.path();
+    let _guard = DirGuard::new(root);
+    execute_init(false, false).unwrap();
+    fs::create_dir_all(root.join("observability")).unwrap();
+    fs::write(
+        root.join("observability").join("svc.yaml"),
+        "apiVersion: openslo/v1\nkind: Service\nmetadata:\n  name: solo\nspec:\n  description: x\n",
+    )
+    .unwrap();
 
     let (stdout, stderr, code) = run_cli(root, &["observability", "diff", "--json"]);
     assert_eq!(
@@ -173,34 +212,15 @@ fn test_disk_without_ingest_is_no_indexed_data() {
     assert_eq!(
         v["emptyReason"].as_str(),
         Some("noIndexedData"),
-        "disk-present uningested OpenSLO must be noIndexedData, got: {v}"
+        "Service-only uningested diff must stay noIndexedData, got: {v}"
     );
     let message = v["message"].as_str().unwrap_or_default();
     assert!(
         message.contains("OpenSLO files on disk but not in the graph"),
         "disk-without-ingest must use the disk-first sentence, got: {message}"
     );
-    assert_eq!(
-        v["indexedCount"].as_u64(),
-        Some(0),
-        "uningested OpenSLO is not in the graph, got: {v}"
-    );
-    assert_ne!(
-        message, OLD_LIE,
-        "must not use the analyze-graph-only lie that ignores disk YAML, got: {message}"
-    );
-    assert!(
-        message.contains("index --analyze-graph"),
-        "disk-without-ingest message must name index --analyze-graph, got: {message}"
-    );
-    assert!(
-        !message.to_lowercase().contains("add observability"),
-        "disk-present YAML must not say add observability/ as if missing, got: {message}"
-    );
-    assert!(
-        !message.contains("add them under 'observability/'"),
-        "disk-present YAML must not say add YAML, got: {message}"
-    );
+    assert_eq!(v["indexedCount"].as_u64(), Some(0), "got {v}");
+    assert!(v.get("preview").is_none(), "got {v}");
 }
 
 /// 0215-A4 / 0146: ingested + committed clean tree → `cleanDiff` + `indexedCount >= 1`.

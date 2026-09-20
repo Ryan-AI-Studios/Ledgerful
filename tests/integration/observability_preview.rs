@@ -1,4 +1,4 @@
-//! 0360 — observability `--preview` + versioned diff envelope.
+//! 0360 `--preview` + 0400 persist-empty disk fill for observability coverage/diff.
 
 use crate::common::{git_add_and_commit, setup_git_repo};
 use ledgerful::commands::index::{IndexArgs, execute_index};
@@ -114,7 +114,7 @@ fn coverage_preview_without_init_populates_dogfood() {
 
 #[test]
 #[serial(cwd)]
-fn persist_without_ingest_is_no_indexed_data_while_preview_populated() {
+fn persist_without_ingest_fills_from_disk_while_preview_populated() {
     let tmp = new_git_repo();
     let root = tmp.path();
     let _guard = crate::common::DirGuard::new(root);
@@ -124,15 +124,31 @@ fn persist_without_ingest_is_no_indexed_data_while_preview_populated() {
     let (persist, stderr, code) = run_cli(root, &["observability", "coverage", "--json"]);
     assert_eq!(code, 0, "persist coverage failed stderr={stderr}");
     let persist = parse_json(&persist);
-    assert_eq!(persist["emptyReason"], "noIndexedData");
+    assert_eq!(persist["resultCount"], 1);
+    assert_eq!(persist["results"][0]["service"], "Service: dogfood-service");
+    assert_eq!(persist["results"][0]["slo_count"], 1);
+    assert_eq!(persist["results"][0]["metric_count"], 1);
+    assert_eq!(persist["results"][0]["health"], "covered");
+    assert_eq!(persist["preview"], true);
+    assert!(persist.get("emptyReason").is_none(), "got {persist}");
+    assert!(persist.get("sessionNotices").is_none(), "got {persist}");
     assert!(
-        persist["message"]
-            .as_str()
-            .unwrap_or("")
-            .contains("index --analyze-graph"),
-        "persist empty must keep 0215 ingest next, got {}",
-        persist["message"]
+        !root.join(".ledgerful").join("cli-session.json").exists(),
+        "fill must not write the session cookie"
     );
+
+    let (human, herr, code) = run_cli(root, &["observability", "coverage"]);
+    assert_eq!(code, 0, "human coverage failed {herr} {human}");
+    assert!(
+        human.contains("Observability Coverage (preview)"),
+        "got {human}"
+    );
+    assert!(human.contains("dogfood-service"), "got {human}");
+
+    let (again, stderr, code) = run_cli(root, &["observability", "coverage", "--json"]);
+    assert_eq!(code, 0, "second persist failed stderr={stderr}");
+    let again = parse_json(&again);
+    assert_eq!(again["preview"], true, "fill must not persist Cozo rows");
 
     let (preview, stderr, code) =
         run_cli(root, &["observability", "coverage", "--preview", "--json"]);
@@ -170,6 +186,110 @@ fn preview_empty_without_yaml_does_not_mention_analyze_graph() {
         !root.join(".ledgerful").join("cli-session.json").exists(),
         "preview must not write the session cookie"
     );
+}
+
+#[test]
+#[serial(cwd)]
+fn persist_diff_dirty_yaml_without_ingest_includes_source_file() {
+    let tmp = new_git_repo();
+    let root = tmp.path();
+    let _guard = crate::common::DirGuard::new(root);
+    execute_init(false, false).unwrap();
+    copy_openslo_fixture(root);
+
+    let (stdout, stderr, code) = run_cli(root, &["observability", "diff", "--json"]);
+    assert_eq!(code, 0, "stderr={stderr} stdout={stdout}");
+    let v = parse_json(&stdout);
+    assert_eq!(v["preview"], true);
+    assert_eq!(v["kind"], "observabilityDiff");
+    let changed = v["changed"].as_array().cloned().unwrap_or_default();
+    let slo = changed.iter().find(|x| x["category"] == "slo");
+    assert!(slo.is_some(), "expected changed SLO, got {v}");
+    assert_eq!(slo.unwrap()["sourceFile"], "observability/dogfood_slo.yaml");
+
+    let (human, herr, code) = run_cli(root, &["observability", "diff"]);
+    assert_eq!(code, 0, "human diff failed {herr} {human}");
+    assert!(
+        human.contains("Observability Diff (preview)"),
+        "got {human}"
+    );
+}
+
+#[test]
+#[serial(cwd)]
+fn persist_diff_clean_committed_yaml_without_ingest_is_clean_diff() {
+    let tmp = new_git_repo();
+    let root = tmp.path();
+    let _guard = crate::common::DirGuard::new(root);
+    execute_init(false, false).unwrap();
+    copy_openslo_fixture(root);
+    git_add_and_commit(root, "openslo");
+
+    let (stdout, stderr, code) = run_cli(root, &["observability", "diff", "--json"]);
+    assert_eq!(code, 0, "stderr={stderr} stdout={stdout}");
+    let v = parse_json(&stdout);
+    assert_eq!(v["preview"], true);
+    assert_eq!(v["emptyReason"], "cleanDiff");
+    assert!(v["indexedCount"].as_u64().unwrap_or(0) >= 2, "got {v}");
+    assert_eq!(v["changed"].as_array().map(Vec::len).unwrap_or(99), 0);
+}
+
+#[test]
+#[serial(cwd)]
+fn persist_coverage_service_only_is_health_missing() {
+    let tmp = new_git_repo();
+    let root = tmp.path();
+    let _guard = crate::common::DirGuard::new(root);
+    execute_init(false, false).unwrap();
+    fs::create_dir_all(root.join("observability")).unwrap();
+    fs::write(
+        root.join("observability").join("svc.yaml"),
+        "apiVersion: openslo/v1\nkind: Service\nmetadata:\n  name: solo\nspec:\n  description: x\n",
+    )
+    .unwrap();
+
+    let (stdout, stderr, code) = run_cli(root, &["observability", "coverage", "--json"]);
+    assert_eq!(code, 0, "stderr={stderr} stdout={stdout}");
+    let v = parse_json(&stdout);
+    assert_eq!(v["resultCount"], 1);
+    assert_eq!(v["results"][0]["service"], "Service: solo");
+    assert_eq!(v["results"][0]["slo_count"], 0);
+    assert_eq!(v["results"][0]["health"], "missing");
+    assert_eq!(v["preview"], true);
+    assert!(
+        !root.join(".ledgerful").join("cli-session.json").exists(),
+        "fill must not write the session cookie"
+    );
+}
+
+#[test]
+#[serial(cwd)]
+fn persist_empty_then_added_yaml_emits_preview_not_already_shown() {
+    let tmp = new_git_repo();
+    let root = tmp.path();
+    let _guard = crate::common::DirGuard::new(root);
+    execute_init(false, false).unwrap();
+
+    let (first, stderr, code) = run_cli(root, &["observability", "coverage", "--json"]);
+    assert_eq!(code, 0, "first empty failed stderr={stderr}");
+    let first = parse_json(&first);
+    assert_eq!(first["emptyReason"], "noMatches");
+
+    copy_openslo_fixture(root);
+    let (second, stderr, code) = run_cli(root, &["observability", "coverage", "--json"]);
+    assert_eq!(code, 0, "second fill failed stderr={stderr}");
+    let second = parse_json(&second);
+    assert_eq!(second["preview"], true);
+    assert_eq!(second["results"][0]["service"], "Service: dogfood-service");
+    assert!(second.get("emptyReason").is_none(), "got {second}");
+
+    let (human, _, code) = run_cli(root, &["observability", "coverage"]);
+    assert_eq!(code, 0);
+    assert!(
+        !human.contains("Already shown this session."),
+        "fill after cookie must still show the table, got {human}"
+    );
+    assert!(human.contains("dogfood-service"), "got {human}");
 }
 
 #[test]
