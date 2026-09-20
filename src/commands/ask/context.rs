@@ -104,7 +104,9 @@ pub(crate) fn gather_semantic_chunks(
     limit: usize,
     config: &LocalModelConfig,
     is_global: bool,
+    include_kg_neighborhood: bool,
 ) -> SemanticGather {
+    let _ = is_global;
     let Some(cozo) = storage.cozo() else {
         return SemanticGather::Skipped {
             reason: "CozoDB storage not available".to_string(),
@@ -200,7 +202,7 @@ pub(crate) fn gather_semantic_chunks(
         }
     }
 
-    if is_global
+    if include_kg_neighborhood
         && !semantic_symbols.is_empty()
         && let Some(kg_ctx) =
             fetch_kg_neighborhood(cozo, semantic_symbols.iter().map(|s| s.as_str()))
@@ -354,6 +356,7 @@ mod tests {
             3,
             &config,
             true,
+            true,
         );
         match outcome {
             SemanticGather::Failed { reason } => {
@@ -418,6 +421,7 @@ mod tests {
             5,
             &config,
             true,
+            true,
         );
         match outcome {
             SemanticGather::Skipped { reason } => {
@@ -433,6 +437,23 @@ mod tests {
                 panic!("unconfigured should be Skipped, not Failed: {reason}")
             }
         }
+    }
+
+    #[test]
+    fn gather_semantic_chunks_neighborhood_param_is_include_kg() {
+        let src = include_str!("context.rs");
+        let idx = src
+            .find("if include_kg_neighborhood")
+            .expect("KG attach must use include_kg_neighborhood");
+        let window = &src[idx..idx.saturating_add(180).min(src.len())];
+        assert!(
+            window.contains("fetch_kg_neighborhood"),
+            "include_kg_neighborhood gate must wrap fetch_kg_neighborhood: {window}"
+        );
+        assert!(
+            !window.contains("if is_global"),
+            "must not attach neighborhood on mere is_global: {window}"
+        );
     }
 
     #[test]

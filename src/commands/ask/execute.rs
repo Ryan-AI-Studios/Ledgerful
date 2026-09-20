@@ -1,4 +1,7 @@
-use crate::commands::ask::gather::{gather_impact_and_bridge, gather_semantic_and_kg};
+use crate::commands::ask::gather::{
+    format_gather_elapsed_ms, gather_impact_and_bridge, gather_semantic_and_kg,
+    global_system_prompt,
+};
 use crate::commands::ask::legacy_complete::{LegacyCompleteInputs, execute_legacy_complete};
 use crate::commands::ask::{
     Backend, build_ask_user_prompt, resolve_backend, resolve_provider_entries,
@@ -7,11 +10,13 @@ use crate::commands::helpers::{get_layout, load_ledger_config};
 use crate::config::model::Config;
 use crate::gemini::modes::GeminiMode;
 use crate::index::warn_if_stale;
+use crate::observability::stage::stage_span;
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use miette::Result;
 use owo_colors::{OwoColorize, Stream};
 use std::env;
+use std::time::Instant;
 
 const MIN_CONTEXT_CHARS: usize = 32_768;
 
@@ -61,21 +66,34 @@ pub fn execute_ask(opts: ExecuteAskOpts) -> Result<()> {
         return Ok(());
     }
 
-    let mut gathered = gather_impact_and_bridge(&storage, &layout, &config, &query, auto_scan)?;
+    let explicit_semantic = semantic;
+    let mut gathered;
+    {
+        let _stage = stage_span!("ask_gather").entered();
+        let started = Instant::now();
+        gathered = gather_impact_and_bridge(&storage, &layout, &config, &query, auto_scan)?;
+        gather_semantic_and_kg(
+            &mut gathered,
+            &storage,
+            &layout,
+            &config,
+            explicit_semantic,
+            auto_index,
+            limit,
+            no_kg_fallback,
+        );
+        eprintln!(
+            "{}",
+            format_gather_elapsed_ms(started.elapsed().as_millis())
+                .if_supports_color(Stream::Stderr, |s| s.dimmed())
+        );
+    }
+    let semantic = (explicit_semantic || gathered.is_global) && !gathered.gather_skipped_trivial;
 
-    let semantic = semantic || gathered.is_global;
-    gather_semantic_and_kg(
-        &mut gathered,
-        &storage,
-        &layout,
-        &config,
-        semantic,
-        auto_index,
-        limit,
-        no_kg_fallback,
-    );
-
-    if gathered.relevant_chunks.is_empty() && (gathered.is_global || semantic) {
+    if gathered.relevant_chunks.is_empty()
+        && (gathered.is_global || semantic)
+        && !gathered.gather_skipped_trivial
+    {
         println!("Note: no retrieved snippets for this query.");
         if gathered.evidence.read_failed > 0 {
             eprintln!(
@@ -114,7 +132,11 @@ pub fn execute_ask(opts: ExecuteAskOpts) -> Result<()> {
     );
 
     let base_system_prompt = if gathered.is_global {
-        "You are Ledgerful, an expert software engineering assistant. You act as a codebase oracle answering architectural and implementation questions based on retrieved knowledge graph and semantic context snippets. Provide direct, technical, and accurate answers citing the retrieved snippets where relevant.".to_string()
+        global_system_prompt(
+            gathered.gather_skipped_trivial,
+            gathered.include_kg_neighborhood,
+        )
+        .to_string()
     } else {
         crate::local_model::context::get_system_prompt(&mode.to_string())
     };
@@ -134,41 +156,44 @@ pub fn execute_ask(opts: ExecuteAskOpts) -> Result<()> {
         &config,
     );
 
-    // TA14: If a provider priority list is configured, try each provider
-    // in order, falling back to the next on degradable errors. If all
-    // providers fail, degrade to context-only output (R4).
-    if !config.ask.providers.priority.is_empty() {
-        let entries =
-            resolve_provider_entries(&config, backend).map_err(|e| miette::miette!("{e}"))?;
-        return crate::commands::ask::execute_ask_with_providers(
-            &config,
-            &base_system_prompt,
-            &user_prompt,
-            &gathered.relevant_chunks,
-            timeout_secs,
-            mode,
-            &gathered.latest_packet,
+    {
+        let _stage = stage_span!("ask_complete").entered();
+        // TA14: If a provider priority list is configured, try each provider
+        // in order, falling back to the next on degradable errors. If all
+        // providers fail, degrade to context-only output (R4).
+        if !config.ask.providers.priority.is_empty() {
+            let entries =
+                resolve_provider_entries(&config, backend).map_err(|e| miette::miette!("{e}"))?;
+            return crate::commands::ask::execute_ask_with_providers(
+                &config,
+                &base_system_prompt,
+                &user_prompt,
+                &gathered.relevant_chunks,
+                timeout_secs,
+                mode,
+                &gathered.latest_packet,
+                adaptive_mode,
+                truncated,
+                &entries,
+            );
+        }
+
+        execute_legacy_complete(LegacyCompleteInputs {
+            config: &config,
+            resolved_backend,
+            timeout_kind,
+            effective_timeout,
+            complete_override,
+            gemini_timeout,
+            base_system_prompt: &base_system_prompt,
+            user_prompt: &user_prompt,
+            relevant_chunks: &gathered.relevant_chunks,
+            latest_packet: &gathered.latest_packet,
             adaptive_mode,
             truncated,
-            &entries,
-        );
+            mode,
+        })
     }
-
-    execute_legacy_complete(LegacyCompleteInputs {
-        config: &config,
-        resolved_backend,
-        timeout_kind,
-        effective_timeout,
-        complete_override,
-        gemini_timeout,
-        base_system_prompt: &base_system_prompt,
-        user_prompt: &user_prompt,
-        relevant_chunks: &gathered.relevant_chunks,
-        latest_packet: &gathered.latest_packet,
-        adaptive_mode,
-        truncated,
-        mode,
-    })
 }
 
 fn prepare_ask_storage(
@@ -407,6 +432,57 @@ mod tests {
         let options = crate::commands::ask::ask_completion_options();
         assert_eq!(options.max_tokens, 512);
         assert!(options.max_tokens < Config::default().local_model.context_window);
+    }
+
+    #[test]
+    fn ask_gather_and_ask_complete_are_the_only_ask_spans() {
+        let src = include_str!("execute.rs");
+        let mut names = std::collections::BTreeSet::new();
+        let needle = "stage_span!(\"";
+        let mut rest = src;
+        while let Some(i) = rest.find(needle) {
+            let after = &rest[i + needle.len()..];
+            if let Some(end) = after.find('"') {
+                names.insert(after[..end].to_string());
+                rest = &after[end + 1..];
+            } else {
+                break;
+            }
+        }
+        let expected: std::collections::BTreeSet<String> = ["ask_gather", "ask_complete"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(names, expected, "ask stage_span names: {names:?}");
+        let gather_at = src
+            .find("stage_span!(\"ask_gather\")")
+            .expect("ask_gather span");
+        assert!(
+            src[gather_at..].contains("gather_impact_and_bridge"),
+            "ask_gather must wrap gather_impact_and_bridge"
+        );
+        assert!(
+            src[gather_at..].contains("gather_semantic_and_kg"),
+            "ask_gather must wrap gather_semantic_and_kg"
+        );
+        let complete_at = src
+            .find("stage_span!(\"ask_complete\")")
+            .expect("ask_complete span");
+        let priority_at = src[complete_at..]
+            .find("providers.priority")
+            .expect("priority check after ask_complete");
+        assert!(
+            priority_at > 0,
+            "ask_complete must be entered before providers.priority"
+        );
+        let empty_at = src
+            .find("Note: no retrieved snippets for this query.")
+            .expect("empty-snippets return");
+        let skip_guard = src[..empty_at].rfind("gather_skipped_trivial");
+        assert!(
+            skip_guard.is_some(),
+            "empty-snippets return must be guarded by gather_skipped_trivial"
+        );
     }
 
     /// 0073 Codex R1 P2: Forbidden + cloud-only credentials must surface

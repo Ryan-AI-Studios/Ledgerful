@@ -16,6 +16,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Ask global gather latency (0405):** clean-tree Ask skips embed+KG+FTS
+  for LLM-instruction / ping tokens (`pong`, `hello`); KG neighborhood
+  attaches for `--semantic`, definition-shaped, or GlobalConceptual
+  queries — not mere `is_global`. `[Evidence]` stays four tokens.
+  stderr `gather {ms}ms` and skip banner
+  `gather skipped (llm-instruction|ping)`. Unconfigured backend on
+  the skip path is a configure error (no empty-snippets substitute).
+  `--semantic` and one-word subsystem queries (`config`, `MCP`) still
+  gather.
+
 - **Semantic function-grain chunks (0404):** embed text prefixes
   `fn name` / `Type.method`; declaration-only Rust `mod x;` is not
   a chunk; incremental file hashes include grain id `fn-name-v1` so
