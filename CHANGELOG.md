@@ -6,6 +6,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Ask RRF once per list and CamelCase term (0406):** same-path
+  duplicates in one RRF list contribute once (first rank);
+  first-structural snippet unchanged. `CodeIdentifierTokenizer`
+  dual-emits the full CamelCase / PascalCase identifier so
+  `search_term_exact` locates `ProvenanceAction` the way snake_case
+  already does. FTS format stamp `code_tokenizer_v3` forces a
+  one-time rebuild (`search` / `index`; Ask does not rebuild).
+
 ### Added
 
 - **Hotspot explain contribution evidence (0393):** bounded

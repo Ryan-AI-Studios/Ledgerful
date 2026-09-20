@@ -686,7 +686,9 @@ impl CodeIdentifierTokenStream<'_> {
     }
 
     /// Split pure-alnum span with existing camelCase / PascalCase rules.
+    /// Two or more pieces also dual-emit the full identifier first (0141 analog).
     fn enqueue_camel_case_pieces(&mut self, start_char: usize, end_char: usize) {
+        let mut pieces: Vec<(usize, usize)> = Vec::new();
         let mut i = start_char;
         while i < end_char {
             let piece_start_char = i;
@@ -710,10 +712,30 @@ impl CodeIdentifierTokenStream<'_> {
                 prev_char = curr_char;
                 i += 1;
             }
+            pieces.push((piece_start_char, i));
+        }
 
+        if pieces.len() >= 2 {
+            let offset_from = self.chars[start_char].0;
+            let offset_to = if end_char < self.chars.len() {
+                self.chars[end_char].0
+            } else {
+                self.text.len()
+            };
+            let position = self.take_next_position();
+            self.pending.push_back(PendingToken {
+                text: self.text[offset_from..offset_to].to_string(),
+                offset_from,
+                offset_to,
+                position,
+                position_length: pieces.len(),
+            });
+        }
+
+        for (piece_start_char, piece_end_char) in pieces {
             let offset_from = self.chars[piece_start_char].0;
-            let offset_to = if i < self.chars.len() {
-                self.chars[i].0
+            let offset_to = if piece_end_char < self.chars.len() {
+                self.chars[piece_end_char].0
             } else {
                 self.text.len()
             };
@@ -806,7 +828,7 @@ impl TokenStream for CodeIdentifierTokenStream<'_> {
         if ident.contains('_') {
             self.enqueue_underscore_dual(offset_from, offset_to);
         } else {
-            // Pure alphanumeric: camelCase / PascalCase splits only (no dual full).
+            // Pure alphanumeric: camelCase / PascalCase; dual-emit full when 2+ pieces.
             self.enqueue_camel_case_pieces(start_char, end_char);
         }
 
@@ -1098,12 +1120,37 @@ mod tests {
     fn code_identifier_camel_case_preserved() {
         let tokens = collect_tokens("MainRunner");
         let texts: Vec<&str> = tokens.iter().map(|t| t.text.as_str()).collect();
-        assert_eq!(texts, vec!["Main", "Runner"]);
-        for t in &tokens {
-            assert_eq!(t.position_length, 1);
-        }
+        assert_eq!(texts, vec!["MainRunner", "Main", "Runner"]);
+        assert_eq!(tokens[0].position_length, 2);
+        assert_eq!(tokens[1].position_length, 1);
+        assert_eq!(tokens[2].position_length, 1);
         assert_eq!(tokens[0].position, 0);
         assert_eq!(tokens[1].position, 1);
+        assert_eq!(tokens[2].position, 2);
+    }
+
+    #[test]
+    fn code_identifier_dual_emit_pascal_case() {
+        let tokens = collect_tokens("ProvenanceAction");
+        let texts: Vec<&str> = tokens.iter().map(|t| t.text.as_str()).collect();
+        assert!(
+            texts.contains(&"ProvenanceAction"),
+            "expected full token, got {texts:?}"
+        );
+        assert!(
+            texts.contains(&"Provenance"),
+            "expected piece Provenance: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"Action"),
+            "expected piece Action: {texts:?}"
+        );
+        let full = tokens
+            .iter()
+            .find(|t| t.text == "ProvenanceAction")
+            .expect("full");
+        assert_eq!(full.position_length, 2);
+        assert_eq!(tokens[0].text, "ProvenanceAction");
     }
 
     #[test]
@@ -1164,6 +1211,29 @@ mod tests {
         assert!(
             results.iter().any(|r| r.path.contains("bayesian")),
             "expected bayesian path, got {:?}",
+            results.iter().map(|r| &r.path).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn search_term_exact_finds_full_pascal_case_identifier() {
+        let dir = TempDir::new().expect("tempdir");
+        let engine = make_engine(&dir);
+        index_doc(
+            &engine,
+            "src/ledger/provenance.rs",
+            "enum ProvenanceAction {}",
+        );
+        let results = engine
+            .search_term_exact("ProvenanceAction", 5)
+            .expect("search_term_exact");
+        assert!(
+            !results.is_empty(),
+            "TermQuery full PascalCase id must hit after dual-emit"
+        );
+        assert!(
+            results.iter().any(|r| r.path.contains("provenance")),
+            "expected provenance path, got {:?}",
             results.iter().map(|r| &r.path).collect::<Vec<_>>()
         );
     }
