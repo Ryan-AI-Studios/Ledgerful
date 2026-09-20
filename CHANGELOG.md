@@ -16,6 +16,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Deploy impact ungated classify (0399):** `deploy impact` cheap git-diff
+  classify runs on product-default coverage (global off). Gated empty is only
+  an explicit `coverage.deploy.enabled=false` under global on. Surfaces catalog
+  deploy readiness is unchanged.
+
 - **Data-model rusqlite Row extraction (0398):** default `data-models list`
   extracts rusqlite `Row` mapper functions and `query_map` struct
   construction in addition to FromRow/Queryable/Insertable. SQL

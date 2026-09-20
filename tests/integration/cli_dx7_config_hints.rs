@@ -126,20 +126,14 @@ fn deploy_disabled_globally_emits_two_key_hint() {
     config.coverage.deploy.enabled = true;
 
     let (reason, msg) = deploy_empty_state_message(&config);
-    assert_eq!(
-        reason,
-        ledgerful::output::empty::EmptyReason::DisabledByConfig
-    );
-    assert!(msg.contains("coverage.enabled"), "got: {msg}");
-    assert!(msg.contains("coverage.deploy.enabled"), "got: {msg}");
-    assert!(msg.contains("config set"), "got: {msg}");
+    assert_eq!(reason, ledgerful::output::empty::EmptyReason::NoMatches);
     assert!(
-        msg.contains("not change"),
-        "should not suggest reindexing: {msg}"
+        msg.starts_with("No deployment impact detected"),
+        "global-off empty is classify/noMatches (0399): {msg}"
     );
     assert!(
-        !msg.starts_with("No deployment impact detected"),
-        "disabled global must not lead with no-impact: {msg}"
+        !msg.contains("config set"),
+        "global-off must not emit a coverage enable hint: {msg}"
     );
     assert!(
         !msg.starts_with(' '),
@@ -311,18 +305,18 @@ fn deploy_impact_binary_human_path_prints_hint_when_disabled() {
 
     seed_repo_and_init(root);
 
-    // Disable the global coverage gate so the two-key hint is emitted.
-    write_temp_config(root, false, true);
+    // Explicit deploy-section disable (0324 / 0399): one-key hint, not global-off.
+    write_temp_config(root, true, false);
 
     let (ok, stdout, stderr) = run_deploy_impact(root, false);
     assert!(ok, "human deploy impact should succeed; stderr: {stderr}");
     assert!(
-        stdout.contains("config set coverage.enabled=true"),
-        "human output should contain the global enable hint; got: {stdout}"
-    );
-    assert!(
         stdout.contains("coverage.deploy.enabled=true"),
         "human output should contain the deploy enable hint; got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("coverage.enabled=false"),
+        "explicit deploy-off must not blame the global switch: {stdout}"
     );
 }
 
@@ -407,7 +401,7 @@ fn deploy_impact_from_subdir_uses_repo_root_config_and_storage() {
 
 // ---------------------------------------------------------------------------
 // BLOCKER 2 regression: `deploy impact` must distinguish "not a git repo"
-// (`RepoDiscoveryFailed` -> config-gated empty state, exit 0) from a broken
+// (`RepoDiscoveryFailed` -> `in_git_repo=false`, empty classify, exit 0) from a broken
 // repo (`RepoOpenFailed`/other -> propagate the error, exit non-zero).
 //
 // NOTE on the broken-repo arm: on the gix version currently pinned,
@@ -427,7 +421,7 @@ fn deploy_impact_from_subdir_uses_repo_root_config_and_storage() {
 // `git::repo::tests::test_discover_fail` unit test, which pins the
 // `RepoDiscoveryFailed` variant the discrimination keys on. Below we pin the
 // REACHABLE behavioral contract end-to-end: a non-repo directory succeeds with
-// the config-gated empty state (the `RepoDiscoveryFailed -> false` path the fix
+// empty classify / `noMatches` (the `RepoDiscoveryFailed -> false` path the fix
 // preserves), proving the discrimination does not regress the no-repo fallback.
 // ---------------------------------------------------------------------------
 
@@ -437,24 +431,18 @@ fn deploy_impact_non_repo_dir_succeeds_with_empty_state() {
     let root = tmp.path();
 
     // Intentionally NO `git init` / `seed_repo_and_init` here: this directory is
-    // not a git repo, so `open_repo` returns `RepoDiscoveryFailed`, which the
-    // BLOCKER 2 fix maps to `in_git_repo = false` -> config-gated empty state.
-    // Write a config so the deploy-specific gate is OFF and the hint is emitted.
+    // not a git repo, so `open_repo` returns `RepoDiscoveryFailed`, which maps
+    // to `in_git_repo = false` -> empty classify (`noMatches` after 0399).
     write_temp_config(root, false, true);
 
     let (ok, stdout, stderr) = run_deploy_impact(root, false);
     assert!(
         ok,
-        "non-repo dir should exit 0 with the config-gated empty state, not \
-         error; stderr: {stderr}"
+        "non-repo dir should exit 0 with empty classify, not error; stderr: {stderr}"
     );
     assert!(
-        stdout.contains("config set coverage.enabled=true"),
-        "non-repo dir should emit the global coverage enable hint; got: {stdout}"
-    );
-    assert!(
-        stdout.contains("coverage.deploy.enabled=true"),
-        "non-repo dir should emit the deploy enable hint; got: {stdout}"
+        stdout.contains("No deployment impact detected for current changes."),
+        "non-repo dir should emit noMatches copy; got: {stdout}"
     );
 }
 

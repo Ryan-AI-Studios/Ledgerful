@@ -116,7 +116,9 @@ pub(crate) fn execute_deploy_impact_in(
     stderr: &mut impl Write,
 ) -> Result<()> {
     let config = load_config_or_default_warn(layout);
-    let gated = !config.coverage.enabled || !config.coverage.deploy.enabled;
+    // Explicit deploy-section disable only (0399). Product default / global-off
+    // still cheap-classifies; 0324 gated skip stays `coverage.enabled && !deploy.enabled`.
+    let gated = config.coverage.enabled && !config.coverage.deploy.enabled;
     if gated {
         return emit_deploy_outcome(layout, &config, Vec::new(), None, json, stdout);
     }
@@ -444,22 +446,13 @@ fn manifest_type_label(mt: &ManifestType) -> String {
     }
 }
 
-/// Builds the empty-state message for `deploy impact`, consulting the same
-/// `coverage.enabled` / `coverage.deploy.enabled` switches the deploy
-/// enrichment provider gates on, so the message never tells a user to reindex
-/// when reindexing cannot change the outcome.
+/// Builds the empty-state message for `deploy impact`.
+///
+/// Gated copy is **only** explicit `coverage.enabled && !coverage.deploy.enabled`
+/// (0324). Product default / global-off classify (0399), so an empty result is
+/// `noMatches` — reindexing still cannot invent a dirty Dockerfile.
 pub fn deploy_empty_state_message(config: &crate::config::model::Config) -> (EmptyReason, String) {
-    if !config.coverage.enabled {
-        let hint = config_enable_hint(&["coverage.enabled", "coverage.deploy.enabled"]);
-        (
-            EmptyReason::DisabledByConfig,
-            format!(
-                "Deploy manifest detection is disabled by the global \
-                 `coverage.enabled = false` switch in `.ledgerful/config.toml` -- \
-                 reindexing will not change this. {hint}"
-            ),
-        )
-    } else if !config.coverage.deploy.enabled {
+    if config.coverage.enabled && !config.coverage.deploy.enabled {
         let hint = config_enable_hint(&["coverage.deploy.enabled"]);
         (
             EmptyReason::DisabledByConfig,
@@ -768,10 +761,20 @@ mod tests {
     #[test]
     fn deploy_impact_gated_message_does_not_lead_with_no_deployment() {
         let mut config = crate::config::model::Config::default();
-        config.coverage.enabled = false;
+        config.coverage.enabled = true;
+        config.coverage.deploy.enabled = false;
         let (reason, msg) = super::deploy_empty_state_message(&config);
         assert_eq!(reason, crate::output::empty::EmptyReason::DisabledByConfig);
         assert!(!msg.starts_with("No deployment impact detected"), "{msg}");
+        assert!(!msg.starts_with(' '), "{msg}");
+    }
+
+    #[test]
+    fn deploy_impact_product_default_empty_is_no_matches() {
+        let config = crate::config::model::Config::default();
+        let (reason, msg) = super::deploy_empty_state_message(&config);
+        assert_eq!(reason, crate::output::empty::EmptyReason::NoMatches);
+        assert!(msg.starts_with("No deployment impact detected"), "{msg}");
         assert!(!msg.starts_with(' '), "{msg}");
     }
 
@@ -867,6 +870,46 @@ mod tests {
             &mut err,
         )
         .expect("elapsed instant should emit");
+        let stderr = String::from_utf8_lossy(&err);
+        assert!(
+            stderr.contains(crate::impact::budget::DEPLOY_BUDGET_WARN),
+            "{stderr}"
+        );
+        let stdout = String::from_utf8_lossy(&out);
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+        assert_eq!(v["completeness"]["stop"], "budget");
+        assert_eq!(v["completeness"]["scope"], "overall");
+        assert_eq!(v["completeness"]["stage"], "deploy");
+        assert!(v.get("emptyReason").is_none(), "{v}");
+        assert!(v.get("defaultPatterns").is_some(), "{v}");
+        assert!(v.get("classifiers").is_some(), "{v}");
+    }
+
+    #[test]
+    fn deploy_impact_elapsed_instant_on_product_default_emits_completeness() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root =
+            camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8 temp path");
+        let layout = crate::state::layout::Layout::new(&root);
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let elapsed = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .unwrap_or_else(std::time::Instant::now);
+        super::execute_deploy_impact_in(
+            &layout,
+            false,
+            true,
+            None,
+            Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            ))),
+            Some(elapsed),
+            None,
+            &mut out,
+            &mut err,
+        )
+        .expect("elapsed instant on product default should emit");
         let stderr = String::from_utf8_lossy(&err);
         assert!(
             stderr.contains(crate::impact::budget::DEPLOY_BUDGET_WARN),
