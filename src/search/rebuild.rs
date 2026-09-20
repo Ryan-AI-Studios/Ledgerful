@@ -12,7 +12,7 @@ use miette::Result;
 ///
 /// Used by `ledgerful index` finish path and `search --auto-index` after
 /// SQLite FullBootstrap/Incremental work. Writes the FTS format stamp on
-/// success so tokenizer revisions (e.g. code_tokenizer_v2) do not silently
+/// success so tokenizer revisions (e.g. code_tokenizer_v3) do not silently
 /// serve stale postings.
 pub fn rebuild_tantivy_index(layout: &Layout) -> Result<()> {
     let index_path = layout.search_index_dir();

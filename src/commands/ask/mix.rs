@@ -6,7 +6,7 @@
 use crate::local_model::pruner::RankedChunk;
 use crate::search::tantivy_engine::normalize_search_path;
 use regex::Regex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 /// Cormack/Clarke RRF constant.
@@ -221,15 +221,19 @@ pub(crate) fn rrf_merge(
         if items.is_empty() {
             continue;
         }
+        let mut scored_this_list: HashSet<String> = HashSet::new();
         for (idx, item) in items.iter().enumerate() {
             let rank = (idx + 1) as f32;
             let add = 1.0 / (RRF_K + rank);
             let key = fusion_key(&item.path);
             let is_structural = matches!(origin, CandidateOrigin::Structural);
+            let first_in_this_list = scored_this_list.insert(key.clone());
             by_path
                 .entry(key.clone())
                 .and_modify(|acc| {
-                    acc.score += add;
+                    if first_in_this_list {
+                        acc.score += add;
+                    }
                     if is_structural && !acc.has_structural {
                         acc.symbol_name = item.symbol_name.clone();
                         if !item.content.is_empty() {
@@ -450,6 +454,12 @@ mod tests {
             !fused[0]
                 .content
                 .contains("apply_provenance_preserves_inherited_with_file_origin")
+        );
+        let expected = 1.0 / (RRF_K + 1.0);
+        assert!(
+            (fused[0].score - expected).abs() < 1e-6,
+            "same-path duplicates in one list contribute once: got {} want {expected}",
+            fused[0].score
         );
     }
 

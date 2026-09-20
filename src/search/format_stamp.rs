@@ -9,8 +9,9 @@ use std::path::Path;
 /// Sibling of Tantivy index files under `search_index_dir`.
 pub const SEARCH_FORMAT_STAMP_NAME: &str = "ledgerful_search_format";
 
-/// Content written when the code-identifier dual-emit tokenizer is active.
-pub const SEARCH_FORMAT_STAMP_CONTENT: &str = "code_tokenizer_v2";
+/// Content written when the code-identifier dual-emit tokenizer is active
+/// (v3: CamelCase / PascalCase full-token dual-emit, 0406).
+pub const SEARCH_FORMAT_STAMP_CONTENT: &str = "code_tokenizer_v3";
 
 /// Absolute path of the stamp file for `index_dir`.
 pub fn stamp_path(index_dir: &Path) -> std::path::PathBuf {
