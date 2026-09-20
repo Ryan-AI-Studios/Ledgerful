@@ -16,6 +16,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Bridge query unquoted join (0402):** `bridge query configuration
+  provenance` joins remaining words like `search` (`query.join(" ")`).
+  `--json` still `kind: bridgeQuery`. Hidden CLI; do not enable on EXEC.
+
 - **Sync cursor/verify human tokens (0401):** human `sync cursor` names
   `lag.reason` and `Next:` without inventing wall-clock lag. Human
   `sync verify` failures prefix the closed `verdict` token on stderr.

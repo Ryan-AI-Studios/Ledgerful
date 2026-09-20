@@ -42,8 +42,9 @@ pub enum BridgeCommands {
     },
     /// Query the bridge for context
     Query {
-        /// Query string
-        query: String,
+        /// Query words (unquoted multi-word OK). Flags may appear before or after.
+        #[arg(value_name = "QUERY", num_args = 1.., required = true)]
+        query: Vec<String>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -78,7 +79,9 @@ pub fn execute(command: BridgeCommands) -> Result<()> {
             crate::bridge::export::execute_export(args)
         }
         BridgeCommands::Import { input } => crate::bridge::import::execute_import(input),
-        BridgeCommands::Query { query, json } => crate::bridge::client::execute_query(query, json),
+        BridgeCommands::Query { query, json } => {
+            crate::bridge::client::execute_query(query.join(" "), json)
+        }
     }
 }
 

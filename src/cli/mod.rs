@@ -49,6 +49,7 @@ mod resolve_quiet_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::bridge::BridgeCommands;
     use clap::{CommandFactory, Parser};
 
     /// Run clap Command-tree work on a 32 MiB stack thread.
@@ -1005,6 +1006,101 @@ mod tests {
             }
             _ => panic!("expected Search command"),
         }
+    }
+
+    fn parse_bridge_query(args: &[&str]) -> (Vec<String>, bool) {
+        let mut full = vec!["ledgerful"];
+        full.extend_from_slice(args);
+        match Cli::try_parse_from(full).unwrap().command {
+            Commands::Bridge {
+                subcommand: BridgeCommands::Query { query, json },
+            } => (query, json),
+            other => panic!("expected Bridge Query, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bridge_query_multi_token_unquoted_joins_query() {
+        let (query, json) = parse_bridge_query(&["bridge", "query", "configuration", "provenance"]);
+        assert_eq!(query, vec!["configuration", "provenance"]);
+        assert_eq!(query.join(" "), "configuration provenance");
+        assert!(!json);
+    }
+
+    #[test]
+    fn bridge_query_json_flag_before_tokens() {
+        let (query, json) =
+            parse_bridge_query(&["bridge", "query", "--json", "configuration", "provenance"]);
+        assert!(json);
+        assert_eq!(query, vec!["configuration", "provenance"]);
+        assert_eq!(query.join(" "), "configuration provenance");
+    }
+
+    #[test]
+    fn bridge_query_json_flag_after_tokens() {
+        let (query, json) =
+            parse_bridge_query(&["bridge", "query", "configuration", "provenance", "--json"]);
+        assert!(json);
+        assert_eq!(query, vec!["configuration", "provenance"]);
+        assert_eq!(query.join(" "), "configuration provenance");
+    }
+
+    #[test]
+    fn bridge_query_json_flag_between_tokens() {
+        let (query, json) =
+            parse_bridge_query(&["bridge", "query", "configuration", "--json", "provenance"]);
+        assert!(json);
+        assert_eq!(query, vec!["configuration", "provenance"]);
+        assert_eq!(query.join(" "), "configuration provenance");
+    }
+
+    #[test]
+    fn bridge_query_quoted_two_word_single_token() {
+        let (query, json) =
+            parse_bridge_query(&["bridge", "query", "--json", "configuration provenance"]);
+        assert!(json);
+        assert_eq!(query, vec!["configuration provenance"]);
+        assert_eq!(query.join(" "), "configuration provenance");
+    }
+
+    #[test]
+    fn bridge_query_missing_query_is_required() {
+        let err = Cli::try_parse_from(["ledgerful", "bridge", "query"]).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument,
+            "empty bridge query must fail closed via required=true: {err}"
+        );
+    }
+
+    #[test]
+    fn bridge_query_unknown_flag_is_error() {
+        let err =
+            Cli::try_parse_from(["ledgerful", "bridge", "query", "foo", "--nope"]).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::UnknownArgument,
+            "unknown flag must stay fail-closed: {err}"
+        );
+    }
+
+    #[test]
+    fn bridge_query_hyphen_leading_without_separator_is_error() {
+        let err = Cli::try_parse_from(["ledgerful", "bridge", "query", "--not-a-query-flag"])
+            .unwrap_err();
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::UnknownArgument,
+            "hyphen-leading token without -- must not become query text: {err}"
+        );
+    }
+
+    #[test]
+    fn bridge_query_end_of_options_keeps_hyphen_token() {
+        let (query, json) = parse_bridge_query(&["bridge", "query", "--", "--json"]);
+        assert_eq!(query, vec!["--json"]);
+        assert_eq!(query.join(" "), "--json");
+        assert!(!json, "token after -- must not select json mode");
     }
 
     #[test]
