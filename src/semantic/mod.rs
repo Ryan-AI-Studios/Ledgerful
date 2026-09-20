@@ -1183,6 +1183,7 @@ mod tests {
         let chunk = crate::semantic::chunker::AstChunk {
             file_path: path_key.to_string(),
             name: "f".to_string(),
+            qualified_name: None,
             kind: crate::index::symbols::SymbolKind::Function,
             content: "fn f() {}".to_string(),
             docstring: None,
@@ -1229,6 +1230,7 @@ mod tests {
         let local_chunk = crate::semantic::chunker::AstChunk {
             file_path: local_key.to_string(),
             name: "local_fn".to_string(),
+            qualified_name: None,
             kind: crate::index::symbols::SymbolKind::Function,
             content: "fn local_fn() {}".to_string(),
             docstring: None,
@@ -1437,6 +1439,7 @@ mod tests {
         crate::semantic::chunker::AstChunk {
             file_path: path.to_string(),
             name: "f".to_string(),
+            qualified_name: None,
             kind: crate::index::symbols::SymbolKind::Function,
             content: "fn f() {}".to_string(),
             docstring: None,

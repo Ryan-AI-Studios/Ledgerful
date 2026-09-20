@@ -19,20 +19,68 @@ fn is_standalone_chunk_kind(kind: &SymbolKind) -> bool {
     }
 }
 
+/// Grain id mixed into incremental `semantic_file_hash` so embed-text
+/// formula changes refresh without a dim wipe or mandatory `--full`.
+pub const EMBED_TEXT_GRAIN: &str = "fn-name-v1";
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AstChunk {
     pub file_path: String,
     pub name: String,
+    #[serde(default)]
+    pub qualified_name: Option<String>,
     pub kind: SymbolKind,
     pub content: String,
     pub docstring: Option<String>,
     pub range: (usize, usize), // (byte_start, byte_end)
     pub lines: (usize, usize), // (line_start, line_end)
-    pub offset: usize,         // offset for split chunks
+    pub offset: usize,         // byte index into the un-headered body
+}
+
+pub(crate) fn semantic_file_content_hash(content: &str) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(EMBED_TEXT_GRAIN.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(content.as_bytes());
+    hasher.finalize().to_hex().to_string()
+}
+
+fn kind_token(kind: &SymbolKind) -> &'static str {
+    match kind {
+        SymbolKind::Function => "fn",
+        SymbolKind::Method => "method",
+        SymbolKind::Struct => "struct",
+        SymbolKind::Enum => "enum",
+        SymbolKind::Trait => "trait",
+        SymbolKind::Type => "type",
+        SymbolKind::Module => "mod",
+        SymbolKind::Class => "class",
+        SymbolKind::Interface => "interface",
+        SymbolKind::Variable => "var",
+        SymbolKind::Constant => "const",
+    }
+}
+
+fn display_name(qualified_name: &Option<String>, name: &str) -> String {
+    qualified_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| name.trim())
+        .to_string()
+}
+
+fn grain_header(kind: &SymbolKind, display: &str) -> String {
+    let token = kind_token(kind);
+    if display.is_empty() {
+        token.to_string()
+    } else {
+        format!("{token} {display}")
+    }
 }
 
 impl AstChunk {
-    pub fn to_embedding_text(&self) -> String {
+    fn embedding_body(&self) -> String {
         let mut text = String::new();
         if let Some(doc) = &self.docstring {
             text.push_str(doc);
@@ -42,9 +90,19 @@ impl AstChunk {
         text
     }
 
+    pub fn to_embedding_text(&self) -> String {
+        let header = grain_header(&self.kind, &display_name(&self.qualified_name, &self.name));
+        let body = self.embedding_body();
+        if body.is_empty() {
+            format!("{header}\n\n")
+        } else {
+            format!("{header}\n\n{body}")
+        }
+    }
+
     pub fn split(&self, max_chars: usize, overlap: usize) -> Vec<AstChunk> {
-        let embedding_text = self.to_embedding_text();
-        let chars: Vec<(usize, char)> = embedding_text.char_indices().collect();
+        let body = self.embedding_body();
+        let chars: Vec<(usize, char)> = body.char_indices().collect();
         if chars.len() <= max_chars {
             return vec![self.clone()];
         }
@@ -58,14 +116,15 @@ impl AstChunk {
             let byte_end = if end_idx < chars.len() {
                 chars[end_idx].0
             } else {
-                embedding_text.len()
+                body.len()
             };
 
-            let chunk_text = embedding_text[byte_start..byte_end].to_string();
+            let chunk_text = body[byte_start..byte_end].to_string();
 
             chunks.push(AstChunk {
                 file_path: self.file_path.clone(),
                 name: self.name.clone(),
+                qualified_name: self.qualified_name.clone(),
                 kind: self.kind.clone(),
                 content: chunk_text,
                 docstring: None,
@@ -155,6 +214,10 @@ impl AstChunker {
                 continue;
             };
 
+            if symbol.kind == SymbolKind::Module && node.child_by_field_name("body").is_none() {
+                continue;
+            }
+
             let chunk_content = node
                 .utf8_text(content.as_bytes())
                 .into_diagnostic()?
@@ -189,6 +252,7 @@ impl AstChunker {
             chunks.push(AstChunk {
                 file_path: file_path.clone(),
                 name: symbol.name,
+                qualified_name: symbol.qualified_name,
                 kind: symbol.kind,
                 content: chunk_content,
                 docstring,
@@ -289,6 +353,7 @@ impl AstChunker {
                 chunks.push(AstChunk {
                     file_path: file_path.clone(),
                     name,
+                    qualified_name: None,
                     kind,
                     content: chunk_content,
                     docstring,
@@ -379,6 +444,7 @@ impl AstChunker {
                 chunks.push(AstChunk {
                     file_path: file_path.clone(),
                     name,
+                    qualified_name: None,
                     kind,
                     content: chunk_content,
                     docstring,
@@ -474,5 +540,130 @@ trait Bar {
             ],
             "4 kept (free_fn Function, impl_method Function, impl Foo Type, Bar Trait) + 1 skip"
         );
+    }
+
+    #[test]
+    fn to_embedding_text_rust_fn_includes_name_header() {
+        let chunk = AstChunk {
+            file_path: "src/commands/config_verify.rs".to_string(),
+            name: "apply_provenance".to_string(),
+            qualified_name: None,
+            kind: SymbolKind::Function,
+            content: "fn apply_provenance() {}".to_string(),
+            docstring: None,
+            range: (0, 0),
+            lines: (1, 1),
+            offset: 0,
+        };
+        let text = chunk.to_embedding_text();
+        assert!(text.starts_with("fn apply_provenance\n\n"), "{text}");
+        assert!(text.contains("fn apply_provenance() {}"), "{text}");
+    }
+
+    #[test]
+    fn to_embedding_text_impl_method_uses_qualified_name() {
+        let chunk = AstChunk {
+            file_path: "src/foo.rs".to_string(),
+            name: "impl_method".to_string(),
+            qualified_name: Some("Foo.impl_method".to_string()),
+            kind: SymbolKind::Function,
+            content: "fn impl_method(&self) {}".to_string(),
+            docstring: None,
+            range: (0, 0),
+            lines: (1, 1),
+            offset: 0,
+        };
+        let text = chunk.to_embedding_text();
+        assert!(text.starts_with("fn Foo.impl_method\n\n"), "{text}");
+        assert_eq!(text.matches("fn Foo.impl_method\n\n").count(), 1);
+    }
+
+    #[test]
+    fn split_children_prefix_header_once_and_offset_is_body_index() {
+        let body = "abcdefghij".repeat(8);
+        let chunk = AstChunk {
+            file_path: "src/long.rs".to_string(),
+            name: "f".to_string(),
+            qualified_name: None,
+            kind: SymbolKind::Function,
+            content: body.clone(),
+            docstring: None,
+            range: (0, body.len()),
+            lines: (1, 1),
+            offset: 0,
+        };
+        let parts = chunk.split(20, 5);
+        assert!(parts.len() > 1, "expected split, got {}", parts.len());
+        for part in &parts {
+            let text = part.to_embedding_text();
+            assert!(text.starts_with("fn f\n\n"), "{text}");
+            assert_eq!(text.matches("fn f\n\n").count(), 1, "{text}");
+        }
+        assert_eq!(parts[0].offset, 0);
+        assert!(parts[1].offset > 0, "second offset {}", parts[1].offset);
+        assert!(
+            !parts[0].content.starts_with("fn f"),
+            "split content must be un-headered body, got {}",
+            parts[0].content
+        );
+        let end = parts[1].offset + parts[1].content.len();
+        assert_eq!(&body[parts[1].offset..end], parts[1].content.as_str());
+        assert!(parts[1].offset < body.len());
+    }
+
+    #[test]
+    fn to_embedding_text_empty_display_name_has_no_trailing_space() {
+        let chunk = AstChunk {
+            file_path: "src/empty.rs".to_string(),
+            name: "   ".to_string(),
+            qualified_name: None,
+            kind: SymbolKind::Function,
+            content: "fn x() {}".to_string(),
+            docstring: None,
+            range: (0, 0),
+            lines: (1, 1),
+            offset: 0,
+        };
+        let text = chunk.to_embedding_text();
+        assert!(text.starts_with("fn\n\n"), "{text}");
+        assert!(!text.starts_with("fn \n"), "{text}");
+    }
+
+    #[test]
+    fn chunk_rust_skips_declaration_only_mod() {
+        let chunks = AstChunker::chunk_file(Path::new("db.rs"), "mod provenance;\n")
+            .expect("chunk declaration-only mod");
+        assert!(
+            chunks.iter().all(|c| !matches!(c.kind, SymbolKind::Module)),
+            "{chunks:?}"
+        );
+        assert!(chunks.iter().all(|c| c.name != "provenance"), "{chunks:?}");
+    }
+
+    #[test]
+    fn chunk_rust_keeps_mod_with_body_and_inner_fn() {
+        let src = "mod inner {\n    fn x() {}\n}\n";
+        let chunks = AstChunker::chunk_file(Path::new("lib.rs"), src).expect("chunk mod with body");
+        assert!(
+            chunks
+                .iter()
+                .any(|c| c.name == "x" && matches!(c.kind, SymbolKind::Function)),
+            "{chunks:?}"
+        );
+        assert!(
+            chunks
+                .iter()
+                .any(|c| c.name == "inner" && matches!(c.kind, SymbolKind::Module)),
+            "{chunks:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_file_content_hash_differs_from_raw_blake3() {
+        let content = "fn apply_provenance() {}";
+        let raw = blake3::hash(content.as_bytes()).to_hex().to_string();
+        let grain = semantic_file_content_hash(content);
+        assert_ne!(grain, raw);
+        assert_eq!(grain, semantic_file_content_hash(content));
     }
 }

@@ -21,6 +21,7 @@ fn make_chunk(file_path: &str, name: &str, offset: usize, content: &str) -> AstC
     AstChunk {
         file_path: file_path.to_string(),
         name: name.to_string(),
+        qualified_name: None,
         offset,
         content: content.to_string(),
         kind: SymbolKind::Function,

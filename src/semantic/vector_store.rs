@@ -848,6 +848,7 @@ mod tests {
         AstChunk {
             file_path: "t.rs".to_string(),
             name: name.to_string(),
+            qualified_name: None,
             kind: crate::index::symbols::SymbolKind::Function,
             content: format!("fn {name}() {{}}"),
             docstring: None,

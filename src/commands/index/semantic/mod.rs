@@ -3,6 +3,7 @@ mod stages;
 
 use crate::config::model::Config;
 use crate::semantic::SemanticDiscovery;
+use crate::semantic::chunker::{AstChunker, semantic_file_content_hash};
 use crate::semantic::concurrency::EmbedSemaphore;
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
@@ -33,6 +34,24 @@ pub(crate) fn resolve_semantic_index_mode(
     } else {
         (false, "cold-store")
     }
+}
+
+/// Warm incremental skip: hash-current and (has snippets or chunker produced none).
+/// `chunk_file` errors keep the file in `to_process`.
+pub(crate) fn skip_warm_incremental_file(
+    semantic: &SemanticDiscovery<'_>,
+    path: &std::path::Path,
+    content: &str,
+    key: &str,
+    hash: &str,
+) -> bool {
+    if !semantic.is_file_hash_current(key, hash) {
+        return false;
+    }
+    if semantic.file_has_snippets(key) {
+        return true;
+    }
+    matches!(AstChunker::chunk_file(path, content), Ok(chunks) if chunks.is_empty())
 }
 
 /// Final machine summary for `index --semantic --json` (schemaVersion 1).
@@ -255,12 +274,11 @@ pub(crate) fn execute_semantic_index(
                 let Ok(content) = crate::util::fs::read_to_string_with_encoding(path) else {
                     return true; // re-try unreadable files (C10 soft)
                 };
-                let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+                let hash = semantic_file_content_hash(&content);
                 let Ok(key) = semantic_path_key(repo_root, path) else {
                     return true;
                 };
-                // Skip only if hash-current AND has ≥1 snippet row.
-                !(semantic.is_file_hash_current(&key, &hash) && semantic.file_has_snippets(&key))
+                !skip_warm_incremental_file(&semantic, path, &content, &key, &hash)
             })
             .collect()
     } else {
@@ -337,7 +355,7 @@ pub(crate) fn execute_semantic_index(
     let mut flat_chunks = Vec::new();
     let mut successful_files = Vec::new();
     for (path, content, chunks) in parsed_files {
-        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        let hash = semantic_file_content_hash(&content);
         let Ok(path_key) = semantic_path_key(repo_root, &path) else {
             warn!(
                 "Skipping semantic ingest for path outside work root: {}",
