@@ -28,7 +28,7 @@ fn insert_http_route(root: &Path) {
 }
 
 #[test]
-fn configure_apply_comma_list_refuses_second_token_not_joined_literal() {
+fn configure_apply_comma_list_same_list_succeeds_not_joined_literal() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -57,34 +57,18 @@ fn configure_apply_comma_list_refuses_second_token_not_joined_literal() {
         .output()
         .unwrap();
     assert!(
-        !out.status.success(),
-        "joined apply must refuse; stdout={} stderr={}",
+        out.status.success(),
+        "same-list apply must succeed after HTTP character; stdout={} stderr={}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(
-        out.stdout.is_empty(),
-        "validation refuse must not emit stdout: {}",
-        String::from_utf8_lossy(&out.stdout)
-    );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("coverage.services"),
-        "clap must split the second token; stderr={stderr}"
-    );
     assert!(
         !stderr.contains("`coverage.global,coverage.services`"),
         "must not treat the comma list as one id; stderr={stderr}"
     );
-
     let layout = Layout::new(root.to_string_lossy().as_ref());
-    assert!(
-        !layout.cli_session_file_for_id(session).exists(),
-        "validation refuse must not write cookie"
-    );
     let cfg = ledgerful::config::load::load_config(&layout).unwrap();
-    assert!(
-        !cfg.coverage.enabled,
-        "fail-closed: no writes on mixed apply"
-    );
+    assert!(cfg.coverage.enabled);
+    assert!(cfg.coverage.services.enabled);
 }

@@ -9,12 +9,19 @@ impl Commands {
     pub(super) fn present_flag_names(&self) -> Vec<&'static str> {
         let mut f = Vec::new();
         match self {
-            Commands::Init(InitArgs { force, enforce }) => {
+            Commands::Init(InitArgs {
+                force,
+                enforce,
+                operator_pack,
+            }) => {
                 if *force {
                     f.push("force");
                 }
                 if *enforce {
                     f.push("enforce");
+                }
+                if *operator_pack {
+                    f.push("operator_pack");
                 }
             }
             Commands::ChangeContext(ChangeContextArgs {

@@ -16,6 +16,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Init operator pack (0403):** opt-in `init --operator-pack` fills
+  product-default coverage/bridge and a missing nightly task without
+  clobbering on-disk `true` or baking a cloud Ask model. Bare `init`
+  stays 0186-A default-off. `configure --apply` accepts same-list
+  global+child when the child will be catalog-visible after global.
+  `--force` help matches skip-gitignore (does not overwrite config).
+
 - **Bridge query unquoted join (0402):** `bridge query configuration
   provenance` joins remaining words like `search` (`query.join(" ")`).
   `--json` still `kind: bridgeQuery`. Hidden CLI; do not enable on EXEC.

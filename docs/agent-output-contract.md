@@ -155,7 +155,10 @@ omitted when none). `applied` is present only when `--apply` was used
 Deploy-only repos (indexed `deploy_manifests`, no HTTP) emit
 `coverage.global` after `index --incremental`.
 
-`--apply` is explicit ids only (three `applyArg` tokens). Refuse unknown /
+`--apply` is explicit ids only (three `applyArg` tokens). Same-list
+`coverage.global` plus `coverage.services` or `coverage.deploy` is accepted
+when the child will be catalog-visible after global. Still refuse child-only
+while global is off and global is not in the list. Refuse unknown /
 inapplicable / no-`applyArg` / apply-all / empty-after-trim with no writes,
 empty stdout, and no cookie. Ready applyArg rows are idempotent
 (`message: "already enabled"`).

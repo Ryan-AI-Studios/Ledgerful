@@ -1,5 +1,5 @@
 use crate::cli::args::{
-    ChangeContextArgs, Cli, Commands, DoctorArgs, ImpactArgs, LedgerCommands, ScanArgs,
+    ChangeContextArgs, Cli, Commands, DoctorArgs, ImpactArgs, InitArgs, LedgerCommands, ScanArgs,
 };
 use crate::ledger::types::Category;
 use clap::{CommandFactory, Parser};
@@ -350,6 +350,30 @@ fn session_json_is_machine_output() {
     assert_eq!(parse(&["session"]).command_name(), "session");
     assert_eq!(parse(&["session", "--json"]).command_name(), "session");
     assert_eq!(parse(&["session", "--json"]).argv_shape(), "session|json");
+}
+
+#[test]
+fn init_operator_pack_parses_and_argv_shape() {
+    let cmd = parse(&["init", "--operator-pack"]);
+    match &cmd {
+        Commands::Init(InitArgs {
+            force,
+            enforce,
+            operator_pack,
+        }) => {
+            assert!(!*force);
+            assert!(!*enforce);
+            assert!(*operator_pack);
+        }
+        other => panic!("expected Init, got {other:?}"),
+    }
+    assert_eq!(cmd.argv_shape(), "init|operator_pack");
+    let bare = parse(&["init"]);
+    match &bare {
+        Commands::Init(InitArgs { operator_pack, .. }) => assert!(!*operator_pack),
+        other => panic!("expected Init, got {other:?}"),
+    }
+    assert_eq!(bare.argv_shape(), "init");
 }
 
 #[test]

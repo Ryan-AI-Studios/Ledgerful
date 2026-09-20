@@ -76,9 +76,11 @@ pub fn run_with(cli: Cli) -> Result<()> {
     };
 
     let result = match cli.command {
-        Commands::Init(InitArgs { force, enforce }) => {
-            crate::commands::init::execute_init(force, enforce)
-        }
+        Commands::Init(InitArgs {
+            force,
+            enforce,
+            operator_pack,
+        }) => crate::commands::init::execute_init_with(force, enforce, operator_pack),
         Commands::Gate { command } => dispatch_gate(gate_or_default(command)),
         Commands::Policy { command } => dispatch_policy(policy_or_default(command)),
         Commands::Release { json, command } => dispatch_release(release_or_default(command), json),

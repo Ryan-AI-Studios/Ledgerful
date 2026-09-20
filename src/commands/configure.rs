@@ -85,13 +85,13 @@ pub fn execute_configure_in(
 
     let tokens = normalize_apply_tokens(opts.apply)?;
     if !tokens.is_empty() {
-        validate_apply_ids(&tokens, &pre_items)?;
+        validate_apply_ids(&tokens, &pre_items, layout, storage, config, &session)?;
     }
 
     let mut applied = Vec::new();
     if !tokens.is_empty() {
-        for id in &tokens {
-            applied.push(apply_one(layout, id, &pre_items));
+        for id in apply_order(&tokens) {
+            applied.push(apply_one(layout, &id, &pre_items));
         }
         applied.sort_by(|a, b| a.id.cmp(&b.id));
     }
@@ -150,21 +150,58 @@ fn is_apply_all_alias(token: &str) -> bool {
     token == "*" || token.eq_ignore_ascii_case("all")
 }
 
-fn validate_apply_ids(ids: &[String], items: &[ConfigChecklistItem]) -> Result<()> {
+fn apply_order(tokens: &[String]) -> Vec<String> {
+    let mut rest: Vec<String> = tokens.to_vec();
+    let mut ordered = Vec::new();
+    for id in ["coverage.global", "coverage.services", "coverage.deploy"] {
+        if let Some(pos) = rest.iter().position(|t| t == id) {
+            ordered.push(rest.remove(pos));
+        }
+    }
+    rest.sort();
+    ordered.extend(rest);
+    ordered
+}
+
+fn validate_apply_ids(
+    ids: &[String],
+    items: &[ConfigChecklistItem],
+    layout: &Layout,
+    storage: &StorageManager,
+    config: &Config,
+    session: &CliSession,
+) -> Result<()> {
+    let global_in_list = ids.iter().any(|id| id == "coverage.global");
+    let global_on = config.coverage.enabled || global_in_list;
+    let projected = if global_in_list && !config.coverage.enabled {
+        let mut cloned = config.clone();
+        cloned.coverage.enabled = true;
+        Some(build_config_checklist(layout, storage, &cloned, session)?)
+    } else {
+        None
+    };
+
     for id in ids {
-        match items.iter().find(|i| i.id == *id) {
-            None => {
-                return Err(miette::miette!(
-                    "configure --apply: `{id}` is unknown or not in the current catalog (no writes)"
-                ));
-            }
-            Some(item) if item.apply_arg.is_none() => {
+        if let Some(item) = items.iter().find(|i| i.id == *id) {
+            if item.apply_arg.is_none() {
                 return Err(miette::miette!(
                     "configure --apply: `{id}` has no applyArg (no writes)"
                 ));
             }
-            Some(_) => {}
+            continue;
         }
+        let deferred_child = (*id == "coverage.services" || *id == "coverage.deploy")
+            && apply_mapping(id).is_some()
+            && global_on;
+        if deferred_child {
+            let catalog = projected.as_deref().unwrap_or(items);
+            if catalog.iter().any(|i| i.id == *id && i.apply_arg.is_some()) {
+                continue;
+            }
+        }
+        return Err(miette::miette!(
+            "configure --apply: `{id}` is unknown or not in the current catalog (no writes)"
+        ));
     }
     Ok(())
 }
@@ -252,6 +289,16 @@ mod tests {
         let storage =
             StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
         (tmp, layout, storage, Config::default())
+    }
+
+    fn insert_deploy(storage: &StorageManager) {
+        let conn = storage.get_connection();
+        conn.execute(
+            "INSERT INTO deploy_manifests (file_path, manifest_type, risk_tier, service_name, owner, last_indexed_at) \
+             VALUES ('Dockerfile', 'dockerfile', 'high', NULL, NULL, '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
     }
 
     fn insert_route(storage: &StorageManager, id: i64, file_path: &str) {
@@ -544,26 +591,102 @@ mod tests {
                 .coverage
                 .enabled
         );
+        let _ = storage.shutdown();
+    }
 
+    #[test]
+    fn configure_apply_same_list_global_and_services_succeeds() {
+        let (_tmp, layout, storage, config) = harness();
+        insert_route(&storage, 1, "src/api.rs");
         let (result, stdout) = run_in(
             &layout,
             &storage,
             &config,
             true,
             &["coverage.global", "coverage.services"],
-            "t-all2",
+            "t-same-svc",
+        );
+        assert!(result.is_ok(), "{result:?}\n{stdout}");
+        let env = parse_envelope(&stdout);
+        let reloaded = crate::config::load::load_config(&layout).unwrap();
+        assert!(reloaded.coverage.enabled);
+        assert!(reloaded.coverage.services.enabled);
+        let ids: Vec<&str> = env.applied.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, vec!["coverage.global", "coverage.services"]);
+        assert!(env.applied.iter().all(|a| a.ok));
+        let _ = storage.shutdown();
+    }
+
+    #[test]
+    fn configure_apply_same_list_global_and_deploy_succeeds() {
+        let (_tmp, layout, storage, config) = harness();
+        insert_route(&storage, 1, "src/api.rs");
+        insert_deploy(&storage);
+        let (result, stdout) = run_in(
+            &layout,
+            &storage,
+            &config,
+            true,
+            &["coverage.deploy", "coverage.global"],
+            "t-same-dep",
+        );
+        assert!(result.is_ok(), "{result:?}\n{stdout}");
+        let env = parse_envelope(&stdout);
+        let reloaded = crate::config::load::load_config(&layout).unwrap();
+        assert!(reloaded.coverage.enabled);
+        assert!(reloaded.coverage.deploy.enabled);
+        let ids: Vec<&str> = env.applied.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, vec!["coverage.deploy", "coverage.global"]);
+        assert!(env.applied.iter().all(|a| a.ok));
+        let _ = storage.shutdown();
+    }
+
+    #[test]
+    fn configure_apply_deploy_alone_still_refuses() {
+        let (_tmp, layout, storage, config) = harness();
+        insert_deploy(&storage);
+        let (result, stdout) = run_in(
+            &layout,
+            &storage,
+            &config,
+            true,
+            &["coverage.deploy"],
+            "t-dep-only",
+        );
+        assert!(result.is_err(), "must refuse deploy-only while global off");
+        assert!(stdout.is_empty(), "{stdout}");
+        assert!(
+            !crate::config::load::load_config(&layout)
+                .unwrap()
+                .coverage
+                .deploy
+                .enabled
+        );
+        let _ = storage.shutdown();
+    }
+
+    #[test]
+    fn configure_apply_global_and_deploy_without_rows_refuses() {
+        let (_tmp, layout, storage, config) = harness();
+        insert_route(&storage, 1, "src/api.rs");
+        let (result, stdout) = run_in(
+            &layout,
+            &storage,
+            &config,
+            true,
+            &["coverage.global", "coverage.deploy"],
+            "t-dep-norows",
         );
         assert!(
             result.is_err(),
-            "global+services in one invocation must refuse when services not pre-apply"
+            "must refuse deploy when it would not appear after global"
         );
         assert!(stdout.is_empty(), "{stdout}");
         assert!(
             !crate::config::load::load_config(&layout)
                 .unwrap()
                 .coverage
-                .enabled,
-            "two-step HITL: must not apply global when services is also requested"
+                .enabled
         );
         let _ = storage.shutdown();
     }

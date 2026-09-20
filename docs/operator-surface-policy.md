@@ -106,9 +106,14 @@ remains a fixture omitted from the default list.
 ### Phase B — local `[services]` recipe (not clone-durable)
 
 `.ledgerful/` is gitignored, so declared services and coverage flags cannot ship with
-the repo without flipping product defaults (declined). On this machine only:
+the repo without flipping product defaults (declined). On this machine only,
+`ledgerful init --operator-pack` is the documented alternative to hand
+`config set` for product-default coverage/bridge plus a missing nightly
+task. Still not clone-durable product defaults (0186-A). Hand path:
 
 ```text
+ledgerful init --operator-pack
+# or:
 ledgerful config set coverage.enabled=true
 ledgerful config set coverage.services.enabled=true
 # then hand-edit .ledgerful/config.toml with the [[services.definitions]] block

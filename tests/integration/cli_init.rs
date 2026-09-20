@@ -2,6 +2,7 @@ use camino::Utf8Path;
 use ledgerful::commands::init::execute_init;
 use serial_test::serial;
 use std::fs;
+use std::process::Command;
 use tempfile::tempdir;
 
 use crate::common::{DirGuard, TempEnv, non_interactive, setup_git_repo};
@@ -30,6 +31,12 @@ fn test_init_command_integration() {
     assert!(gitignore.exists());
     let gitignore_content = fs::read_to_string(gitignore).unwrap();
     assert!(gitignore_content.contains(".ledgerful/"));
+    let cfg =
+        ledgerful::config::load::load_config(&ledgerful::state::layout::Layout::new(root)).unwrap();
+    assert!(
+        !cfg.coverage.enabled && !cfg.bridge.enabled,
+        "bare init must stay 0186-A default-off"
+    );
 
     let pre_commit = fs::read_to_string(root.join(".git").join("hooks").join("pre-commit"))
         .expect("pre-commit hook should be installed");
@@ -453,5 +460,81 @@ fn init_skips_hooks_when_lefthook_present() {
     assert!(
         !root.join(".git").join("hooks").join("pre-commit").exists(),
         "pre-commit hook should not be installed when lefthook.yml is present"
+    );
+}
+
+#[test]
+#[serial(env, cwd)]
+fn init_operator_pack_enables_coverage_and_bridge_without_real_scheduler() {
+    let _env_non_interactive = non_interactive();
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(tmp.path());
+
+    let exe = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(exe)
+        .args(["init", "--operator-pack"])
+        .current_dir(root.as_std_path())
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .env("LEDGERFUL_TEST_NIGHTLY_SEAM", "fake")
+        .output()
+        .expect("spawn init --operator-pack");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "init --operator-pack failed: stdout={stdout} stderr={stderr}"
+    );
+    assert!(stdout.contains("Operator pack:"), "{stdout}");
+    assert!(stdout.contains("  coverage.global: applied"), "{stdout}");
+    assert!(stdout.contains("  coverage.services: applied"), "{stdout}");
+    assert!(stdout.contains("  coverage.deploy: applied"), "{stdout}");
+    assert!(stdout.contains("  bridge.enabled: applied"), "{stdout}");
+
+    let _bridge = TempEnv::remove("LEDGERFUL_BRIDGE");
+    let cfg =
+        ledgerful::config::load::load_config(&ledgerful::state::layout::Layout::new(root)).unwrap();
+    assert!(cfg.coverage.enabled);
+    assert!(cfg.coverage.services.enabled);
+    assert!(cfg.coverage.deploy.enabled);
+    assert!(cfg.bridge.enabled);
+
+    let disk = fs::read_to_string(root.join(".ledgerful").join("config.toml")).unwrap();
+    assert!(
+        disk.contains("[bridge]"),
+        "pack must write [bridge]: {disk}"
+    );
+    assert!(
+        disk.contains("enabled = true"),
+        "pack must set on-disk enabled = true: {disk}"
+    );
+    assert!(
+        !disk.contains("ask.providers"),
+        "pack must not write Ask providers: {disk}"
+    );
+}
+
+#[test]
+fn init_help_names_operator_pack_and_force_does_not_overwrite() {
+    let exe = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(exe)
+        .args(["init", "--help"])
+        .output()
+        .expect("spawn init --help");
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        help.contains("--operator-pack"),
+        "init --help must name --operator-pack:\n{help}"
+    );
+    assert!(
+        !help
+            .to_ascii_lowercase()
+            .contains("overwrites existing config"),
+        "--force must not claim overwrite:\n{help}"
+    );
+    assert!(
+        help.contains("does not overwrite"),
+        "--force help must say it does not overwrite:\n{help}"
     );
 }

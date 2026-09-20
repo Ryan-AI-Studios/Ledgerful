@@ -11,6 +11,10 @@ use std::fs;
 use tracing::info;
 
 pub fn execute_init(no_gitignore: bool, enforce: bool) -> Result<()> {
+    execute_init_with(no_gitignore, enforce, false)
+}
+
+pub fn execute_init_with(no_gitignore: bool, enforce: bool, operator_pack: bool) -> Result<()> {
     // 1. Discover work root + shared state dir (linked worktrees share main).
     // Non-git cwd keeps Layout::new (private state under cwd) intentionally.
     let (root, layout) = match gix::discover(".") {
@@ -215,21 +219,23 @@ pub fn execute_init(no_gitignore: bool, enforce: bool) -> Result<()> {
     }
     println!();
 
-    if config_created {
+    let printed_mode = if config_created {
         if let Err(e) = write_initial_mode_ledger_entry(&layout, gate_mode) {
             eprintln!("Warning: could not record initial gate mode ledger entry: {e}");
         }
+        gate_mode.to_string()
     } else {
-        let existing_config = crate::config::load::load_config(&layout).unwrap_or_default();
-        let actual_mode = existing_config.gate.mode.clone();
-        print_init_status_block(&actual_mode);
-        // 0154: product success line must survive default WARN floor (not tracing INFO).
-        println!("Ledgerful initialized successfully!");
-        return Ok(());
-    }
-    print_init_status_block(gate_mode);
+        crate::config::load::load_config(&layout)
+            .unwrap_or_default()
+            .gate
+            .mode
+    };
+    print_init_status_block(&printed_mode);
     // 0154: product success line must survive default WARN floor (not tracing INFO).
     println!("Ledgerful initialized successfully!");
+    if operator_pack {
+        super::pack::apply_operator_pack(&layout, &mut std::io::stdout())?;
+    }
     Ok(())
 }
 
