@@ -16,6 +16,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Sync cursor/verify human tokens (0401):** human `sync cursor` names
+  `lag.reason` and `Next:` without inventing wall-clock lag. Human
+  `sync verify` failures prefix the closed `verdict` token on stderr.
+  `--json` envelopes stay 0365 (no `kind`; stdout `message` unprefixed).
+
 - **Observability persist-empty disk fill (0400):** default `observability
   coverage` / `diff` fill from repo-root OpenSLO when persist is empty
   (`preview: true`; no graph write, no session cookie). `--preview` still

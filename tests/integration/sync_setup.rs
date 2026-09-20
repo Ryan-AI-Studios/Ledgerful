@@ -516,6 +516,13 @@ fn cursor_json_lag_reasons() {
     assert_eq!(v["lag"]["reason"], "notInitialized");
     assert_eq!(v["nextAction"], "ledgerful sync init");
 
+    let (human, _, hcode) = run_cli(tmp.path(), &["sync", "cursor"]);
+    assert_eq!(hcode, 0);
+    assert!(
+        human.contains("Lag is unknown (`notInitialized`). Next: ledgerful sync init"),
+        "human cursor must lock unknown-lag template:\n{human}"
+    );
+
     let _id = init_device(root);
     let (stdout, stderr, code) = run_cli(tmp.path(), &["sync", "cursor", "--json"]);
     assert_eq!(code, 0, "stderr={stderr}");
@@ -523,6 +530,13 @@ fn cursor_json_lag_reasons() {
     assert_eq!(v["initialized"], true);
     assert_eq!(v["lag"]["reason"], "neverRun");
     assert_eq!(v["nextAction"], "ledgerful sync setup");
+
+    let (human, _, hcode) = run_cli(tmp.path(), &["sync", "cursor"]);
+    assert_eq!(hcode, 0);
+    assert!(
+        human.contains("Lag is unknown (`neverRun`). Next: ledgerful sync setup"),
+        "human cursor must lock neverRun template:\n{human}"
+    );
 
     let layout = ledgerful::state::layout::Layout::new(root);
     let storage = StorageManager::init_with_layout(&layout).unwrap();
@@ -547,6 +561,10 @@ fn cursor_json_lag_reasons() {
     assert_eq!(hcode, 0);
     assert!(human.contains("Last Extract HLC: hlc-a"));
     assert!(human.contains("Hybrid Logical Clock"));
+    assert!(
+        human.contains("Lag is unknown (`hlcNotWallClock`). Next: ledgerful sync setup"),
+        "human cursor must lock hlcNotWallClock template:\n{human}"
+    );
     assert!(!human.contains("Extract is ahead of Apply."));
     assert!(!human.contains("Trusted peers"));
 }
@@ -568,6 +586,17 @@ fn log_json_states() {
     assert_eq!(v["logState"], "neverInitialized");
     assert_eq!(v["nextAction"], "ledgerful sync init");
     assert_eq!(v["lineCount"], 0);
+
+    let (human, _, hcode) = run_cli(tmp.path(), &["sync", "log"]);
+    assert_eq!(hcode, 0);
+    assert!(
+        human.contains("neverInitialized"),
+        "human log must name state:\n{human}"
+    );
+    assert!(
+        human.contains("ledgerful sync init"),
+        "human log must name next:\n{human}"
+    );
 
     let _id = init_device(root);
     let (stdout, stderr, code) = run_cli(tmp.path(), &["sync", "log", "--json"]);
@@ -793,6 +822,8 @@ fn verify_json_verdicts_signed_tampered_missing() {
     let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(v["ok"], false);
     assert_eq!(v["verdict"], "decryptFailed");
+    assert_json_message_unprefixed(&v);
+    assert_human_verify_verdict(tmp.path(), bad_path.to_str().unwrap(), "decryptFailed");
 
     let sig_tampered = rewrite_zip_member(&zip, "device.sig", &[0u8; 64]);
     let enc_sig = Bundle::encrypt(&sig_tampered, TEST_SECRET.as_bytes()).unwrap();
@@ -806,6 +837,8 @@ fn verify_json_verdicts_signed_tampered_missing() {
     let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(v["verdict"], "signatureFailed");
     assert_eq!(v["ok"], false);
+    assert_json_message_unprefixed(&v);
+    assert_human_verify_verdict(tmp.path(), sig_path.to_str().unwrap(), "signatureFailed");
 
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip.clone())).unwrap();
     let mut manifest_json = Vec::new();
@@ -830,6 +863,8 @@ fn verify_json_verdicts_signed_tampered_missing() {
     assert_eq!(code, 1);
     let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(v["verdict"], "integrityFailed");
+    assert_json_message_unprefixed(&v);
+    assert_human_verify_verdict(tmp.path(), int_path.to_str().unwrap(), "integrityFailed");
 
     let foreign = SigningKey::generate(&mut rand::rng());
     let foreign_id = "device-foreign1";
@@ -862,6 +897,8 @@ fn verify_json_verdicts_signed_tampered_missing() {
         "unknownDevice message must name device: {}",
         v["message"]
     );
+    assert_json_message_unprefixed(&v);
+    assert_human_verify_verdict(tmp.path(), fpath.to_str().unwrap(), "unknownDevice");
 
     let missing = tmp.path().join("no-such.lfbundle");
     let (stdout, _, code) = run_cli(
@@ -872,6 +909,8 @@ fn verify_json_verdicts_signed_tampered_missing() {
     let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(v["verdict"], "missingFile");
     assert_eq!(v["ok"], false);
+    assert_json_message_unprefixed(&v);
+    assert_human_verify_verdict(tmp.path(), missing.to_str().unwrap(), "missingFile");
 
     drop(_secret);
     let _gone = TempEnv::remove("LEDGERFUL_SYNC_SECRET");
@@ -887,6 +926,111 @@ fn verify_json_verdicts_signed_tampered_missing() {
             .as_str()
             .unwrap_or("")
             .contains("LEDGERFUL_SYNC_SECRET")
+    );
+    assert_json_message_unprefixed(&v);
+    let (h_out, h_err, h_code) =
+        run_cli(tmp.path(), &["sync", "verify", ok_path.to_str().unwrap()]);
+    assert_eq!(h_code, 1, "stderr={h_err}");
+    assert!(
+        h_out.trim().is_empty(),
+        "human verify stdout must be empty:\n{h_out}"
+    );
+    assert!(
+        h_err.contains("missingSecret:"),
+        "human verify must prefix verdict:\n{h_err}"
+    );
+    assert!(
+        h_err.contains("LEDGERFUL_SYNC_SECRET"),
+        "human verify must name the env:\n{h_err}"
+    );
+}
+
+#[test]
+#[cfg(feature = "sync")]
+#[serial_test::serial(cwd, env)]
+fn cursor_log_human_tokens_without_sync_init() {
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(tmp.path());
+    let _guard = DirGuard::from_utf8(root);
+
+    ledgerful::commands::init::execute_init(false, false).unwrap();
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["sync", "cursor", "--json"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["initialized"], false);
+    assert_eq!(v["lag"]["reason"], "notInitialized");
+
+    let (human, _, hcode) = run_cli(tmp.path(), &["sync", "cursor"]);
+    assert_eq!(hcode, 0);
+    assert!(
+        human.contains("Lag is unknown (`notInitialized`). Next: ledgerful sync init"),
+        "human cursor must lock unknown-lag template:\n{human}"
+    );
+
+    let (human, _, hcode) = run_cli(tmp.path(), &["sync", "log"]);
+    assert_eq!(hcode, 0);
+    assert!(
+        human.contains("neverInitialized"),
+        "human log must name state:\n{human}"
+    );
+    assert!(
+        human.contains("ledgerful sync init"),
+        "human log must name next:\n{human}"
+    );
+}
+
+#[test]
+#[cfg(feature = "sync")]
+#[serial_test::serial(cwd, env)]
+fn cursor_set_skips_unknown_lag_line() {
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(tmp.path());
+    let _guard = DirGuard::from_utf8(root);
+    let _id = init_device(root);
+
+    let (stdout, stderr, code) = run_cli(
+        tmp.path(),
+        &["sync", "cursor", "--set", "1700000000000-0000-n"],
+    );
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(
+        stdout.contains("Sync extract cursor updated to:"),
+        "set must print update:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("Lag is unknown"),
+        "--set must skip unknown-lag line:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("Next:"),
+        "--set must skip Next line:\n{stdout}"
+    );
+}
+
+#[cfg(feature = "sync")]
+fn assert_json_message_unprefixed(v: &serde_json::Value) {
+    let verdict = v["verdict"].as_str().unwrap_or("");
+    if let Some(msg) = v["message"].as_str() {
+        assert!(
+            !msg.starts_with(&format!("{verdict}:")),
+            "JSON message must stay raw, not `{verdict}: …`: {msg}"
+        );
+    }
+}
+
+#[cfg(feature = "sync")]
+fn assert_human_verify_verdict(dir: &std::path::Path, path: &str, verdict: &str) {
+    let (stdout, stderr, code) = run_cli(dir, &["sync", "verify", path]);
+    assert_eq!(code, 1, "stderr={stderr}");
+    assert!(
+        stdout.trim().is_empty(),
+        "human verify stdout must be empty:\n{stdout}"
+    );
+    assert!(
+        stderr.contains(&format!("{verdict}:")),
+        "human verify must prefix `{verdict}:`:\n{stderr}"
     );
 }
 

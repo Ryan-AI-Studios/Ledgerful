@@ -52,6 +52,14 @@ pub fn handle(set: Option<String>, json: bool) -> Result<()> {
         ) {
             println!("{line}");
         }
+        let initialized = sync_initialized(&layout)?;
+        let extract = nonempty_hlc(extract_hlc.as_deref());
+        let apply = nonempty_hlc(apply_hlc.as_deref());
+        println!(
+            "Lag is unknown (`{}`). Next: {}",
+            lag_reason(initialized, extract, apply),
+            cursor_log_next_action(initialized)
+        );
     }
 
     Ok(())

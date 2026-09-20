@@ -234,7 +234,7 @@ v1 target scheme: `dir://<absolute-path>` — a shared folder with per-device ou
 
 - **Bundle KDF:** Argon2id (pin: argon2 **0.5.x** — no 0.6 RC)
 - **AEAD:** XChaCha20-Poly1305 (chacha20poly1305 **0.11**)
-- **Device identity:** Ed25519 (ed25519-dalek **2.x** — **no** 3.0 bump)
+- **Device identity:** Ed25519 (ed25519-dalek **3.0.0**)
 - **Pair invite MAC (0111):**
   - `key = blake3::derive_key("ledgerful team-sync pair v1", secret)`
   - `msg = b"pair-invite-v1\0" || device_id || pub32`
@@ -269,9 +269,9 @@ ledgerful sync pair --list
 ledgerful sync pair --revoke <device_id>
 ledgerful sync pair --force '<invite>'
 ledgerful sync run --once           # clear message when disabled; no secret prompt if disabled
-ledgerful sync verify <path>        # decrypt + Ed25519 verify
+ledgerful sync verify <path>        # decrypt + Ed25519 verify; failures print `{verdict}:` on stderr
 ledgerful sync verify <path> --json # schemaVersion 1; closed verdict; ok agrees with exit
-ledgerful sync cursor               # extract/apply HLC watermarks (human Never + HLC explanation)
+ledgerful sync cursor               # extract/apply HLC watermarks; Lag is unknown (`reason`). Next: …
 ledgerful sync cursor --json        # schemaVersion 1; lag.status always unknown; omit-empty watermarkCompare
 ledgerful sync log                  # tail sync.log (JSON-line events from sync::run)
 ledgerful sync log --json           # logState + omit-empty events[]
