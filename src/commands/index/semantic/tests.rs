@@ -11,6 +11,7 @@ fn chunk(name: &str) -> AstChunk {
     AstChunk {
         file_path: "src/lib.rs".to_string(),
         name: name.to_string(),
+        qualified_name: None,
         kind: SymbolKind::Function,
         content: format!("fn {name}() {{}}"),
         docstring: None,
@@ -223,13 +224,74 @@ fn wipe_edge_orphan_hashes_execute_path_cold_store_and_reprocesses() {
     );
     assert_eq!(reason, "cold-store");
 
-    // C1 filter (incremental branch): skip only when hash-current AND has snippets.
-    // Hash-only must re-process even under forced incremental.
+    // C1: hash-current without snippets still re-processes when the file
+    // would produce chunks (unknown here — no path). Empty-chunk skip is
+    // `skip_warm_incremental_file`.
     let would_skip = semantic.is_file_hash_current(path_key, content_hash)
         && semantic.file_has_snippets(path_key);
     assert!(
         !would_skip,
         "hash-current without snippets must re-process (not silent up-to-date)"
+    );
+}
+
+#[test]
+fn skip_warm_incremental_file_skips_hash_current_declaration_only_mod() {
+    use crate::config::model::LocalModelConfig;
+    use crate::semantic::SemanticDiscovery;
+    use crate::semantic::chunker::semantic_file_content_hash;
+    use crate::state::storage_cozo::CozoStorage;
+    use std::path::Path;
+
+    let storage = CozoStorage::new_in_memory().expect("cozo");
+    let config = LocalModelConfig {
+        dimensions: 3,
+        disable_hnsw: true,
+        ..Default::default()
+    };
+    let semantic = SemanticDiscovery::new(config, &storage).expect("semantic");
+    semantic.ensure_file_hash_schema().expect("hash schema");
+
+    let path = Path::new("mod.rs");
+    let content = "mod provenance;\n";
+    let hash = semantic_file_content_hash(content);
+    semantic
+        .record_file_hash("mod.rs", &hash)
+        .expect("record hash");
+    assert!(
+        skip_warm_incremental_file(&semantic, path, content, "mod.rs", &hash),
+        "declaration-only mod.rs must not block up_to_date"
+    );
+}
+
+#[test]
+fn skip_warm_incremental_file_reprocesses_stale_raw_hash() {
+    use crate::config::model::LocalModelConfig;
+    use crate::semantic::SemanticDiscovery;
+    use crate::semantic::chunker::semantic_file_content_hash;
+    use crate::state::storage_cozo::CozoStorage;
+    use std::path::Path;
+
+    let storage = CozoStorage::new_in_memory().expect("cozo");
+    let config = LocalModelConfig {
+        dimensions: 3,
+        disable_hnsw: true,
+        ..Default::default()
+    };
+    let semantic = SemanticDiscovery::new(config, &storage).expect("semantic");
+    semantic.ensure_file_hash_schema().expect("hash schema");
+
+    let path = Path::new("src/lib.rs");
+    let content = "fn free_fn() {}\n";
+    let raw = blake3::hash(content.as_bytes()).to_hex().to_string();
+    semantic
+        .record_file_hash("src/lib.rs", &raw)
+        .expect("record raw hash");
+    let grain = semantic_file_content_hash(content);
+    assert_ne!(grain, raw);
+    assert!(
+        !skip_warm_incremental_file(&semantic, path, content, "src/lib.rs", &grain),
+        "old raw blake3 must be treated as stale"
     );
 }
 

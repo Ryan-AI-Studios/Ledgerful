@@ -7,9 +7,10 @@
 ## What this is
 
 `ledgerful search --semantic` and the semantic path of `ledgerful ask` rank
-AST-chunked code snippets by cosine distance to a query embedding. Results are
-only as meaningful as the embedding model behind `local_model.base_url` (or
-`local_model.embedding_url`).
+AST-chunked code snippets by cosine distance to a query embedding. Embed text
+starts with a grain header (`fn name` / `Type.method`); declaration-only Rust
+`mod x;` is not a chunk. Results are only as meaningful as the embedding model
+behind `local_model.base_url` (or `local_model.embedding_url`).
 
 This is a **capability that can be off**:
 
@@ -51,8 +52,12 @@ bootstrap so the index never silently stays empty.
   the run is `cold-store` / full.
 - **First populate / cold / post-dim-wipe empty vectors:** bare
   `index --semantic` full-bootstraps automatically (`cold-store`).
-- **Warm delta:** bare `index --semantic` re-embeds only changed files (and
-  files whose hash is current but that have zero snippet rows).
+- **Warm delta:** bare `index --semantic` re-embeds only changed files.
+  File hashes include embed-text grain id `fn-name-v1`, so a formula
+  change invalidates every hash and refreshes on the **next**
+  `index --semantic` (query/Ask keep ranking pre-header vectors until
+  that run). Hash-current files with zero snippet rows still re-process
+  unless the chunker produces zero chunks (declaration-only `mod x;`).
 - **Force rebuild:** `index --semantic --full` always wins over `-i`.
 - **After repo absolute-path move / isolation cleanup:** prefer
   `index --semantic --full` once so foreign keys purge and relative keys rewrite.

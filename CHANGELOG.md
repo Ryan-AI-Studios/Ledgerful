@@ -16,6 +16,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Semantic function-grain chunks (0404):** embed text prefixes
+  `fn name` / `Type.method`; declaration-only Rust `mod x;` is not
+  a chunk; incremental file hashes include grain id `fn-name-v1` so
+  the formula refreshes on the next `index --semantic` without a dim
+  wipe. Search/Ask keep pre-header vectors until that run.
+
 - **Init operator pack (0403):** opt-in `init --operator-pack` fills
   product-default coverage/bridge and a missing nightly task without
   clobbering on-disk `true` or baking a cloud Ask model. Bare `init`
