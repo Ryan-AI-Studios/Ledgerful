@@ -205,19 +205,13 @@ fn finish(json: bool, report: VerifyReport) -> Result<()> {
             .map_err(|e| miette!("Failed to write verify JSON newline: {e}"))?;
         if !ok {
             crate::output::requested_exit::request_exit(1);
-            return Err(miette!(
-                "{}",
-                report.message.unwrap_or_else(|| report.verdict.to_string())
-            ));
+            return Err(miette!("{}", diagnostic_display(&report)));
         }
         return Ok(());
     }
 
     if !ok {
-        return Err(miette!(
-            "{}",
-            report.message.unwrap_or_else(|| report.verdict.to_string())
-        ));
+        return Err(miette!("{}", diagnostic_display(&report)));
     }
 
     println!("Bundle Verification Success:");
@@ -234,4 +228,11 @@ fn finish(json: bool, report: VerifyReport) -> Result<()> {
     println!("  Signature:      Valid (Ed25519)");
     println!("  Integrity:      Valid (SHA-256)");
     Ok(())
+}
+
+fn diagnostic_display(report: &VerifyReport) -> String {
+    match &report.message {
+        Some(msg) => format!("{}: {msg}", report.verdict),
+        None => report.verdict.to_string(),
+    }
 }
