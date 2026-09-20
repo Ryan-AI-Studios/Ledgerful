@@ -79,7 +79,6 @@ const INSTRUCTION_PHRASES: &[&str] = &[
     "say only",
     "output only",
     "print only",
-    "single word",
 ];
 
 const PING_TOKENS: &[&str] = &["pong", "ping", "hello", "hi"];
@@ -107,21 +106,19 @@ fn tokenize_ask_query(s: &str) -> Vec<String> {
         .collect()
 }
 
-fn contains_phrase_tokens(tokens: &[String], phrase: &str) -> bool {
+fn starts_with_phrase_tokens(tokens: &[String], phrase: &str) -> bool {
     let phrase_tokens = tokenize_ask_query(phrase);
     if phrase_tokens.is_empty() || phrase_tokens.len() > tokens.len() {
         return false;
     }
-    tokens
-        .windows(phrase_tokens.len())
-        .any(|window| window == phrase_tokens.as_slice())
+    &tokens[..phrase_tokens.len()] == phrase_tokens.as_slice()
 }
 
 pub(crate) fn is_llm_instruction_query(query: &str) -> bool {
     let tokens = tokenize_ask_query(query);
     INSTRUCTION_PHRASES
         .iter()
-        .any(|phrase| contains_phrase_tokens(&tokens, phrase))
+        .any(|phrase| starts_with_phrase_tokens(&tokens, phrase))
 }
 
 pub(crate) fn is_ping_token(query: &str) -> bool {
@@ -994,6 +991,21 @@ mod tests {
         assert!(!skip_oversized_global_gather("pong", true, true));
         assert!(!skip_oversized_global_gather("pong", false, false));
         assert!(!skip_oversized_global_gather("test", false, true));
+        assert!(!skip_oversized_global_gather(
+            "How is single word matching implemented in the tokenizer?",
+            false,
+            true
+        ));
+        assert!(!skip_oversized_global_gather(
+            "Does ask output only JSON when json is set?",
+            false,
+            true
+        ));
+        assert!(!skip_oversized_global_gather(
+            "Can the agent reply with file paths from Evidence?",
+            false,
+            true
+        ));
         let instruction = gather_plan("Reply with the single word pong.", false, true);
         assert_eq!(instruction.skip_kind, Some(GatherSkipKind::LlmInstruction));
         assert!(!instruction.include_kg_neighborhood);
