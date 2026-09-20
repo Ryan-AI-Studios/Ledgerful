@@ -29,6 +29,28 @@ fn search_trigrams_json_is_machine_output() {
         "argv_shape must record json: {}",
         parse(&["bridge", "query", "q", "--json"]).argv_shape()
     );
+    assert!(
+        parse(&["bridge", "query", "configuration", "provenance", "--json"]).is_machine_output(),
+        "unquoted two words + --json after tokens is machine"
+    );
+    assert!(
+        parse(&["bridge", "query", "--json", "configuration", "provenance"]).is_machine_output(),
+        "unquoted two words + --json before tokens is machine"
+    );
+    assert!(
+        parse(&["bridge", "query", "configuration", "--json", "provenance"]).is_machine_output(),
+        "unquoted two words + --json between tokens is machine"
+    );
+    assert_eq!(
+        parse(&["bridge", "query", "configuration", "provenance", "--json"]).argv_shape(),
+        "bridge_query|json",
+        "query words must not leak into argv_shape"
+    );
+    assert_eq!(
+        parse(&["bridge", "query", "configuration", "--json", "provenance"]).argv_shape(),
+        "bridge_query|json",
+        "between-tokens query words must not leak into argv_shape"
+    );
     let shape = parse(&["search-trigrams", "led", "--json"]).argv_shape();
     assert!(
         shape.contains("json"),
