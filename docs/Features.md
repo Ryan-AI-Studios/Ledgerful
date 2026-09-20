@@ -77,13 +77,14 @@ Understand the "blast radius" of any change before it is committed.
         dirty-path ∩ indexed models; field-level impact stays
         `unsupported`.
     *   **Observability**: Trace config drift and SDK dependency detection.
-        Coverage inventory reads repo-root `observability/` OpenSLO
-        (`kind: Service` + matching SLO, or `[services]`) after
-        `index --analyze-graph`. `--preview` shows the same denominators
-        from disk without writing the graph. `observability diff --json`
-        is `schemaVersion` 1 `kind: observabilityDiff` with relative
-        `sourceFile`. Coverage stays opt-in; do not enable it on this
-        engine tree to “see” data.
+        Default `observability coverage` / `diff` fill from repo-root
+        `observability/` OpenSLO (`kind: Service` + matching SLO) when
+        persist is empty (`preview: true`; no graph write). `--preview`
+        is the no-Cozo path. `[services]` overlay and surfaces catalog
+        still need `index --analyze-graph`. Do not commit product OpenSLO
+        on this engine tree; do not enable coverage to “see” data.
+        `observability diff --json` is `schemaVersion` 1
+        `kind: observabilityDiff` with relative `sourceFile`.
     *   **Affected HTTP flows (0118)**: Change-set `affectedFlows` over indexed route
         registrations (handler symbol / impl file / registration file / optional blast
         edges). Surfaces: impact, change-context, `scan --pr`, and

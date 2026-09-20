@@ -16,6 +16,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Observability persist-empty disk fill (0400):** default `observability
+  coverage` / `diff` fill from repo-root OpenSLO when persist is empty
+  (`preview: true`; no graph write, no session cookie). `--preview` still
+  never opens Cozo. 0215 empty taxonomy stays when the fill misses.
+
 - **Deploy impact ungated classify (0399):** `deploy impact` cheap git-diff
   classify runs on product-default coverage (global off). Gated empty is only
   an explicit `coverage.deploy.enabled=false` under global on. Surfaces catalog
