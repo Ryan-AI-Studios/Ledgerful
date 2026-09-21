@@ -879,9 +879,13 @@ async fn test_trends_returns_populated_data() {
     let storage = StorageManager::init(db_path.as_std_path()).unwrap();
     let conn = storage.get_connection();
 
+    // Seed today (UTC). A fixed 2026-06-23 stamp aged out on 2026-09-21 when
+    // the days=90 cutoff became 2026-06-24 (Utc::now() - 89 days). Same class
+    // as cli_hotspots seed_hotspot_trends (2026-08-01 → historyAvailable false).
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     conn.execute(
         "INSERT INTO project_trend_days (day, score, changes, high_risk_count) VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params!["2026-06-23", 42.5, 5, 1],
+        rusqlite::params![&today, 42.5, 5, 1],
     )
     .unwrap();
     drop(storage);
@@ -902,7 +906,7 @@ async fn test_trends_returns_populated_data() {
     let data = json["data"].as_array().expect("data is an array");
     assert_eq!(data.len(), 1);
     let point = &data[0];
-    assert_eq!(point["date"].as_str(), Some("2026-06-23"));
+    assert_eq!(point["date"].as_str(), Some(today.as_str()));
     assert!((point["score"].as_f64().unwrap() - 42.5).abs() < 1e-6);
     assert_eq!(point["changes"].as_i64(), Some(5));
     assert_eq!(point["highRiskCount"].as_i64(), Some(1));
