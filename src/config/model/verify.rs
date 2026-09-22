@@ -34,9 +34,15 @@ pub struct VerifyConfig {
     /// Ordered list of verification steps to run when no `-c` flag is provided
     #[serde(default)]
     pub steps: Vec<VerifyStep>,
-    /// Default timeout for steps that don't specify one
+    /// Default timeout for explicit `[[verify.steps]]` that don't specify one.
+    /// Not the auto-plan test budget.
     #[serde(default = "default_verify_timeout")]
     pub default_timeout_secs: u64,
+    /// Planned seconds for auto-plan test steps (`cargo nextest` / `cargo test`).
+    /// `None` keeps the built-in test budget (400 unless a measurement changes it).
+    /// Does not apply to fmt, clippy, manual `-c`, or explicit steps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suite_timeout_secs: Option<u64>,
     /// Weight of semantic prediction in score blending [0.0, 1.0]. 0.0 disables.
     #[serde(default = "default_semantic_weight")]
     pub semantic_weight: f64,
@@ -108,6 +114,7 @@ impl Default for VerifyConfig {
             mode: None,
             steps: Vec::new(),
             default_timeout_secs: default_verify_timeout(),
+            suite_timeout_secs: None,
             semantic_weight: default_semantic_weight(),
             prefer_nextest: None,
             allowed_commands: Vec::new(),
@@ -129,6 +136,7 @@ mod tests {
         assert_eq!(config.mode, None);
         assert!(config.steps.is_empty());
         assert_eq!(config.default_timeout_secs, 300);
+        assert_eq!(config.suite_timeout_secs, None);
         assert!((config.semantic_weight - 0.3).abs() < f64::EPSILON);
         assert!(!config.allow_shell_steps);
         assert!(config.allowed_commands.is_empty());
@@ -206,5 +214,19 @@ shell = true
         assert!(check_policy("my-tool", &policy).is_ok());
         assert_eq!(policy.default_timeout_secs, 90);
         assert!(policy.strict);
+    }
+
+    #[test]
+    fn suite_timeout_zero_fails_validation() {
+        use crate::config::model::Config;
+        use crate::config::validate::validate_config;
+        let mut config = Config::default();
+        config.verify.suite_timeout_secs = Some(0);
+        let err = validate_config(&config).expect_err("zero suite budget");
+        let text = format!("{err:?}");
+        assert!(
+            text.contains("suite_timeout_secs"),
+            "expected suite key in {text}"
+        );
     }
 }

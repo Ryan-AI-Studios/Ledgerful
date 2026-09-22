@@ -66,6 +66,12 @@ pub fn validate_config(config: &Config) -> Result<()> {
         }
         .into());
     }
+    if config.verify.suite_timeout_secs == Some(0) {
+        return Err(ConfigError::ValidationFailed {
+            reason: "verify.suite_timeout_secs must be > 0".to_string(),
+        }
+        .into());
+    }
 
     // Process-policy lists: reject empty strings and dual allow+deny membership.
     for (i, cmd) in config.verify.allowed_commands.iter().enumerate() {

@@ -292,8 +292,11 @@ impl Commands {
                 // Spec: flag *names* only. Recording "scope" for every verify run is fine
                 // and keeps path/tx_id out of the hash.
                 scope: _,
-                timeout: _,
+                timeout,
             }) => {
+                if timeout.is_some() {
+                    f.push("timeout");
+                }
                 if command.is_some() {
                     f.push("command");
                 }

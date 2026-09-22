@@ -44,7 +44,7 @@ fn test_impact_packet_is_loadable_by_verify_after_scan() {
     let result = execute_verify(ExecuteVerifyOpts {
         command: Some("echo ok".into()),
         tx_id: None,
-        timeout_secs: 10,
+        timeout_secs: Some(10),
         no_predict: false,
         explain: false,
         entity: None,

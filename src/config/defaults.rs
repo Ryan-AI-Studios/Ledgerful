@@ -32,6 +32,9 @@ overall_budget_secs = 25
 [verify]
 mode = "auto"
 # default_timeout_secs = 300
+# suite_timeout_secs raises auto-plan cargo test / cargo nextest only.
+# Omitted keeps the built-in test budget. Explicit [[verify.steps]] ignore it.
+# suite_timeout_secs = 900
 # Process policy (default-strict with a built-in cargo/npm/pytest/git allowlist).
 # allowed_commands extends the built-in list (does not replace it):
 # allowed_commands = ["my-custom-tool"]

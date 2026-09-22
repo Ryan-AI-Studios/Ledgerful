@@ -1487,6 +1487,28 @@ mod tests {
     }
 
     #[test]
+    fn verify_timeout_omitted_is_none_and_absent_from_argv_shape() {
+        let without = Cli::try_parse_from(["ledgerful", "verify"]).unwrap();
+        match &without.command {
+            Commands::Verify(args) => assert_eq!(args.timeout, None),
+            _ => panic!("expected Verify"),
+        }
+        assert!(
+            !without.command.argv_shape().contains("timeout"),
+            "{}",
+            without.command.argv_shape()
+        );
+        let with = Cli::try_parse_from(["ledgerful", "verify", "--timeout", "25"]).unwrap();
+        match &with.command {
+            Commands::Verify(args) => assert_eq!(args.timeout, Some(25)),
+            _ => panic!("expected Verify"),
+        }
+        let shape = with.command.argv_shape();
+        assert!(shape.contains("timeout"), "{shape}");
+        assert!(!shape.contains("25"), "{shape}");
+    }
+
+    #[test]
     fn verify_alias_dry_run() {
         let cli = Cli::try_parse_from(["ledgerful", "verify", "--dry-run"]).unwrap();
         match cli.command {

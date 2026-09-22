@@ -128,13 +128,18 @@ pub fn build_empty_changes_plan(
             timeout_secs: 60,
             description: "No changes: format check (scoped tests N/A)".to_string(),
             shell: false,
+            budget_source: None,
         });
         steps.push(VerificationStep {
             command: "cargo clippy --all-targets --all-features -- -D warnings".to_string(),
             timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
             description: "No changes: lints (scoped tests N/A)".to_string(),
             shell: false,
+            budget_source: None,
         });
+    }
+    for step in &mut steps {
+        crate::verify::runner::stamp_auto_budget(step, None);
     }
     VerificationPlan {
         source: Some(PlanSource::AutoPolicy),
@@ -208,6 +213,10 @@ pub struct VerificationStep {
     /// an explicit opt-in because it exposes shell-injection risk.
     #[serde(default)]
     pub shell: bool,
+    /// Planned budget class (`suite`, `format`, `lint`, `auto`, `manual`,
+    /// `explicit`). Omitted on older reports. Not a second timeout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -310,6 +319,7 @@ pub fn build_plan_from_config(config: &VerifyConfig) -> Option<VerificationPlan>
                 step.description.clone()
             },
             shell: step.shell,
+            budget_source: Some("explicit".to_string()),
         })
         .collect();
 

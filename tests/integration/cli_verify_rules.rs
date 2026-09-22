@@ -24,7 +24,7 @@ fn test_verify_invalid_rules_fail_visibly() {
     let err = execute_verify(ExecuteVerifyOpts {
         command: None,
         tx_id: None,
-        timeout_secs: 5,
+        timeout_secs: Some(5),
         no_predict: false,
         explain: false,
         entity: None,

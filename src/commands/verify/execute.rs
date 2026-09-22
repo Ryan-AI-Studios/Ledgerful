@@ -10,7 +10,7 @@ use crate::verify::plan::{VerificationStep, VerifyScope, build_plan_from_config}
 use crate::verify::predictor::OutcomePredictor;
 use crate::verify::results::VerificationReport;
 use crate::verify::suggestions::{generate_suggestions, query_ledger_status};
-use crate::verify::timeouts::{cap_auto_step_timeout, manual_timeout};
+use crate::verify::timeouts::{cap_auto_step_timeout, manual_timeout, manual_timeout_from_cli};
 use miette::Result;
 use owo_colors::{OwoColorize, Stream, Style};
 use std::env;
@@ -29,7 +29,7 @@ use super::mapping::{TestMappingState, explain_test_mappings, step_relevant_to_e
 pub struct ExecuteVerifyOpts {
     pub command: Option<String>,
     pub tx_id: Option<String>,
-    pub timeout_secs: u64,
+    pub timeout_secs: Option<u64>,
     pub no_predict: bool,
     pub explain: bool,
     pub entity: Option<String>,
@@ -168,7 +168,10 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
     let (plan, steps) = match command_str {
         Some(ref cmd) => (
             None,
-            vec![manual_step(cmd.clone(), manual_timeout(timeout_secs))],
+            vec![manual_step(
+                cmd.clone(),
+                manual_timeout(manual_timeout_from_cli(timeout_secs)),
+            )],
         ),
         None => {
             if let Some(config_plan) = config_plan {
@@ -524,7 +527,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
             println!(
                 "  • {} (timeout: {}s)",
                 command_str.as_deref().unwrap_or(""),
-                timeout_secs
+                manual_timeout(manual_timeout_from_cli(timeout_secs))
             );
             println!();
             println!(
@@ -1024,6 +1027,7 @@ fn emit_verify_dry_run_json(
                 command: s.command.clone(),
                 status: "planned".to_string(),
                 timeout_secs: s.timeout_secs,
+                budget_source: s.budget_source.clone(),
             })
             .collect()
     };
@@ -1140,6 +1144,7 @@ fn manual_step(command: String, timeout_secs: u64) -> VerificationStep {
         command,
         timeout_secs,
         shell: true,
+        budget_source: Some("manual".to_string()),
     }
 }
 

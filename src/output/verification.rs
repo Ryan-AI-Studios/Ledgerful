@@ -425,6 +425,7 @@ mod tests {
             timeout_secs: 60,
             description: description.to_string(),
             shell: false,
+            budget_source: None,
         }
     }
 

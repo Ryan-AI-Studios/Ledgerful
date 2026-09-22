@@ -21,6 +21,9 @@ pub struct VerifyDryRunStepJson {
     /// Planned seconds after the CLI cap. Default so a pre-0408 payload still deserializes.
     #[serde(default)]
     pub timeout_secs: u64,
+    /// Planned budget class. Omitted when unset. schemaVersion stays 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_source: Option<String>,
 }
 
 /// `kind: "verifyDryRun"` — not a verification. No `ok`.
@@ -336,6 +339,7 @@ mod diagnostic_dto_tests {
                 command: "cargo fmt --all -- --check".into(),
                 status: "planned".into(),
                 timeout_secs: 60,
+                budget_source: None,
             }],
         };
         let json = payload.to_json_string().unwrap();
@@ -348,6 +352,10 @@ mod diagnostic_dto_tests {
         assert!(!json.contains("durationMs"), "{json}");
         assert!(!json.contains("exitCode"), "{json}");
         assert!(json.contains("\"timeoutSecs\""), "{json}");
+        assert!(
+            !json.contains("budgetSource"),
+            "unset budgetSource stays omitted: {json}"
+        );
         assert!(json.contains("\"status\": \"planned\""));
         assert!(!json.contains("matchedSteps"));
         assert!(!json.contains("datasetKeys"));
