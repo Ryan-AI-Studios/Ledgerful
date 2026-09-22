@@ -1773,6 +1773,279 @@ mod tests {
         );
     }
 
+    /// 0410: a vendored `.js` callee does not license JavaScript reachability.
+    /// `include_vendor` does not reopen that license. A real `.rs` caller graph
+    /// still scores an unreached Rust function as unreachable.
+    #[test]
+    fn reachability_unknown_when_callee_is_vendored_js() {
+        let (storage, _cozo) = in_memory_storage_with_cozo();
+        let conn = storage.get_connection();
+        seed_rs_edge_and_mapping(conn);
+
+        let entry_file_id: i64 = conn
+            .query_row(
+                "SELECT id FROM project_files WHERE file_path = 'src/entry.rs'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let entry_main_id: i64 = conn
+            .query_row(
+                "SELECT id FROM project_symbols WHERE symbol_name = 'entry_main'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at) VALUES ('third_party/x.js', 'JavaScript', 'hv', 20, 'OK', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let vendor_file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, 'keys', 'keys', 'Function', 'INTERNAL', '2026-01-01')",
+            [vendor_file_id],
+        )
+        .unwrap();
+        let keys_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO structural_edges (caller_symbol_id, caller_file_id, callee_symbol_id, callee_file_id, call_kind, resolution_status) VALUES (?1, ?2, ?3, ?4, 'DIRECT', 'RESOLVED')",
+            [entry_main_id, entry_file_id, keys_id, vendor_file_id],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at) VALUES ('mcp-server/lib/install.js', 'JavaScript', 'hi', 40, 'OK', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let install_file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, 'ensureBinary', 'ensureBinary', 'Function', 'INTERNAL', '2026-01-01')",
+            [install_file_id],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at) VALUES ('src/orphan.rs', 'Rust', 'ho', 10, 'OK', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let orphan_file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, 'crate::dead_fn', 'dead_fn', 'Function', 'INTERNAL', '2026-01-01')",
+            [orphan_file_id],
+        )
+        .unwrap();
+
+        let config = default_config();
+        let ensure = make_symbol("ensureBinary", Some("ensureBinary"), None);
+        let dead_fn = make_symbol("dead_fn", Some("crate::dead_fn"), None);
+        let default_scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
+        assert_eq!(
+            default_scorer
+                .reachability_score(&ensure, Path::new("mcp-server/lib/install.js"))
+                .unwrap(),
+            None
+        );
+        let vendor_included = default_scorer.with_path_include(false, true);
+        assert_eq!(
+            vendor_included
+                .reachability_score(&ensure, Path::new("mcp-server/lib/install.js"))
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            vendor_included
+                .reachability_score(&dead_fn, Path::new("src/orphan.rs"))
+                .unwrap(),
+            Some(1.0)
+        );
+    }
+
+    /// 0410: a vendored caller does not license its extension, even with
+    /// `include_vendor`.
+    #[test]
+    fn vendored_js_caller_does_not_license_extension() {
+        let (storage, _cozo) = in_memory_storage_with_cozo();
+        let conn = storage.get_connection();
+        seed_rs_edge_and_mapping(conn);
+        let helper_id: i64 = conn
+            .query_row(
+                "SELECT id FROM project_symbols WHERE symbol_name = 'live_helper'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let helper_file_id: i64 = conn
+            .query_row(
+                "SELECT id FROM project_files WHERE file_path = 'src/entry.rs'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at) VALUES ('third_party/caller.js', 'JavaScript', 'hc', 20, 'OK', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let vendor_file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, 'vendorCaller', 'vendorCaller', 'Function', 'INTERNAL', '2026-01-01')",
+            [vendor_file_id],
+        )
+        .unwrap();
+        let vendor_caller_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO structural_edges (caller_symbol_id, caller_file_id, callee_symbol_id, callee_file_id, call_kind, resolution_status) VALUES (?1, ?2, ?3, ?4, 'DIRECT', 'RESOLVED')",
+            [vendor_caller_id, vendor_file_id, helper_id, helper_file_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at) VALUES ('mcp-server/lib/install.js', 'JavaScript', 'hi', 10, 'OK', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let install_file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, 'ensureBinary', 'ensureBinary', 'Function', 'INTERNAL', '2026-01-01')",
+            [install_file_id],
+        )
+        .unwrap();
+
+        let config = default_config();
+        let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false)
+            .with_path_include(false, true);
+        let ensure = make_symbol("ensureBinary", Some("ensureBinary"), None);
+        assert_eq!(
+            scorer
+                .reachability_score(&ensure, Path::new("mcp-server/lib/install.js"))
+                .unwrap(),
+            None
+        );
+    }
+
+    /// 0410: a product `.js` caller still licenses JavaScript reachability.
+    #[test]
+    fn reachability_known_when_product_js_caller_exists() {
+        let (storage, _cozo) = in_memory_storage_with_cozo();
+        let conn = storage.get_connection();
+        seed_rs_edge_and_mapping(conn);
+        let helper_id: i64 = conn
+            .query_row(
+                "SELECT id FROM project_symbols WHERE symbol_name = 'live_helper'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let helper_file_id: i64 = conn
+            .query_row(
+                "SELECT id FROM project_files WHERE file_path = 'src/entry.rs'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at) VALUES ('src/app.js', 'JavaScript', 'ha', 20, 'OK', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let caller_file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, 'realCaller', 'realCaller', 'Function', 'INTERNAL', '2026-01-01')",
+            [caller_file_id],
+        )
+        .unwrap();
+        let caller_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO structural_edges (caller_symbol_id, caller_file_id, callee_symbol_id, callee_file_id, call_kind, resolution_status) VALUES (?1, ?2, ?3, ?4, 'DIRECT', 'RESOLVED')",
+            [caller_id, caller_file_id, helper_id, helper_file_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at) VALUES ('src/other.js', 'JavaScript', 'ho', 10, 'OK', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let other_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, 'lonely', 'lonely', 'Function', 'INTERNAL', '2026-01-01')",
+            [other_id],
+        )
+        .unwrap();
+
+        let config = default_config();
+        let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
+        let lonely = make_symbol("lonely", Some("lonely"), None);
+        assert_eq!(
+            scorer
+                .reachability_score(&lonely, Path::new("src/other.js"))
+                .unwrap(),
+            Some(1.0)
+        );
+    }
+
+    /// 0410: a deleted caller file does not license its extension.
+    #[test]
+    fn deleted_js_caller_does_not_license_extension() {
+        let (storage, _cozo) = in_memory_storage_with_cozo();
+        let conn = storage.get_connection();
+        seed_rs_edge_and_mapping(conn);
+        let helper_id: i64 = conn
+            .query_row(
+                "SELECT id FROM project_symbols WHERE symbol_name = 'live_helper'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let helper_file_id: i64 = conn
+            .query_row(
+                "SELECT id FROM project_files WHERE file_path = 'src/entry.rs'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at) VALUES ('src/gone.js', 'JavaScript', 'hg', 20, 'DELETED', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let gone_file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, 'goneCaller', 'goneCaller', 'Function', 'INTERNAL', '2026-01-01')",
+            [gone_file_id],
+        )
+        .unwrap();
+        let gone_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO structural_edges (caller_symbol_id, caller_file_id, callee_symbol_id, callee_file_id, call_kind, resolution_status) VALUES (?1, ?2, ?3, ?4, 'DIRECT', 'RESOLVED')",
+            [gone_id, gone_file_id, helper_id, helper_file_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at) VALUES ('src/live.js', 'JavaScript', 'hl', 10, 'OK', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let live_file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, 'stillHere', 'stillHere', 'Function', 'INTERNAL', '2026-01-01')",
+            [live_file_id],
+        )
+        .unwrap();
+
+        let config = default_config();
+        let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
+        let still = make_symbol("stillHere", Some("stillHere"), None);
+        assert_eq!(
+            scorer
+                .reachability_score(&still, Path::new("src/live.js"))
+                .unwrap(),
+            None
+        );
+    }
+
     #[test]
     fn no_test_coverage_unknown_when_mapping_table_empty() {
         let (storage, _cozo) = in_memory_storage_with_cozo();

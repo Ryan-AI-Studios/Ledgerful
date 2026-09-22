@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Dead-code JS unknown, not unreachable (0410):** a language
+  enters the reachability set only from a non-deleted, non-vendored
+  caller file. Vendored JavaScript callees no longer mark product
+  `.js` symbols unreachable. `include_vendor` does not reopen that
+  set. Weights, the 0.75 threshold, and the honesty footer are
+  unchanged.
+
 - **Verify chain follows the signed head (0409):** when
   `chain_head.latest_entry_hash` matches a local entry, `verify
   --signatures --chain` walks backward from that hash. Older empty
