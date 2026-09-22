@@ -8,6 +8,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Regex search drops unstored whitespace trigrams (0412):**
+  `search --regex` no longer ANDs 3-character windows that contain
+  ASCII whitespace. Those strings are not tokens under the
+  `code_trigram` analyzer (`WhitespaceTokenizer` splits on ASCII
+  whitespace only). When every window is unqueryable, candidate
+  selection uses the existing all-paths fallback. A non-breaking
+  space stays in the AND. Explicit `--regex` surfaces candidate-cap
+  truncation when a match was kept. The search format stamp is
+  unchanged.
+
 - **Ask length stop is partial (0411):** when the model stop
   reason is `length`, Ask still prints the answer, then exits 1
   with stderr `Answer truncated: model stop reason length.`
