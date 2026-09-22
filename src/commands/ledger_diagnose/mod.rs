@@ -1,6 +1,6 @@
 //! Read-only `ledger diagnose` (0416).
 
-mod classify;
+pub(crate) mod classify;
 
 use std::path::Path;
 

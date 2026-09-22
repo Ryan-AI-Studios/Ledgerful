@@ -12,6 +12,7 @@ payloads.
 **0149** (uniform machine JSON: top-level `status`, `dead-code`, index-check
 purity, scan incomplete-flag tips), **0180** (`scan --json`/`--out` gitScan
 envelope without mandatory `--impact`; escalate remains `--impact --json`),
+**0417** (`ledger recovery plan --json` is schemaVersion 1 `kind: "ledgerAdoptionPlan"`; `ledger recovery apply --json` is `kind: "ledgerAdoptionResult"`; `verify --signatures --chain --accept-adoption` adds an `adoption` object and keeps schemaVersion 1).
 **0416** (`ledger diagnose --json` is schemaVersion 1 `kind: "ledgerChainDiagnosis"`; exit 0 when the read succeeds; `--manifest` file is unsigned `kind: "ledgerRecoveryManifestProposal"`).
 **0207** (populated list `--json` is a schemaVersion-1 object; `index --check --json`
 camelCase CLI DTO).

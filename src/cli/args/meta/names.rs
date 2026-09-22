@@ -111,6 +111,10 @@ impl Commands {
                 LedgerCommands::Search { .. } => "ledger_search",
                 LedgerCommands::Reconcile { .. } => "ledger_reconcile",
                 LedgerCommands::Adopt { .. } => "ledger_adopt",
+                LedgerCommands::Recovery { command } => match command {
+                    RecoveryCommands::Plan { .. } => "ledger_recovery_plan",
+                    RecoveryCommands::Apply { .. } => "ledger_recovery_apply",
+                },
                 LedgerCommands::Audit { .. } => "ledger_audit",
                 LedgerCommands::Note { .. } => "ledger_note",
                 LedgerCommands::Diagnose { .. } => "ledger_diagnose",

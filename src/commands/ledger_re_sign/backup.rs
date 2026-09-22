@@ -16,10 +16,13 @@ pub(crate) fn backup_ledger_db(
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("ledger.db");
-    let backup_path = db_path
-        .parent()
-        .unwrap_or(Path::new("."))
-        .join(format!("{}.{}.bak", base_name, timestamp));
+    // Test-only redirect. Unset, the backup stays beside the database.
+    let parent = std::env::var("LEDGERFUL_TEST_BACKUP_DIR")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| db_path.parent().unwrap_or(Path::new(".")).to_path_buf());
+    let backup_path = parent.join(format!("{base_name}.{timestamp}.bak"));
 
     // Online Backup API copies the live database into a new file.
     {

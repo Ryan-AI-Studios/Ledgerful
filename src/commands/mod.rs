@@ -29,6 +29,7 @@ pub mod index;
 pub mod init;
 pub mod intent;
 pub mod ledger;
+pub mod ledger_adopt;
 pub mod ledger_adr;
 pub mod ledger_audit;
 pub mod ledger_diagnose;

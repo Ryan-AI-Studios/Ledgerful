@@ -27,6 +27,7 @@ pub mod m52_command_timings;
 pub mod m53_ledger_sig_version;
 pub mod m54_file_bindings;
 pub mod m55_ci_gate_qualifiers;
+pub mod m56_ledger_recovery_manifest;
 
 use rusqlite_migration::Migrations;
 
@@ -150,6 +151,10 @@ pub fn get_migrations() -> Migrations<'static> {
     // schema_version stays monotonic; the table is empty until indexing writes it.
     all_m.extend(m54_file_bindings::m54_file_bindings());
     all_m.extend(m55_ci_gate_qualifiers::m55_ci_gate_qualifiers());
+    // m56 stores the adoption manifest in the same database as the ledger
+    // (Track 0417). Registered unconditionally so a database that has run m56
+    // fails preflight on an older binary instead of opening with a missing table.
+    all_m.extend(m56_ledger_recovery_manifest::m56_ledger_recovery_manifest());
 
     Migrations::new(all_m)
 }
@@ -197,6 +202,7 @@ pub fn get_migrations_count() -> usize {
     // m54 is counted unconditionally — see the matching comment in `get_migrations`.
     count += m54_file_bindings::m54_file_bindings().len();
     count += m55_ci_gate_qualifiers::m55_ci_gate_qualifiers().len();
+    count += m56_ledger_recovery_manifest::m56_ledger_recovery_manifest().len();
 
     count
 }

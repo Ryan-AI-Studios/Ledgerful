@@ -228,21 +228,45 @@ pub fn verify_ledger_signatures_with_options(
     exact: bool,
     json: bool,
 ) -> Result<()> {
-    let mut storage = StorageManager::init_with_layout(layout)?;
-    let db = crate::ledger::db::LedgerDb::new(storage.get_connection_mut());
+    verify_ledger_signatures_with_options_and_adoption(
+        layout,
+        verify_signatures,
+        verify_chain,
+        strict_signatures,
+        against_export,
+        exact,
+        json,
+        false,
+    )
+}
 
+#[allow(clippy::too_many_arguments)]
+pub fn verify_ledger_signatures_with_options_and_adoption(
+    layout: &Layout,
+    verify_signatures: bool,
+    verify_chain: bool,
+    strict_signatures: bool,
+    against_export: Option<&Path>,
+    exact: bool,
+    json: bool,
+    accept_adoption: bool,
+) -> Result<()> {
+    let mut storage = StorageManager::init_with_layout(layout)?;
     let config = crate::config::load::load_config(layout).unwrap_or_default();
     let signing_required = config.intent.require_signing || strict_signatures;
     let trusted_keys = &config.intent.trusted_public_keys;
     let min_sig_version = config.intent.min_sig_version;
 
-    let entries = db
-        .get_all_committed_ledger_entries()
-        .map_err(|e| miette::miette!("Failed to read ledger entries: {}", e))?;
-
-    let head = db
-        .get_chain_head()
-        .map_err(|e| miette::miette!("Failed to read chain head: {}", e))?;
+    let (entries, head) = {
+        let db = crate::ledger::db::LedgerDb::new(storage.get_connection_mut());
+        let entries = db
+            .get_all_committed_ledger_entries()
+            .map_err(|e| miette::miette!("Failed to read ledger entries: {}", e))?;
+        let head = db
+            .get_chain_head()
+            .map_err(|e| miette::miette!("Failed to read chain head: {}", e))?;
+        (entries, head)
+    };
 
     if json {
         return emit_verify_signatures_json(
@@ -256,6 +280,12 @@ pub fn verify_ledger_signatures_with_options(
             trusted_keys,
             min_sig_version,
             strict_signatures,
+            accept_adoption,
+            if accept_adoption {
+                Some(storage.get_connection())
+            } else {
+                None
+            },
         );
     }
 
@@ -278,6 +308,12 @@ pub fn verify_ledger_signatures_with_options(
             signing_required,
             trusted_keys,
             min_sig_version,
+            accept_adoption,
+            if accept_adoption {
+                Some(storage.get_connection())
+            } else {
+                None
+            },
         )?;
         return Ok(());
     }
@@ -509,6 +545,8 @@ fn verify_chain_integrity(
     signing_required: bool,
     trusted_keys: &[String],
     min_sig_version: u32,
+    accept_adoption: bool,
+    adoption_conn: Option<&rusqlite::Connection>,
 ) -> Result<()> {
     // Distinguish a real stored chain head from one we will synthesize for
     // pre-chain/legacy ledgers. The integrity check that binds the computed
@@ -727,12 +765,43 @@ fn verify_chain_integrity(
     let _ = exact;
 
     if should_walk_chain && !walk.extra_genesis.is_empty() {
-        sig_exit::request_exit(sig_exit::INVALID_OR_CHAIN);
-        return Err(miette::miette!(
-            "{summary} Chain break: {} additional genesis entr(y/ies) with null prev_hash after chain started (first: {}).",
-            walk.extra_genesis.len(),
-            walk.extra_genesis[0].tx_id
-        ));
+        if accept_adoption {
+            let decision = match adoption_conn {
+                Some(conn) => crate::commands::ledger_adopt::decide_adoption(
+                    conn,
+                    entries,
+                    local_head.as_ref(),
+                ),
+                None => crate::commands::ledger_adopt::AdoptionDecision {
+                    accepted: false,
+                    adopted_count: 0,
+                    unresolved_count: walk.extra_genesis.len(),
+                    manifest_digest: String::new(),
+                    message: "no adoption manifest is stored".to_string(),
+                },
+            };
+            if decision.accepted {
+                tracing::info!(
+                    target: "cli_summary",
+                    "{summary} historical continuity not established. adopted={} unresolved={}",
+                    decision.adopted_count,
+                    decision.unresolved_count
+                );
+            } else {
+                sig_exit::request_exit(sig_exit::INVALID_OR_CHAIN);
+                return Err(miette::miette!(
+                    "{summary} historical continuity not established. {}",
+                    decision.message
+                ));
+            }
+        } else {
+            sig_exit::request_exit(sig_exit::INVALID_OR_CHAIN);
+            return Err(miette::miette!(
+                "{summary} Chain break: {} additional genesis entr(y/ies) with null prev_hash after chain started (first: {}).",
+                walk.extra_genesis.len(),
+                walk.extra_genesis[0].tx_id
+            ));
+        }
     }
     if should_walk_chain && !walk.orphans.is_empty() {
         sig_exit::request_exit(sig_exit::INVALID_OR_CHAIN);
@@ -913,6 +982,7 @@ fn build_verify_signatures_json(
         signatures,
         chain,
         checkpoint,
+        adoption: None,
     };
     Ok((payload, first_human))
 }
@@ -929,8 +999,10 @@ fn emit_verify_signatures_json(
     trusted_keys: &[String],
     min_sig_version: u32,
     strict_signatures: bool,
+    accept_adoption: bool,
+    adoption_conn: Option<&rusqlite::Connection>,
 ) -> Result<()> {
-    let (payload, first_human) = build_verify_signatures_json(
+    let (mut payload, first_human) = build_verify_signatures_json(
         entries,
         head,
         verify_signatures,
@@ -942,6 +1014,52 @@ fn emit_verify_signatures_json(
         min_sig_version,
         strict_signatures,
     )?;
+    if accept_adoption {
+        let decision = match adoption_conn {
+            Some(conn) => crate::commands::ledger_adopt::decide_adoption(conn, entries, head),
+            None => crate::commands::ledger_adopt::AdoptionDecision {
+                accepted: false,
+                adopted_count: 0,
+                unresolved_count: payload.chain.extra_genesis_count,
+                manifest_digest: String::new(),
+                message: "no adoption manifest is stored".to_string(),
+            },
+        };
+        if decision.accepted {
+            payload
+                .chain
+                .breaks
+                .retain(|item| item.kind != ChainBreakKind::ExtraGenesis);
+            payload.chain.break_count = payload.chain.breaks.len().saturating_add(
+                if payload
+                    .chain
+                    .head
+                    .as_ref()
+                    .is_some_and(|h| !h.signature_valid || !h.hash_match || !h.length_match)
+                {
+                    1
+                } else {
+                    0
+                },
+            );
+            let checkpoint_fail = payload
+                .checkpoint
+                .as_ref()
+                .is_some_and(|item| !item.result.is_pass());
+            if payload.signatures.invalid == 0 && payload.chain.break_count == 0 && !checkpoint_fail
+            {
+                payload.ok = true;
+                payload.exit_code = sig_exit::OK;
+            }
+        }
+        payload.adoption = Some(crate::commands::verify::diagnostic::VerifyAdoptionJson {
+            accepted: decision.accepted,
+            adopted_count: decision.adopted_count,
+            unresolved_count: decision.unresolved_count,
+            historical_continuity: "notEstablished".to_string(),
+            manifest_digest: decision.manifest_digest,
+        });
+    }
     let ok = payload.ok;
     let exit_code = payload.exit_code;
     let unsigned_fail = payload.signatures.unsigned;
@@ -2503,8 +2621,19 @@ mod verify_signatures_json_collect_tests {
     #[test]
     fn human_summary_names_signed_chain_and_extra_genesis() {
         let (entries, head) = older_null_plus_three();
-        let err = verify_chain_integrity(&entries, Some(&head), None, false, false, false, &[], 1)
-            .expect_err("extra genesis stays a chain failure");
+        let err = verify_chain_integrity(
+            &entries,
+            Some(&head),
+            None,
+            false,
+            false,
+            false,
+            &[],
+            1,
+            false,
+            None,
+        )
+        .expect_err("extra genesis stays a chain failure");
         let msg = format!("{err}");
         assert!(msg.contains("Signed chain length 3"), "{msg}");
         assert!(msg.contains("head length 3"), "{msg}");

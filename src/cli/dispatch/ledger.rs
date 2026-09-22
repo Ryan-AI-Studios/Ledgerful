@@ -171,6 +171,23 @@ pub(super) fn dispatch_ledger(command: LedgerCommands) -> Result<()> {
             &summary,
             &reason,
         ),
+        LedgerCommands::Recovery { command } => {
+            let command = match command {
+                crate::cli::args::RecoveryCommands::Plan { output, json } => {
+                    crate::commands::ledger_adopt::RecoveryCommand::Plan { output, json }
+                }
+                crate::cli::args::RecoveryCommands::Apply {
+                    manifest,
+                    yes,
+                    json,
+                } => crate::commands::ledger_adopt::RecoveryCommand::Apply {
+                    manifest,
+                    yes,
+                    json,
+                },
+            };
+            crate::commands::ledger_adopt::execute_ledger_recovery(command)
+        }
         LedgerCommands::Audit {
             entity,
             pos_entity,

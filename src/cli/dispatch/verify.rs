@@ -20,6 +20,7 @@ pub(super) fn dispatch_verify(
         against_export,
         exact,
         strict_signatures,
+        accept_adoption,
         dry_run,
         scope,
         auto_index,
@@ -31,11 +32,14 @@ pub(super) fn dispatch_verify(
             "--exact requires --against-export <path> (snapshot equality against a retained head)"
         ));
     }
+    if accept_adoption && !chain {
+        return Err(miette::miette!("--accept-adoption requires --chain"));
+    }
     // Mix reject first so `--json --health --signatures` never reaches execute
     // or the signatures walk (0321).
     refuse_mixed_verify_diagnostics(health, dry_run, signatures, chain, against_export.is_some())?;
     if signatures || chain || against_export.is_some() {
-        crate::commands::verify::verify_ledger_signatures_with_options(
+        crate::commands::verify::verify_ledger_signatures_with_options_and_adoption(
             layout,
             signatures,
             chain,
@@ -43,6 +47,7 @@ pub(super) fn dispatch_verify(
             against_export.as_deref(),
             exact,
             json,
+            accept_adoption,
         )
     } else {
         crate::commands::verify::execute_verify(ExecuteVerifyOpts {

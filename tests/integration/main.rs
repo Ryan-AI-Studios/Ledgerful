@@ -103,6 +103,7 @@ mod hotspot_ranking;
 mod impact_verify_pipeline;
 mod incremental_graph_consistency;
 mod latest_impact_freshness;
+mod ledger_adopt;
 mod ledger_adr;
 mod ledger_bulk;
 mod ledger_chain_hash;

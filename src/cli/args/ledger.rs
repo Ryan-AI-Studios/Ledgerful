@@ -3,6 +3,32 @@ use crate::ledger::types::Category;
 use clap::{Args, Subcommand};
 use std::path::PathBuf;
 
+/// `ledger recovery plan` writes a manifest. `ledger recovery apply` appends one attestation.
+#[derive(Subcommand, Debug)]
+pub enum RecoveryCommands {
+    /// Write a recovery manifest. Read-only.
+    Plan {
+        /// New file path. Refuses an existing file and any path under .ledgerful.
+        #[arg(long)]
+        output: PathBuf,
+        /// Emit the versioned plan envelope on stdout.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check or apply a recovery manifest. Mutation requires --yes.
+    Apply {
+        /// Manifest written by `ledger recovery plan`.
+        #[arg(long)]
+        manifest: PathBuf,
+        /// Back up the database and append the attestation.
+        #[arg(long)]
+        yes: bool,
+        /// Emit the versioned result envelope on stdout.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 fn parse_provenance_limit(raw: &str) -> Result<usize, String> {
     let n: usize = raw.parse().map_err(|e| format!("invalid --limit: {e}"))?;
     if n == 0 {
@@ -375,6 +401,11 @@ pub enum LedgerCommands {
         /// Reason for the new transaction
         #[arg(short, long)]
         reason: String,
+    },
+    /// Attest eligible legacy rows without rewriting their prev_hash links.
+    Recovery {
+        #[command(subcommand)]
+        command: RecoveryCommands,
     },
     /// Perform a holistic project audit or history for an entity
     Audit {

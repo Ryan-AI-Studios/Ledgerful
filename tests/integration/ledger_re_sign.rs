@@ -11,7 +11,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use tempfile::{TempDir, tempdir};
 
-use crate::common::{DirGuard, non_interactive, setup_git_repo};
+use crate::common::{DirGuard, TempEnv, non_interactive, setup_git_repo};
 
 fn keys_dir(dir: &std::path::Path) -> std::path::PathBuf {
     dir.join(".ledgerful").join("keys")
@@ -1023,4 +1023,51 @@ fn fs_backup(dir: &std::path::Path) -> bool {
     };
     read.filter_map(Result::ok)
         .any(|entry| entry.file_name().to_string_lossy().contains(".bak"))
+}
+
+#[test]
+#[serial(cwd, env)]
+fn re_sign_backup_failure_aborts_before_mutation() {
+    let _env = non_interactive();
+    let (dir, root, db_path) = setup_initialized_repo();
+    let _guard = DirGuard::from_utf8(&root);
+    let tx_id: String = rusqlite::Connection::open(db_path.as_std_path())
+        .unwrap()
+        .query_row(
+            "SELECT tx_id FROM ledger_entries ORDER BY committed_at, tx_id LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    rusqlite::Connection::open(db_path.as_std_path())
+        .unwrap()
+        .execute(
+            "UPDATE ledger_entries SET signature = '00' WHERE tx_id = ?1",
+            rusqlite::params![tx_id],
+        )
+        .unwrap();
+    let blocker = dir.path().join("not-a-dir");
+    std::fs::write(&blocker, b"x").unwrap();
+    let _backup = TempEnv::set("LEDGERFUL_TEST_BACKUP_DIR", blocker.to_str().unwrap());
+    let before = std::fs::read(db_path.as_std_path()).unwrap();
+    let err = execute_ledger_re_sign_with_keys_dir(
+        None,
+        true,
+        false,
+        false,
+        true,
+        Some(keys_dir(dir.path())),
+    )
+    .unwrap_err();
+    assert!(format!("{err}").to_lowercase().contains("backup"), "{err}");
+    assert_eq!(before, std::fs::read(db_path.as_std_path()).unwrap());
+    let signature: String = rusqlite::Connection::open(db_path.as_std_path())
+        .unwrap()
+        .query_row(
+            "SELECT signature FROM ledger_entries WHERE tx_id = ?1",
+            rusqlite::params![tx_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(signature, "00");
 }

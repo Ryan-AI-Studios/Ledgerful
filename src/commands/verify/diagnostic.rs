@@ -228,6 +228,21 @@ pub struct VerifySignaturesJson {
     pub chain: VerifyChainDimensionJson,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<VerifyCheckpointJson>,
+    /// Present only for `verify --signatures --chain --accept-adoption`.
+    /// schemaVersion stays 1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adoption: Option<VerifyAdoptionJson>,
+}
+
+/// Adoption acceptance beside strict chain verification (0417).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyAdoptionJson {
+    pub accepted: bool,
+    pub adopted_count: usize,
+    pub unresolved_count: usize,
+    pub historical_continuity: String,
+    pub manifest_digest: String,
 }
 
 impl VerifySignaturesJson {
@@ -459,6 +474,7 @@ mod diagnostic_dto_tests {
                 head: None,
             },
             checkpoint: None,
+            adoption: None,
         };
         let json = payload.to_json_string().unwrap();
         assert!(json.contains("\"kind\": \"verifySignatures\""));

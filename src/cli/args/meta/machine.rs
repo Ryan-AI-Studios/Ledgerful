@@ -131,6 +131,10 @@ impl Commands {
                 LedgerCommands::Search { json, .. } => *json,
                 LedgerCommands::Reconcile { .. } => false,
                 LedgerCommands::Adopt { .. } => false,
+                LedgerCommands::Recovery { command } => match command {
+                    crate::cli::args::RecoveryCommands::Plan { json, .. } => *json,
+                    crate::cli::args::RecoveryCommands::Apply { json, .. } => *json,
+                },
                 LedgerCommands::Audit { json, .. } => *json,
                 LedgerCommands::Note { .. } => false,
                 LedgerCommands::Diagnose { json, .. } => *json,
