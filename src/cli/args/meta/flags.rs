@@ -281,6 +281,7 @@ impl Commands {
                 against_export,
                 exact,
                 strict_signatures,
+                accept_adoption,
                 dry_run,
                 auto_index,
                 allow_full_fallback,
@@ -329,6 +330,9 @@ impl Commands {
                 }
                 if *strict_signatures {
                     f.push("strict_signatures");
+                }
+                if *accept_adoption {
+                    f.push("accept_adoption");
                 }
                 if *dry_run {
                     f.push("dry_run");
@@ -1038,6 +1042,27 @@ impl Commands {
                         f.push("force");
                     }
                 }
+                LedgerCommands::Recovery { command } => match command {
+                    crate::cli::args::RecoveryCommands::Plan { json, output: _ } => {
+                        f.push("output");
+                        if *json {
+                            f.push("json");
+                        }
+                    }
+                    crate::cli::args::RecoveryCommands::Apply {
+                        manifest: _,
+                        yes,
+                        json,
+                    } => {
+                        f.push("manifest");
+                        if *yes {
+                            f.push("yes");
+                        }
+                        if *json {
+                            f.push("json");
+                        }
+                    }
+                },
                 LedgerCommands::Diagnose {
                     json,
                     limit,

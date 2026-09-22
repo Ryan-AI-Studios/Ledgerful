@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Legacy adoption attests rows without inventing their order (0417):**
+  `ledger recovery plan` writes a canonical manifest. `ledger recovery apply --yes`
+  appends one maintenance attestation and does not rewrite existing `prev_hash`
+  values. Strict `verify --signatures --chain` still fails on extra genesis.
+  `--accept-adoption` can succeed and still says historical continuity is not
+  established. `ledger adopt` remains the drift command.
+
 - **Chain diagnosis does not promise a blocked re-sign (0416):**
   `ledger diagnose` reports the full anomaly set and exits 0 when the
   read succeeds. `verify --chain` still exits non-zero and still caps

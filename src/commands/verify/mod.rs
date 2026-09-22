@@ -25,6 +25,7 @@ pub use signatures::{
     enumerate_invalid_ledger_entries, enumerate_invalid_ledger_entries_with_policy,
     format_signature_success_line_colored, sig_entry_stream, sig_exit, tally_signature_classes,
     verify_ledger_signatures, verify_ledger_signatures_with_options,
+    verify_ledger_signatures_with_options_and_adoption,
 };
 
 /// PATH probe for cargo-nextest (0321). Thin wrapper — do not import `health`.

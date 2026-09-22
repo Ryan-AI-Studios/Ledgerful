@@ -255,8 +255,21 @@ pub fn generate_soc2_export_with_options(
         manifest_files.push(mf);
     }
 
-    let mode_disclosure =
+    let mut mode_disclosure =
         build_mode_disclosure(&ledger_entries, &config.gate.mode, stored_head.as_ref());
+    if has_db {
+        let storage = StorageManager::open_read_only_sqlite_only(layout)?;
+        let decision = crate::commands::ledger_adopt::decide_adoption(
+            storage.get_connection(),
+            &ledger_entries,
+            stored_head.as_ref(),
+        );
+        if decision.accepted {
+            mode_disclosure
+                .chain_continuity_status
+                .push_str(" | adoption: historical continuity not established");
+        }
+    }
 
     // Include chain_head.json in the export before sorting so it participates
     // in the deterministic alphabetical order.

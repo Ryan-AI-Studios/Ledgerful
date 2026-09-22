@@ -320,6 +320,11 @@ pub struct VerifyArgs {
     /// Treat unsigned LOCAL rows as failures even when require_signing is false
     #[arg(long = "strict-signatures")]
     pub strict_signatures: bool,
+    /// With --chain, accept a stored adoption manifest. Strict chain failure
+    /// stays the default. Success still reports historical continuity as
+    /// not established. schemaVersion stays 1.
+    #[arg(long = "accept-adoption", requires = "chain")]
+    pub accept_adoption: bool,
     /// Show the verification plan without executing any commands
     #[arg(long)]
     pub dry_run: bool,

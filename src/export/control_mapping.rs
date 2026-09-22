@@ -592,7 +592,7 @@ pub fn render_mapping_doc(mapping: &ControlMapping) -> String {
     lines.push(String::new());
     lines.push("These keywords represent bundle/system-level evidence rather than per-entry predicates, so the per-entry matcher returns `false` for all individual entries.".to_string());
     lines.push(String::new());
-    lines.push("* `tamper_evident_chain` — the tamper-evident chain covers all entries; the chain as a whole is the evidence, not individual entries. Every entry is included because removing any entry would break continuity. `chain_head.json` is included in the bundle when a chain head exists.".to_string());
+    lines.push("* `tamper_evident_chain` — the tamper-evident chain covers the signed segment from the stored head. Rows outside that segment are not historical continuity. An adoption manifest, when present, is a present-day attestation and is not that chain. `chain_head.json` is included in the bundle when a chain head exists.".to_string());
     lines.push("* `scan_impact` — Framework-level evidence category (not included in this bundle — produced by `ledgerful scan --impact`).".to_string());
     lines.push("* `config_diff` — Framework-level evidence category (not included in this bundle — produced by `ledgerful config diff`).".to_string());
     lines.push("* `security_surface_diff` — Framework-level evidence category (not included in this bundle — produced by `ledgerful security impact --changed` and `ledgerful security boundaries`).".to_string());

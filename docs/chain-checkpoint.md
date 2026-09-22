@@ -7,6 +7,12 @@ closes that gap for operators.
 
 This is **not** local immutability, Rekor/CT, or a public transparency log.
 
+An adopted ledger still has its original extra-genesis rows. Older binaries
+keep exiting 1 with `CHAIN_BREAK` on that store. A binary that has not run
+migration m56 cannot open a database that has. `verify --signatures --chain`
+without `--accept-adoption` stays a failure. `--accept-adoption` reports
+historical continuity as not established.
+
 ## 5-step recipe
 
 1. **Export a thin head** (or a full SOC2 zip — both work):
