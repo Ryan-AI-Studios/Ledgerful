@@ -143,7 +143,7 @@ mod rollup;
 mod rust_parser_modular;
 mod scan_pr_tests;
 mod scip_integration;
-mod search_performance;
+mod search_correctness;
 mod semantic_search;
 mod tantivy_hardening;
 mod temporal_coupling;
