@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Ledger status --all JSON includes history (0413):**
+  `ledger status --all --json` adds `history` and `historyCount`
+  for the local committed rows, including an empty array and `0`
+  when nothing is committed. Without `--all`, both keys stay
+  absent and `schemaVersion` stays 1. Human `--all` clips the
+  summary and entity columns; the JSON summary stays full.
+  Top-level `status` still has no `--all`.
+
 - **Regex search drops unstored whitespace trigrams (0412):**
   `search --regex` no longer ANDs 3-character windows that contain
   ASCII whitespace. Those strings are not tokens under the

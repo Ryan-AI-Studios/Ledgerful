@@ -26,6 +26,18 @@ pub struct LifecycleSignals {
 /// Stable schema version for `ledger status --json` (track 0093).
 const STATUS_JSON_SCHEMA_VERSION: u32 = 1;
 
+/// One committed ledger row on `ledger status --all --json` (0413).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryRow {
+    pub tx_id: String,
+    pub committed_at: String,
+    pub category: Category,
+    pub entity: String,
+    pub change_type: ChangeType,
+    pub summary: String,
+}
+
 /// Wire payload for `ledger status --json` (v1).
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -43,6 +55,12 @@ pub struct StatusJson {
     pub promote_orphan_tx_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub promote_error: Option<String>,
+    /// Present only for `ledger status --all --json`, including an empty vec.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history: Option<Vec<HistoryRow>>,
+    /// `history.len()` when `history` is present, including zero.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history_count: Option<usize>,
 }
 
 /// Build the status JSON payload with lexicographically sorted `pendingTxIds`
@@ -57,8 +75,17 @@ pub fn build_status_json(
     signals: &LifecycleSignals,
     work_root: &str,
     state_dir: &str,
+    mut history: Option<Vec<HistoryRow>>,
 ) -> StatusJson {
     pending_tx_ids.sort();
+    if let Some(rows) = history.as_mut() {
+        rows.sort_by(|left, right| {
+            left.committed_at
+                .cmp(&right.committed_at)
+                .then_with(|| left.tx_id.cmp(&right.tx_id))
+        });
+    }
+    let history_count = history.as_ref().map(Vec::len);
     StatusJson {
         schema_version: STATUS_JSON_SCHEMA_VERSION,
         work_root: work_root.to_string(),
@@ -71,7 +98,28 @@ pub fn build_status_json(
         head_uncovered: signals.head_uncovered,
         promote_orphan_tx_id: signals.promote_orphan_tx_id.clone(),
         promote_error: signals.promote_error.clone(),
+        history,
+        history_count,
     }
+}
+
+fn history_row_from_entry(entry: LedgerEntry) -> HistoryRow {
+    HistoryRow {
+        tx_id: entry.tx_id,
+        committed_at: entry.committed_at,
+        category: entry.category,
+        entity: entry.entity_normalized,
+        change_type: entry.change_type,
+        summary: entry.summary,
+    }
+}
+
+fn clip_history_cell(
+    value: &str,
+    max_chars: usize,
+    style: crate::output::table::TableStyleKind,
+) -> String {
+    crate::output::table::truncate_chars(value, max_chars, style)
 }
 
 /// Inspect the pending_hook_tx sidecar for promote-fail / HEAD-match coverage gaps.
@@ -214,6 +262,7 @@ pub fn execute_ledger_status(opts: LedgerStatusOpts) -> Result<()> {
             &signals,
             exit_code,
             strict_observe_signal,
+            all,
         );
     }
 
@@ -264,6 +313,7 @@ fn status_json(
     signals: &LifecycleSignals,
     exit_code: bool,
     strict_observe_signal: bool,
+    all: bool,
 ) -> Result<()> {
     let pending = tx_mgr
         .get_all_pending()
@@ -273,6 +323,20 @@ fn status_json(
         .map_err(|e| miette::miette!("{}", e))?;
     let pending_tx_ids: Vec<String> = pending.iter().map(|t| t.tx_id.clone()).collect();
     let unaudited_file_count = unaudited.iter().map(|u| u.drift_count as usize).sum();
+    let history = if all {
+        let db = LedgerDb::new(tx_mgr.get_connection());
+        let entries = db
+            .get_all_committed_ledger_entries()
+            .map_err(|e| miette::miette!("{}", e))?;
+        Some(
+            entries
+                .into_iter()
+                .map(history_row_from_entry)
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        None
+    };
     let status = build_status_json(
         pending_tx_ids,
         unaudited.len(),
@@ -280,6 +344,7 @@ fn status_json(
         signals,
         layout.root.as_str(),
         layout.state_dir.as_str(),
+        history,
     );
 
     println!(
@@ -595,6 +660,7 @@ fn status_git_human(
         if entries.is_empty() {
             println!("  No history found.");
         } else {
+            let style = crate::output::table::resolve_table_style();
             let mut table =
                 crate::output::table::build_table(vec!["Time", "Entity", "Type", "Summary"]);
             for entry in entries {
@@ -605,14 +671,13 @@ fn status_git_human(
                         .relative_time(committed_at.with_timezone(&Utc))
                         .if_supports_color(Stream::Stdout, |s| s.dimmed())
                         .to_string(),
-                    entry
-                        .entity_normalized
+                    clip_history_cell(&entry.entity_normalized, 48, style)
                         .if_supports_color(Stream::Stdout, |s| s.cyan())
                         .to_string(),
                     format!("{:?}", entry.change_type)
                         .if_supports_color(Stream::Stdout, |s| s.blue())
                         .to_string(),
-                    entry.summary.clone(),
+                    clip_history_cell(&entry.summary, 80, style),
                 ]);
             }
             println!("{}", table);
@@ -812,6 +877,7 @@ mod status_json_tests {
             &signals,
             "/repo",
             "/repo/.ledgerful",
+            None,
         );
         let b = build_status_json(
             vec!["m-tx".into(), "z-tx".into(), "a-tx".into()],
@@ -820,6 +886,7 @@ mod status_json_tests {
             &signals,
             "/repo",
             "/repo/.ledgerful",
+            None,
         );
         assert_eq!(a.pending_tx_ids, vec!["a-tx", "m-tx", "z-tx"]);
         assert_eq!(a.pending_count, 3);
@@ -838,6 +905,102 @@ mod status_json_tests {
         assert!(
             !pretty.contains("collisions"),
             "0223: StatusJson v1 must not grow collisions[] (0224 owns that array); got {pretty}"
+        );
+    }
+
+    fn history_row(tx_id: &str, committed_at: &str, summary: &str) -> HistoryRow {
+        HistoryRow {
+            tx_id: tx_id.to_string(),
+            committed_at: committed_at.to_string(),
+            category: Category::Bugfix,
+            entity: "src/impact/analysis/mod.rs".to_string(),
+            change_type: ChangeType::Modify,
+            summary: summary.to_string(),
+        }
+    }
+
+    fn status_object(history: Option<Vec<HistoryRow>>) -> serde_json::Value {
+        let status = build_status_json(
+            Vec::new(),
+            0,
+            0,
+            &LifecycleSignals::default(),
+            "/repo",
+            "/repo/.ledgerful",
+            history,
+        );
+        serde_json::to_value(status).expect("status json")
+    }
+
+    #[test]
+    fn status_json_without_all_omits_history_keys() {
+        let value = status_object(None);
+        let object = value.as_object().expect("object");
+        assert!(!object.contains_key("history"));
+        assert!(!object.contains_key("historyCount"));
+        assert_eq!(value["schemaVersion"], 1);
+    }
+
+    #[test]
+    fn status_json_all_empty_emits_empty_history() {
+        let value = status_object(Some(Vec::new()));
+        assert_eq!(value["history"], serde_json::json!([]));
+        assert_eq!(value["historyCount"], 0);
+        assert_eq!(value["schemaVersion"], 1);
+    }
+
+    #[test]
+    fn status_json_all_sorts_by_committed_at_then_tx_id() {
+        let value = status_object(Some(vec![
+            history_row("m-tx", "2026-09-22T12:00:00Z", "later"),
+            history_row("b-tx", "2026-09-22T11:00:00Z", "tie-b"),
+            history_row("a-tx", "2026-09-22T11:00:00Z", "tie-a"),
+        ]));
+        let ids: Vec<&str> = value["history"]
+            .as_array()
+            .expect("history")
+            .iter()
+            .map(|row| row["txId"].as_str().expect("txId"))
+            .collect();
+        assert_eq!(ids, vec!["a-tx", "b-tx", "m-tx"]);
+        assert_eq!(value["historyCount"], 3);
+        let first = &value["history"][0];
+        assert_eq!(first["entity"], "src/impact/analysis/mod.rs");
+        assert_eq!(first["changeType"], "MODIFY");
+        assert_eq!(first["category"], "BUGFIX");
+        assert_eq!(first["summary"], "tie-a");
+        assert_eq!(first["committedAt"], "2026-09-22T11:00:00Z");
+    }
+
+    #[test]
+    fn status_json_all_keeps_full_summary() {
+        let summary = "s".repeat(200);
+        let value = status_object(Some(vec![history_row(
+            "one",
+            "2026-01-01T00:00:00Z",
+            &summary,
+        )]));
+        assert_eq!(value["historyCount"], 1);
+        assert_eq!(value["history"][0]["summary"], summary);
+        assert_eq!(value["history"].as_array().expect("history").len(), 1);
+    }
+
+    #[test]
+    fn clip_history_cell_uses_style_ellipsis_at_80_and_48() {
+        let summary = "s".repeat(200);
+        let entity = "e".repeat(90);
+        let ascii_summary =
+            clip_history_cell(&summary, 80, crate::output::table::TableStyleKind::Ascii);
+        let utf8_summary =
+            clip_history_cell(&summary, 80, crate::output::table::TableStyleKind::Utf8);
+        let ascii_entity =
+            clip_history_cell(&entity, 48, crate::output::table::TableStyleKind::Ascii);
+        assert_eq!(ascii_summary, format!("{}...", "s".repeat(80)));
+        assert_eq!(utf8_summary, format!("{}…", "s".repeat(80)));
+        assert_eq!(ascii_entity, format!("{}...", "e".repeat(48)));
+        assert_eq!(
+            clip_history_cell("short", 80, crate::output::table::TableStyleKind::Ascii),
+            "short"
         );
     }
 
