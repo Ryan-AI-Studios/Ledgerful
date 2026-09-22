@@ -217,8 +217,18 @@ fn test_verify_command_timeout() {
     assert!(result.is_err());
     let err_msg = format!("{:?}", result.err().unwrap());
     assert!(
-        err_msg.to_ascii_lowercase().contains("timed out"),
-        "expected timeout error, got: {err_msg}"
+        err_msg.contains("Verification failed"),
+        "expected Verification failed, got: {err_msg}"
+    );
+    let report_path = root.join(".ledgerful/reports/latest-verify.json");
+    let text = std::fs::read_to_string(report_path.as_std_path())
+        .unwrap_or_else(|e| panic!("read {report_path}: {e}"));
+    let report: serde_json::Value = serde_json::from_str(&text).expect("latest-verify.json");
+    assert_eq!(report["results"][0]["exitCode"], 124, "report={text}");
+    let summary = report["results"][0]["stderrSummary"].as_str().unwrap_or("");
+    assert!(
+        summary.contains("Step timed out after"),
+        "stderrSummary={summary}"
     );
 }
 

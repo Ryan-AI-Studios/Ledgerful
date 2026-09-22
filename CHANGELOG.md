@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Verify CLI timeout emits JSON (0408):** `--timeout` caps each
+  auto-policy step (`min` with the 60/400 plan; auto `0` stays the 400
+  ceiling). A step that hits the cap is a fail row (`exitCode` 124,
+  `Step timed out after`) and later steps are not started. Manual `0`
+  is an immediate timeout row, not a disabled clock. Dry-run steps
+  include `timeoutSecs`.
+
 - **Ask RRF once per list and CamelCase term (0406):** same-path
   duplicates in one RRF list contribute once (first rank);
   first-structural snippet unchanged. `CodeIdentifierTokenizer`

@@ -10,7 +10,7 @@ use crate::verify::plan::{VerificationStep, VerifyScope, build_plan_from_config}
 use crate::verify::predictor::OutcomePredictor;
 use crate::verify::results::VerificationReport;
 use crate::verify::suggestions::{generate_suggestions, query_ledger_status};
-use crate::verify::timeouts::manual_timeout;
+use crate::verify::timeouts::{cap_auto_step_timeout, manual_timeout};
 use miette::Result;
 use owo_colors::{OwoColorize, Stream, Style};
 use std::env;
@@ -328,6 +328,9 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                 // Never on --dry-run: descriptions are pipe-merged walls (0144).
                 if verbose && !json && !dry_run {
                     print_verify_plan(&plan);
+                }
+                for step in &mut plan.steps {
+                    step.timeout_secs = cap_auto_step_timeout(step.timeout_secs, timeout_secs);
                 }
                 let steps = plan.steps.clone();
                 (Some(plan), steps)
@@ -1020,6 +1023,7 @@ fn emit_verify_dry_run_json(
                 name: crate::verify::fail_block::step_name_from_command(&s.command),
                 command: s.command.clone(),
                 status: "planned".to_string(),
+                timeout_secs: s.timeout_secs,
             })
             .collect()
     };

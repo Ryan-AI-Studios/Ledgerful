@@ -7,6 +7,15 @@ use std::env;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+/// Step `exitCode` when the configured cap elapses. Process exit stays the
+/// verification-failed rejection; this code is only the result row.
+pub const VERIFY_STEP_TIMEOUT_EXIT_CODE: i32 = 124;
+
+pub enum StepExecution {
+    Finished(ExecutionResult),
+    TimedOut { timeout: Duration, message: String },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionMode {
     Direct,
@@ -91,11 +100,28 @@ pub fn execute_step(step: &PreparedStep, policy: &ProcessPolicy) -> Result<Execu
 /// Execute a prepared step, optionally using a caller-provided `Command`
 /// (e.g. to inject environment variables such as `CARGO_INCREMENTAL`). When
 /// `command_override` is `None`, a fresh `Command` is built from `step`.
+///
+/// A timeout is `Err` here so callers that have not opted into a result row
+/// keep today's fatal. [`execute_step_outcome`] is the typed path.
 pub fn execute_step_with_command(
     step: &PreparedStep,
     policy: &ProcessPolicy,
     command_override: Option<std::process::Command>,
 ) -> Result<ExecutionResult> {
+    match execute_step_outcome(step, policy, command_override)? {
+        StepExecution::Finished(result) => Ok(result),
+        StepExecution::TimedOut { message, .. } => Err(CommandError::Verify(message).into()),
+    }
+}
+
+/// Same execution as [`execute_step_with_command`], but a configured timeout is
+/// `Ok(TimedOut)` so the engine can record a row and stop. Not-found, policy
+/// deny, and spawn failure stay `Err` (no row).
+pub fn execute_step_outcome(
+    step: &PreparedStep,
+    policy: &ProcessPolicy,
+    command_override: Option<std::process::Command>,
+) -> Result<StepExecution> {
     // Direct mode: allowlist/deny check on the real executable.
     //
     // Shell mode: skip check_policy on the literal "cmd"/"sh" wrapper
@@ -111,11 +137,14 @@ pub fn execute_step_with_command(
         check_policy(&step.executable, policy).into_diagnostic()?;
     }
 
-    let mut command = command_override.unwrap_or_else(|| {
-        let mut c = Command::new(&step.executable);
-        c.args(&step.args);
-        c
-    });
+    let mut command = match command_override {
+        Some(command) => command,
+        None => {
+            let mut c = Command::new(&step.executable);
+            c.args(&step.args);
+            c
+        }
+    };
     command.stdin(Stdio::null());
     command
         .current_dir(env::current_dir().into_diagnostic()?)
@@ -138,7 +167,7 @@ pub fn execute_step_with_command(
                 ))
                 .into());
             }
-            Ok(result)
+            Ok(StepExecution::Finished(result))
         }
         Err(ProcessError::Timeout { timeout }) => {
             let elapsed = timeout.as_secs();
@@ -148,7 +177,7 @@ pub fn execute_step_with_command(
                  Likely cause: cold build or feature-resolution mismatch. \
                  Try: run `ledgerful index --incremental` or use `--scope full` deliberately."
             );
-            Err(CommandError::Verify(message).into())
+            Ok(StepExecution::TimedOut { timeout, message })
         }
         Err(ProcessError::NotFound { cmd }) => {
             let hint = fallback_install_hint(&cmd);

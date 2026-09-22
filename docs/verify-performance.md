@@ -176,3 +176,11 @@ If a step times out, the error now includes:
 - A likely cause (cold build or feature-resolution mismatch).
 - A next step: run `ledgerful index --incremental` or use `--scope full`
 deliberately.
+
+`--timeout` caps each auto-policy step (`min` with the planned 60s / 400s
+ceilings). Auto `--timeout 0` uses the 400 ceiling (it does not disable the
+clock). Manual `--timeout 0` is an immediate timeout row (`Duration::ZERO`),
+not a disabled clock. A hit emits verify JSON (`exitCode` 124, `failureDetail`
+contains `Step timed out after`) and does not start later steps. Full scope
+is not a 40-second guarantee: the ceiling is per step, then stop — not a
+second cumulative deadline.

@@ -18,6 +18,9 @@ pub struct VerifyDryRunStepJson {
     pub name: String,
     pub command: String,
     pub status: String,
+    /// Planned seconds after the CLI cap. Default so a pre-0408 payload still deserializes.
+    #[serde(default)]
+    pub timeout_secs: u64,
 }
 
 /// `kind: "verifyDryRun"` — not a verification. No `ok`.
@@ -332,6 +335,7 @@ mod diagnostic_dto_tests {
                 name: "fmt".into(),
                 command: "cargo fmt --all -- --check".into(),
                 status: "planned".into(),
+                timeout_secs: 60,
             }],
         };
         let json = payload.to_json_string().unwrap();
@@ -343,6 +347,7 @@ mod diagnostic_dto_tests {
         assert!(!json.contains("\"ok\""), "dry-run must not emit ok: {json}");
         assert!(!json.contains("durationMs"), "{json}");
         assert!(!json.contains("exitCode"), "{json}");
+        assert!(json.contains("\"timeoutSecs\""), "{json}");
         assert!(json.contains("\"status\": \"planned\""));
         assert!(!json.contains("matchedSteps"));
         assert!(!json.contains("datasetKeys"));
