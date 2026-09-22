@@ -181,4 +181,46 @@ mod tests {
         assert_eq!(result.matches[0].path, file_rel);
         assert!(!result.candidates_truncated);
     }
+
+    #[test]
+    fn regex_filter_auto_finds_trait_impact_provider() {
+        let dir = TempDir::new().expect("tempdir");
+        let engine = make_engine(&dir);
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(root.join("src")).expect("mkdir");
+        let file_rel = "src/impact.rs";
+        let body = "pub trait ImpactProvider {";
+        std::fs::write(root.join(file_rel), body).expect("write");
+        index_doc(&engine, file_rel, body);
+
+        let filter = RegexFilter::new(&engine);
+        let root_utf8 = camino::Utf8Path::from_path(&root).expect("utf8 root");
+        let matches = filter
+            .search(root_utf8, "trait ImpactProvider", 10)
+            .expect("auto search");
+        assert!(
+            matches.iter().any(|m| m.path == file_rel),
+            "AND of non-space trigrams must open the trait file: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn regex_filter_auto_all_paths_when_every_trigram_has_ascii_space() {
+        let dir = TempDir::new().expect("tempdir");
+        let engine = make_engine(&dir);
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let file_rel = "src_let.rs";
+        let body = "let a = b;";
+        std::fs::write(root.join(file_rel), body).expect("write");
+        index_doc(&engine, file_rel, body);
+
+        let filter = RegexFilter::new(&engine);
+        let root_utf8 = camino::Utf8Path::from_path(&root).expect("utf8 root");
+        let matches = filter.search(root_utf8, "a = b", 10).expect("auto search");
+        assert!(
+            matches.iter().any(|m| m.path == file_rel),
+            "empty queryable trigrams must use AllPaths: {matches:?}"
+        );
+    }
 }

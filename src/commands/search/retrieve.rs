@@ -17,6 +17,16 @@ pub fn is_regex_likely(query: &str) -> bool {
     })
 }
 
+/// Explicit `--regex` truncation: result over-limit, or the candidate cap
+/// fired and at least one match was returned.
+pub(crate) fn regex_cli_marks_truncated(
+    over_limit: bool,
+    candidates_truncated: bool,
+    had_hits: bool,
+) -> bool {
+    over_limit || (candidates_truncated && had_hits)
+}
+
 pub fn is_identifier_likely(query: &str) -> bool {
     !query.is_empty()
         && !query.contains(' ')
@@ -365,8 +375,13 @@ pub(crate) fn perform_search(
             println!("[Search Mode: Regex]");
         }
         let filter = RegexFilter::new(&engine);
-        let mut matches = filter.search(root, &args.query, overfetch)?;
-        let truncated = matches.len() > args.limit;
+        let result =
+            filter.search_with(root, &args.query, overfetch, RegexCandidateSource::Auto)?;
+        let over_limit = result.matches.len() > args.limit;
+        let had_hits = !result.matches.is_empty();
+        let truncated =
+            regex_cli_marks_truncated(over_limit, result.candidates_truncated, had_hits);
+        let mut matches = result.matches;
         matches.truncate(args.limit);
         collector.set_truncated(truncated);
 
@@ -696,6 +711,19 @@ fn handle_fuzzy_fallback(
             }
             println!();
         }
+    }
+}
+
+#[cfg(test)]
+mod regex_cli_truncated_tests {
+    use super::regex_cli_marks_truncated;
+
+    #[test]
+    fn regex_cli_marks_truncated_four_corners() {
+        assert!(regex_cli_marks_truncated(false, true, true));
+        assert!(!regex_cli_marks_truncated(false, true, false));
+        assert!(regex_cli_marks_truncated(true, false, true));
+        assert!(!regex_cli_marks_truncated(false, false, true));
     }
 }
 
