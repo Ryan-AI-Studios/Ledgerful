@@ -430,7 +430,7 @@ mod tests {
     #[test]
     fn ask_completion_options_are_bounded() {
         let options = crate::commands::ask::ask_completion_options();
-        assert_eq!(options.max_tokens, 512);
+        assert_eq!(options.max_tokens, 1024);
         assert!(options.max_tokens < Config::default().local_model.context_window);
     }
 

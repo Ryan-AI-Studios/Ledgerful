@@ -85,8 +85,8 @@ pub(crate) fn execute_legacy_complete(inputs: LegacyCompleteInputs<'_>) -> Resul
                         "Local Model Response:".if_supports_color(Stream::Stdout, |s| s
                             .style(Style::new().bold().green()))
                     );
-                    println!("{response}");
-                    Ok(())
+                    println!("{}", response.text);
+                    crate::commands::ask::finish_printed_ask(response.stop_reason.as_deref())
                 }
                 Err(e) => {
                     let raw = e.to_string();

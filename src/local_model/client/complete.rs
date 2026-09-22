@@ -235,6 +235,18 @@ pub(crate) fn ping_completions_detailed(
     Ok(model_name)
 }
 
+/// Parsed completion. Ask keeps `stop_reason`. `complete` returns `text` only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionText {
+    pub text: String,
+    pub stop_reason: Option<String>,
+}
+
+/// True only when the provider stop reason is ASCII-case-insensitive `length`.
+pub fn is_length_stop(reason: Option<&str>) -> bool {
+    reason.is_some_and(|reason| reason.eq_ignore_ascii_case("length"))
+}
+
 pub fn complete(
     config: &LocalModelConfig,
     messages: &[ChatMessage],
@@ -242,6 +254,7 @@ pub fn complete(
     timeout_secs_override: Option<u64>,
 ) -> Result<String, String> {
     complete_with_options(config, messages, options, timeout_secs_override, None)
+        .map(|output| output.text)
 }
 
 fn complete_with_options(
@@ -250,7 +263,7 @@ fn complete_with_options(
     options: &CompletionOptions,
     timeout_secs_override: Option<u64>,
     first_byte_secs: Option<u64>,
-) -> Result<String, String> {
+) -> Result<CompletionText, String> {
     let policy = CloudPolicy::from_env();
     let cloud_ok = has_cloud_fallback(config);
 
@@ -410,7 +423,12 @@ fn complete_with_options(
         };
         // Messages already sanitized above — pass through once (no double-mangle).
         match gemini_complete_unsanitized(&default_gemini, &sanitized_messages, options) {
-            Ok(response) => return Ok(response),
+            Ok(text) => {
+                return Ok(CompletionText {
+                    text,
+                    stop_reason: None,
+                });
+            }
             Err(e) => {
                 tracing::debug!("Gemini fallback failed: {}", e);
                 cloud_attempts.push(("Gemini fallback".to_string(), e));
@@ -454,6 +472,7 @@ pub fn complete_with_first_byte_timeout(
         timeout_secs_override,
         first_byte_secs.or(Some(15)),
     )
+    .map(|output| output.text)
 }
 
 /// Returns true if the error string indicates a first-byte timeout.
@@ -490,7 +509,7 @@ pub fn complete_with_hard_deadline(
     messages: &[ChatMessage],
     options: &CompletionOptions,
     timeout_secs: Option<u64>,
-) -> Result<String, String> {
+) -> Result<CompletionText, String> {
     let primary_timeout = timeout_secs.unwrap_or(config.timeout_secs);
     let deadline_secs = hard_deadline_secs(config, timeout_secs);
     let deadline = Duration::from_secs(deadline_secs);
@@ -504,7 +523,13 @@ pub fn complete_with_hard_deadline(
 
     // Pass Option through so cloud fallback stays short when CLI omitted (M2).
     std::thread::spawn(move || {
-        let result = complete(&config_clone, &messages_clone, &options_clone, timeout_secs);
+        let result = complete_with_options(
+            &config_clone,
+            &messages_clone,
+            &options_clone,
+            timeout_secs,
+            None,
+        );
         let _ = tx.send(result);
     });
 
@@ -558,7 +583,7 @@ fn complete_with_endpoint(
     options: &CompletionOptions,
     first_byte_secs: Option<u64>,
     is_local: bool,
-) -> Result<String, String> {
+) -> Result<CompletionText, String> {
     let target = completion_target(endpoint.base_url);
 
     // Check for known problematic base URL shapes
@@ -695,20 +720,31 @@ fn send_endpoint_request(
     }
 }
 
+fn completion_text_from_parts(
+    label: &str,
+    content: &str,
+    reasoning: Option<&str>,
+    stop_reason: Option<String>,
+) -> Result<CompletionText, String> {
+    let text = apply_completion_text(label, content, reasoning)?;
+    Ok(CompletionText { text, stop_reason })
+}
+
 fn parse_endpoint_response(
     response: ureq::Response,
     endpoint: &CompletionEndpoint<'_>,
     target: &EndpointTarget,
-) -> Result<String, String> {
+) -> Result<CompletionText, String> {
     match target.kind {
         EndpointKind::OllamaNative => {
             let parsed: ollama::OllamaChatResponse = response
                 .into_json()
                 .map_err(|e| format!("Failed to parse Ollama native response: {e}"))?;
-            apply_completion_text(
+            completion_text_from_parts(
                 endpoint.label,
                 &parsed.message.content,
                 parsed.message.thinking.as_deref(),
+                parsed.done_reason,
             )
         }
         EndpointKind::OpenAICompatible => {
@@ -720,10 +756,11 @@ fn parse_endpoint_response(
                 .into_iter()
                 .next()
                 .ok_or_else(|| "No completion choices returned".to_string())?;
-            apply_completion_text(
+            completion_text_from_parts(
                 endpoint.label,
                 &choice.message.content,
                 choice.message.reasoning.as_deref(),
+                choice.finish_reason,
             )
         }
     }
@@ -778,9 +815,9 @@ fn complete_endpoint_with_first_byte(
     timeout_secs: u64,
     first_byte_secs: u64,
     is_local: bool,
-) -> Result<String, String> {
+) -> Result<CompletionText, String> {
     let (headers_tx, headers_rx) = std::sync::mpsc::channel::<Result<(), String>>();
-    let (result_tx, result_rx) = std::sync::mpsc::channel::<Result<String, String>>();
+    let (result_tx, result_rx) = std::sync::mpsc::channel::<Result<CompletionText, String>>();
 
     // Capture owned data for the worker thread.
     let endpoint_owned = CompletionEndpointOwned {
@@ -921,16 +958,17 @@ fn parse_endpoint_response_owned(
     response: ureq::Response,
     endpoint: &CompletionEndpointOwned,
     target: &EndpointTarget,
-) -> Result<String, String> {
+) -> Result<CompletionText, String> {
     match target.kind {
         EndpointKind::OllamaNative => {
             let parsed: ollama::OllamaChatResponse = response
                 .into_json()
                 .map_err(|e| format!("Failed to parse Ollama native response: {e}"))?;
-            apply_completion_text(
+            completion_text_from_parts(
                 &endpoint.label,
                 &parsed.message.content,
                 parsed.message.thinking.as_deref(),
+                parsed.done_reason,
             )
         }
         EndpointKind::OpenAICompatible => {
@@ -942,11 +980,107 @@ fn parse_endpoint_response_owned(
                 .into_iter()
                 .next()
                 .ok_or_else(|| "No completion choices returned".to_string())?;
-            apply_completion_text(
+            completion_text_from_parts(
                 &endpoint.label,
                 &choice.message.content,
                 choice.message.reasoning.as_deref(),
+                choice.finish_reason,
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod length_stop_parse_tests {
+    use super::{
+        build_endpoint_body, completion_text_from_parts, is_length_stop, ollama_native_num_predict,
+    };
+    use crate::local_model::client::types::{
+        ChatMessage, CompletionEndpoint, CompletionOptions, EndpointKind, EndpointTarget,
+    };
+
+    #[test]
+    fn is_length_stop_matches_length_only() {
+        assert!(is_length_stop(Some("length")));
+        assert!(is_length_stop(Some("LENGTH")));
+        assert!(!is_length_stop(Some("max_tokens")));
+        assert!(!is_length_stop(None));
+    }
+
+    #[test]
+    fn ask_length_stop_both_parsers_share_helper() {
+        let src = include_str!("complete.rs");
+        let borrowed = fn_body(src, "parse_endpoint_response");
+        let owned = fn_body(src, "parse_endpoint_response_owned");
+        assert!(borrowed.contains("completion_text_from_parts("));
+        assert!(owned.contains("completion_text_from_parts("));
+        assert!(!borrowed.contains("apply_completion_text("));
+        assert!(!owned.contains("apply_completion_text("));
+    }
+
+    #[test]
+    fn ask_length_stop_parts_keep_reason_and_text() {
+        let got =
+            completion_text_from_parts("local", "abc", None, Some("length".to_string())).unwrap();
+        assert_eq!(got.text, "abc");
+        assert_eq!(got.stop_reason.as_deref(), Some("length"));
+        assert!(is_length_stop(got.stop_reason.as_deref()));
+    }
+
+    #[test]
+    fn ask_length_stop_body_sends_1024() {
+        let options = CompletionOptions {
+            max_tokens: 1024,
+            ..CompletionOptions::default()
+        };
+        let messages = [ChatMessage {
+            role: "user".to_string(),
+            content: "q".to_string(),
+        }];
+        let endpoint = CompletionEndpoint {
+            label: "local",
+            base_url: "http://127.0.0.1:9",
+            model: "m",
+            authorization: None,
+        };
+        let ollama = build_endpoint_body(
+            &endpoint,
+            &messages,
+            &options,
+            &EndpointTarget {
+                kind: EndpointKind::OllamaNative,
+                url: "http://127.0.0.1:9/api/chat".to_string(),
+            },
+        );
+        assert_eq!(ollama["options"]["num_predict"], 1024);
+        assert_eq!(ollama_native_num_predict(1024), 1024);
+        let openai = build_endpoint_body(
+            &endpoint,
+            &messages,
+            &options,
+            &EndpointTarget {
+                kind: EndpointKind::OpenAICompatible,
+                url: "http://127.0.0.1:9/v1/chat/completions".to_string(),
+            },
+        );
+        assert_eq!(openai["max_tokens"], 1024);
+    }
+
+    fn fn_body<'a>(src: &'a str, name: &str) -> &'a str {
+        let marker = format!("fn {name}(");
+        let start = src
+            .find(&marker)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        let after = &src[start..];
+        let rest = &after[marker.len()..];
+        let fn_at = rest.find("\nfn ");
+        let cfg_at = rest.find("\n#[cfg");
+        let cut = match (fn_at, cfg_at) {
+            (Some(fn_index), Some(cfg_index)) => fn_index.min(cfg_index),
+            (Some(fn_index), None) => fn_index,
+            (None, Some(cfg_index)) => cfg_index,
+            (None, None) => rest.len(),
+        };
+        &after[..marker.len() + cut]
     }
 }
