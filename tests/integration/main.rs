@@ -108,6 +108,7 @@ mod ledger_bulk;
 mod ledger_chain_hash;
 mod ledger_cli_parsing;
 mod ledger_crypto;
+mod ledger_diagnose;
 mod ledger_drift;
 mod ledger_enforcement;
 mod ledger_enforcement_gate;

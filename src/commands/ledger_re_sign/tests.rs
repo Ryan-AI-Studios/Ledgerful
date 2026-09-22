@@ -1,6 +1,6 @@
 use super::backup::{backup_ledger_db, verify_backup_integrity};
 use super::execute_ledger_re_sign_with_keys_dir;
-use super::mutate::build_maintenance_entry;
+use super::mutate::{apply_re_sign, build_maintenance_entry};
 use super::preview::{enumerate_upgrade_candidates, key_fingerprint, resolve_re_sign_keys_dir};
 use crate::commands::verify::enumerate_invalid_ledger_entries;
 use crate::ledger::crypto::sign_ledger_entry_in;
@@ -326,4 +326,79 @@ fn backup_is_openable_and_passes_integrity_check() {
 #[test]
 fn key_fingerprint_is_first_sixteen_hex_chars() {
     assert_eq!(key_fingerprint("abcdef1234567890aaaa"), "abcdef1234567890");
+}
+
+#[test]
+fn re_sign_stale_head_aborts_before_signature_write() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = camino::Utf8Path::from_path(tmp.path())
+        .unwrap()
+        .to_path_buf();
+    let layout = crate::state::layout::Layout::new(&root);
+    std::fs::create_dir_all(layout.state_subdir()).unwrap();
+    let mut storage = crate::state::storage::StorageManager::init_with_layout(&layout).unwrap();
+    storage
+        .get_connection()
+        .execute(
+            "INSERT INTO transactions (
+                tx_id, status, category, entity, entity_normalized, session_id, source, started_at
+             ) VALUES ('tx-stale', 'COMMITTED', 'FEATURE', 'a', 'a', 'test', 'test', '2020-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+    storage
+        .get_connection()
+        .execute(
+            "INSERT INTO ledger_entries (
+                tx_id, category, entry_type, entity, entity_normalized, change_type,
+                summary, reason, is_breaking, committed_at, origin, author, sig_version, signature
+             ) VALUES ('tx-stale', 'FEATURE', 'IMPLEMENTATION', 'a', 'a', 'MODIFY', 's', 'r', 0,
+                '2020-01-01T00:00:00Z', 'LOCAL', 't', 1, 'keep-me')",
+            [],
+        )
+        .unwrap();
+    storage
+        .get_connection()
+        .execute(
+            "INSERT INTO chain_head (
+                id, latest_entry_hash, genesis, length, updated_at
+             ) VALUES (1, 'stored-head', '2020-01-01T00:00:00Z', 1, '2020-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+    let keys = tmp.path().join("keys");
+    std::fs::create_dir_all(&keys).unwrap();
+    let config = crate::config::load::load_config_or_default_warn(&layout);
+    let result = apply_re_sign(
+        &mut storage,
+        &keys,
+        &[("tx-stale".into(), "keep-me".into(), "pub".into())],
+        "new-pub",
+        &layout,
+        &config,
+        false,
+        false,
+        Some("other-head".into()),
+    );
+    let msg = match result {
+        Ok(_) => panic!("stale head must abort before any signature write"),
+        Err(err) => format!("{err}"),
+    };
+    assert!(msg.contains("stale"), "{msg}");
+
+    let signature: String = storage
+        .get_connection()
+        .query_row(
+            "SELECT signature FROM ledger_entries WHERE tx_id = 'tx-stale'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(signature, "keep-me");
+    let count: i64 = storage
+        .get_connection()
+        .query_row("SELECT COUNT(*) FROM ledger_entries", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 1);
 }

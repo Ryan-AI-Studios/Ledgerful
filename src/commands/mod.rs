@@ -31,6 +31,7 @@ pub mod intent;
 pub mod ledger;
 pub mod ledger_adr;
 pub mod ledger_audit;
+pub mod ledger_diagnose;
 pub mod ledger_graph;
 pub mod ledger_re_sign;
 pub mod ledger_register;

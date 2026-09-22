@@ -192,6 +192,21 @@ pub(super) fn dispatch_ledger(command: LedgerCommands) -> Result<()> {
             note,
             message,
         } => crate::commands::ledger::execute_ledger_note(&entity, note, message),
+        LedgerCommands::Diagnose {
+            json,
+            limit,
+            offset,
+            output,
+            manifest,
+        } => crate::commands::ledger_diagnose::execute_ledger_diagnose(
+            crate::commands::ledger_diagnose::DiagnoseOpts {
+                json,
+                limit,
+                offset,
+                output,
+                manifest,
+            },
+        ),
         LedgerCommands::ReSign {
             tx,
             all_invalid,

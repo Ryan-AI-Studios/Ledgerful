@@ -5,6 +5,7 @@
 
 mod backup;
 mod mutate;
+mod preflight;
 mod preview;
 
 pub use preview::enumerate_upgrade_candidates;
@@ -16,6 +17,7 @@ use backup::backup_ledger_db;
 use miette::{Result, miette};
 use mutate::apply_re_sign;
 use owo_colors::{OwoColorize, Stream, Style};
+use preflight::{ReSignPreflight, evaluate_re_sign_preflight, format_blocked};
 use preview::{
     collect_candidate_preview, handle_empty_candidates, key_fingerprint, print_dry_run_listing,
     resolve_dry_run_public_key, resolve_re_sign_keys_dir,
@@ -51,7 +53,6 @@ pub fn execute_ledger_re_sign_with_keys_dir(
     }
 
     let layout = get_layout()?;
-    let keys_dir = resolve_re_sign_keys_dir(keys_dir_override, dry_run)?;
     let db_path = layout
         .state_subdir()
         .join("ledger.db")
@@ -65,6 +66,20 @@ pub fn execute_ledger_re_sign_with_keys_dir(
     let entries = preview_db
         .get_all_committed_ledger_entries()
         .map_err(|e| miette!("Failed to read ledger entries: {}", e))?;
+    let snapshot_head = preview_db
+        .get_chain_head()
+        .map_err(|e| miette!("Failed to read chain head: {}", e))?
+        .map(|head| head.latest_entry_hash);
+
+    if let ReSignPreflight::Blocked(block) = evaluate_re_sign_preflight(&entries) {
+        let msg = format_blocked(&block);
+        println!("{msg}");
+        return Err(miette!("{msg}"));
+    }
+
+    // Key-dir creation stays after the topology gate. A blocked --yes must not
+    // create ~/.ledgerful/keys.
+    let keys_dir = resolve_re_sign_keys_dir(keys_dir_override, dry_run)?;
 
     let signing_required = config.intent.require_signing;
     let preview = collect_candidate_preview(
@@ -79,6 +94,11 @@ pub fn execute_ledger_re_sign_with_keys_dir(
     )?;
 
     if preview.candidates.is_empty() {
+        if let Some(requested) = tx.as_deref() {
+            return Err(miette!(
+                "Transaction '{requested}' is already valid; re-sign will not change it"
+            ));
+        }
         return handle_empty_candidates(dry_run, preview.is_upgrade_mode);
     }
 
@@ -139,6 +159,7 @@ pub fn execute_ledger_re_sign_with_keys_dir(
         &config,
         signing_required,
         preview.is_upgrade_mode,
+        snapshot_head,
     )?;
 
     println!(

@@ -113,6 +113,7 @@ impl Commands {
                 LedgerCommands::Adopt { .. } => "ledger_adopt",
                 LedgerCommands::Audit { .. } => "ledger_audit",
                 LedgerCommands::Note { .. } => "ledger_note",
+                LedgerCommands::Diagnose { .. } => "ledger_diagnose",
                 LedgerCommands::ReSign { .. } => "ledger_re_sign",
                 LedgerCommands::Gc { .. } => "ledger_gc",
                 LedgerCommands::Resume { .. } => "ledger_resume",

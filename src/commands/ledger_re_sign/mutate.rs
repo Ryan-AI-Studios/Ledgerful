@@ -1,4 +1,5 @@
 use super::backup::nanos_since_epoch;
+use super::preflight::{ReSignPreflight, evaluate_re_sign_preflight};
 use super::preview::{ReSignCandidate, key_fingerprint};
 use crate::ledger::db::LedgerDb;
 use crate::ledger::types::{Category, ChangeType, EntryType, LedgerEntry};
@@ -24,6 +25,7 @@ pub(crate) fn apply_re_sign(
     config: &crate::config::model::Config,
     signing_required: bool,
     is_upgrade_mode: bool,
+    expected_head_hash: Option<String>,
 ) -> Result<ReSignMutation> {
     let author = current_actor(layout, config);
     let now = Utc::now().to_rfc3339();
@@ -36,6 +38,33 @@ pub(crate) fn apply_re_sign(
         .get_connection_mut()
         .transaction()
         .map_err(|e| miette!("Failed to begin re-sign transaction: {}", e))?;
+
+    let captured_order: Vec<String> = {
+        let db = LedgerDb::new(&sqlite_tx);
+        let head = db
+            .get_chain_head()
+            .map_err(|e| miette!("Failed to read chain head: {}", e))?;
+        let current = head.as_ref().map(|h| h.latest_entry_hash.clone());
+        if current != expected_head_hash {
+            return Err(miette!(
+                "Re-sign plan is stale: chain head changed before signatures were written"
+            ));
+        }
+        let snapshot = db
+            .get_all_committed_ledger_entries()
+            .map_err(|e| miette!("Failed to read ledger entries for chain rebuild: {}", e))?;
+        match evaluate_re_sign_preflight(&snapshot) {
+            ReSignPreflight::Blocked(block) => {
+                return Err(miette!(
+                    "BLOCKED {} count={} first={}\nRe-sign backed up the database and did not change signatures.\nNext: ledger diagnose --json",
+                    block.reason,
+                    block.count,
+                    block.first_tx_id
+                ));
+            }
+            ReSignPreflight::Clear { order } => order,
+        }
+    };
 
     let old_head_opt: Option<crate::ledger::types::ChainHead> = {
         let db = LedgerDb::new(&sqlite_tx);
@@ -107,33 +136,19 @@ pub(crate) fn apply_re_sign(
             .get_all_committed_ledger_entries()
             .map_err(|e| miette!("Failed to read ledger entries for chain rebuild: {}", e))?;
 
-        let walk = crate::ledger::chain_iter::iter_local_chain(&entries);
-        if !walk.forks.is_empty() {
-            return Err(miette!(
-                "CHAIN_BREAK: cannot re-sign while local chain has {} fork(s) (first parent hash {}). Resolve forks before re-sign.",
-                walk.forks.len(),
-                walk.forks[0].0
-            ));
-        }
-        if !walk.orphans.is_empty() {
-            return Err(miette!(
-                "CHAIN_BREAK: cannot re-sign while {} orphan LOCAL entr(y/ies) are unlinked (first: {}).",
-                walk.orphans.len(),
-                walk.orphans[0].tx_id
-            ));
-        }
-        if !walk.extra_genesis.is_empty() {
-            return Err(miette!(
-                "CHAIN_BREAK: cannot re-sign with {} additional genesis entr(y/ies) (first: {}).",
-                walk.extra_genesis.len(),
-                walk.extra_genesis[0].tx_id
-            ));
-        }
-
-        // Prefer the LOCAL walk order. When the ledger is pre-chain (no prev_hash
-        // links yet), fall back to a deterministic committed_at/tx_id order over
-        // LOCAL rows only so re-sign can establish the first chain segment.
-        let rebuild_order: Vec<LedgerEntry> = if walk.ordered.is_empty() {
+        // A restored signature makes the stored prev_hash links valid again.
+        // Rewriting only the pre-sign prefix would attach the maintenance row
+        // beside the restored child and fork. Use the post-sign walk when it
+        // is one chain. When the new signatures break links (v1 to v2), rewrite
+        // the order captured before those signature writes.
+        let post = crate::ledger::chain_iter::iter_local_chain(&entries);
+        let post_is_one_chain = post.forks.is_empty()
+            && post.orphans.is_empty()
+            && post.extra_genesis.is_empty()
+            && !post.ordered.is_empty();
+        let rebuild_order: Vec<LedgerEntry> = if post_is_one_chain {
+            post.ordered
+        } else if captured_order.is_empty() {
             let mut local: Vec<LedgerEntry> = entries
                 .into_iter()
                 .filter(|e| e.origin == "LOCAL")
@@ -145,7 +160,18 @@ pub(crate) fn apply_re_sign(
             });
             local
         } else {
-            walk.ordered
+            let by_tx: std::collections::BTreeMap<String, LedgerEntry> = entries
+                .into_iter()
+                .map(|entry| (entry.tx_id.clone(), entry))
+                .collect();
+            let mut ordered = Vec::with_capacity(captured_order.len());
+            for tx_id in &captured_order {
+                let entry = by_tx
+                    .get(tx_id)
+                    .ok_or_else(|| miette!("Captured re-sign order is missing entry {tx_id}"))?;
+                ordered.push(entry.clone());
+            }
+            ordered
         };
 
         // Re-sign creates a fresh chain segment from the earliest LOCAL entry

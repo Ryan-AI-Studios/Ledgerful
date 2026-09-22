@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Chain diagnosis does not promise a blocked re-sign (0416):**
+  `ledger diagnose` reports the full anomaly set and exits 0 when the
+  read succeeds. `verify --chain` still exits non-zero and still caps
+  break samples at 20. `ledger re-sign` refuses extra genesis and
+  forks before it creates a backup or a new signature. A bad
+  signature can look like an orphan; diagnose reports that class, and
+  re-sign still repairs it.
+
 - **Search performance gate measures the query (0415):** the integration
   test no longer fails a debug process spawn that exceeds 500 ms.
   Ranked and regex searches assert JSON hits instead. The hard budget
