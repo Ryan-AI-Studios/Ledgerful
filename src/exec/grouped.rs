@@ -294,4 +294,47 @@ mod tests {
         let err = spawn_wait_grouped(cmd, Duration::from_millis(500)).unwrap_err();
         assert!(matches!(err, GroupedProcessError::Timeout { .. }));
     }
+
+    /// 0414 / 0079 F-005: a grandchild heartbeat must stop after the group kill.
+    #[test]
+    fn grouped_timeout_stops_grandchild_heartbeat() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("heartbeat.txt");
+        let marker_arg = marker.display().to_string();
+        let cmd = if cfg!(windows) {
+            let script = dir.path().join("heartbeat.ps1");
+            std::fs::write(
+                &script,
+                "$path = $args[0]\nwhile ($true) { Add-Content -Path $path -Value 'x'; Start-Sleep -Milliseconds 100 }\n",
+            )
+            .unwrap();
+            let mut c = Command::new("cmd");
+            let script_s = script.display().to_string();
+            c.args([
+                "/C",
+                &format!("powershell -NoProfile -File {script_s} {marker_arg}"),
+            ]);
+            c
+        } else {
+            let mut c = Command::new("sh");
+            c.arg("-c");
+            c.arg("while true; do echo x >> \"$1\"; sleep 0.1; done & wait");
+            c.arg("sh");
+            c.arg(&marker_arg);
+            c
+        };
+        let err = spawn_wait_grouped(cmd, Duration::from_secs(2)).unwrap_err();
+        assert!(
+            matches!(err, GroupedProcessError::Timeout { .. }),
+            "{err:?}"
+        );
+        let size_after = std::fs::metadata(&marker).map(|m| m.len()).unwrap_or(0);
+        assert!(size_after > 0, "grandchild never wrote {marker_arg}");
+        std::thread::sleep(Duration::from_millis(500));
+        let size_later = std::fs::metadata(&marker).map(|m| m.len()).unwrap_or(0);
+        assert_eq!(
+            size_after, size_later,
+            "heartbeat still growing after group kill ({size_after} -> {size_later})"
+        );
+    }
 }

@@ -150,7 +150,7 @@ fn test_verify_command_pass() {
     let result = execute_verify(ExecuteVerifyOpts {
         command: Some(cmd.into()),
         tx_id: None,
-        timeout_secs: 5,
+        timeout_secs: Some(5),
         no_predict: false,
         explain: false,
         entity: None,
@@ -174,7 +174,7 @@ fn test_verify_command_fail() {
     let result = execute_verify(ExecuteVerifyOpts {
         command: Some(cmd.into()),
         tx_id: None,
-        timeout_secs: 5,
+        timeout_secs: Some(5),
         no_predict: false,
         explain: false,
         entity: None,
@@ -202,7 +202,7 @@ fn test_verify_command_timeout() {
     let result = execute_verify(ExecuteVerifyOpts {
         command: Some(cmd.into()),
         tx_id: None,
-        timeout_secs: 1,
+        timeout_secs: Some(1),
         no_predict: false,
         explain: false,
         entity: None,
@@ -240,7 +240,7 @@ fn test_verify_command_not_found() {
     let result = execute_verify(ExecuteVerifyOpts {
         command: Some("nonexistent_command_9999".into()),
         tx_id: None,
-        timeout_secs: 5,
+        timeout_secs: Some(5),
         no_predict: false,
         explain: false,
         entity: None,
@@ -267,7 +267,7 @@ fn test_verify_dry_run_does_not_execute() {
     let result = execute_verify(ExecuteVerifyOpts {
         command: Some("nonexistent_command_that_would_fail_if_run".into()),
         tx_id: None,
-        timeout_secs: 5,
+        timeout_secs: Some(5),
         no_predict: false,
         explain: false,
         entity: None,
@@ -328,7 +328,7 @@ fn test_verify_fast_live_clean_empty_changes_despite_stale_packet() {
     let result = execute_verify(ExecuteVerifyOpts {
         command: None,
         tx_id: None,
-        timeout_secs: 5,
+        timeout_secs: Some(5),
         no_predict: false,
         explain: false,
         entity: None,
@@ -403,7 +403,7 @@ fn test_verify_dry_run_mapping_refuse_is_err() {
     let result = execute_verify(ExecuteVerifyOpts {
         command: None,
         tx_id: None,
-        timeout_secs: 5,
+        timeout_secs: Some(5),
         no_predict: false,
         explain: false,
         entity: None,
@@ -451,7 +451,7 @@ fn test_verify_fast_missing_packet_dirty_tree_refuses() {
     let result = execute_verify(ExecuteVerifyOpts {
         command: None,
         tx_id: None,
-        timeout_secs: 5,
+        timeout_secs: Some(5),
         no_predict: true,
         explain: false,
         entity: None,
@@ -483,7 +483,7 @@ fn test_verify_health_check_known_executable() {
     let result = execute_verify(ExecuteVerifyOpts {
         command: Some("cargo --version".into()),
         tx_id: None,
-        timeout_secs: 10,
+        timeout_secs: Some(10),
         no_predict: false,
         explain: false,
         entity: None,
@@ -513,7 +513,7 @@ fn test_verify_health_check_missing_executable() {
     let result = execute_verify(ExecuteVerifyOpts {
         command: None,
         tx_id: None,
-        timeout_secs: 5,
+        timeout_secs: Some(5),
         no_predict: false,
         explain: false,
         entity: None,
@@ -544,7 +544,7 @@ fn test_verify_health_check_env_prefix_command() {
     let result = execute_verify(ExecuteVerifyOpts {
         command: None,
         tx_id: None,
-        timeout_secs: 10,
+        timeout_secs: Some(10),
         no_predict: false,
         explain: false,
         entity: None,
@@ -1402,7 +1402,7 @@ timeout_secs = 5
     let err = execute_verify(ExecuteVerifyOpts {
         command: None,
         tx_id: None,
-        timeout_secs: 5,
+        timeout_secs: Some(5),
         no_predict: true,
         explain: false,
         entity: None,
@@ -1457,7 +1457,7 @@ timeout_secs = 5
     let err = execute_verify(ExecuteVerifyOpts {
         command: None,
         tx_id: None,
-        timeout_secs: 5,
+        timeout_secs: Some(5),
         no_predict: true,
         explain: false,
         entity: None,
@@ -1512,7 +1512,7 @@ timeout_secs = 5
     let err = execute_verify(ExecuteVerifyOpts {
         command: None,
         tx_id: None,
-        timeout_secs: 5,
+        timeout_secs: Some(5),
         no_predict: true,
         explain: false,
         entity: None,
@@ -1567,7 +1567,7 @@ timeout_secs = 30
     let result = execute_verify(ExecuteVerifyOpts {
         command: None,
         tx_id: None,
-        timeout_secs: 30,
+        timeout_secs: Some(30),
         no_predict: true,
         explain: false,
         entity: None,

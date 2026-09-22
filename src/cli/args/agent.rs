@@ -282,11 +282,13 @@ pub struct VerifyArgs {
     /// Transaction ID to associate with this verification run
     #[arg(long)]
     pub tx_id: Option<String>,
-    /// Caps each auto-policy step (min with the 60/400 plan; 0 -> 400 ceiling).
-    /// Omitted default 600 leaves those ceilings. A manual command uses the flag
-    /// as that command's timeout.
-    #[arg(long, short, default_value_t = 600)]
-    pub timeout: u64,
+    /// Caps each auto-policy step. Omitted leaves the planned budget, including
+    /// a configured suite budget above 400 seconds. An explicit value is
+    /// min(planned, this flag). 0 keeps the 400-second ceiling on auto steps.
+    /// A manual command uses the flag as its timeout; omitted manual stays
+    /// 600 seconds, and manual 0 is an immediate timeout.
+    #[arg(long, short)]
+    pub timeout: Option<u64>,
     /// Disable Bayesian failure prediction
     #[arg(long)]
     pub no_predict: bool,

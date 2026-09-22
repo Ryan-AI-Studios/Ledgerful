@@ -316,10 +316,14 @@ They do **not** write `latest-verify.json`.
 | `verify --json --signatures` / `--chain` / `--against-export` | `verifySignatures` |
 
 `verifyDryRun.steps[].timeoutSecs` (number, always) is the planned seconds
-after the CLI `--timeout` cap (`min` with the auto-plan 60/400 ceilings).
-schemaVersion stays 1. Still no `ok`, no `durationMs`, no `exitCode`.
-Auto `--timeout 0` stays the 400 ceiling. Omitted `--timeout` (default 600)
-leaves the plan ceilings (fmt 60, clippy 400).
+after the CLI `--timeout` cap. schemaVersion stays 1. Still no `ok`, no
+`durationMs`, no `exitCode`. Optional `budgetSource` (`suite` | `format` |
+`lint` | `auto` | `manual` | `explicit`) is omitted when unset.
+Auto `--timeout 0` stays the 400 ceiling. Omitted `--timeout` leaves the
+planned budget: fast empty-changes stays fmt 60 / clippy 400; auto-plan
+`cargo test` / `cargo nextest` use `[verify] suite_timeout_secs` or the
+built-in 400. An explicit flag is `min(planned, flag)`. Executed
+`VerifyCliJson` steps do not grow `timeoutSecs` or `budgetSource`.
 
 `verifySignatures.checkpoint` (only with `--against-export`): `match` and
 `extends` are `ok: true` / exit 0 (same as human extends-or-equals).

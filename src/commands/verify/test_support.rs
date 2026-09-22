@@ -61,5 +61,6 @@ pub(crate) fn test_step(command: &str) -> VerificationStep {
         timeout_secs: 60,
         description: "step".into(),
         shell: false,
+        budget_source: None,
     }
 }

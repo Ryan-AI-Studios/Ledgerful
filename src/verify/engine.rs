@@ -452,12 +452,14 @@ mod tests {
                 timeout_secs: 1,
                 description: "sleeper".to_string(),
                 shell: false,
+                budget_source: None,
             },
             VerificationStep {
                 command: sentinel.to_string(),
                 timeout_secs: 30,
                 description: "must not run".to_string(),
                 shell: false,
+                budget_source: None,
             },
         ];
         let started = std::time::Instant::now();
@@ -504,12 +506,14 @@ mod tests {
                 timeout_secs: 30,
                 description: "bad git".to_string(),
                 shell: false,
+                budget_source: None,
             },
             VerificationStep {
                 command: "git --version".to_string(),
                 timeout_secs: 30,
                 description: "git version".to_string(),
                 shell: false,
+                budget_source: None,
             },
         ];
         let report = VerifyEngine::execute_with_scope(

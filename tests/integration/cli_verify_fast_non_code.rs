@@ -37,6 +37,16 @@ fn write_rust_manifest(root: &Path) {
     .expect("Cargo.toml");
 }
 
+fn write_suite_budget(root: &Path, seconds: u64) {
+    let state = root.join(".ledgerful");
+    fs::create_dir_all(&state).unwrap();
+    fs::write(
+        state.join("config.toml"),
+        format!("[verify]\nsuite_timeout_secs = {seconds}\n"),
+    )
+    .unwrap();
+}
+
 fn init_committed_rust_repo(root: &Path) {
     setup_git_repo(root);
     write_rust_manifest(root);
@@ -331,4 +341,69 @@ fn test_fast_dry_run_dirty_src_is_not_silently_cheap() {
     assert!(!out.status.success());
     let stdout = stdout_text(&out);
     assert_eq!(first_nonempty_line(&stdout), "scope: fast");
+}
+
+#[test]
+fn suite_budget_survives_omitted_timeout_and_explicit_cap_still_mins() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    init_committed_rust_repo(root);
+    write_suite_budget(root, 900);
+
+    let open = spawn_verify(root, &["verify", "--scope", "full", "--json", "--dry-run"]);
+    let open_stdout = stdout_text(&open);
+    let open_stderr = String::from_utf8_lossy(&open.stderr);
+    assert!(
+        open.status.success(),
+        "omitted timeout dry-run must exit 0; stdout={open_stdout:?} stderr={open_stderr:?}"
+    );
+    let open_v: serde_json::Value =
+        serde_json::from_str(open_stdout.trim()).expect("omitted dry-run JSON");
+    assert_eq!(open_v["schemaVersion"], 1);
+    let steps = open_v["steps"].as_array().expect("steps");
+    let nextest = steps
+        .iter()
+        .find(|step| {
+            step["command"]
+                .as_str()
+                .unwrap_or("")
+                .contains("cargo nextest")
+                || step["command"]
+                    .as_str()
+                    .unwrap_or("")
+                    .starts_with("cargo test ")
+        })
+        .expect("test step");
+    assert_eq!(nextest["timeoutSecs"], 900, "{open_v}");
+    assert_eq!(nextest["budgetSource"], "suite", "{open_v}");
+    let fmt = steps
+        .iter()
+        .find(|step| step["command"].as_str().unwrap_or("").contains("cargo fmt"))
+        .expect("fmt step");
+    assert_eq!(fmt["timeoutSecs"], 400, "auto full fmt stays 400: {open_v}");
+    assert_eq!(fmt["budgetSource"], "format");
+
+    let capped = spawn_verify(
+        root,
+        &[
+            "verify",
+            "--scope",
+            "full",
+            "--timeout",
+            "25",
+            "--json",
+            "--dry-run",
+        ],
+    );
+    let capped_stdout = stdout_text(&capped);
+    assert!(capped.status.success(), "{capped_stdout:?}");
+    let capped_v: serde_json::Value =
+        serde_json::from_str(capped_stdout.trim()).expect("capped dry-run JSON");
+    let capped_test = capped_v["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["budgetSource"] == "suite")
+        .expect("suite step");
+    assert_eq!(capped_test["timeoutSecs"], 25, "{capped_v}");
 }

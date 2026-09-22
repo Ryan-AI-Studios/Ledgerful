@@ -513,15 +513,18 @@ fn test_build_plan_from_config_with_steps() {
         default_timeout_secs: 120,
         semantic_weight: 0.3,
         prefer_nextest: None,
+        suite_timeout_secs: Some(900),
         ..Default::default()
     };
     let plan = build_plan_from_config(&config).unwrap();
     assert_eq!(plan.steps.len(), 2);
     assert_eq!(plan.steps[0].description, "Run tests");
     assert_eq!(plan.steps[0].timeout_secs, 60);
+    assert_eq!(plan.steps[0].budget_source.as_deref(), Some("explicit"));
     assert_eq!(plan.steps[1].description, "From config: cargo fmt --check");
-    // None timeout_secs should resolve to default_timeout_secs
+    // None timeout_secs should resolve to default_timeout_secs, not the suite key.
     assert_eq!(plan.steps[1].timeout_secs, 120);
+    assert_eq!(plan.steps[1].budget_source.as_deref(), Some("explicit"));
 }
 
 // ── Scoped selection tests (Tier 1 + Tier 6) ─────────────────────────
@@ -704,6 +707,7 @@ fn scoped_nextest_step_prepares_direct_without_spawn() {
         command,
         timeout_secs: 5,
         shell: false,
+        budget_source: None,
     };
     let prepared = crate::verify::runner::prepare_rule_step(
         &step,
@@ -2196,6 +2200,7 @@ fn step(cmd: &str) -> VerificationStep {
         timeout_secs: 60,
         description: cmd.to_string(),
         shell: false,
+        budget_source: None,
     }
 }
 

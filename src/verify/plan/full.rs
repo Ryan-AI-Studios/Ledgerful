@@ -114,6 +114,7 @@ pub(crate) fn build_plan_with_scope(
                             p_file.path.display()
                         ),
                         shell: false,
+                        budget_source: None,
                     });
                 }
             }
@@ -135,6 +136,7 @@ pub(crate) fn build_plan_with_scope(
                 timeout_secs: step.timeout_secs.unwrap_or(DEFAULT_AUTO_TIMEOUT_SECS),
                 description: step.description,
                 shell: false,
+                budget_source: None,
             })
             .collect()
     } else {
@@ -145,6 +147,7 @@ pub(crate) fn build_plan_with_scope(
                 timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
                 description: format!("From rules: {}", cmd),
                 shell: false,
+                budget_source: None,
             })
             .collect()
     };
@@ -183,6 +186,10 @@ pub(crate) fn build_plan_with_scope(
             has_rust,
             repo_root,
         );
+    }
+
+    for step in &mut unique_steps {
+        crate::verify::runner::stamp_auto_budget(step, config.suite_timeout_secs);
     }
 
     let plan_source = if rules.was_legacy_default {
@@ -248,6 +255,7 @@ pub(crate) fn append_full_tier_commands(
                     timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
                     description: "Tier: slow tests".to_string(),
                     shell: false,
+                    budget_source: None,
                 });
             }
         }
@@ -259,6 +267,7 @@ pub(crate) fn append_full_tier_commands(
                 timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
                 description: "Tier: doctests".to_string(),
                 shell: false,
+                budget_source: None,
             });
         }
     } else {
@@ -269,6 +278,7 @@ pub(crate) fn append_full_tier_commands(
                 timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
                 description: "Fallback: full cargo test".to_string(),
                 shell: false,
+                budget_source: None,
             });
         }
     }

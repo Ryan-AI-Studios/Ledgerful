@@ -224,7 +224,7 @@ pub fn build_plan_scoped_with_options(
     // CHANGELOG / packaging / bump scripts). Skip freshness and mapping.
     // `fallback_reason` stays None so JSON `scopeExecuted` remains `"fast"`.
     if all_non_code_cheap(packet) {
-        return build_non_code_cheap_plan(packet, profile);
+        return build_non_code_cheap_plan(packet, profile, config.suite_timeout_secs);
     }
 
     // 3. EmptyChanges — before stem query (query_scoped returns None for both
@@ -318,7 +318,7 @@ pub fn build_plan_scoped_with_options(
     let scoped_stems = conn.and_then(|c| query_scoped_test_files(c, packet));
     if let Some(mut test_stems) = scoped_stems {
         let unioned = union_bump_manifests_if_needed(packet, &mut test_stems);
-        return build_fast_scoped_plan(packet, &test_stems, unioned);
+        return build_fast_scoped_plan(packet, &test_stems, unioned, config.suite_timeout_secs);
     }
 
     // 6. MappingRefuse — fresh mapping but no coverage for changed files.
@@ -363,6 +363,7 @@ pub(crate) fn mapping_cannot_scope_outcome(
 fn build_non_code_cheap_plan(
     packet: &ImpactPacket,
     profile: &crate::platform::repository::RepositoryProfile,
+    suite: Option<u64>,
 ) -> VerificationPlan {
     let rust_steps: Vec<VerificationStep> = if profile.rust.is_some() {
         vec![
@@ -371,12 +372,14 @@ fn build_non_code_cheap_plan(
                 timeout_secs: 60,
                 description: "Non-code changes: format check (scoped tests N/A)".to_string(),
                 shell: false,
+                budget_source: None,
             },
             VerificationStep {
                 command: "cargo clippy --all-targets --all-features -- -D warnings".to_string(),
                 timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
                 description: "Non-code changes: lints (scoped tests N/A)".to_string(),
                 shell: false,
+                budget_source: None,
             },
         ]
     } else {
@@ -389,9 +392,13 @@ fn build_non_code_cheap_plan(
             timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
             description: "Non-code changes: packaging/scripts tests (bump_manifests)".to_string(),
             shell: false,
+            budget_source: None,
         }
     });
-    let steps: Vec<VerificationStep> = rust_steps.into_iter().chain(packaging_step).collect();
+    let mut steps: Vec<VerificationStep> = rust_steps.into_iter().chain(packaging_step).collect();
+    for step in &mut steps {
+        crate::verify::runner::stamp_auto_budget(step, suite);
+    }
     VerificationPlan {
         source: Some(PlanSource::AutoPolicy),
         steps,
@@ -433,6 +440,7 @@ fn build_fast_scoped_plan(
     packet: &ImpactPacket,
     test_stems: &[String],
     injected: bool,
+    suite: Option<u64>,
 ) -> VerificationPlan {
     let scoped_cmd = build_scoped_nextest_command(test_stems);
     // Always include fmt + clippy in fast scope — they're cheap and
@@ -448,20 +456,27 @@ fn build_fast_scoped_plan(
             timeout_secs: 60,
             description: "Scoped: format check".to_string(),
             shell: false,
+            budget_source: None,
         },
         VerificationStep {
             command: "cargo clippy --all-targets --all-features -- -D warnings".to_string(),
             timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
             description: "Scoped: lints".to_string(),
             shell: false,
+            budget_source: None,
         },
         VerificationStep {
             command: scoped_cmd,
             timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
             description: scoped_nextest_description(packet, injected),
             shell: false,
+            budget_source: None,
         },
     ];
+    let mut steps = steps;
+    for step in &mut steps {
+        crate::verify::runner::stamp_auto_budget(step, suite);
+    }
 
     VerificationPlan {
         source: Some(PlanSource::AutoPolicy), // Scoped testing is always auto-policy derived

@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Verify suite budget follows an omitted timeout (0414):**
+  `verify --timeout` is optional. Omitting it leaves the planned step
+  budget, so `[verify] suite_timeout_secs` can sit above 400 seconds.
+  An explicit value is still `min(planned, flag)`. Auto `--timeout 0`
+  stays the 400-second ceiling. The suite key applies to auto-plan
+  `cargo test` / `cargo nextest` steps only. Fast empty-changes stays
+  fmt 60 / clippy 400. Manual omitted stays 600 seconds.
+
 - **Ledger status --all JSON includes history (0413):**
   `ledger status --all --json` adds `history` and `historyCount`
   for the local committed rows, including an empty array and `0`
