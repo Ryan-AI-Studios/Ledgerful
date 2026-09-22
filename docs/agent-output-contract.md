@@ -45,7 +45,7 @@ contract and follows `LEDGERFUL_TABLE_STYLE`. Purity inventory unchanged
 | `export head --stdout` / `-o -` | n/a | yes | 0182: exact `serialize_chain_head` bytes. File mode prints SUCCESS (checkpoint write, not a verification) on stdout and writes the same JSON body to the file. |
 | `export evidence` | no (writes zip) | yes (human SUCCESS) | No `--json`. Default dest `ledgerful-soc2-evidence.zip` (demo: `ledgerful-DEMO-evidence.zip`). `manifest.json` `gateModeDisclosure.chainContinuityStatus` `verified:` is a gated LOCAL walk plus a real stored signed head; otherwise `signed-head-only:` / `INVALID` / `not verified`. Zip CRC/sig is not a full-chain walk. |
 | `viz` / `viz --view services` | no | yes (path + `#evidence` tokens) | No `--json`. Default dest `reports/graph.html` / `reports/services.html`. Offline vis-network 10.1.2. Graph: `source: Cozo nodes/edges`. Services gated: `source: declared overlay; inference gated`. Machine=false. |
-| `ledger status --json` | yes | yes | schemaVersion 1 |
+| `ledger status --json` | yes | yes | schemaVersion 1. Additive `history` + `historyCount` only with ledger `--all` (0413): both present when the flag is set, including `history: []` and `historyCount: 0` when nothing is committed; both omitted otherwise. Top-level `status` has no `--all`. |
 | `ledger stack --json` | yes (0281) | yes | schemaVersion 1 object `kind: "ledgerStack"`; `empty` true iff filtered rules/validators/mappings are all empty; `next` is the two clap register commands only when empty; `enforcementEnabled` from live config; omit-false `rulesNotEnforced` when rules exist and `start_change` would not block (`enforcementEnabled` and `gate.mode=enforce`). Item structs stay snake_case. No `emptyReason`. Not Daily 5 |
 | `ledger validator list --json` | yes | yes | **Bare array** of `CommitValidator` (snake_case). Empty catalog is `[]`. Not a schemaVersion object. Not Daily 5. Human empty is not a table (0 registered + next `--help`). |
 | `status --json` | yes (0149) | yes | **same payload** as `ledger status --json` |
@@ -570,6 +570,10 @@ alias of `ledger status`; no `--global` / `--all`). Combined `--help`
 | `stateDir` | Absolute `.ledgerful` directory (same string as doctor `environment.stateDir`; linked worktree shares main) |
 | `pendingTxIds` | **Sorted** lexicographically for determinism |
 | `promoteOrphanTxId` / `promoteError` | Omitted when absent |
+| `history` | Omitted without ledger `--all`. With `--all`, the local committed rows (`txId`, `committedAt`, `category`, `entity`, `changeType`, `summary`), sorted by the stored `committedAt` string then `txId`. `entity` is `entity_normalized`. `changeType` is `MODIFY` (serde), not Debug `Modify`. `summary` is the full stored text. An empty committed set is `[]`, not an omitted key. |
+| `historyCount` | Omitted without ledger `--all`. With `--all`, `history.length`, including `0`. |
+
+`ledger status --all --json` adds those two keys and no others. `schemaVersion` stays **1**. Top-level `status --json` cannot pass `--all`, so its field set stays the keys above `history`. `--all --json --entity` is still repo-wide history (`--json` returns before the entity filter). Human `--all` clips summary to 80 characters and entity to 48 with the style-aware ellipsis; JSON `summary` stays full.
 
 Observe-mode would-block diagnostics go to **stderr** via `cli_summary`
 `warn!`. Stdout remains parseable JSON alone.

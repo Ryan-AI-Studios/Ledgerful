@@ -75,7 +75,7 @@ Scoped index inventory (not search). `--path` is a **prefix**. JSON `schemaVersi
 
 ## `ledgerful status`
 
-Pending/drift slice of `ledger status` (`--json` / `--compact` only). Bare `ledgerful status` is valid human pending/drift. Ledger-only flags (`--entity`, `--exit-code`, `--global`, `--all`, `--strict-observe-signal`, `--verify-signatures`, and `--repo`/`--reindex`/`--opt-in`/`--opt-out` which require `--global`) live on `ledgerful ledger status`. Daily 5 stays `ledger status --compact` / `--json`. Git hooks stay `ledger status --compact --exit-code`.
+Pending/drift slice of `ledger status` (`--json` / `--compact` only). Bare `ledgerful status` is valid human pending/drift. Ledger-only flags (`--entity`, `--exit-code`, `--global`, `--all`, `--strict-observe-signal`, `--verify-signatures`, and `--repo`/`--reindex`/`--opt-in`/`--opt-out` which require `--global`) live on `ledgerful ledger status`. `ledger status --all --json` adds `history` and `historyCount` (empty array and `0` when nothing is committed); human `--all` clips the summary and entity columns. Daily 5 stays `ledger status --compact` / `--json`. Git hooks stay `ledger status --compact --exit-code`.
 
 ## `ledgerful ledger stack`
 
