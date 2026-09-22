@@ -412,6 +412,24 @@ pub enum LedgerCommands {
         #[arg(short, long)]
         message: Option<String>,
     },
+    /// Read-only chain diagnosis. Exit 0 when the database was read.
+    Diagnose {
+        /// Emit the versioned JSON envelope on stdout
+        #[arg(long)]
+        json: bool,
+        /// Page size for anomaly rows (1 through 1000)
+        #[arg(long, default_value_t = 100)]
+        limit: u64,
+        /// Number of anomaly rows to skip
+        #[arg(long, default_value_t = 0)]
+        offset: u64,
+        /// Write a new file. Refuses an existing path and any path under .ledgerful
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// With --output, write the unsigned recovery manifest proposal
+        #[arg(long)]
+        manifest: bool,
+    },
     /// Re-sign ledger entries (upgrade legacy signatures and/or repair invalid ones)
     ReSign {
         /// Re-sign a single transaction by id or prefix

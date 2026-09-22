@@ -1038,6 +1038,29 @@ impl Commands {
                         f.push("force");
                     }
                 }
+                LedgerCommands::Diagnose {
+                    json,
+                    limit,
+                    offset,
+                    output,
+                    manifest,
+                } => {
+                    if *json {
+                        f.push("json");
+                    }
+                    if *limit != 100 {
+                        f.push("limit");
+                    }
+                    if *offset != 0 {
+                        f.push("offset");
+                    }
+                    if output.is_some() {
+                        f.push("output");
+                    }
+                    if *manifest {
+                        f.push("manifest");
+                    }
+                }
                 LedgerCommands::RecoverOrphan {
                     promote,
                     abandon,

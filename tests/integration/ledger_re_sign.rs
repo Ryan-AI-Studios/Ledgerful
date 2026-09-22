@@ -874,3 +874,153 @@ fn re_sign_then_verify_chain_passes() {
     )
     .expect("verify --chain must pass after re-sign");
 }
+
+#[test]
+#[serial(cwd)]
+fn re_sign_blocked_extra_genesis_dry_run_and_yes() {
+    let _env = non_interactive();
+    let (dir, root, db_path) = setup_initialized_repo();
+    let _guard = DirGuard::from_utf8(&root);
+    {
+        let conn = rusqlite::Connection::open(db_path.as_std_path()).unwrap();
+        for tx in ["tx-a", "tx-b"] {
+            conn.execute(
+                "INSERT INTO transactions (
+                    tx_id, status, category, entity, entity_normalized, session_id, source, started_at
+                 ) VALUES (?1, 'COMMITTED', 'FEATURE', 'a', 'a', 'test', 'test', '2020-01-01T00:00:00Z')",
+                rusqlite::params![tx],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO ledger_entries (
+                    tx_id, category, entry_type, entity, entity_normalized, change_type,
+                    summary, reason, is_breaking, committed_at, origin, author, sig_version
+                 ) VALUES (?1, 'FEATURE', 'IMPLEMENTATION', 'a', 'a', 'MODIFY', 's', 'r', 0,
+                    '2020-01-01T00:00:00Z', 'LOCAL', 't', 1)",
+                rusqlite::params![tx],
+            )
+            .unwrap();
+        }
+    }
+    let keys = keys_dir(dir.path());
+    let state = db_path.parent().expect("state dir");
+    let layout = Layout::new(&root);
+    let _prime = StorageManager::open_read_only_sqlite_only(&layout);
+    let before = db_fingerprint(state.as_std_path());
+    let err =
+        execute_ledger_re_sign_with_keys_dir(None, false, true, true, false, Some(keys.clone()))
+            .unwrap_err();
+    assert_blocked(&format!("{err}"));
+    assert!(!backup_exists(db_path.as_std_path()));
+
+    let err = execute_ledger_re_sign_with_keys_dir(None, false, true, false, true, Some(keys))
+        .unwrap_err();
+    assert_blocked(&format!("{err}"));
+    assert!(!backup_exists(db_path.as_std_path()));
+    assert_eq!(before, db_fingerprint(state.as_std_path()));
+}
+
+fn assert_blocked(msg: &str) {
+    assert!(msg.contains("BLOCKED extra_genesis"), "{msg}");
+    assert!(msg.contains("count="), "{msg}");
+    assert!(msg.contains("first="), "{msg}");
+    assert!(
+        msg.contains("Re-sign did not back up or change signatures."),
+        "{msg}"
+    );
+    assert!(msg.contains("Next: ledger diagnose --json"), "{msg}");
+    assert!(!msg.contains("Pass --yes"), "{msg}");
+}
+
+fn db_fingerprint(state: &std::path::Path) -> (Option<u64>, Option<u64>, Option<u64>) {
+    (
+        file_fingerprint(&state.join("ledger.db")),
+        file_fingerprint(&state.join("ledger.db-wal")),
+        file_fingerprint(&state.join("ledger.db-shm")),
+    )
+}
+
+fn file_fingerprint(path: &std::path::Path) -> Option<u64> {
+    let bytes = std::fs::read(path).ok()?;
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    Some(hasher.finish())
+}
+
+#[test]
+#[serial(cwd)]
+fn re_sign_single_valid_entry_fails_with_error() {
+    let _env = non_interactive();
+    let (dir, root, db_path) = setup_initialized_repo();
+    let _guard = DirGuard::from_utf8(&root);
+    let keys = keys_dir(dir.path());
+    std::fs::create_dir_all(&keys).unwrap();
+    let parent_hash = {
+        let storage = ledgerful::state::storage::StorageManager::open_read_only_sqlite_only(
+            &Layout::new(&root),
+        )
+        .unwrap();
+        let db = ledgerful::ledger::db::LedgerDb::new(storage.get_connection());
+        let existing = db.get_all_committed_ledger_entries().unwrap();
+        existing
+            .iter()
+            .find(|e| e.origin == "LOCAL")
+            .map(|e| ledgerful::ledger::crypto::compute_entry_hash_for_entry(e).unwrap())
+    };
+    let (sig, pub_key) = ledgerful::ledger::crypto::sign_ledger_entry_in(
+        &keys,
+        "tx-valid",
+        "FEATURE",
+        "s",
+        "r",
+        "2020-01-02T00:00:00Z",
+    )
+    .unwrap();
+    {
+        let conn = rusqlite::Connection::open(db_path.as_std_path()).unwrap();
+        conn.execute(
+            "INSERT INTO transactions (
+                tx_id, status, category, entity, entity_normalized, session_id, source, started_at
+             ) VALUES ('tx-valid', 'COMMITTED', 'FEATURE', 'a', 'a', 'test', 'test', '2020-01-02T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ledger_entries (
+                tx_id, category, entry_type, entity, entity_normalized, change_type,
+                summary, reason, is_breaking, committed_at, origin, author, sig_version,
+                signature, public_key, prev_hash
+             ) VALUES ('tx-valid', 'FEATURE', 'IMPLEMENTATION', 'a', 'a', 'MODIFY', 's', 'r', 0,
+                '2020-01-02T00:00:00Z', 'LOCAL', 't', 1, ?1, ?2, ?3)",
+            rusqlite::params![sig, pub_key, parent_hash],
+        )
+        .unwrap();
+    }
+    let err = execute_ledger_re_sign_with_keys_dir(
+        Some("tx-valid".into()),
+        false,
+        false,
+        true,
+        false,
+        Some(keys),
+    )
+    .unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("already valid"), "{msg}");
+    assert!(!backup_exists(db_path.as_std_path()));
+}
+
+fn backup_exists(db_path: &std::path::Path) -> bool {
+    let Some(parent) = db_path.parent() else {
+        return false;
+    };
+    fs_backup(parent)
+}
+
+fn fs_backup(dir: &std::path::Path) -> bool {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    read.filter_map(Result::ok)
+        .any(|entry| entry.file_name().to_string_lossy().contains(".bak"))
+}

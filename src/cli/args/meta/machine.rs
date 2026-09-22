@@ -133,6 +133,7 @@ impl Commands {
                 LedgerCommands::Adopt { .. } => false,
                 LedgerCommands::Audit { json, .. } => *json,
                 LedgerCommands::Note { .. } => false,
+                LedgerCommands::Diagnose { json, .. } => *json,
                 LedgerCommands::ReSign { .. } => false,
                 LedgerCommands::Gc { .. } => false,
                 LedgerCommands::Resume { .. } => false,
