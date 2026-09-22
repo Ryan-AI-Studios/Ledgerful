@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Ask length stop is partial (0411):** when the model stop
+  reason is `length`, Ask still prints the answer, then exits 1
+  with stderr `Answer truncated: model stop reason length.`
+  Other stop reasons, including a missing reason, stay exit 0.
+  Ask's completion cap is 1024, the existing Ollama
+  `num_predict` ceiling. MCP `ask` reports `isError: true` for
+  that child exit. The prompt-packet `truncated` flag is unchanged.
+
 - **Dead-code JS unknown, not unreachable (0410):** a language
   enters the reachability set only from a non-deleted, non-vendored
   caller file. Vendored JavaScript callees no longer mark product

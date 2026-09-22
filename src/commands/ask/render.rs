@@ -120,8 +120,10 @@ pub(crate) fn execute_ask_with_providers(
                             "Response:".if_supports_color(Stream::Stdout, |s| s
                                 .style(Style::new().bold().green()))
                         );
-                        println!("{response}");
-                        return Ok(());
+                        println!("{}", response.text);
+                        return crate::commands::ask::finish_printed_ask(
+                            response.stop_reason.as_deref(),
+                        );
                     }
                     Err(e) => {
                         let err_str =

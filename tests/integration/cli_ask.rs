@@ -658,3 +658,111 @@ fn test_ask_empty_refuse_gates_provider_priority() {
     );
     completions.assert_calls(0);
 }
+
+const ASK_LENGTH_STOP_FOOTER: &str = "Answer truncated: model stop reason length.";
+
+fn spawn_ask_with_finish_reason(finish_reason: &str, content: &str) -> std::process::Output {
+    let _env_non_interactive = non_interactive();
+    let _env_gemini = TempEnv::remove("GEMINI_API_KEY");
+    let _env_openrouter = TempEnv::remove("OPENROUTER_API_KEY");
+    let _env_ollama = TempEnv::remove("OLLAMA_API_KEY");
+    let _env_ollama_cloud = TempEnv::remove("OLLAMA_CLOUD_API_KEY");
+
+    let server = httpmock::MockServer::start();
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/chat/completions");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .json_body(serde_json::json!({
+                "choices": [{
+                    "message": {"content": content},
+                    "finish_reason": finish_reason
+                }]
+            }));
+    });
+
+    let tmp = tempdir().unwrap();
+    let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+    let _guard = DirGuard::from_utf8(root);
+    Command::new("git")
+        .arg("init")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().unwrap();
+    plant_dirty_diff(tmp.path(), &layout);
+    fs::write(
+        layout.config_file(),
+        format!(
+            "[local_model]\nbase_url = \"{}\"\ngeneration_model = \"test-model\"\nprefer_local = true\ntimeout_secs = 15\n",
+            server.base_url()
+        ),
+    )
+    .unwrap();
+
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    Command::new(ledgerful_bin)
+        .args([
+            "ask",
+            "--timeout",
+            "20",
+            "--",
+            "What does this codebase do?",
+        ])
+        .current_dir(tmp.path())
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .env_remove("GEMINI_API_KEY")
+        .env_remove("OPENROUTER_API_KEY")
+        .env_remove("OLLAMA_API_KEY")
+        .env_remove("OLLAMA_CLOUD_API_KEY")
+        .output()
+        .unwrap()
+}
+
+#[test]
+#[serial(env, cwd)]
+fn ask_length_stop_exits_1_and_prints_footer_once() {
+    let output = spawn_ask_with_finish_reason("length", "cut-answer-token");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "length stop must exit 1\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("cut-answer-token"),
+        "answer body must stay on stdout, got: {stdout}"
+    );
+    assert_eq!(
+        stderr.matches(ASK_LENGTH_STOP_FOOTER).count(),
+        1,
+        "footer must appear once on stderr, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Local model failed:"),
+        "length stop must not enter the generic failure wrapper, got: {stderr}"
+    );
+}
+
+#[test]
+#[serial(env, cwd)]
+fn ask_length_stop_stop_reason_exits_0_without_footer() {
+    let output = spawn_ask_with_finish_reason("stop", "full-answer-token");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "stop must exit 0\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("full-answer-token"),
+        "answer body must stay on stdout, got: {stdout}"
+    );
+    assert!(
+        !stderr.contains(ASK_LENGTH_STOP_FOOTER),
+        "stop must not print the truncation footer, got: {stderr}"
+    );
+}
