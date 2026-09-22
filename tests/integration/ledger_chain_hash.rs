@@ -1069,6 +1069,85 @@ fn chain__against_export_advance_past_checkpoint__passes() {
 #[cfg(feature = "export")]
 #[test]
 #[serial(cwd, env)]
+fn against_export_extra_genesis_is_extends_or_match() {
+    use ledgerful::export::soc2::generate_soc2_export;
+
+    let _env_non_interactive = non_interactive();
+    let setup = setup_initialized_repo();
+    let root = setup.root.clone();
+    let db_path = setup.db_path.clone();
+
+    commit_n_entries(&setup, 3, "signed chain");
+
+    let conn = rusqlite::Connection::open(db_path.as_path()).unwrap();
+    conn.execute(
+        "INSERT INTO transactions (tx_id, status, category, entity, entity_normalized, session_id, source, started_at)
+         VALUES ('tx-prechain-old', 'COMMITTED', 'FEATURE', 'src/main.rs', 'src/main.rs', 'test', 'LOCAL', '2026-06-27T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO ledger_entries (tx_id, category, entry_type, entity, entity_normalized, change_type, summary, reason, is_breaking, committed_at, origin, author, observed, prev_hash)
+         VALUES ('tx-prechain-old', 'FEATURE', 'IMPLEMENTATION', 'src/main.rs', 'src/main.rs', 'MODIFY', 'older null prev', 'test', 0, '2026-06-27T00:00:00Z', 'LOCAL', 'test', 0, NULL)",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let layout = Layout::new(root.as_str());
+    let export_zip = tempdir().unwrap();
+    let export_path = export_zip.path().join("export.zip");
+    std::fs::write(&export_path, generate_soc2_export(&layout).unwrap()).unwrap();
+
+    let err = verify_ledger_signatures_with_options(
+        &layout,
+        false,
+        true,
+        false,
+        Some(export_path.as_path()),
+        false,
+        false,
+    )
+    .unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("Signed chain length"),
+        "human summary missing, got: {msg}"
+    );
+    assert!(
+        msg.contains("extra genesis"),
+        "extra-genesis count missing, got: {msg}"
+    );
+    assert!(
+        !msg.contains("rollback/tail-truncation"),
+        "1-entry walk still classified the checkpoint, got: {msg}"
+    );
+    assert!(
+        !msg.contains("Local chain has 1 linked entries"),
+        "checkpoint still used the earliest-null walk, got: {msg}"
+    );
+
+    let err_json = verify_ledger_signatures_with_options(
+        &layout,
+        false,
+        true,
+        false,
+        Some(export_path.as_path()),
+        false,
+        true,
+    )
+    .unwrap_err();
+    let json_msg = format!("{err_json}");
+    assert!(
+        !json_msg.contains("rollback/tail-truncation")
+            && !json_msg.contains("Local chain has 1 linked entries"),
+        "json path still diverged on the 1-entry walk, got: {json_msg}"
+    );
+}
+
+#[cfg(feature = "export")]
+#[test]
+#[serial(cwd, env)]
 fn chain__against_export_exact_after_advance__fails() {
     use ledgerful::export::soc2::generate_soc2_export;
 

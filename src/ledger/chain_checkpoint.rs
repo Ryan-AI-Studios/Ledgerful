@@ -55,19 +55,31 @@ pub enum CheckpointMode {
 
 /// Ordered LOCAL entries used for chain-head synthesis and checkpoint compare.
 ///
+/// Head-less. Re-sign and [`crate::export::soc2::synthesize_chain_head`] stay
+/// on this function. A real stored head uses [`ordered_local_for_head_with_head`].
+///
 /// - **Post-chain** (any LOCAL entry with non-empty `prev_hash`): `iter_local_chain`
-///   walk order (genesis → head by linkage).
+///   walk order (earliest empty `prev_hash`, then linkage).
 /// - **Pre-chain** (no LOCAL entry has non-empty `prev_hash`): full LOCAL list
 ///   sorted by `(committed_at, tx_id)`.
 ///
 /// Federated rows (`origin != "LOCAL"`) are always excluded.
 pub fn ordered_local_for_head(entries: &[LedgerEntry]) -> Vec<&LedgerEntry> {
+    ordered_local_for_head_with_head(entries, None)
+}
+
+/// Same partition as [`ordered_local_for_head`], but a real head selects the
+/// backward walk from `latest_entry_hash` when that hash matches a local entry.
+pub fn ordered_local_for_head_with_head<'a>(
+    entries: &'a [LedgerEntry],
+    head: Option<&ChainHead>,
+) -> Vec<&'a LedgerEntry> {
     let any_linked = entries
         .iter()
         .any(|e| e.origin == "LOCAL" && e.prev_hash.as_deref().is_some_and(|p| !p.is_empty()));
 
     if any_linked {
-        let walk = crate::ledger::chain_iter::iter_local_chain(entries);
+        let walk = crate::ledger::chain_iter::iter_local_chain_with_head(entries, head);
         // Map walk order (owned clones) back to references into the input slice
         // so callers can hash without re-cloning entry payloads.
         walk.ordered
