@@ -522,7 +522,7 @@ fn verify_chain_integrity(
     let mut chain_length: i64 = 0;
 
     // Shared chain iterator (RT-C4): walk by prev_hash linkage; exclude federated.
-    let walk = crate::ledger::chain_iter::iter_local_chain(entries);
+    let walk = crate::ledger::chain_iter::iter_local_chain_with_head(entries, head);
     if walk.federated_skipped > 0 {
         tracing::info!(
             target: "cli_summary",
@@ -552,24 +552,9 @@ fn verify_chain_integrity(
             .any(|e| e.origin == "LOCAL" && e.prev_hash.is_some());
     let should_walk_chain = head_is_real || has_any_prev_link;
 
-    // Multiple null-prev genesis rows are only a break once a chain exists.
-    // Pre-chain ledgers legitimately have many null-prev entries.
-    if should_walk_chain && !walk.extra_genesis.is_empty() {
-        sig_exit::request_exit(sig_exit::INVALID_OR_CHAIN);
-        return Err(miette::miette!(
-            "Chain break: {} additional genesis entr(y/ies) with null prev_hash after chain started (first: {}).",
-            walk.extra_genesis.len(),
-            walk.extra_genesis[0].tx_id
-        ));
-    }
-    if should_walk_chain && !walk.orphans.is_empty() {
-        sig_exit::request_exit(sig_exit::INVALID_OR_CHAIN);
-        return Err(miette::miette!(
-            "Chain break: {} orphan LOCAL entr(y/ies) not linked by prev_hash (first: {}).",
-            walk.orphans.len(),
-            walk.orphans[0].tx_id
-        ));
-    }
+    // Extra genesis and orphans are reported after the signed-chain walk, the
+    // head check, and against-export classification. Returning here used to
+    // hide chain length and make `--against-export` diverge on a 1-entry walk.
     let chain_entries: &[crate::ledger::types::LedgerEntry] = if should_walk_chain {
         &walk.ordered
     } else {
@@ -637,75 +622,61 @@ fn verify_chain_integrity(
         prev_hash = Some(compute_entry_hash_for_verify(entry)?);
     }
 
+    let extra_n = if should_walk_chain {
+        walk.extra_genesis.len()
+    } else {
+        0
+    };
+    let summary = match local_head.as_ref() {
+        Some(head_ref) => {
+            let agree = prev_hash.as_deref() == Some(head_ref.latest_entry_hash.as_str())
+                && chain_length == head_ref.length;
+            let word = if agree { "agree" } else { "differ" };
+            format!(
+                "Signed chain length {chain_length} vs head length {} ({word}); {extra_n} extra genesis row(s) outside that chain.",
+                head_ref.length
+            )
+        }
+        None => format!(
+            "Signed chain length {chain_length} vs head length none (no stored head); {extra_n} extra genesis row(s) outside that chain."
+        ),
+    };
+
     if let Some(msg) = chain_break {
         sig_exit::request_exit(sig_exit::INVALID_OR_CHAIN);
-        return Err(miette::miette!("{}", msg));
+        return Err(miette::miette!("{summary} {msg}"));
     }
-
-    // When an export is supplied we must compare against it even if the local
-    // chain head is missing or the ledger is pre-chain. The SOC2 export
-    // synthesizes a chain_head.json for legacy/pre-chain ledgers, so
-    // --against-export can still detect truncation/rollback.
-    if let Some(export_path) = against_export {
-        #[cfg(feature = "export")]
-        {
-            return compare_against_export_path(
-                entries,
-                local_head.as_ref(),
-                head_is_real,
-                prev_hash.as_deref(),
-                chain_length,
-                export_path,
-                exact,
-            );
-        }
-        #[cfg(not(feature = "export"))]
-        {
-            let _ = (export_path, exact, chain_length, head_is_real);
-            return Err(miette::miette!(
-                "verify --against-export requires the export feature; rebuild with --features export"
-            ));
-        }
-    }
-    // `--exact` is only meaningful with `--against-export` (CLI rejects otherwise).
-    let _ = exact;
 
     // Fail-closed: if the chain head has been stripped from a DB that contains
     // in-chain entries (entries with prev_hash set), treat it as a downgrade. If
     // no entry has ever referenced chain state, the ledger is pre-chain/benign.
-    if !head_is_real && !entries.is_empty() {
+    // Against-export still runs below for a pre-chain ledger that has an export.
+    if !head_is_real && !entries.is_empty() && against_export.is_none() {
         let any_prev = entries.iter().any(|e| e.prev_hash.is_some());
         if any_prev {
-            // Only report a downgrade if the chain links were not already
-            // reported as broken by the walk above. The walk failure is more
-            // specific; this fallback catches a head stripped from an otherwise
-            // intact chain.
-            if chain_break.is_none() {
-                return Err(miette::miette!(
-                    "Chain head is missing but ledger entries have prev_hash values; downgrade detected."
-                ));
-            }
-        } else {
-            tracing::info!(
-                target: "cli_summary",
-                "Chain not yet started (pre-chain ledger). No chain to verify."
-            );
-            return Ok(());
+            return Err(miette::miette!(
+                "{summary} Chain head is missing but ledger entries have prev_hash values; downgrade detected."
+            ));
         }
+        tracing::info!(
+            target: "cli_summary",
+            "Chain not yet started (pre-chain ledger). No chain to verify."
+        );
+        return Ok(());
     }
 
-    if let Some(head_ref) = local_head {
+    if let Some(head_ref) = local_head.as_ref() {
         let expected_latest = prev_hash.as_deref().unwrap_or("");
         if expected_latest != head_ref.latest_entry_hash {
             return Err(miette::miette!(
-                "Chain head mismatch: computed latest entry hash {} does not match stored head {}",
+                "{summary} Chain head mismatch: computed latest entry hash {} does not match stored head {}",
                 expected_latest,
                 head_ref.latest_entry_hash
             ));
         }
         if chain_length != head_ref.length {
             return Err(miette::miette!(
-                "Chain length mismatch: computed {} linked entries but head claims {}",
+                "{summary} Chain length mismatch: computed {} linked entries but head claims {}",
                 chain_length,
                 head_ref.length
             ));
@@ -720,11 +691,59 @@ fn verify_chain_integrity(
             head_pub,
         ) {
             return Err(miette::miette!(
-                "Chain head signature verification failed for head {}.",
+                "{summary} Chain head signature verification failed for head {}.",
                 head_ref.latest_entry_hash
             ));
         }
+    }
 
+    // When an export is supplied we must compare against it even if the local
+    // chain head is missing or the ledger is pre-chain. A passing checkpoint
+    // does not clear extra genesis.
+    if let Some(export_path) = against_export {
+        #[cfg(feature = "export")]
+        {
+            if let Err(err) = compare_against_export_path(
+                entries,
+                local_head.as_ref(),
+                head_is_real,
+                prev_hash.as_deref(),
+                chain_length,
+                export_path,
+                exact,
+            ) {
+                return Err(miette::miette!("{summary} {err}"));
+            }
+        }
+        #[cfg(not(feature = "export"))]
+        {
+            let _ = (export_path, exact, chain_length, head_is_real);
+            return Err(miette::miette!(
+                "{summary} verify --against-export requires the export feature; rebuild with --features export"
+            ));
+        }
+    }
+    // `--exact` is only meaningful with `--against-export` (CLI rejects otherwise).
+    let _ = exact;
+
+    if should_walk_chain && !walk.extra_genesis.is_empty() {
+        sig_exit::request_exit(sig_exit::INVALID_OR_CHAIN);
+        return Err(miette::miette!(
+            "{summary} Chain break: {} additional genesis entr(y/ies) with null prev_hash after chain started (first: {}).",
+            walk.extra_genesis.len(),
+            walk.extra_genesis[0].tx_id
+        ));
+    }
+    if should_walk_chain && !walk.orphans.is_empty() {
+        sig_exit::request_exit(sig_exit::INVALID_OR_CHAIN);
+        return Err(miette::miette!(
+            "{summary} Chain break: {} orphan LOCAL entr(y/ies) not linked by prev_hash (first: {}).",
+            walk.orphans.len(),
+            walk.orphans[0].tx_id
+        ));
+    }
+
+    if let Some(head_ref) = local_head.as_ref() {
         tracing::info!(
             target: "cli_summary",
             "Chain verified: {} linked entries from genesis {} to head {}.",
@@ -751,6 +770,7 @@ fn compare_against_export_path(
 ) -> Result<()> {
     use crate::ledger::chain_checkpoint::{
         CheckpointMode, compare_against_export, load_checkpoint_head, ordered_local_for_head,
+        ordered_local_for_head_with_head,
     };
 
     let export_head = load_checkpoint_head(export_path)?;
@@ -824,7 +844,11 @@ fn compare_against_export_path(
         }
     }
 
-    let ordered = ordered_local_for_head(entries);
+    let ordered = if head_is_real {
+        ordered_local_for_head_with_head(entries, Some(&local_head))
+    } else {
+        ordered_local_for_head(entries)
+    };
     let mode = if exact {
         CheckpointMode::Exact
     } else {
@@ -1084,7 +1108,7 @@ fn collect_chain_and_checkpoint_for_json(
         ));
     }
 
-    let walk = crate::ledger::chain_iter::iter_local_chain(entries);
+    let walk = crate::ledger::chain_iter::iter_local_chain_with_head(entries, head);
     let head_is_real = head.is_some();
     let has_any_prev_link = walk.ordered.iter().any(|e| e.prev_hash.is_some())
         || entries
@@ -1356,7 +1380,7 @@ fn collect_checkpoint_for_json(
     {
         use crate::ledger::chain_checkpoint::{
             CheckpointMode, CheckpointResultKind, classify_against_export, load_checkpoint_head,
-            ordered_local_for_head,
+            ordered_local_for_head, ordered_local_for_head_with_head,
         };
 
         let mode_label = if exact {
@@ -1431,7 +1455,11 @@ fn collect_checkpoint_for_json(
             }
         }
 
-        let ordered = ordered_local_for_head(entries);
+        let ordered = if head_is_real {
+            ordered_local_for_head_with_head(entries, Some(&local_head))
+        } else {
+            ordered_local_for_head(entries)
+        };
         let mode = if exact {
             CheckpointMode::Exact
         } else {
@@ -2450,5 +2478,79 @@ mod verify_signatures_json_collect_tests {
             !body.contains("first_human.is_some()"),
             "collect-fn slice must not treat first_human as chain_break"
         );
+    }
+
+    fn entry_at(tx: &str, prev: Option<&str>, committed_at: &str) -> LedgerEntry {
+        let mut row = entry(tx, prev, "LOCAL");
+        row.committed_at = committed_at.to_string();
+        row.signature = Some("sig".to_string());
+        row.public_key = Some("pk".to_string());
+        row
+    }
+
+    fn older_null_plus_three() -> (Vec<LedgerEntry>, crate::ledger::types::ChainHead) {
+        let older = entry_at("tx-old", None, "2026-06-27T00:00:00Z");
+        let genesis = entry_at("tx-g", None, "2026-07-11T00:00:00Z");
+        let g_hash = compute_entry_hash_for_entry(&genesis).expect("hash genesis");
+        let mid = entry_at("tx-m", Some(&g_hash), "2026-07-12T00:00:00Z");
+        let m_hash = compute_entry_hash_for_entry(&mid).expect("hash mid");
+        let tip = entry_at("tx-t", Some(&m_hash), "2026-07-13T00:00:00Z");
+        let t_hash = compute_entry_hash_for_entry(&tip).expect("hash tip");
+        let head = signed_head(&t_hash, &genesis.committed_at, 3);
+        (vec![older, genesis, mid, tip], head)
+    }
+
+    #[test]
+    fn human_summary_names_signed_chain_and_extra_genesis() {
+        let (entries, head) = older_null_plus_three();
+        let err = verify_chain_integrity(&entries, Some(&head), None, false, false, false, &[], 1)
+            .expect_err("extra genesis stays a chain failure");
+        let msg = format!("{err}");
+        assert!(msg.contains("Signed chain length 3"), "{msg}");
+        assert!(msg.contains("head length 3"), "{msg}");
+        assert!(msg.contains("1 extra genesis"), "{msg}");
+        assert!(msg.contains("additional genesis"), "{msg}");
+    }
+
+    #[cfg(feature = "export")]
+    #[test]
+    fn against_export_extra_genesis_is_extends_or_match() {
+        let (entries, head) = older_null_plus_three();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("chain_head.json");
+        std::fs::write(&path, serde_json::to_vec(&head).expect("encode head")).expect("write head");
+        let (payload, _) = build_verify_signatures_json(
+            &entries,
+            Some(&head),
+            false,
+            true,
+            Some(path.as_path()),
+            false,
+            false,
+            &[],
+            1,
+            false,
+        )
+        .expect("payload");
+        assert_eq!(payload.chain.linked_entries, 3);
+        assert_eq!(payload.chain.extra_genesis_count, 1);
+        let stored = payload.chain.head.as_ref().expect("head");
+        assert!(stored.hash_match);
+        assert!(stored.length_match);
+        let checkpoint = payload.checkpoint.as_ref().expect("checkpoint");
+        assert!(
+            matches!(
+                checkpoint.result,
+                crate::ledger::chain_checkpoint::CheckpointResultKind::Match
+                    | crate::ledger::chain_checkpoint::CheckpointResultKind::Extends
+            ),
+            "checkpoint {:?}",
+            checkpoint.result
+        );
+        assert!(!payload.ok);
+        assert_eq!(payload.exit_code, sig_exit::INVALID_OR_CHAIN);
+        let rendered = payload.to_json_string().expect("json");
+        assert!(!rendered.contains("rollback/tail-truncation"));
+        assert!(!rendered.contains("Local chain has 1 linked entries"));
     }
 }

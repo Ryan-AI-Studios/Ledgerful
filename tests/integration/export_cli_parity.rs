@@ -330,17 +330,15 @@ async fn export_evidence__web_matches_direct_call__same_unzipped_members() {
     let disclosure = gate_mode_disclosure_from_zip(&direct_zip);
     let status = disclosure["chainContinuityStatus"].as_str().unwrap();
     let note = disclosure["completenessNote"].as_str().unwrap();
+    // Init writes one null-prev entry and a signed head for it. The seeded
+    // rows are also null-prev (no links). That is the 0369 pre-chain + real
+    // head case: the head-aware walk matches, so disclosure is verified.
     assert!(
-        status.starts_with("signed-head-only:") || status.starts_with("not verified —"),
-        "{status}"
+        status.starts_with("verified:"),
+        "pre-chain head that names the init entry is verified, got: {status}"
     );
     assert!(
-        !status.starts_with("verified:"),
-        "seeded export without a matching walk must not claim verified: {status}"
-    );
-    assert!(
-        note.contains("not full-chain verified")
-            || note.contains("Chain continuity is not verified"),
+        note.contains("does not assert per-entry signature validity"),
         "{note}"
     );
     let web_disclosure = gate_mode_disclosure_from_zip(&web_zip);

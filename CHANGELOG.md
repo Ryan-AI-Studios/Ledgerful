@@ -8,6 +8,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Verify chain follows the signed head (0409):** when
+  `chain_head.latest_entry_hash` matches a local entry, `verify
+  --signatures --chain` walks backward from that hash. Older empty
+  `prev_hash` rows stay extra genesis and the exit stays non-zero.
+  The human line states signed-chain length, head length, and that
+  count. `--against-export` classifies the signed chain (`match` or
+  `extends`) instead of a one-entry earliest-null walk. Re-sign and
+  synthesized heads stay on the head-less walk.
+
 - **Verify CLI timeout emits JSON (0408):** `--timeout` caps each
   auto-policy step (`min` with the 60/400 plan; auto `0` stays the 400
   ceiling). A step that hits the cap is a fail row (`exitCode` 124,

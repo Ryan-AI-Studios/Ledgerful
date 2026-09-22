@@ -415,7 +415,7 @@ fn first_walk_failure(
     entries: &[crate::ledger::types::LedgerEntry],
     head: &ChainHead,
 ) -> Option<String> {
-    let walk = crate::ledger::chain_iter::iter_local_chain(entries);
+    let walk = crate::ledger::chain_iter::iter_local_chain_with_head(entries, Some(head));
     // Extra-genesis / orphans / link-breaks apply only after a prev_hash
     // chain has started. Spec §1b writes
     // `should_walk_chain = stored_head.is_some() || has_any_prev_link`,
