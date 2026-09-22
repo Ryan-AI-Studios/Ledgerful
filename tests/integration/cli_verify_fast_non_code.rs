@@ -237,6 +237,87 @@ fn test_verify_json_dry_run_emits_verify_dry_run_kind() {
 }
 
 #[test]
+fn test_fast_dry_run_timeout_caps_json_steps() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    init_committed_rust_repo(root);
+
+    let capped = spawn_verify(
+        root,
+        &[
+            "verify",
+            "--scope",
+            "fast",
+            "--timeout",
+            "25",
+            "--json",
+            "--dry-run",
+        ],
+    );
+    let capped_stdout = stdout_text(&capped);
+    let capped_stderr = String::from_utf8_lossy(&capped.stderr);
+    assert!(
+        capped.status.success(),
+        "capped dry-run must exit 0; stdout={capped_stdout:?} stderr={capped_stderr:?}"
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(capped_stdout.trim()).expect("capped dry-run JSON");
+    assert_eq!(v["executed"], false);
+    assert!(v.get("ok").is_none(), "dry-run must not emit ok: {v}");
+    let steps = v["steps"].as_array().expect("steps");
+    assert_eq!(steps.len(), 2, "{v}");
+    assert_eq!(steps[0]["timeoutSecs"], 25);
+    assert_eq!(steps[1]["timeoutSecs"], 25);
+    let fmt_cmd = steps[0]["command"].as_str().unwrap_or("");
+    let clippy_cmd = steps[1]["command"].as_str().unwrap_or("");
+    assert!(fmt_cmd.contains("cargo fmt"), "{fmt_cmd}");
+    assert!(clippy_cmd.contains("clippy"), "{clippy_cmd}");
+
+    let plain = spawn_verify(root, &["verify", "--scope", "fast", "--json", "--dry-run"]);
+    let plain_stdout = stdout_text(&plain);
+    let plain_stderr = String::from_utf8_lossy(&plain.stderr);
+    assert!(
+        plain.status.success(),
+        "default dry-run must exit 0; stdout={plain_stdout:?} stderr={plain_stderr:?}"
+    );
+    let plain_v: serde_json::Value =
+        serde_json::from_str(plain_stdout.trim()).expect("default dry-run JSON");
+    let plain_steps = plain_v["steps"].as_array().expect("steps");
+    assert_eq!(plain_steps.len(), 2, "{plain_v}");
+    assert_eq!(plain_steps[0]["timeoutSecs"], 60);
+    assert_eq!(plain_steps[1]["timeoutSecs"], 400);
+    assert!(
+        plain_steps[0]["command"]
+            .as_str()
+            .unwrap_or("")
+            .contains("cargo fmt"),
+        "{plain_v}"
+    );
+    assert!(
+        plain_steps[1]["command"]
+            .as_str()
+            .unwrap_or("")
+            .contains("clippy"),
+        "{plain_v}"
+    );
+
+    let human = spawn_verify(
+        root,
+        &["verify", "--scope", "fast", "--timeout", "25", "--dry-run"],
+    );
+    let human_stdout = stdout_text(&human);
+    let human_stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(
+        human.status.success(),
+        "human dry-run must exit 0; stdout={human_stdout:?} stderr={human_stderr:?}"
+    );
+    assert!(
+        human_stdout.contains("(timeout: 25s)"),
+        "human dry-run must show capped timeout: {human_stdout:?}"
+    );
+}
+
+#[test]
 fn test_fast_dry_run_dirty_src_is_not_silently_cheap() {
     // Mixed/src dirty with no mapping still refuses (DoD-3 frozen).
     let tmp = tempdir().unwrap();

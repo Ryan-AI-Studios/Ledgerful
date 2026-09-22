@@ -282,7 +282,9 @@ pub struct VerifyArgs {
     /// Transaction ID to associate with this verification run
     #[arg(long)]
     pub tx_id: Option<String>,
-    /// Timeout in seconds
+    /// Caps each auto-policy step (min with the 60/400 plan; 0 -> 400 ceiling).
+    /// Omitted default 600 leaves those ceilings. A manual command uses the flag
+    /// as that command's timeout.
     #[arg(long, short, default_value_t = 600)]
     pub timeout: u64,
     /// Disable Bayesian failure prediction

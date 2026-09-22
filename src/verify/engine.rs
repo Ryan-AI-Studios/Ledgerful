@@ -9,7 +9,10 @@ use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use crate::verify::plan::{VerificationPlan, VerificationStep};
 use crate::verify::results::{VerificationReport, VerificationResult, write_verify_report};
-use crate::verify::runner::{execute_step_with_command, prepare_manual_step, prepare_rule_step};
+use crate::verify::runner::{
+    StepExecution, VERIFY_STEP_TIMEOUT_EXIT_CODE, execute_step_outcome, prepare_manual_step,
+    prepare_rule_step,
+};
 use chrono::Utc;
 use miette::Result;
 use std::path::PathBuf;
@@ -160,35 +163,58 @@ impl VerifyEngine {
                 command.env("CARGO_INCREMENTAL", "1");
             }
 
-            let result = execute_step_with_command(&prepared, &policy, Some(command))?;
+            match execute_step_outcome(&prepared, &policy, Some(command))? {
+                StepExecution::Finished(result) => {
+                    // Product step-done (0148 matrix):
+                    // - default pass: compact ok + elapsed (no SUCCESS banner)
+                    // - verbose pass: SUCCESS via print_verify_result (no compact ok)
+                    // - fail (default or verbose): FAILURE via print_verify_result
+                    // - json: never println
+                    if should_emit_verify_step_progress(ctx.suppress_human_output) {
+                        if result.exit_code == 0 && !ctx.verbose {
+                            println!(
+                                "{}",
+                                format_verify_step_ok(
+                                    i,
+                                    n,
+                                    &prepared.display_command,
+                                    result.duration
+                                )
+                            );
+                        }
+                        if result.exit_code != 0 || ctx.verbose {
+                            print_verify_result(
+                                &prepared.display_command,
+                                step.timeout_secs,
+                                &result,
+                                ctx.verbose,
+                            );
+                        }
+                    }
 
-            // Product step-done (0148 matrix):
-            // - default pass: compact ok + elapsed (no SUCCESS banner)
-            // - verbose pass: SUCCESS via print_verify_result (no compact ok)
-            // - fail (default or verbose): FAILURE via print_verify_result
-            // - json: never println
-            if should_emit_verify_step_progress(ctx.suppress_human_output) {
-                if result.exit_code == 0 && !ctx.verbose {
-                    println!(
-                        "{}",
-                        format_verify_step_ok(i, n, &prepared.display_command, result.duration)
-                    );
+                    let report_result = Self::to_report_result(&prepared.display_command, &result);
+                    if report_result.exit_code != 0 {
+                        overall_success = false;
+                    }
+                    persisted_results.push(report_result);
                 }
-                if result.exit_code != 0 || ctx.verbose {
-                    print_verify_result(
-                        &prepared.display_command,
-                        step.timeout_secs,
-                        &result,
-                        ctx.verbose,
-                    );
+                StepExecution::TimedOut { timeout, message } => {
+                    overall_success = false;
+                    let stderr_summary = Self::truncate_summary(&message);
+                    let truncated = stderr_summary.chars().count() < message.chars().count();
+                    persisted_results.push(VerificationResult {
+                        command: prepared.display_command.clone(),
+                        exit_code: VERIFY_STEP_TIMEOUT_EXIT_CODE,
+                        duration_ms: timeout.as_millis() as u64,
+                        stdout_summary: String::new(),
+                        stderr_summary,
+                        truncated,
+                        timestamp: Utc::now().to_rfc3339(),
+                    });
+                    eprintln!("{message}");
+                    break;
                 }
             }
-
-            let report_result = Self::to_report_result(&prepared.display_command, &result);
-            if report_result.exit_code != 0 {
-                overall_success = false;
-            }
-            persisted_results.push(report_result);
         }
 
         let mut report = VerificationReport::new(plan, persisted_results.clone())
@@ -390,5 +416,113 @@ mod tests {
             false,
             false,
         ));
+    }
+
+    fn temp_verify_ctx() -> (tempfile::TempDir, VerificationContext) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        let ctx = VerificationContext::new(
+            layout,
+            tmp.path().to_path_buf(),
+            Config::default(),
+            false,
+            false,
+            false,
+        );
+        (tmp, ctx)
+    }
+
+    #[test]
+    fn engine_timeout_emits_result_and_skips_later_step() {
+        let (_tmp, mut ctx) = temp_verify_ctx();
+        let (command, basename) = if cfg!(target_os = "windows") {
+            ("ping -n 10 127.0.0.1", "ping")
+        } else {
+            ("sleep 10", "sleep")
+        };
+        ctx.config
+            .verify
+            .allowed_commands
+            .push(basename.to_string());
+        let sentinel = "sentinel-command-not-allowlisted-0408";
+        let steps = vec![
+            VerificationStep {
+                command: command.to_string(),
+                timeout_secs: 1,
+                description: "sleeper".to_string(),
+                shell: false,
+            },
+            VerificationStep {
+                command: sentinel.to_string(),
+                timeout_secs: 30,
+                description: "must not run".to_string(),
+                shell: false,
+            },
+        ];
+        let started = std::time::Instant::now();
+        let report = VerifyEngine::execute_with_scope(
+            &mut ctx,
+            None,
+            &steps,
+            false,
+            None,
+            crate::verify::plan::VerifyScope::Full,
+        )
+        .unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "wall clock {:?}",
+            started.elapsed()
+        );
+        assert_eq!(report.results.len(), 1, "{:?}", report.results);
+        assert_eq!(report.results[0].exit_code, 124);
+        assert_eq!(report.results[0].duration_ms, 1000);
+        assert!(
+            report.results[0]
+                .stderr_summary
+                .contains("Step timed out after"),
+            "{}",
+            report.results[0].stderr_summary
+        );
+        assert!(
+            report.results[0].stderr_summary.contains(command),
+            "{}",
+            report.results[0].stderr_summary
+        );
+        let blob = format!("{:?}", report.results);
+        assert!(!blob.contains(sentinel), "{blob}");
+        assert!(!report.overall_pass);
+    }
+
+    #[test]
+    fn engine_nonzero_exit_still_runs_next_step() {
+        let (_tmp, mut ctx) = temp_verify_ctx();
+        let steps = vec![
+            VerificationStep {
+                command: "git not-a-real-subcommand".to_string(),
+                timeout_secs: 30,
+                description: "bad git".to_string(),
+                shell: false,
+            },
+            VerificationStep {
+                command: "git --version".to_string(),
+                timeout_secs: 30,
+                description: "git version".to_string(),
+                shell: false,
+            },
+        ];
+        let report = VerifyEngine::execute_with_scope(
+            &mut ctx,
+            None,
+            &steps,
+            false,
+            None,
+            crate::verify::plan::VerifyScope::Full,
+        )
+        .unwrap();
+        assert_eq!(report.results.len(), 2, "{:?}", report.results);
+        assert_ne!(report.results[0].exit_code, 0);
+        assert_eq!(report.results[1].exit_code, 0);
     }
 }

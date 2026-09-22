@@ -143,6 +143,7 @@ Move beyond blind test runs with intelligent, data-driven verification.
 *   **Failure Explanation Engine**: Generates concise, technical rationales for predicted failures using a local LLM backend.
 *   **Dynamic Verification Plans**: Deterministic plans generated from a blend of explicit configuration (`mode = "explicit"`), stack-aware automatic policy (`mode = "auto"`), structural impact, and historical outcomes.
 *   **Stack-Aware Auto-Policy**: When in `auto` mode, Ledgerful scans the workspace for supported stacks (Rust, Node, Deno) and seamlessly builds a robust verification plan. It infers test runners (npm, pnpm, yarn, bun, deno, cargo) and scripts without manual configuration.
+*   **CLI step timeout**: `verify --timeout` caps each auto-policy step (`min` with the planned 60s/400s ceilings; omitted default 600 leaves those ceilings; auto `--timeout 0` stays the 400 ceiling). A step that hits the cap is a JSON fail row (`exitCode` 124, `Step timed out after`) and later steps are not started. Manual command and `[[verify.steps]]` keep their own timeouts (manual `0` is an immediate timeout row, not a disabled clock). Signature verify (`--signatures` / `--chain` / `--against-export`) ignores the flag. Full scope is not a 40-second guarantee.
 
 ## 5. Engineering Coverage & Self-Awareness
 

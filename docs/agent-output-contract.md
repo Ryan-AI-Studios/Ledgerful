@@ -315,6 +315,12 @@ They do **not** write `latest-verify.json`.
 | `verify --json --health` | `verifyHealth` (`ok` = tools only) |
 | `verify --json --signatures` / `--chain` / `--against-export` | `verifySignatures` |
 
+`verifyDryRun.steps[].timeoutSecs` (number, always) is the planned seconds
+after the CLI `--timeout` cap (`min` with the auto-plan 60/400 ceilings).
+schemaVersion stays 1. Still no `ok`, no `durationMs`, no `exitCode`.
+Auto `--timeout 0` stays the 400 ceiling. Omitted `--timeout` (default 600)
+leaves the plan ceilings (fmt 60, clippy 400).
+
 `verifySignatures.checkpoint` (only with `--against-export`): `match` and
 `extends` are `ok: true` / exit 0 (same as human extends-or-equals).
 `diverges` / `exactMismatch` / `exportSigInvalid` are `ok: false` / exit 1.
@@ -510,8 +516,13 @@ Failed step example with path enrichment (additive; **schemaVersion stays 1**):
 | `steps[].status` | string | `"pass"` if `exitCode == 0`, else `"fail"` |
 | `steps[].failureDetail` | string (omitted on pass) | stderr summary preferred |
 | `steps[].failedPaths` | string[] (omitted when empty/pass) | Best-effort formatter paths; same sources as human fail block |
+| `steps[].exitCode` | number | That step's exit code (`0` is pass; any other value is fail, including an ordinary command failure). `124` when the step hit its timeout (`failureDetail` contains `Step timed out after`); later steps are omitted. No new `kind`. schemaVersion stays 1 |
 | `timestamp` | ISO 8601 | From the run report |
 | `txId` | string (omitted when null) | Bound pending transaction if any |
+
+A step timeout is `status: "fail"`, `exitCode: 124`, `ok: false`. Manual
+`--timeout 0` is an immediate timeout row (`Duration::ZERO`), not a disabled
+clock. Auto `--timeout 0` stays the 400 ceiling.
 
 This payload is a **CLI wire contract**. It is built from
 `VerificationReport` but does **not** extend the persisted
@@ -1675,6 +1686,7 @@ A non-zero exit with **no** JSON is **not** a verification result. Always check
 | Panic in the main thread | exit **101**; no payload | **Fatal** |
 | Hard `Err` before the payload is emitted (e.g. cwd unreadable, rejected combo) | no payload; non-zero | **Fatal** |
 | Plan step failure after the run completes | **JSON present**, `ok: false`, non-zero | **Validation rejection** |
+| Step timeout | **Validation rejection**, not an empty-stdout fatal. JSON present, `ok: false`, non-zero. Stdout is the JSON object alone. Stderr may carry the one timeout sentence (`Step timed out after …`, including the index / `--scope full` hint). `exitCode` 124; later steps omitted. Manual `--timeout 0` is this immediate row (`Duration::ZERO`), not a disabled clock. Auto `--timeout 0` stays the 400 ceiling | **Validation rejection** |
 | **Config load failure** | **not fatal** — warn + defaults (post-0094 honesty path); verification still runs | continue; may see stderr WARN |
 | **SQLite / packet open failure** | **not fatal** — prediction disabled with warn; plan still runs | continue; may see stderr WARN |
 
