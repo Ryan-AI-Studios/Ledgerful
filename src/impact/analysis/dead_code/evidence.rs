@@ -886,18 +886,22 @@ impl<'a> ConfidenceScorer<'a> {
         Ok(computed)
     }
 
+    /// Caller files with a resolved callee license an extension.
+    ///
+    /// Callee paths do not. Vendored callers do not, even when
+    /// `include_vendor` is set: a language with no product caller edges
+    /// stays reachability-unknown (0410).
     fn compute_extensions_with_resolved_edges(&self) -> Result<HashSet<String>> {
         let conn = self.storage.get_connection();
         let mut stmt = conn
             .prepare(
                 "SELECT DISTINCT pf.file_path
                  FROM project_files pf
-                 WHERE pf.id IN (
-                   SELECT caller_file_id FROM structural_edges WHERE callee_symbol_id IS NOT NULL
-                   UNION
-                   SELECT callee_file_id FROM structural_edges
-                   WHERE callee_symbol_id IS NOT NULL AND callee_file_id IS NOT NULL
-                 )",
+                 WHERE pf.parse_status != 'DELETED'
+                   AND pf.id IN (
+                     SELECT caller_file_id FROM structural_edges
+                     WHERE callee_symbol_id IS NOT NULL
+                   )",
             )
             .into_diagnostic()?;
         let rows = stmt
@@ -906,6 +910,9 @@ impl<'a> ConfidenceScorer<'a> {
         let mut extensions = HashSet::new();
         for row in rows {
             let path = row.into_diagnostic()?;
+            if crate::impact::hotspots::is_vendor_hotspot_path(&path) {
+                continue;
+            }
             if let Some(ext) = path_file_extension(Path::new(&path)) {
                 extensions.insert(ext);
             }
