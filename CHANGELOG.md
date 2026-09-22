@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Search performance gate measures the query (0415):** the integration
+  test no longer fails a debug process spawn that exceeds 500 ms.
+  Ranked and regex searches assert JSON hits instead. The hard budget
+  is an ignored release in-process p95 (`search-perf` CI job). That
+  job is not a required status check. A bad regex still exits 1.
+
 - **Verify suite budget follows an omitted timeout (0414):**
   `verify --timeout` is optional. Omitting it leaves the planned step
   budget, so `[verify] suite_timeout_secs` can sit above 400 seconds.

@@ -7,6 +7,9 @@ pub mod stream_indexer;
 pub mod tantivy_engine;
 pub mod trigram;
 
+#[cfg(test)]
+mod perf_gate;
+
 pub use format_stamp::{needs_format_rebuild, write_stamp};
 pub use rebuild::rebuild_tantivy_index;
 pub use regex_filter::{
