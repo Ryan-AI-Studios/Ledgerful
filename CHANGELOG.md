@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Re-sign refuses an empty captured order; diagnose output is create-only (0418):**
+  When the post-sign walk is broken and the pre-sign captured order is empty,
+  `ledger re-sign` errors and rolls back instead of timestamp-sorting LOCAL
+  rows or writing a one-entry maintenance head. `ledger diagnose --output`
+  still refuses an existing path; the write now uses `create_new` so a file
+  created after the exists check is not truncated.
+
 - **Legacy adoption attests rows without inventing their order (0417):**
   `ledger recovery plan` writes a canonical manifest. `ledger recovery apply --yes`
   appends one maintenance attestation and does not rewrite existing `prev_hash`

@@ -91,3 +91,41 @@ fn chain_diagnose_manifest_omits_keys() {
     assert!(value.get("signature").is_none());
     assert!(body.contains("not authenticated chronology"));
 }
+
+#[test]
+#[serial(cwd)]
+fn chain_diagnose_refuses_existing_manifest_output() {
+    let dir = tempfile::tempdir().unwrap();
+    setup_git_repo(dir.path());
+    let root = camino::Utf8Path::from_path(dir.path())
+        .unwrap()
+        .to_path_buf();
+    let _guard = DirGuard::from_utf8(&root);
+    execute_init(false, false).unwrap();
+    let out = dir.path().join("manifest.json");
+    fs::write(&out, "canary-manifest").unwrap();
+    let layout = Layout::new(&root);
+    let err = diagnose_layout(&layout, &opts(false, Some(out.clone()), true)).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("output file already exists"), "{msg}");
+    assert_eq!(fs::read_to_string(&out).unwrap(), "canary-manifest");
+}
+
+#[test]
+#[serial(cwd)]
+fn chain_diagnose_refuses_existing_full_output() {
+    let dir = tempfile::tempdir().unwrap();
+    setup_git_repo(dir.path());
+    let root = camino::Utf8Path::from_path(dir.path())
+        .unwrap()
+        .to_path_buf();
+    let _guard = DirGuard::from_utf8(&root);
+    execute_init(false, false).unwrap();
+    let out = dir.path().join("diagnosis.json");
+    fs::write(&out, "canary-full").unwrap();
+    let layout = Layout::new(&root);
+    let err = diagnose_layout(&layout, &opts(false, Some(out.clone()), false)).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("output file already exists"), "{msg}");
+    assert_eq!(fs::read_to_string(&out).unwrap(), "canary-full");
+}

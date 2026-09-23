@@ -876,6 +876,299 @@ fn re_sign_then_verify_chain_passes() {
 }
 
 #[test]
+#[serial(cwd, env)]
+fn re_sign_blocked_yes_does_not_create_default_keys_dir() {
+    let _non_interactive = non_interactive();
+    let (_dir, root, db_path) = setup_initialized_repo();
+    let _guard = DirGuard::from_utf8(&root);
+    {
+        let conn = rusqlite::Connection::open(db_path.as_std_path()).unwrap();
+        for tx in ["tx-a", "tx-b"] {
+            conn.execute(
+                "INSERT INTO transactions (
+                    tx_id, status, category, entity, entity_normalized, session_id, source, started_at
+                 ) VALUES (?1, 'COMMITTED', 'FEATURE', 'a', 'a', 'test', 'test', '2020-01-01T00:00:00Z')",
+                rusqlite::params![tx],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO ledger_entries (
+                    tx_id, category, entry_type, entity, entity_normalized, change_type,
+                    summary, reason, is_breaking, committed_at, origin, author, sig_version
+                 ) VALUES (?1, 'FEATURE', 'IMPLEMENTATION', 'a', 'a', 'MODIFY', 's', 'r', 0,
+                    '2020-01-01T00:00:00Z', 'LOCAL', 't', 1)",
+                rusqlite::params![tx],
+            )
+            .unwrap();
+        }
+    }
+    let home = tempdir().unwrap();
+    let home_str = home.path().to_str().expect("utf8 home");
+    let _userprofile = TempEnv::set("USERPROFILE", home_str);
+    let _home_env = TempEnv::set("HOME", home_str);
+    let err =
+        execute_ledger_re_sign_with_keys_dir(None, false, true, false, true, None).unwrap_err();
+    assert_blocked(&format!("{err}"));
+    assert!(!backup_exists(db_path.as_std_path()));
+    assert!(
+        !home.path().join(".ledgerful").join("keys").exists(),
+        "blocked --yes must not create the default keys directory"
+    );
+}
+
+#[test]
+#[serial(cwd)]
+fn re_sign_v1_parent_rewrites_child_prev_hash() {
+    let _env = non_interactive();
+    let (_dir, root, db_path) = setup_initialized_repo();
+    let _guard = DirGuard::from_utf8(&root);
+    let entity_path = root.join("src/main.rs");
+    std::fs::create_dir_all(entity_path.parent().unwrap()).unwrap();
+    std::fs::write(&entity_path, "").unwrap();
+
+    let mut storage = StorageManager::init(db_path.as_std_path()).unwrap();
+    let mut tx_mgr = TransactionManager::new(&mut storage, root.clone().into(), Config::default());
+    let keys = keys_dir(root.as_std_path());
+    let parent_id = tx_mgr
+        .start_change(TransactionRequest {
+            category: Category::Feature,
+            entity: "src/main.rs".to_string(),
+            planned_action: Some("v1 parent".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+    let committed_at = "2026-06-03T00:00:00Z";
+    let (sig_v2, pub_v2) = sign_v2_for_commit(
+        &keys,
+        &parent_id,
+        Category::Feature,
+        "v1 parent",
+        "reason",
+        committed_at,
+        "src/main.rs",
+    );
+    tx_mgr
+        .commit_change(
+            parent_id.clone(),
+            CommitRequest {
+                change_type: ChangeType::Modify,
+                summary: "v1 parent".to_string(),
+                reason: "reason".to_string(),
+                committed_at: Some(committed_at.to_string()),
+                signature: sig_v2,
+                public_key: pub_v2,
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap();
+    drop(tx_mgr);
+    drop(storage);
+
+    let parent_v1_hash = {
+        let conn = rusqlite::Connection::open(db_path.as_std_path()).unwrap();
+        let (stored_cat, stored_at): (String, String) = conn
+            .query_row(
+                "SELECT category, committed_at FROM ledger_entries WHERE tx_id = ?1",
+                rusqlite::params![parent_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let (sig_v1, pub_v1) = ledgerful::ledger::crypto::sign_ledger_entry_in(
+            &keys,
+            &parent_id,
+            &stored_cat,
+            "v1 parent",
+            "reason",
+            &stored_at,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE ledger_entries SET signature = ?1, public_key = ?2, sig_version = 1 WHERE tx_id = ?3",
+            rusqlite::params![
+                sig_v1.as_deref().unwrap_or(""),
+                pub_v1.as_deref().unwrap_or(""),
+                parent_id
+            ],
+        )
+        .unwrap();
+        let storage = StorageManager::open_read_only_sqlite_only(&Layout::new(&root)).unwrap();
+        let db = ledgerful::ledger::db::LedgerDb::new(storage.get_connection());
+        let parent = db
+            .get_ledger_entries_for_tx(&parent_id)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!(parent.sig_version, 1);
+        ledgerful::ledger::crypto::compute_entry_hash_for_entry(&parent).unwrap()
+    };
+
+    let child_at = "2026-06-04T00:00:00Z";
+    let (child_sig, child_pub) = ledgerful::ledger::crypto::sign_ledger_entry_in(
+        &keys, "tx-child", "FEATURE", "v1 child", "reason", child_at,
+    )
+    .unwrap();
+    {
+        let conn = rusqlite::Connection::open(db_path.as_std_path()).unwrap();
+        conn.execute(
+            "INSERT INTO transactions (
+                tx_id, status, category, entity, entity_normalized, session_id, source, started_at
+             ) VALUES ('tx-child', 'COMMITTED', 'FEATURE', 'src/main.rs', 'src/main.rs', 'test', 'test', ?1)",
+            rusqlite::params![child_at],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ledger_entries (
+                tx_id, category, entry_type, entity, entity_normalized, change_type,
+                summary, reason, is_breaking, committed_at, origin, author, sig_version,
+                signature, public_key, prev_hash
+             ) VALUES ('tx-child', 'FEATURE', 'IMPLEMENTATION', 'src/main.rs', 'src/main.rs', 'MODIFY',
+                'v1 child', 'reason', 0, ?1, 'LOCAL', 't', 1, ?2, ?3, ?4)",
+            rusqlite::params![child_at, child_sig, child_pub, parent_v1_hash],
+        )
+        .unwrap();
+    }
+
+    execute_ledger_re_sign_with_keys_dir(None, false, true, false, true, Some(keys)).unwrap();
+
+    let layout = Layout::new(&root);
+    ledgerful::commands::verify::verify_ledger_signatures_with_options(
+        &layout, true, true, false, None, false, false,
+    )
+    .expect("verify --chain must pass after v1 parent and child re-sign");
+    let storage = StorageManager::open_read_only_sqlite_only(&layout).unwrap();
+    let db = ledgerful::ledger::db::LedgerDb::new(storage.get_connection());
+    let entries = db.get_all_committed_ledger_entries().unwrap();
+    let parent = entries
+        .iter()
+        .find(|entry| entry.tx_id == parent_id)
+        .expect("parent");
+    let child = entries
+        .iter()
+        .find(|entry| entry.tx_id == "tx-child")
+        .expect("child");
+    assert_eq!(parent.sig_version, 2);
+    assert_eq!(child.sig_version, 2);
+    let parent_hash = ledgerful::ledger::crypto::compute_entry_hash_for_entry(parent).unwrap();
+    assert_eq!(child.prev_hash.as_deref(), Some(parent_hash.as_str()));
+}
+
+#[test]
+#[serial(cwd)]
+fn re_sign_empty_captured_order_and_broken_post_walk_errors() {
+    let _env = non_interactive();
+    let (dir, root, db_path) = setup_initialized_repo();
+    let _guard = DirGuard::from_utf8(&root);
+    {
+        let conn = rusqlite::Connection::open(db_path.as_std_path()).unwrap();
+        for (tx, at, prev) in [
+            (
+                "tx-orphan-a",
+                "2020-01-02T00:00:00Z",
+                "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            ),
+            (
+                "tx-orphan-b",
+                "2020-01-03T00:00:00Z",
+                "cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe",
+            ),
+        ] {
+            conn.execute(
+                "INSERT INTO transactions (
+                    tx_id, status, category, entity, entity_normalized, session_id, source, started_at
+                 ) VALUES (?1, 'COMMITTED', 'FEATURE', 'a', 'a', 'test', 'test', ?2)",
+                rusqlite::params![tx, at],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO ledger_entries (
+                    tx_id, category, entry_type, entity, entity_normalized, change_type,
+                    summary, reason, is_breaking, committed_at, origin, author, sig_version,
+                    signature, public_key, prev_hash
+                 ) VALUES (?1, 'FEATURE', 'IMPLEMENTATION', 'a', 'a', 'MODIFY', 's', 'r', 0,
+                    ?2, 'LOCAL', 't', 1, '00', '00', ?3)",
+                rusqlite::params![tx, at, prev],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "UPDATE ledger_entries SET prev_hash = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', signature = '11', public_key = '11' WHERE prev_hash IS NULL OR prev_hash = ''",
+            [],
+        )
+        .unwrap();
+        let leftover_genesis: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM ledger_entries WHERE origin = 'LOCAL' AND (prev_hash IS NULL OR prev_hash = '')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            leftover_genesis, 0,
+            "empty-order fixture must have no LOCAL genesis"
+        );
+    }
+    let keys = keys_dir(dir.path());
+    std::fs::create_dir_all(&keys).unwrap();
+    let state = db_path.parent().expect("state dir");
+    let layout = Layout::new(&root);
+    let _prime = StorageManager::open_read_only_sqlite_only(&layout);
+    let before = db_fingerprint(state.as_std_path());
+    let before_maintenance: i64 = {
+        let conn = rusqlite::Connection::open(db_path.as_std_path()).unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM ledger_entries WHERE entry_type = 'MAINTENANCE'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    let before_links: Vec<(String, Option<String>)> = {
+        let conn = rusqlite::Connection::open(db_path.as_std_path()).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT tx_id, prev_hash FROM ledger_entries ORDER BY tx_id")
+            .unwrap();
+        stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect()
+    };
+    let err = execute_ledger_re_sign_with_keys_dir(None, true, false, false, true, Some(keys))
+        .unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("captured order is empty and post-sign walk is broken"),
+        "{msg}"
+    );
+    assert_eq!(before, db_fingerprint(state.as_std_path()));
+    let after_links: Vec<(String, Option<String>)> = {
+        let conn = rusqlite::Connection::open(db_path.as_std_path()).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT tx_id, prev_hash FROM ledger_entries ORDER BY tx_id")
+            .unwrap();
+        stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect()
+    };
+    assert_eq!(before_links, after_links);
+    let after_maintenance: i64 = {
+        let conn = rusqlite::Connection::open(db_path.as_std_path()).unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM ledger_entries WHERE entry_type = 'MAINTENANCE'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        before_maintenance, after_maintenance,
+        "rollback must not insert a maintenance head"
+    );
+}
+
+#[test]
 #[serial(cwd)]
 fn re_sign_blocked_extra_genesis_dry_run_and_yes() {
     let _env = non_interactive();
