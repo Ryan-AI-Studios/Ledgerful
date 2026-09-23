@@ -1,6 +1,7 @@
 use camino::Utf8Path;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 pub mod env_guard;
 pub use env_guard::TempEnv;
@@ -13,15 +14,38 @@ pub fn non_interactive() -> TempEnv {
     TempEnv::set("LEDGERFUL_NON_INTERACTIVE", "1")
 }
 
+/// RAII CWD guard for integration tests.
+///
+/// Holds a process-wide lock for the guard lifetime because `cargo test`
+/// (shared-process, libtest threads) races on `set_current_dir`. `cargo
+/// nextest` is process-per-test, so the lock is inert there. Poison is
+/// recovered via `into_inner` so one panicking test does not cascade.
+/// Residual CWD sites (`CwdGuard`, `cwd_lock`, unguarded test
+/// `set_current_dir`) are a different lock class.
+///
+/// `DirGuard` is `!Send` (`MutexGuard`). Construct it on the thread that
+/// holds it — do not send across threads.
 pub struct DirGuard {
     original: PathBuf,
+    _lock: MutexGuard<'static, ()>,
+}
+
+fn dir_guard_cwd_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 impl DirGuard {
     pub fn new(dir: &Path) -> Self {
+        let lock = dir_guard_cwd_lock()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let original = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir).unwrap();
-        Self { original }
+        Self {
+            original,
+            _lock: lock,
+        }
     }
 
     #[allow(dead_code)]
@@ -32,6 +56,7 @@ impl DirGuard {
 
 impl Drop for DirGuard {
     fn drop(&mut self) {
+        // Restore first; `_lock` drops after this body (release last).
         let _ = std::env::set_current_dir(&self.original);
     }
 }

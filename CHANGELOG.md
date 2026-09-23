@@ -17,6 +17,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Shared-process `DirGuard` no longer restores a deleted tempdir as CWD (0433):**
+  both test guards hold a process-wide lock for their lifetime under
+  `cargo test`. `cargo nextest` is process-per-test so the lock is inert
+  there. The `ask_auto_scan` CLI child is isolated from EXEC completion
+  (`LEDGERFUL_LOCAL_GENERATION_URL`), git hooks, ambient cloud keys, and
+  federated `%TEMP%` persist-skip.
+
 - **`index --check --strict` exits 1 when a typed surface is `stale` (0421):**
   `--strict` now consults `surfaces[]` (mapping / routes / embeddings /
   files / symbols), not only `staleFiles`. `FreshPopulated` stays a

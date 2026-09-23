@@ -13,7 +13,7 @@ use ledgerful::state::storage::StorageManager;
 use std::fs;
 use tempfile::tempdir;
 
-use crate::common::{DirGuard, git_add_and_commit, setup_git_repo};
+use crate::common::{DirGuard, git_add_and_commit, git_add_and_commit_no_verify, setup_git_repo};
 
 /// `compute_impact_in_memory` must detect a dirty working tree, surface the
 /// modified file in the packet, and leave the stored snapshot table empty
@@ -137,33 +137,53 @@ fn test_ask_auto_scan_suppresses_stale_warning_with_fresh_packet() {
     use std::process::Command;
 
     let tmp = tempdir().unwrap();
-    let root = tmp.path();
-    setup_git_repo(root);
+    // Nest one level so federated sibling discovery sees only this repo,
+    // not leftover `.ledgerful` dirs under %TEMP% (0433 persist-skip).
+    let root = tmp.path().join("repo");
+    fs::create_dir_all(&root).unwrap();
+    setup_git_repo(&root);
 
     fs::write(root.join("a.txt"), "v1").unwrap();
-    git_add_and_commit(root, "initial");
+    git_add_and_commit(&root, "initial");
 
     let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
-    Command::new(ledgerful_bin)
-        .arg("init")
-        .current_dir(root)
+    isolate_ask_child(Command::new(ledgerful_bin).arg("init").current_dir(&root))
         .output()
         .unwrap();
+
+    // Keep Instant persistable: federated sibling walk of %TEMP% must not
+    // exhaust the 25s budget and fire should_skip_persist (0433). Do not
+    // pass scan --timeout 0 (unbounded).
+    let config_path = root.join(".ledgerful").join("config.toml");
+    let mut config = fs::read_to_string(&config_path).unwrap();
+    config.push_str("\n[federation]\nscan_file_budget = 1\nscan_timeout_secs = 5\n");
+    fs::write(&config_path, config).unwrap();
 
     // Record a cached packet against a dirty tree, then advance HEAD so the
     // cached packet is stale (head_hash != current HEAD).
     fs::write(root.join("a.txt"), "v2").unwrap();
-    let scan_out = Command::new(ledgerful_bin)
-        .args(["scan", "--impact"])
-        .current_dir(root)
-        .output()
-        .unwrap();
+    let scan_out = isolate_ask_child(
+        Command::new(ledgerful_bin)
+            .args(["scan", "--impact"])
+            .current_dir(&root),
+    )
+    .output()
+    .unwrap();
     assert!(
         scan_out.status.success(),
         "scan --impact failed: {}",
         String::from_utf8_lossy(&scan_out.stderr)
     );
-    git_add_and_commit(root, "advance head past the cached packet");
+    let latest = root
+        .join(".ledgerful")
+        .join("reports")
+        .join("latest-impact.json");
+    assert!(
+        latest.exists(),
+        "scan --impact must persist latest-impact.json (stderr: {})",
+        String::from_utf8_lossy(&scan_out.stderr)
+    );
+    git_add_and_commit_no_verify(&root, "advance head past the cached packet");
 
     // Dirty the tree again so `--auto-scan` finds a fresh, non-empty diff.
     fs::write(root.join("a.txt"), "v3").unwrap();
@@ -181,13 +201,13 @@ fn test_ask_auto_scan_suppresses_stale_warning_with_fresh_packet() {
     // (which runs AFTER the warning/notice stage) fail fast so the test does
     // not depend on a live backend and stays quick; the assertions are on
     // stderr emitted before any LLM contact.
-    let with_scan = Command::new(ledgerful_bin)
-        .args(["ask", "--auto-scan", "--timeout", "1", query])
-        .current_dir(root)
-        .env("LEDGERFUL_NON_INTERACTIVE", "1")
-        .env_remove("GEMINI_API_KEY")
-        .output()
-        .unwrap();
+    let with_scan = isolate_ask_child(
+        Command::new(ledgerful_bin)
+            .args(["ask", "--auto-scan", "--timeout", "1", query])
+            .current_dir(&root),
+    )
+    .output()
+    .unwrap();
     let with_scan_err = String::from_utf8_lossy(&with_scan.stderr);
     assert!(
         with_scan_err.to_lowercase().contains("auto-scanning"),
@@ -200,16 +220,30 @@ fn test_ask_auto_scan_suppresses_stale_warning_with_fresh_packet() {
 
     // Without --auto-scan: the stale cached packet must still warn. Same
     // `--timeout 1` rationale â€” the warning is emitted before the LLM call.
-    let without_scan = Command::new(ledgerful_bin)
-        .args(["ask", "--timeout", "1", query])
-        .current_dir(root)
-        .env("LEDGERFUL_NON_INTERACTIVE", "1")
-        .env_remove("GEMINI_API_KEY")
-        .output()
-        .unwrap();
+    let without_scan = isolate_ask_child(
+        Command::new(ledgerful_bin)
+            .args(["ask", "--timeout", "1", query])
+            .current_dir(&root),
+    )
+    .output()
+    .unwrap();
     let without_scan_err = String::from_utf8_lossy(&without_scan.stderr);
     assert!(
         without_scan_err.contains(impact_stale_phrase),
         "cached stale packet must still warn without --auto-scan, got stderr: {without_scan_err}"
     );
+}
+
+/// Keep the CLI child off EXEC `:8081` and ambient cloud cascade arms.
+/// `LEDGERFUL_LOCAL_MODEL_URL` cannot override a file-set `base_url`;
+/// `LEDGERFUL_LOCAL_GENERATION_URL` fills empty file `generation_url`.
+fn isolate_ask_child(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    cmd.env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .env("LEDGERFUL_LOCAL_GENERATION_URL", "http://127.0.0.1:1")
+        .env("LEDGERFUL_CLOUD_POLICY", "forbidden")
+        .env_remove("GEMINI_API_KEY")
+        .env_remove("OPENROUTER_API_KEY")
+        .env_remove("OLLAMA_CLOUD_API_KEY")
+        .env_remove("OLLAMA_API_KEY")
+        .env_remove("OPENROUTER_BASE_URL")
 }
