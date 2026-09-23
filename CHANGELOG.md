@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Windows CI exec fixtures no longer race cold child-startup latency (0432):**
+  Heartbeat tests wait for the grandchild marker before group-kill, the
+  large-output deadlock generator uses `cmd /C type` of a pre-written
+  tempfile, and the verify-engine timeout proof is exit 124 plus
+  `duration_ms == 1000` rather than a tight wall against spawn.
+
 - **Working-tree analysis honors the default 25s overall budget (0419):**
   `change-context`, `impact`, and `scan --impact` now resolve omitted
   `--timeout` the same way prospective already did (CLI > env

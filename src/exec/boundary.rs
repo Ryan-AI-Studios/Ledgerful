@@ -162,13 +162,14 @@ mod tests {
 
     #[test]
     fn test_large_output_does_not_deadlock() {
+        let mut _temp_dir: Option<tempfile::TempDir> = None;
         let cmd = if cfg!(target_os = "windows") {
-            let mut c = Command::new("powershell");
-            c.args([
-                "-NoProfile",
-                "-Command",
-                "$s = 'A' * 262144; [Console]::Out.Write($s); [Console]::Out.Flush()",
-            ]);
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("big.txt");
+            std::fs::write(&file, vec![b'A'; 262144]).unwrap();
+            let mut c = Command::new("cmd");
+            c.args(["/C", "type", file.to_str().expect("utf8 tempfile")]);
+            _temp_dir = Some(dir);
             c
         } else {
             let mut c = Command::new("sh");
@@ -187,5 +188,12 @@ mod tests {
         assert_eq!(result.exit_code, 0);
         assert!(result.truncated);
         assert!(result.stdout.len() <= 1024);
+        assert!(
+            result
+                .stdout
+                .chars()
+                .all(|c| c == 'A' || c == '\n' || c == '\r'),
+            "child did not emit A's"
+        );
     }
 }

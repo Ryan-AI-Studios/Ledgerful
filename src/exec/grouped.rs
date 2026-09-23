@@ -269,8 +269,10 @@ mod tests {
             matches!(err, GroupedProcessError::Timeout { .. }),
             "expected timeout, got {err:?}"
         );
+        // Timeout is the invariant. The wall only catches a hung reap and
+        // must stay well below ping -n 30 (~29s) / sleep 30.
         assert!(
-            start.elapsed() < Duration::from_secs(5),
+            start.elapsed() < Duration::from_secs(15),
             "timeout path too slow: {:?}",
             start.elapsed()
         );
@@ -295,7 +297,46 @@ mod tests {
         assert!(matches!(err, GroupedProcessError::Timeout { .. }));
     }
 
+    fn marker_len(path: &std::path::Path) -> u64 {
+        std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+    }
+
+    fn poll_until(bound: Duration, mut pred: impl FnMut() -> bool) -> bool {
+        let start = Instant::now();
+        loop {
+            if pred() {
+                return true;
+            }
+            if start.elapsed() >= bound {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn poll_size_stable(path: &std::path::Path, bound: Duration) -> (u64, bool) {
+        let start = Instant::now();
+        let mut last = marker_len(path);
+        let mut quiet_since = Instant::now();
+        while start.elapsed() < bound {
+            std::thread::sleep(Duration::from_millis(50));
+            let now = marker_len(path);
+            if now != last {
+                last = now;
+                quiet_since = Instant::now();
+            } else if quiet_since.elapsed() >= Duration::from_millis(400) {
+                return (last, true);
+            }
+        }
+        (last, quiet_since.elapsed() >= Duration::from_millis(400))
+    }
+
     /// 0414 / 0079 F-005: a grandchild heartbeat must stop after the group kill.
+    ///
+    /// Manual `CommandWrap` + `start_kill` (not `spawn_wait_grouped(..., 2s)`)
+    /// so readiness is not racing `wait_timeout` that starts after `spawn()`.
+    /// `grouped_timeout_on_shell_with_child` still covers the production
+    /// helper's timeout branch.
     #[test]
     fn grouped_timeout_stops_grandchild_heartbeat() {
         let dir = tempfile::tempdir().unwrap();
@@ -312,7 +353,11 @@ mod tests {
             let script_s = script.display().to_string();
             c.args([
                 "/C",
-                &format!("powershell -NoProfile -File {script_s} {marker_arg}"),
+                "powershell",
+                "-NoProfile",
+                "-File",
+                &script_s,
+                &marker_arg,
             ]);
             c
         } else {
@@ -323,18 +368,27 @@ mod tests {
             c.arg(&marker_arg);
             c
         };
-        let err = spawn_wait_grouped(cmd, Duration::from_secs(2)).unwrap_err();
+
+        let mut wrapped = CommandWrap::from(cmd);
+        #[cfg(unix)]
+        {
+            wrapped.wrap(ProcessGroup::leader());
+        }
+        #[cfg(windows)]
+        {
+            wrapped.wrap(JobObject);
+        }
+
+        let mut child = wrapped.spawn().expect("spawn heartbeat");
+        let ready = poll_until(Duration::from_secs(30), || marker_len(&marker) > 0);
+        child.start_kill().expect("start_kill");
+        child.wait().expect("wait");
+        assert!(ready, "grandchild never wrote {marker_arg}");
+
+        let (size_after, stable) = poll_size_stable(&marker, Duration::from_secs(8));
         assert!(
-            matches!(err, GroupedProcessError::Timeout { .. }),
-            "{err:?}"
-        );
-        let size_after = std::fs::metadata(&marker).map(|m| m.len()).unwrap_or(0);
-        assert!(size_after > 0, "grandchild never wrote {marker_arg}");
-        std::thread::sleep(Duration::from_millis(500));
-        let size_later = std::fs::metadata(&marker).map(|m| m.len()).unwrap_or(0);
-        assert_eq!(
-            size_after, size_later,
-            "heartbeat still growing after group kill ({size_after} -> {size_later})"
+            size_after > 0 && stable,
+            "heartbeat still growing after group kill (size={size_after})"
         );
     }
 }
