@@ -1,7 +1,7 @@
 use super::execute::{
     changes_include_observability_config, compute_pr_scan_affected_flows,
     compute_pr_scan_test_gaps, graph_is_missing_or_stale, maybe_auto_analyze_graph,
-    should_print_scan_report_honesty,
+    should_print_scan_report_honesty, should_skip_auto_analyze_graph,
 };
 use super::git::{is_missing_base_commit_error, parse_pr_range, resolve_commit_oid};
 use super::validate::{
@@ -466,9 +466,24 @@ fn scan_timeout__without_impact__errors() {
 fn scan_timeout_or_prospective_skips_auto_graph() {
     let src = include_str!("execute.rs");
     assert!(
-        src.contains("if prospective || timeout.is_some_and(|s| s > 0)"),
-        "timed/prospective scan must not run unbounded auto-graph before the overall Instant"
+        src.contains("should_skip_auto_analyze_graph(prospective, resolved_overall_budget)"),
+        "timed/prospective scan must skip auto-graph via the resolved-budget helper"
     );
+    assert!(
+        !src.contains("if prospective || timeout.is_some_and(|s| s > 0)"),
+        "auto-graph skip must not depend on the clap flag literal alone"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn should_skip_auto_analyze_graph__prospective_or_resolved_budget() {
+    assert!(should_skip_auto_analyze_graph(true, None));
+    assert!(should_skip_auto_analyze_graph(true, Some(0)));
+    assert!(should_skip_auto_analyze_graph(false, Some(25)));
+    assert!(should_skip_auto_analyze_graph(false, Some(15)));
+    assert!(!should_skip_auto_analyze_graph(false, None));
+    assert!(!should_skip_auto_analyze_graph(false, Some(0)));
 }
 
 #[test]

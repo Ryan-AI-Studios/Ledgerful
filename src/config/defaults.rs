@@ -123,8 +123,9 @@ provider_command = "ai-brains"
 # export_overall_budget_secs = 25
 
 [impact]
-# Overall emit budget for prospective `--paths` (0347). Distinct from
-# `[hotspots] history_budget_secs`. `0` disables the wall clock.
+# Overall emit budget for prospective `--paths`, working-tree, and `--base-ref`
+# (0347 / 0419). Distinct from `[hotspots] history_budget_secs`. `0` disables
+# the wall clock (unbounded; may hang).
 prospective_budget_secs = 25
 
 [review]

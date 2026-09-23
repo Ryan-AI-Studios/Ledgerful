@@ -332,7 +332,7 @@ fn test_scan_impact_excludes_tracked_ignored() {
 
     let _guard = DirGuard::new(root);
 
-    let result = execute_scan(true, false, false, None, None, None, None);
+    let result = crate::common::execute_scan_impact_unbounded();
     assert!(result.is_ok());
 
     let layout = Layout::new(root.to_string_lossy().as_ref());

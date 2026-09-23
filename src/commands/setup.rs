@@ -1,6 +1,6 @@
 use crate::commands::doctor::execute_doctor;
 use crate::commands::index::{IndexArgs, execute_index};
-use crate::commands::scan::execute_scan;
+use crate::commands::scan::execute_scan_with_opts;
 use crate::output::table::{
     TableStyleKind, arrow_with_style, asciiize_box_drawing, bullet_with_style, em_dash_with_style,
     resolve_table_style, status_mark_with_style, warning_mark_with_style,
@@ -163,8 +163,23 @@ pub fn execute_setup(yes: bool, skip_scan: bool) -> Result<()> {
                 ..Default::default()
             })?;
 
-            // Equivalent to: ledgerful scan --impact
-            execute_scan(true, false, false, None, None, None, None)?;
+            // First-scan must persist. `--timeout 0` disables the 0419 default
+            // Instant so 0374 skip-on-budget does not omit latest-impact.json.
+            execute_scan_with_opts(
+                true,
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Vec::new(),
+                false,
+                None,
+                false,
+                Some(0),
+            )?;
             println!(
                 "{} First scan complete.",
                 status_mark_with_style(true, style)

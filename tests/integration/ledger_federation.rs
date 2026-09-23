@@ -4,7 +4,6 @@ use camino::Utf8Path;
 use chrono::Utc;
 use ledgerful::commands::federate::execute_federate_scan;
 use ledgerful::commands::init::execute_init;
-use ledgerful::commands::scan::execute_scan;
 use ledgerful::federated::schema::{FederatedLedgerEntry, FederatedSchema};
 use ledgerful::ledger::db::LedgerDb;
 use ledgerful::ledger::types::{Category, ChangeType, EntryType};
@@ -30,7 +29,7 @@ fn test_ledger_federation_flow() {
     {
         let _guard = DirGuard::from_utf8(&local_path);
         execute_init(false, false).unwrap();
-        execute_scan(true, false, false, None, None, None, None).unwrap();
+        crate::common::execute_scan_impact_unbounded().unwrap();
     }
 
     // 2. Setup "sibling" repo with schema

@@ -55,7 +55,8 @@ pub struct ScanArgs {
     #[arg(long)]
     pub full: bool,
     /// Overall analysis wall-clock seconds for `--impact` (not the history-walk
-    /// budget). `0` disables the clock.
+    /// budget). Working-tree, `--base-ref`, and prospective `--paths` default
+    /// to 25s when omitted. `0` disables the clock (unbounded; may hang).
     /// Requires `--impact`.
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
@@ -94,9 +95,9 @@ pub struct ImpactArgs {
     /// Include process/governance temporal couplings in risk (pathMode=all)
     #[arg(long)]
     pub include_governance: bool,
-    /// Overall analysis wall-clock seconds (not the history-walk budget). `0`
-    /// disables the clock. Prospective `--paths` uses this (default 25s) even
-    /// when the flag is omitted.
+    /// Overall analysis wall-clock seconds (not the history-walk budget).
+    /// Working-tree, `--base-ref`, and prospective `--paths` default to 25s
+    /// when omitted. `0` disables the clock (unbounded; may hang).
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
 }
@@ -126,9 +127,9 @@ pub struct ChangeContextArgs {
     /// Include process/governance temporal couplings in risk + readSet (pathMode=all)
     #[arg(long)]
     pub include_governance: bool,
-    /// Overall analysis wall-clock seconds (not the history-walk budget). `0`
-    /// disables the clock. Prospective `--paths` uses this (default 25s) even
-    /// when the flag is omitted.
+    /// Overall analysis wall-clock seconds (not the history-walk budget).
+    /// Working-tree, `--base-ref`, and prospective `--paths` default to 25s
+    /// when omitted. `0` disables the clock (unbounded; may hang).
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
 }

@@ -518,14 +518,15 @@ pub fn overall_stop_stderr_token(analysis_mode: &str) -> Option<&'static str> {
     }
 }
 
-/// Overall seconds for this run: prospective always resolves; working-tree only
-/// when CLI `--timeout` is present. `Some(0)` disables the wall clock.
+/// Overall seconds for this run: `prospective`, `working_tree`, and `base_ref`
+/// resolve via CLI > env > config > 25. Unknown modes keep bare `cli_timeout`.
+/// `Some(0)` disables the wall clock.
 pub fn overall_budget_secs_for_mode(
     analysis_mode: &str,
     cli_timeout: Option<u64>,
     config_secs: u64,
 ) -> Option<u64> {
-    if analysis_mode == "prospective" {
+    if matches!(analysis_mode, "prospective" | "working_tree" | "base_ref") {
         Some(resolve_prospective_budget_secs(cli_timeout, config_secs))
     } else {
         cli_timeout
@@ -851,12 +852,16 @@ mod tests {
 
     #[test]
     #[allow(non_snake_case)]
-    fn working_tree_impact__omitted_timeout__does_not_use_prospective_default() {
-        assert_eq!(overall_budget_secs_for_mode("working_tree", None, 25), None);
+    fn working_tree_impact__omitted_timeout__uses_prospective_default() {
+        assert_eq!(
+            overall_budget_secs_for_mode("working_tree", None, 25),
+            Some(25)
+        );
         assert_eq!(
             overall_budget_secs_for_mode("prospective", None, 25),
             Some(25)
         );
+        assert_eq!(overall_budget_secs_for_mode("base_ref", None, 25), Some(25));
     }
 
     #[test]
@@ -927,7 +932,10 @@ mod tests {
     fn prospective_budget_precedence_cli_env_config() {
         let _clear = TempEnv::remove(PROSPECTIVE_BUDGET_ENV);
         assert_eq!(resolve_prospective_budget_secs(None, 25), 25);
-        assert_eq!(overall_budget_secs_for_mode("working_tree", None, 25), None);
+        assert_eq!(
+            overall_budget_secs_for_mode("working_tree", None, 25),
+            Some(25)
+        );
         assert_eq!(
             overall_budget_secs_for_mode("prospective", None, 25),
             Some(25)
@@ -941,6 +949,66 @@ mod tests {
         assert_eq!(
             overall_budget_secs_for_mode("working_tree", Some(8), 25),
             Some(8)
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    #[serial_test::serial(env)]
+    fn overall_budget_secs_for_mode__working_tree_and_base_ref_precedence() {
+        let _clear = TempEnv::remove(PROSPECTIVE_BUDGET_ENV);
+        assert_eq!(
+            overall_budget_secs_for_mode("working_tree", None, 25),
+            Some(25)
+        );
+        assert_eq!(overall_budget_secs_for_mode("base_ref", None, 25), Some(25));
+        assert_eq!(
+            overall_budget_secs_for_mode("working_tree", None, 40),
+            Some(40)
+        );
+        assert_eq!(overall_budget_secs_for_mode("base_ref", None, 40), Some(40));
+        let _env = TempEnv::set(PROSPECTIVE_BUDGET_ENV, "12");
+        assert_eq!(
+            overall_budget_secs_for_mode("working_tree", None, 25),
+            Some(12)
+        );
+        assert_eq!(overall_budget_secs_for_mode("base_ref", None, 25), Some(12));
+        assert_eq!(
+            overall_budget_secs_for_mode("working_tree", Some(3), 25),
+            Some(3)
+        );
+        assert_eq!(
+            overall_budget_secs_for_mode("base_ref", Some(3), 25),
+            Some(3)
+        );
+        assert_eq!(
+            overall_budget_secs_for_mode("working_tree", Some(0), 25),
+            Some(0)
+        );
+        assert_eq!(
+            overall_budget_secs_for_mode("base_ref", Some(0), 25),
+            Some(0)
+        );
+        drop(_env);
+        let _bad = TempEnv::set(PROSPECTIVE_BUDGET_ENV, "nope");
+        assert_eq!(
+            overall_budget_secs_for_mode("working_tree", None, 25),
+            Some(25)
+        );
+        assert_eq!(overall_budget_secs_for_mode("base_ref", None, 25), Some(25));
+        assert_eq!(
+            overall_budget_secs_for_mode("range", None, 25),
+            None,
+            "unknown modes stay bare cli_timeout"
+        );
+    }
+
+    #[test]
+    fn skip_unindexed_complexity_fallback_still_follows_overall_deadline() {
+        let src = include_str!("enrichment/hotspots.rs");
+        assert!(
+            src.contains("skip_unindexed_complexity_fallback: context.overall_deadline.is_some()"),
+            "hang cure: Instant present must skip the unindexed symbols fallback"
         );
     }
 
