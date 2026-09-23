@@ -2,6 +2,8 @@
 
 pub(crate) mod classify;
 
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::Path;
 
 use classify::{Diagnosis, PROVENANCE_LIMITS, classify};
@@ -105,7 +107,19 @@ fn write_new(path: &Path, body: &str) -> Result<()> {
     {
         std::fs::create_dir_all(parent).map_err(|e| miette!("create {}: {e}", path.display()))?;
     }
-    std::fs::write(path, body).map_err(|e| miette!("write {}: {e}", path.display()))?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                miette!("output file already exists: {}", path.display())
+            } else {
+                miette!("write {}: {e}", path.display())
+            }
+        })?;
+    file.write_all(body.as_bytes())
+        .map_err(|e| miette!("write {}: {e}", path.display()))?;
     Ok(())
 }
 
@@ -288,6 +302,19 @@ mod tests {
             .iter()
             .any(|row| next.anomalies.iter().any(|other| other.tx_id == row.tx_id));
         assert!(!overlap);
+    }
+
+    #[test]
+    fn write_new_refuses_existing_path_without_truncating() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.json");
+        std::fs::write(&path, "canary").unwrap();
+        let err = write_new(&path, "new").unwrap_err();
+        assert!(
+            format!("{err}").contains("output file already exists"),
+            "{err}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "canary");
     }
 
     #[test]

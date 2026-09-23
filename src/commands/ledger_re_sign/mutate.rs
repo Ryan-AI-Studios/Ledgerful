@@ -146,19 +146,16 @@ pub(crate) fn apply_re_sign(
             && post.orphans.is_empty()
             && post.extra_genesis.is_empty()
             && !post.ordered.is_empty();
+        // An empty captured order means the pre-sign walk had no linked
+        // segment. Sorting the other rows by time would invent prev_hash links.
+        // A broken post-sign walk with no captured plan cannot succeed without
+        // inventing a head; abort so the SQLite transaction rolls back.
         let rebuild_order: Vec<LedgerEntry> = if post_is_one_chain {
             post.ordered
         } else if captured_order.is_empty() {
-            let mut local: Vec<LedgerEntry> = entries
-                .into_iter()
-                .filter(|e| e.origin == "LOCAL")
-                .collect();
-            local.sort_by(|a, b| {
-                a.committed_at
-                    .cmp(&b.committed_at)
-                    .then_with(|| a.tx_id.cmp(&b.tx_id))
-            });
-            local
+            return Err(miette!(
+                "Cannot rebuild chain: captured order is empty and post-sign walk is broken"
+            ));
         } else {
             let by_tx: std::collections::BTreeMap<String, LedgerEntry> = entries
                 .into_iter()
