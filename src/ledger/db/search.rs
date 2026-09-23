@@ -18,11 +18,10 @@ fn fts_where(
     days: Option<u64>,
     breaking_only: bool,
 ) -> FtsWhere {
-    // FTS5 interprets hyphens as column qualifiers (e.g. "dead-code" →
-    // column "code"), so wrap the query in double quotes to treat it as a
-    // phrase search. This prevents "no such column" errors on hyphenated
-    // search terms.
-    let fts_query = format!("\"{query}\"");
+    // FTS5 treats `-` as a column qualifier and an unescaped `"` as the end
+    // of a phrase. Sanitize (double internal quotes, wrap once) so both stay
+    // phrase text. Do not wrap before calling the helper.
+    let fts_query = crate::util::query::sanitize_fts5_query(query);
     let mut clause = "WHERE ledger_fts MATCH ?1".to_string();
     let mut param_idx = 2u32;
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(fts_query)];

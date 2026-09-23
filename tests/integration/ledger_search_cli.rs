@@ -261,3 +261,75 @@ fn cli_ledger_history_alias_include_rollback_parses() {
         "history alias first element must not be ROLLBACK, got: {stdout}"
     );
 }
+
+#[test]
+fn cli_ledger_search_embedded_quote() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+
+    let (init_out, init_err, init_code) = run_bin(root, &["init"]);
+    assert_eq!(
+        init_code, 0,
+        "ledgerful init failed: stderr={init_err} stdout={init_out}"
+    );
+
+    const TX_IMPL: &str = "impl0420cccccccc";
+    const TX_RB: &str = "rb0420dddddddddd";
+    const IMPL_SUMMARY: &str = "0420 CLI implementation contains dead-code token";
+    const QUOTED: &str = "\"dead-code\"";
+
+    let db_path = root.join(".ledgerful").join("state").join("ledger.db");
+    let storage = StorageManager::init(&db_path).unwrap();
+    {
+        let db = LedgerDb::new(storage.get_connection());
+        insert_dummy_tx(&db, TX_IMPL);
+        insert_dummy_tx(&db, TX_RB);
+        db.insert_ledger_entry(&dummy_entry(
+            1,
+            TX_IMPL,
+            EntryType::Implementation,
+            "track-0420-cli",
+            IMPL_SUMMARY,
+            "Longer reason so the implementation FTS document is not empty",
+        ))
+        .unwrap();
+        db.insert_ledger_entry(&dummy_entry(
+            2,
+            TX_RB,
+            EntryType::Rollback,
+            "track-0420-cli",
+            "0420 CLI rollback contains dead-code token",
+            "x",
+        ))
+        .unwrap();
+    }
+    storage.shutdown().unwrap();
+
+    let human_args = ["ledger", "search", QUOTED];
+    let (stdout, stderr, code) = run_bin(root, &human_args);
+    assert_success(&human_args, code, &stdout, &stderr);
+    assert!(
+        stdout.contains("impl0420") || stdout.contains(IMPL_SUMMARY),
+        "quoted human search must show the implementation, got: {stdout}"
+    );
+
+    let json_args = ["ledger", "search", QUOTED, "--json"];
+    let (json_out, json_err, json_code) = run_bin(root, &json_args);
+    assert_success(&json_args, json_code, &json_out, &json_err);
+    let trimmed = json_out.trim();
+    assert!(
+        trimmed.starts_with('['),
+        "JSON must be a bare array, got: {json_out}"
+    );
+    let value: serde_json::Value =
+        serde_json::from_str(trimmed).expect("quoted JSON stdout must parse");
+    let arr = value
+        .as_array()
+        .unwrap_or_else(|| panic!("expected JSON array, got: {json_out}"));
+    assert!(
+        arr.iter()
+            .any(|e| e["tx_id"] == TX_IMPL || e["summary"] == IMPL_SUMMARY),
+        "quoted JSON must include the implementation row, got: {json_out}"
+    );
+}

@@ -524,3 +524,74 @@ fn count_rollback_matches_returns_ok_for_rollback_only_query() {
     let n = counted.expect("count helper must return Ok, never swallow errors");
     assert!(n > 0, "expected rollback matches, got {n}");
 }
+
+#[test]
+fn search_embedded_quote_does_not_report_missing_column() {
+    let conn = setup_db();
+    let db = LedgerDb::new(&conn);
+
+    const TX_IMPL: &str = "impl0420aaaaaaaa";
+    const TX_RB: &str = "rb0420bbbbbbbbbb";
+    const IMPL_SUMMARY: &str = "0420 implementation contains dead-code token";
+    const RB_SUMMARY: &str = "0420 rollback contains dead-code token";
+    let quoted = "\"dead-code\"";
+
+    insert_dummy_tx(&db, TX_IMPL);
+    insert_dummy_tx(&db, TX_RB);
+    db.insert_ledger_entry(&dummy_entry(
+        1,
+        TX_IMPL,
+        EntryType::Implementation,
+        "track-0420-quote",
+        IMPL_SUMMARY,
+        "Longer reason so the implementation FTS document is not empty",
+    ))
+    .unwrap();
+    db.insert_ledger_entry(&dummy_entry(
+        2,
+        TX_RB,
+        EntryType::Rollback,
+        "track-0420-quote",
+        RB_SUMMARY,
+        "x",
+    ))
+    .unwrap();
+
+    let quoted_rows = db
+        .search_ledger(quoted, None, None, false, None, 0, false)
+        .expect("quoted dead-code query must be Ok, not no such column");
+    assert_eq!(
+        quoted_rows.len(),
+        1,
+        "default omit must return the seeded implementation only, got {quoted_rows:?}"
+    );
+    assert_eq!(quoted_rows[0].tx_id, TX_IMPL);
+    assert_eq!(quoted_rows[0].summary, IMPL_SUMMARY);
+    assert_eq!(quoted_rows[0].entry_type, EntryType::Implementation);
+
+    let plain_rows = db
+        .search_ledger("dead-code", None, None, false, None, 0, false)
+        .expect("unquoted dead-code must still match");
+    assert_eq!(plain_rows.len(), 1);
+    assert_eq!(plain_rows[0].tx_id, TX_IMPL);
+    assert_eq!(plain_rows[0].summary, IMPL_SUMMARY);
+
+    let counted = db
+        .count_rollback_matches(quoted, None, None, false)
+        .expect("quoted count must be Ok, never mapped to 0 on error");
+    assert!(counted > 0, "seeded rollback must count, got {counted}");
+}
+
+#[test]
+fn search_unbalanced_quotes_return_ok() {
+    let conn = setup_db();
+    let db = LedgerDb::new(&conn);
+
+    let lone = db
+        .search_ledger("\"", None, None, false, None, 0, false)
+        .expect("lone quote must be Ok after sanitize");
+    let embedded = db
+        .search_ledger("foo\"bar", None, None, false, None, 0, false)
+        .expect("unbalanced foo\"bar must be Ok after sanitize");
+    let _ = (lone.len(), embedded.len());
+}
