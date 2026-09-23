@@ -437,9 +437,9 @@ mod tests {
     fn engine_timeout_emits_result_and_skips_later_step() {
         let (_tmp, mut ctx) = temp_verify_ctx();
         let (command, basename) = if cfg!(target_os = "windows") {
-            ("ping -n 10 127.0.0.1", "ping")
+            ("ping -n 60 127.0.0.1", "ping")
         } else {
-            ("sleep 10", "sleep")
+            ("sleep 60", "sleep")
         };
         ctx.config
             .verify
@@ -472,8 +472,11 @@ mod tests {
             crate::verify::plan::VerifyScope::Full,
         )
         .unwrap();
+        // Hang detector only — timeout-fired proof is exit 124 +
+        // duration_ms == 1000 + sentinel absent. Must stay well above
+        // observed spawn+1s (~15s) and well below ping -n 60 (~59s).
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(10),
+            started.elapsed() < std::time::Duration::from_secs(45),
             "wall clock {:?}",
             started.elapsed()
         );

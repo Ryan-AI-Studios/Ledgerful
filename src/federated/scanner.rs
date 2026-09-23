@@ -1621,8 +1621,10 @@ mod timeout_tests {
             ),
             "expected timeout, got {err:?}"
         );
+        // Timeout is the invariant. The wall only catches a hung reap and
+        // must stay well below ping -n 600 (~600s).
         assert!(
-            elapsed < Duration::from_secs(5),
+            elapsed < Duration::from_secs(15),
             "export should have timed out quickly, took {:?}",
             elapsed
         );
