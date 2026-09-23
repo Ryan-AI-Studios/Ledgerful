@@ -39,7 +39,7 @@ pub struct IndexArgs {
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
-    /// Strict mode for check (exit 1 if stale)
+    /// Strict mode for check (exit 1 if files or typed surfaces are stale)
     #[arg(long)]
     pub strict: bool,
     /// Number of parallel threads for semantic indexing (default: logical CPUs)

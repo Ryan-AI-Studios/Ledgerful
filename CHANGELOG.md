@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`index --check --strict` exits 1 when a typed surface is `stale` (0421):**
+  `--strict` now consults `surfaces[]` (mapping / routes / embeddings /
+  files / symbols), not only `staleFiles`. `FreshPopulated` stays a
+  file-hash fact. `unavailable` (including NotConfigured embeddings)
+  does not fail the gate.
+
 - **`ledger search` no longer treats an embedded `"` as an FTS5 column qualifier (0420):**
   MATCH phrases now go through `sanitize_fts5_query` (internal quotes doubled,
   then wrapped once). A literal `"` in argv no longer becomes `no such column`.

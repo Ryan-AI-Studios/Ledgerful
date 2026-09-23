@@ -3,7 +3,7 @@ use ledgerful::commands::index::{IndexArgs, execute_index};
 use std::fs;
 use tempfile::tempdir;
 
-use crate::common::{DirGuard, run_cli, setup_git_repo};
+use crate::common::{DirGuard, git_add_and_commit, git_cmd, run_cli, setup_git_repo};
 
 /// DoD-1: healthy `index --check` prints non-empty human stdout and exits 0.
 /// Uses subprocess because the live path may call process::exit on other branches.
@@ -139,6 +139,127 @@ fn test_index_check_strict_stale_exits_with_reason() {
     assert!(
         lower.contains("stale") || lower.contains("strict"),
         "stderr must name staleness/strict: {stderr}"
+    );
+}
+
+/// 0421: content-hash clean + typed surface head mismatch → `--strict` exit 1.
+///
+/// Must commit before `execute_index` (unborn HEAD cannot stale a surface).
+/// Seed `test_mapping` with migrated columns + live parent ids when empty.
+#[test]
+fn test_index_check_strict_surface_stale_exits() {
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(tmp.path());
+
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("src").join("lib.rs"),
+        "pub fn surface_stale_target() {}",
+    )
+    .unwrap();
+    git_add_and_commit(tmp.path(), "initial");
+
+    let _guard = DirGuard::from_utf8(root);
+    ledgerful::state::layout::Layout::new(root)
+        .ensure_state_dir()
+        .unwrap();
+
+    let index_result = execute_index(IndexArgs {
+        ..Default::default()
+    });
+    assert!(index_result.is_ok(), "index must succeed: {index_result:?}");
+
+    let db = root.join(".ledgerful").join("state").join("ledger.db");
+    let conn = rusqlite::Connection::open(db.as_std_path()).expect("open ledger.db");
+    let mapping_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM test_mapping", [], |r| r.get(0))
+        .expect("count test_mapping");
+    if mapping_count == 0 {
+        let file_id: i64 = conn
+            .query_row("SELECT id FROM project_files LIMIT 1", [], |r| r.get(0))
+            .expect("project_files row after index");
+        let symbol_id: i64 = conn
+            .query_row("SELECT id FROM project_symbols LIMIT 1", [], |r| r.get(0))
+            .expect("project_symbols row after index");
+        conn.execute(
+            "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id, mapping_kind, last_indexed_at) \
+             VALUES (?1, ?2, ?1, ?2, 'IMPORT', '2026-01-01T00:00:00Z')",
+            (symbol_id, file_id),
+        )
+        .expect("seed test_mapping");
+    }
+    drop(conn);
+
+    git_cmd(tmp.path(), &["commit", "--allow-empty", "-m", "bump"]);
+
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["index", "--check", "--json"]);
+    assert_eq!(
+        code, 0,
+        "json check must exit 0; stdout={stdout}; stderr={stderr}"
+    );
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("check --json must parse: {e}; stdout={stdout}");
+    });
+    assert_eq!(parsed["schemaVersion"], 1);
+    assert_eq!(parsed["kind"], "indexCheck");
+    assert_eq!(
+        parsed["staleFiles"], 0,
+        "fixture must stay file-hash clean: {parsed}"
+    );
+    assert_eq!(
+        parsed["assessment"]["state"], "FreshPopulated",
+        "assessment must stay file-hash: {parsed}"
+    );
+    let stale = parsed["surfaces"]
+        .as_array()
+        .expect("surfaces")
+        .iter()
+        .any(|s| s["status"] == "stale");
+    assert!(
+        stale,
+        "expected a stale surface after empty commit: {parsed}"
+    );
+
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["index", "--check", "--strict"]);
+    assert_eq!(
+        code, 1,
+        "strict surface stale must exit 1; stdout={stdout}; stderr={stderr}"
+    );
+    assert!(
+        stdout.trim().is_empty(),
+        "strict failure reason belongs on stderr, not stdout: {stdout}"
+    );
+    let lower = stderr.to_lowercase();
+    assert!(
+        lower.contains("stale") || lower.contains("strict"),
+        "stderr must name staleness/strict: {stderr}"
+    );
+
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["index", "--check", "--json", "--strict"]);
+    assert_eq!(
+        code, 1,
+        "json+strict must exit 1; stdout={stdout}; stderr={stderr}"
+    );
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("json+strict stdout must parse: {e}; stdout={stdout}");
+    });
+    assert_eq!(parsed["schemaVersion"], 1);
+    assert_eq!(parsed["kind"], "indexCheck");
+    let lower = stderr.to_lowercase();
+    assert!(
+        lower.contains("strict") || lower.contains("stale"),
+        "json+strict stderr must name --strict/stale: {stderr}"
+    );
+
+    let (stdout, _stderr, code) = run_cli(tmp.path(), &["index", "--check"]);
+    assert_eq!(
+        code, 0,
+        "non-strict mixed fixture must exit 0; stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("Surface "),
+        "non-strict must print a surface lag line: {stdout}"
     );
 }
 
