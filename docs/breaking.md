@@ -18,6 +18,18 @@ This document tracks dependency and project-level compatibility concerns for the
 
 ## Project-Level Changes
 
+### Working-tree `--timeout` omitted is a 25s overall Instant (0419)
+
+**Breaking for scripts that treated omitted `--timeout` on working-tree `change-context` / `impact` / `scan --impact` as unbounded:**
+
+| Before | After |
+|---|---|
+| Omitted `--timeout` left `overall_deadline = None` (0389 fence) | Omitted `--timeout` resolves to 25s (same CLI > env > config > 25 as prospective) |
+| Unindexed `symbols` complexity fallback ran | Default Instant skips that fallback (`hotspots[].complexity` stays 0 when `project_symbols` has no row; score formula unchanged) |
+| History walk used the full 45s when no Instant | `capped_by_overall` may emit a history-only `completeness` (`scope` omitted) |
+
+`--timeout 0` still disables the wall clock (unbounded; may hang). History stays `[hotspots] history_budget_secs` (default 45). Completeness keys / MCP `{content,isError}` / `schemaVersion` unchanged. Persist skip on overall stop stays 0374.
+
 ### Semantic index recreates stored width (0377)
 
 **`index --semantic` opens at preferred width (configured > probed), not stored.** When that differs from the stored `snippet_embedding` column (or the stored dim is unreadable), the command **drops FTS + HNSW + the relation and truncates `semantic_file_hash`**, then re-embeds. This is destructive and intended. Query/Ask (`SemanticDiscovery::new`) still open stored and never HP3-drop. After a width wipe, bare `index --semantic` is `cold-store` / full. `--semantic-dry-run` `embedding_dimensions` is that preferred width (`0` / human `unset` when neither configured nor probed).

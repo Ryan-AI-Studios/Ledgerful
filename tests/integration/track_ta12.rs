@@ -57,7 +57,7 @@ fn test_scan_dirty_tree_does_not_write_tombstone() {
     // Pre-populate with a full packet by making the tree dirty and running
     // scan --impact.
     fs::write(root.join("file.rs"), "fn hello() { /* dirty */ }").unwrap();
-    execute_scan(true, false, false, None, None, None, None).unwrap();
+    crate::common::execute_scan_impact_unbounded().unwrap();
     let original_report = read_latest_impact_report(&layout)
         .unwrap()
         .expect("impact report should exist");

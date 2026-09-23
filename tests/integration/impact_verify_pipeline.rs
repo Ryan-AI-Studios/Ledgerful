@@ -1,4 +1,4 @@
-use ledgerful::commands::impact::execute_impact;
+use crate::common::execute_impact_unbounded;
 use ledgerful::commands::verify::{ExecuteVerifyOpts, execute_verify};
 use ledgerful::impact::packet::ImpactPacket;
 use ledgerful::state::layout::Layout;
@@ -37,7 +37,7 @@ fn test_impact_packet_is_loadable_by_verify_after_scan() {
     layout.ensure_state_dir().unwrap();
 
     // Step 1: impact writes the packet to SQLite
-    execute_impact(false, false, false, false, false, None).expect("execute_impact should succeed");
+    execute_impact_unbounded().expect("execute_impact should succeed");
 
     // Step 2: verify should be able to load and deserialize that packet
     // (using prediction mode, no manual command override)
@@ -80,7 +80,7 @@ fn test_impact_packet_stored_in_sqlite_has_finite_hotspot_scores() {
     let layout = Layout::new(dir.to_string_lossy().as_ref());
     layout.ensure_state_dir().unwrap();
 
-    execute_impact(false, false, false, false, false, None).expect("execute_impact should succeed");
+    execute_impact_unbounded().expect("execute_impact should succeed");
 
     // Read back from SQLite and check all hotspot scores
     let db_path = layout.state_subdir().join("ledger.db");

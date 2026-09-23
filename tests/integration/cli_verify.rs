@@ -292,7 +292,6 @@ fn test_verify_dry_run_does_not_execute() {
 /// schedule scoped nextest on obsolete change paths.
 #[test]
 fn test_verify_fast_live_clean_empty_changes_despite_stale_packet() {
-    use ledgerful::commands::impact::execute_impact;
     use ledgerful::state::layout::Layout;
     use std::fs;
 
@@ -319,7 +318,7 @@ fn test_verify_fast_live_clean_empty_changes_despite_stale_packet() {
     let layout = Layout::new(dir.to_string_lossy().as_ref());
     layout.ensure_state_dir().unwrap();
 
-    execute_impact(false, false, false, false, false, None)
+    crate::common::execute_impact_unbounded()
         .expect("execute_impact should produce a loadable packet with changes");
 
     // Commit so the working tree is clean while the saved packet still has changes.
@@ -368,7 +367,6 @@ fn test_verify_fast_live_clean_empty_changes_despite_stale_packet() {
 /// manual commands / full scope.
 #[test]
 fn test_verify_dry_run_mapping_refuse_is_err() {
-    use ledgerful::commands::impact::execute_impact;
     use ledgerful::state::layout::Layout;
     use std::fs;
 
@@ -396,7 +394,7 @@ fn test_verify_dry_run_mapping_refuse_is_err() {
     let layout = Layout::new(dir.to_string_lossy().as_ref());
     layout.ensure_state_dir().unwrap();
 
-    execute_impact(false, false, false, false, false, None)
+    crate::common::execute_impact_unbounded()
         .expect("execute_impact should produce a loadable packet");
 
     // No index → empty test_mapping → MappingRefuse under --scope fast.

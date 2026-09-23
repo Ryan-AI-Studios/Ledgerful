@@ -25,6 +25,15 @@ use std::env;
 use std::path::PathBuf;
 use tracing::info;
 
+/// Skip observability auto-graph when prospective or a resolved overall budget
+/// is `Some(secs) if secs > 0`. `--timeout 0` / `None` still allow the walk.
+pub(super) fn should_skip_auto_analyze_graph(
+    prospective: bool,
+    resolved_budget: Option<u64>,
+) -> bool {
+    prospective || matches!(resolved_budget, Some(secs) if secs > 0)
+}
+
 /// Whether scan-report RO honesty may print on stdout (human only).
 ///
 /// Machine paths (`--json` / `--out`) must not prefix stdout with honesty text
@@ -480,15 +489,28 @@ pub fn execute_scan_with_opts(
         // impact path below handles uninitialized state on its own terms, and
         // auto-analysis is strictly an optimization for the observability-diff
         // empty-state case.
-        // Prospective / explicit `--timeout` must not spend unbounded time in
-        // observability auto-graph before the overall analysis Instant starts.
-        let auto_graph_storage = if prospective || timeout.is_some_and(|s| s > 0) {
-            None
-        } else if !snapshot.changes.is_empty() {
-            maybe_auto_analyze_graph(&snapshot.changes, &current_dir, &config, &layout)?
+        // Prospective / resolved overall budget > 0 must not spend unbounded
+        // time in observability auto-graph before the overall Instant starts.
+        let analysis_mode_for_budget = if prospective {
+            "prospective"
+        } else if base_ref.is_some() {
+            "base_ref"
         } else {
-            None
+            "working_tree"
         };
+        let resolved_overall_budget = crate::impact::budget::overall_budget_secs_for_mode(
+            analysis_mode_for_budget,
+            timeout,
+            config.impact.prospective_budget_secs,
+        );
+        let auto_graph_storage =
+            if should_skip_auto_analyze_graph(prospective, resolved_overall_budget) {
+                None
+            } else if !snapshot.changes.is_empty() {
+                maybe_auto_analyze_graph(&snapshot.changes, &current_dir, &config, &layout)?
+            } else {
+                None
+            };
 
         // Always use the snapshot derived above so that --base-ref / --paths
         // changes are passed through regardless of whether --json / --out is set.

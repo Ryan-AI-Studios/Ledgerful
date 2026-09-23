@@ -106,3 +106,42 @@ pub fn run_cli_env(dir: &Path, args: &[&str], extra: &[(&str, &str)]) -> (String
         output.status.code().unwrap_or(-1),
     )
 }
+
+/// Working-tree `impact` with `--timeout 0` so persist tests keep a durable
+/// packet after 0419's default 25s Instant (0374 skip-on-budget).
+#[allow(dead_code)]
+pub fn execute_impact_unbounded() -> miette::Result<()> {
+    ledgerful::commands::impact::execute_impact_with_opts(
+        false,
+        false,
+        false,
+        false,
+        false,
+        None,
+        None,
+        Vec::new(),
+        false,
+        Some(0),
+        None,
+    )
+}
+
+/// Working-tree `scan --impact` with `--timeout 0` for persist-required fixtures.
+#[allow(dead_code)]
+pub fn execute_scan_impact_unbounded() -> miette::Result<()> {
+    ledgerful::commands::scan::execute_scan_with_opts(
+        true,
+        false,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Vec::new(),
+        false,
+        None,
+        false,
+        Some(0),
+    )
+}

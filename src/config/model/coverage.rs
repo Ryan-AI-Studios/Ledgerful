@@ -81,8 +81,9 @@ pub struct ImpactConfig {
     /// Max total edges across all hops.
     #[serde(default = "default_blast_total_edges")]
     pub blast_total_edges: usize,
-    /// Prospective `--paths` overall emit budget (0347). Distinct from
-    /// `[hotspots] history_budget_secs`. `0` disables the wall clock.
+    /// Prospective `--paths`, working-tree, and `--base-ref` overall emit
+    /// budget (0347 / 0419). Distinct from `[hotspots] history_budget_secs`.
+    /// `0` disables the wall clock (unbounded; may hang).
     #[serde(default = "default_prospective_budget_secs")]
     pub prospective_budget_secs: u64,
 }

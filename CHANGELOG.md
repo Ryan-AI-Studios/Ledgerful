@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Working-tree analysis honors the default 25s overall budget (0419):**
+  `change-context`, `impact`, and `scan --impact` now resolve omitted
+  `--timeout` the same way prospective already did (CLI > env
+  `LEDGERFUL_PROSPECTIVE_BUDGET_SECS` > `[impact] prospective_budget_secs` >
+  25). `--timeout 0` still disables the clock (unbounded; may hang). A
+  default Instant skips the unindexed `symbols` complexity fallback and
+  `scan --impact` auto-graph.
+
 - **Re-sign refuses an empty captured order; diagnose output is create-only (0418):**
   When the post-sign walk is broken and the pre-sign captured order is empty,
   `ledger re-sign` errors and rolls back instead of timestamp-sorting LOCAL

@@ -1,9 +1,12 @@
-use crate::common::DirGuard;
+use crate::common::{DirGuard, TempEnv};
+use serial_test::serial;
 use std::fs;
 use tempfile::tempdir;
 
 #[test]
+#[serial(env)]
 fn test_monorepo_service_impact() {
+    let _clock_off = TempEnv::set("LEDGERFUL_PROSPECTIVE_BUDGET_SECS", "0");
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
