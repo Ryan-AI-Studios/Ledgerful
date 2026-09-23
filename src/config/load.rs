@@ -2,6 +2,8 @@ use crate::config::error::ConfigError;
 use crate::config::model::Config;
 use crate::config::validate::validate_config;
 use crate::state::layout::Layout;
+
+pub use crate::config::plaintext_secret::doctor_plaintext_secret_findings;
 use miette::Result;
 use std::fs;
 use tracing::warn;

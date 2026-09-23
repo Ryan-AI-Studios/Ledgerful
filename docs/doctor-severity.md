@@ -380,3 +380,12 @@ warn (−20 per failure).
 
 Optional backends no longer contribute the historical ~−60 health points on a models-down
 machine (`failures * 20` in `compute_health_score`).
+
+`config-plaintext-secret` (0422) is **warn / other** when `config.toml` assigns a
+non-empty `gemini.api_key`, `local_model.ollama_key`, or
+`local_model.ollama_cloud_api_key`. File keys only — process env and `.env` do
+not emit. Values never appear in the message or remediation. `sessionPriority`
+is `now` (warn/`other` is not 0295 hygiene; do not collapse it). It does **not**
+block `readyForPublish`. While present it increments `dashboard_failures`
+(−20 health) and can occupy a sidecar `topFindings` slot (cap 5). That is
+intended, not a regression. `doctor --fix` has no action for this code.

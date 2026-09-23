@@ -6,6 +6,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- **`doctor --json` warns when `config.toml` assigns a plaintext provider key (0422):**
+  file-sourced `gemini.api_key` / `local_model.ollama_key` /
+  `local_model.ollama_cloud_api_key` emit `config-plaintext-secret`
+  (warn / other). Env and `.env` fills do not. Values never appear in
+  the message. Does not block `readyForPublish`. `doctor --fix` does
+  not strip keys.
+
 ### Fixed
 
 - **`index --check --strict` exits 1 when a typed surface is `stale` (0421):**

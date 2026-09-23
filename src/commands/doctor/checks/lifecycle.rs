@@ -304,6 +304,11 @@ pub(crate) fn collect_lifecycle_findings(
         findings.extend(legacy);
     }
 
+    // 0422: file-sourced plaintext provider keys (warn/other; not migration).
+    findings.extend(crate::config::load::doctor_plaintext_secret_findings(
+        layout,
+    ));
+
     // 0121 / 0226: product hook template stamp drift (Warn + Gate; never blocks publish).
     findings.extend(
         crate::commands::hook_template::hook_template_stale_findings(layout.root.as_path()),
