@@ -3,16 +3,15 @@ pub mod defaults;
 pub mod error;
 pub mod load;
 pub mod model;
-
-// Auto-included submodules of model (Rust 2024 edition loads sibling files automatically).
+pub mod plaintext_secret;
 pub mod redact;
 pub mod starter;
 pub mod validate;
 
 pub use error::ConfigError;
 pub use load::{
-    CONFIG_LOAD_WARN, doctor_config_findings, load_config, load_config_or_default_warn,
-    load_config_with_unknown_keys,
+    CONFIG_LOAD_WARN, doctor_config_findings, doctor_plaintext_secret_findings, load_config,
+    load_config_or_default_warn, load_config_with_unknown_keys,
 };
 pub use model::Config;
 pub use validate::validate_config;

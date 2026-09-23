@@ -432,3 +432,61 @@ fn doctor_after_index_no_search_empty() {
         "expected OK (N) with N>0:\n{human}"
     );
 }
+
+/// 0422: file-assigned provider key emits `config-plaintext-secret` (values never leak).
+#[test]
+fn test_doctor_json_plaintext_secret_file_key() {
+    const SENTINEL: &str = "test-key-not-a-secret";
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("dummy.txt"), "content").unwrap();
+    let state = root.join(".ledgerful");
+    fs::create_dir_all(&state).unwrap();
+    fs::write(
+        state.join("config.toml"),
+        format!("[gemini]\napi_key = \"{SENTINEL}\"\n"),
+    )
+    .unwrap();
+
+    let (stdout, stderr, code) = run_cli(root, &["doctor", "--json"]);
+    assert_eq!(
+        code, 0,
+        "doctor --json without block should exit 0; stderr={stderr}"
+    );
+    assert!(
+        !stdout.contains(SENTINEL),
+        "sentinel leaked to stdout:\n{stdout}"
+    );
+    assert!(
+        !stderr.contains(SENTINEL),
+        "sentinel leaked to stderr:\n{stderr}"
+    );
+
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must be pure JSON");
+    assert_eq!(v["schemaVersion"], 1);
+    assert_eq!(v["readyForPublish"], true);
+    let findings = v["findings"].as_array().expect("findings array");
+    let hit = findings
+        .iter()
+        .find(|f| f["code"] == "config-plaintext-secret")
+        .unwrap_or_else(|| panic!("expected config-plaintext-secret: {v}"));
+    assert_eq!(hit["severity"], "warn");
+    assert_eq!(hit["category"], "other");
+    let msg = hit["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("gemini.api_key"),
+        "message must name gemini.api_key: {msg}"
+    );
+    assert!(!msg.contains(SENTINEL), "message leaked sentinel: {msg}");
+    let rem = hit["remediation"].as_str().unwrap_or("");
+    assert!(
+        rem.contains("ledgerful doctor --json"),
+        "remediation must name doctor --json: {rem}"
+    );
+    assert!(
+        !rem.contains(SENTINEL),
+        "remediation leaked sentinel: {rem}"
+    );
+}
