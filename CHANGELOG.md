@@ -8,6 +8,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`ledger search` no longer treats an embedded `"` as an FTS5 column qualifier (0420):**
+  MATCH phrases now go through `sanitize_fts5_query` (internal quotes doubled,
+  then wrapped once). A literal `"` in argv no longer becomes `no such column`.
+  Plain hyphenated queries such as `dead-code` already worked.
+
 - **Windows CI exec fixtures no longer race cold child-startup latency (0432):**
   Heartbeat tests wait for the grandchild marker before group-kill, the
   large-output deadlock generator uses `cmd /C type` of a pre-written
