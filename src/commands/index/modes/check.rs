@@ -5,7 +5,7 @@ use crate::index::staleness::{
     IndexFreshnessState,
 };
 use crate::index::surface_freshness::{
-    ClassifySurfaceFreshness, SurfaceFreshness, classify_surface_freshness,
+    ClassifySurfaceFreshness, SurfaceFreshness, SurfaceFreshnessStatus, classify_surface_freshness,
     embeddings_probe_from_storage, format_human_lag_lines, probe_named_table, read_indexed_head,
 };
 use miette::{IntoDiagnostic, Result};
@@ -36,6 +36,7 @@ fn decide_check_verdict(
     status: &crate::index::orchestrator::IndexStatus,
     is_missing: bool,
     strict: bool,
+    surfaces: &[SurfaceFreshness],
 ) -> CheckVerdict {
     let is_empty_expected = status
         .assessment
@@ -242,6 +243,28 @@ fn decide_check_verdict(
             ));
         }
     }
+    if strict && !exit_strict_stale {
+        let mut stale_ids: Vec<&str> = surfaces
+            .iter()
+            .filter(|s| s.status == SurfaceFreshnessStatus::Stale)
+            .map(|s| s.id.as_str())
+            .collect();
+        stale_ids.sort_unstable();
+        stale_ids.dedup();
+        if !stale_ids.is_empty() {
+            messages.push((
+                CheckMsgKind::Error,
+                format!(
+                    "Error: Index surfaces are stale ({}) and --strict is enabled.",
+                    stale_ids.join(", ")
+                ),
+            ));
+            exit_strict_stale = true;
+        }
+    }
+    if exit_missing || exit_indeterminate || exit_strict_stale {
+        messages.retain(|(kind, _)| *kind == CheckMsgKind::Error);
+    }
 
     CheckVerdict {
         messages,
@@ -420,10 +443,10 @@ pub(super) fn execute_check_mode(indexer: &mut ProjectIndexer, args: &IndexArgs)
     let discovered = indexer.discover_files()?;
     let is_missing = status.total_files == 0 && !discovered.is_empty();
 
-    let verdict = decide_check_verdict(&status, is_missing, args.strict);
+    let surfaces = classify_check_surfaces(indexer, status.stale_files);
+    let verdict = decide_check_verdict(&status, is_missing, args.strict, &surfaces);
 
     let will_exit = verdict.exit_missing || verdict.exit_indeterminate || verdict.exit_strict_stale;
-    let surfaces = classify_check_surfaces(indexer, status.stale_files);
 
     if args.json {
         let output =
@@ -528,13 +551,83 @@ mod tests {
         assert!(v.as_object().expect("obj").contains_key("schemaVersion"));
     }
 
+    fn available_or_unavailable_surfaces() -> Vec<SurfaceFreshness> {
+        classify_surface_freshness(ClassifySurfaceFreshness {
+            files_stale: Some(0),
+            compared_head: Some("96d46c10"),
+            indexed_head: Some("96d46c10"),
+            mapping: SurfaceTableProbe {
+                exists: true,
+                rows: 0,
+                query_failed: false,
+            },
+            routes: SurfaceTableProbe {
+                exists: true,
+                rows: 0,
+                query_failed: false,
+            },
+            embeddings: EmbeddingsProbe::NotConfigured,
+            permission_denied: false,
+        })
+    }
+
     #[test]
-    fn index_check_strict_still_file_hash_only() {
+    fn index_check_strict_file_hash_only_when_surfaces_available() {
         let status = fresh_status();
-        let verdict = decide_check_verdict(&status, false, true);
+        let verdict = decide_check_verdict(&status, false, true, &[]);
         assert!(!verdict.exit_strict_stale);
         assert!(!verdict.exit_missing);
         assert!(!verdict.exit_indeterminate);
+
+        let available = available_or_unavailable_surfaces();
+        let verdict = decide_check_verdict(&status, false, true, &available);
+        assert!(!verdict.exit_strict_stale);
+        assert!(
+            available
+                .iter()
+                .all(|s| s.status != SurfaceFreshnessStatus::Stale)
+        );
+    }
+
+    #[test]
+    fn index_check_strict_exits_when_surface_stale() {
+        let status = fresh_status();
+        let surfaces = stale_mapping_surfaces();
+        let verdict = decide_check_verdict(&status, false, true, &surfaces);
+        assert!(verdict.exit_strict_stale);
+        assert!(!verdict.exit_missing);
+        assert!(!verdict.exit_indeterminate);
+        assert!(
+            verdict
+                .messages
+                .iter()
+                .all(|(k, _)| *k == CheckMsgKind::Error),
+            "Info must not leak on exit-1: {:?}",
+            verdict.messages
+        );
+        let joined: String = verdict
+            .messages
+            .iter()
+            .map(|(_, m)| m.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            joined.contains("--strict") && joined.contains("mapping"),
+            "strict surface error: {joined}"
+        );
+    }
+
+    #[test]
+    fn index_check_strict_ignores_unavailable_embeddings() {
+        let status = fresh_status();
+        let surfaces = available_or_unavailable_surfaces();
+        let embeddings = surfaces
+            .iter()
+            .find(|s| s.id == "embeddings")
+            .expect("embeddings");
+        assert_eq!(embeddings.status, SurfaceFreshnessStatus::Unavailable);
+        let verdict = decide_check_verdict(&status, false, true, &surfaces);
+        assert!(!verdict.exit_strict_stale);
     }
 
     #[test]
@@ -552,7 +645,7 @@ mod tests {
             last_indexed_at: None,
             assessment: None,
         };
-        let exit_verdict = decide_check_verdict(&missing, true, false);
+        let exit_verdict = decide_check_verdict(&missing, true, false, &[]);
         assert!(exit_verdict.exit_missing);
         let silent = format_check_human(&missing, &surfaces, true);
         assert!(
