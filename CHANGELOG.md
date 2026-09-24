@@ -17,6 +17,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Agent skill and command sheet name shipped Daily 5 budgets (0431):**
+  `change-context --json` documents the 25s prospective default and
+  optional `--timeout`; the skill adds the edit loop (`ledger note`
+  takes an entity). Graph `Drawn:` is stdout-only; HTML `#evidence`
+  stays tokens-only. `index --check` names `--strict` plus the
+  non-strict mixed up-to-date / stale sentence.
+
 - **`ask` names evidence and length-stop on stdout after a model answer (0430):**
   one `[AskMeta]` trailer (counts, gatherMs, kebab provider, truncated)
   without adding `--json`. Length-stop footer and exit 1 stay.

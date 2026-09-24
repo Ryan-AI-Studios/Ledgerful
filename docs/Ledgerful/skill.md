@@ -23,7 +23,7 @@ When the user asked to review a **git range**, run `ledgerful review <RANGE> --j
 
 **Optional:** `ledgerful session --json` (one-shot briefing; does not replace Edit/Daily 5). `ledgerful doctor --json` when the tree is writable and signing/env matters — skip in pure read-only filesystem sandboxes.
 
-Collision skip (0223) still applies: do not ledger start / do not `scan --impact` over a sibling pending TX. Review-only does not start TXs.
+Collision skip still applies: do not ledger start / do not `scan --impact` over a sibling pending TX. Review-only does not start TXs.
 
 ## Edit / Daily 5
 
@@ -36,12 +36,24 @@ Optional step 0: `ledgerful configure --json` is the config-HITL catalog (does n
 | # | Command | Role |
 |---|---|---|
 | 1 | `ledgerful doctor --json` | Env readiness (`readyForPublish`). Skip phantom / sig-pin / v1 ceremony unless signing or `require_signing`. Ack via `[doctor] acknowledged_codes` or `doctor --fix --yes` (pins keys only; never `ledger re-sign --all`). |
-| 2 | `ledgerful change-context --json` | Default pre-edit packet. Does **not** rewrite `latest-impact.json`. Plan: `--paths src/foo.rs`. History walks honor `[hotspots] history_budget_secs` (default 45). `hotspots` list/explain `--timeout` is an overall emit budget (0349). Review `--timeout` is an overall emit budget (0348). Unscoped `audit` / `ledger audit --timeout` is an overall emit budget (0350). |
+| 2 | `ledgerful change-context --json` | Default pre-edit packet. Does **not** rewrite `latest-impact.json`. Plan: `--paths src/foo.rs`. Omitted `--timeout` uses `[impact] prospective_budget_secs` (default 25). `--timeout N` overrides; `--timeout 0` disables. History walks honor `[hotspots] history_budget_secs` (default 45) independently. |
 | 3 | `ledgerful ledger status --compact` or `--json` | Pending / drift; names `workRoot`. Other repo: `-C` / `--directory`. |
 | 4 | `ledgerful search …` (prefer `--auto-index` when stale) | Discovery, not full impact. |
 | 5 | `ledgerful verify --scope fast` | Local gate (≠ full CI). `verify --dry-run` without `--scope` previews this fast plan; executed `verify` stays full. |
 
-Escalate `scan --impact --json` only on B2: `readSetCapped`, high risk + multi-module, unclear public API, user/DoD requires full impact, change-context `not_ready` (not merely `empty`).
+Escalate `scan --impact --json` only on B2: `readSetCapped`, high risk + multi-module, unclear public API, user/DoD requires full impact, change-context `not_ready` (not merely `empty`). Overall budget-stop is `not_ready` / annotated partial — escalate only on B2, not on `empty`.
+
+## Edit loop (provenance)
+
+When this session will modify product files:
+
+```
+ledgerful ledger start <entity> --category <CATEGORY> --message "<intent>"
+ledgerful ledger note <entity> --message "<progress>"
+ledgerful ledger commit <tx-id> --summary "<what>" --reason "<why>"
+```
+
+`ledger note` first arg is the entity (not a tx-id). `ledger note` is optional. Collision skip still applies.
 
 ## Opt-in `next` (HITL)
 
@@ -49,7 +61,7 @@ JSON `next` / `nextActions` / doctor `remediation` that **writes `.ledgerful/`**
 
 - User asked for the gated surface (`services`, `deploy`, `observability`, SCIP edges): say it is gated/empty, quote `next`, **ask once** whether to run it. If participating JSON has `sessionNotices.<id> == "already_shown"`, do **not** re-ask HITL for that gate.
 - Honor `doctor --json` `sessionPriority`. `now` = this session’s attention: Daily 5 **owns** `block`, `binary-behind-tree`, and `hook-template-stale` when publishing (reinstall / refresh hooks). Other `now` warns (`timings-*`, `search-empty`, `binary-behind-latest`, …): **surface once** in the session briefing; never install, prune, recapture exhibits, or `config set` unprompted. `later` = skip unless the user asked for that surface. Never start a SCIP/sccache install because a finding exists.
-- Never `config set coverage.enabled=true` or `index --analyze-graph` unless the owner said yes (0186 Phase B is local opt-in, not a track DoD). Same for SCIP install and `federate scan` — only if the human named that checklist id.
+- Never `config set coverage.enabled=true` or `index --analyze-graph` unless the owner said yes (local opt-in, not a track DoD). Same for SCIP install and `federate scan` — only if the human named that checklist id.
 
 ## SCIP honesty
 
@@ -105,13 +117,13 @@ ledgerful ledger search "<topic>" [--json]
 
 **Quotes required** — clap `query` is one `String` token. Contrast: code FTS `ledgerful search foo bar` stays unquoted multi-word.
 
-`--json` is a **bare array** (`Vec<LedgerEntry>`) — 0213 freeze; do **not** wrap in `schemaVersion`. Key `related_tickets` frozen; **new** row values are ticket ids (or null) — files live on snapshot/`changed_files`. Empty `[]` is a valid FTS miss, not proof of missing provenance.
+`--json` is a **bare array** (`Vec<LedgerEntry>`) — do **not** wrap in `schemaVersion`. Key `related_tickets` frozen; **new** row values are ticket ids (or null) — files live on snapshot/`changed_files`. Empty `[]` is a valid FTS miss, not proof of missing provenance.
 
-Example that finds 0126-class hits: `ledgerful ledger search "0126" --json`.
+Example: `ledgerful ledger search "topic" --json`.
 
 ## Hotspots
 
-Default CLI `hotspots` / `hotspots --json` exclude tests/examples/benches **and** markdown (`.md`) **and** vendored `deps_src`/`vendor`/…; `--include tests` restores the unfiltered `f×c` audit view (includes vendor); `--include docs` is a markdown **frequency** lane (`score` = `f_norm`, `complexity` 0); `--include vendor` restores vendored trees on the `f×c` list. Pin JSON `score` (0–1), not `displayScore` (ln). Item `complexity` is max across current-index symbols (C++ `function_definition` is body-scoped). Default rank is first-party `f×c`, not “most edited”; `frequency` is the churn axis. `--entity` into a vendored subtree needs `--include vendor`. `--semantic` ignores `--include`. Human tables and `audit` TOP HOTSPOTS label ln as **Display** / `display:`. MCP and `/api/hotspots` stay unfiltered. Session (50/30/5, `filter: session`) and CLI list (default 500 commits, `filter: default`) are different windows — compare `hotspots.provenance` / list `provenance` before comparing ranks; pin `score`. `hotspots budget` compares persisted `score` (0–1); empty history is `NO_DATA`; `--fail` needs `--threshold` or `[hotspots] budget_threshold`.
+Default CLI filters, `--include`, and `score` (0–1) live on `references/commands.md`. Pin JSON `score`, not `displayScore`.
 
 ## Windows
 

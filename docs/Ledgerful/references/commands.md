@@ -7,7 +7,7 @@ Short flags only. Humans: `ledgerful --help`.
 | Command | Role |
 |---|---|
 | `ledgerful doctor --json` | Env readiness. `readyForPublish` is zero block findings. CLI always emits `readyForPublishScope` (`readyMeans` + `notRequiredForReady`); sidecar omits it. Standing observe-signing warns: ack via `[doctor] acknowledged_codes` or `doctor --fix --yes` (pin only). Optional embed miss is fail-fast (`embed-unreachable`); not ERROR stderr. |
-| `ledgerful change-context --json` | Default pre-edit packet (does not rewrite `latest-impact.json`). `--paths` is presence / blast-if-edit, not “public types modified”. |
+| `ledgerful change-context --json` | Default pre-edit packet (does not rewrite `latest-impact.json`). `--paths` is presence / blast-if-edit, not “public types modified”. Omitted `--timeout` uses `[impact] prospective_budget_secs` (default 25). `--timeout N` overrides; `--timeout 0` disables. History stays `[hotspots] history_budget_secs` (default 45). |
 | `ledgerful ledger status --compact` or `--json` | Pending / drift; names `workRoot` |
 | `ledgerful search …` | Discovery (`--auto-index` when stale). Code FTS; unquoted multi-word OK. Not `ledger search`. `--json` agents pin `path` + `line`; `content` is a preview (`/` paths). Hidden `search-trigrams` (0352) is a 3-character content-trigram AND path list (`--json` `kind: searchTrigrams`); not Daily 5. |
 | `ledgerful verify --scope fast` | Local gate |
@@ -34,7 +34,7 @@ Optional: `ledgerful session --json` — one-shot briefing (git/ledger/doctor/ch
 | `ledgerful ledger export-provenance [--limit N] [--offset N]` | Pretty **bare array** of committed entries, oldest first. `--limit`/`--offset` page that array; truncation is one stderr `truncated:` line. Not a `schemaVersion` wrap. |
 | `ledgerful export head [--out PATH] [--stdout]` | Thin `ChainHead` checkpoint. `--stdout` / `-o -` is exact JSON bytes (0182). File-mode SUCCESS is a checkpoint write, not a verification. |
 | `ledgerful export evidence [--profile soc2] [--out PATH] [--force] [--control ID]` | Writes a SOC2 zip (no `--json`). Default dest `ledgerful-soc2-evidence.zip` (demo: `ledgerful-DEMO-evidence.zip`). `gateModeDisclosure.chainContinuityStatus` `verified:` requires a gated walk plus a real stored signed head. Always pass `--out` to a tempfile on EXEC. |
-| `ledgerful viz [--output PATH] [--limit N] [--depth N] [--entity ID] [--view graph\|services]` | Writes a standalone HTML file (no `--json`). Default dest `reports/graph.html` or `reports/services.html`. Always pass `--output` to a tempfile on EXEC. Both views inline vis-network 10.1.2 (no CDN). Graph stdout/`#evidence`: `source: Cozo nodes/edges`, `limit:`, `truncated:`, `communities:`, `asset:`, then `Drawn: N nodes, M edges`. Services gated: `source: declared overlay; inference gated` (optional `persisted N not shown`); enabled: `source: persisted service_roots`. Services stdout has no `Drawn:`. |
+| `ledgerful viz [--output PATH] [--limit N] [--depth N] [--entity ID] [--view graph\|services]` | Writes a standalone HTML file (no `--json`). Default dest `reports/graph.html` or `reports/services.html`. Always pass `--output` to a tempfile on EXEC. Both views inline vis-network 10.1.2 (no CDN). Graph **stdout**: `source: Cozo nodes/edges`, `limit:`, `truncated:`, `communities:`, `asset:`, then `Drawn: N nodes, M edges`. HTML `#evidence` / `graph_banner_tokens` stay tokens-only (`source`, `limit`, `truncated`, `communities`, `asset`) — no `Drawn:`. Services gated: `source: declared overlay; inference gated` (optional `persisted N not shown`); enabled: `source: persisted service_roots`. Services stdout has no `Drawn:`. |
 | `ledgerful intent demo` | Interactive TUI demo (mock data). Non-interactive / non-TTY exits non-zero; stderr names the refuse plus `Next: run \`ledgerful intent demo\` in an interactive terminal` (TUI demo, not a batch workflow). No `--json`. |
 | `ledgerful ask` | Semantic Q&A. Stderr: `[Evidence]` counts, `gather {ms}ms`, skip banner, length-stop footer (`Answer truncated: model stop reason length.`). After a model answer, stdout ends with `[AskMeta] semantic=N bm25=N kg=N snippets=N gatherMs=N provider=P truncated=yes\|no` (omit-empty `structural=`). Length stop still exits 1. No `--json`. |
 
@@ -55,6 +55,10 @@ Human preview only (`Gc` is not machine; no `--json`). `--dry-run` with neither 
 ## `ledgerful doctor --apply-hook-refresh --dry-run`
 
 Isolated no-write preview (human path + block id; `--json` is `kind: hookRefreshPreview`). Always `executed: false` + `dryRun: true`. No health catalog, no `ensure_state_dir`, no `doctor-results.json` rewrite. `--json` without `--dry-run` stays rejected. Write-path apply (no `--dry-run`) still prints via `print_refresh_report` and continues into doctor. Third-party refuse tokens stay 0121. Never run without `--dry-run` on an operator repo.
+
+## `ledgerful index --check`
+
+`--json` is schemaVersion 1 `kind: indexCheck`. `--strict` exits 1 when any `surfaces[].status` is `stale`. `unavailable` does not fail `--strict`. Non-strict mixed output may print both `Index is up to date.` **and** `Surface …: stale` when surfaces lag HEAD. Not Daily 5.
 
 ## `ledgerful index --repair-metadata --dry-run --json`
 
