@@ -25,6 +25,8 @@ use std::process::Command;
 
 pub use manifest::HISTORICAL_CONTINUITY as ADOPTION_CONTINUITY;
 
+pub(crate) const ORIGIN_REMOTE_REFUSAL: &str = "adoption refused: repository has no origin remote. Next: git remote add origin <url> then ledgerful ledger recovery plan --output <path>";
+
 #[derive(Debug, Clone)]
 pub enum RecoveryCommand {
     Plan {
@@ -509,11 +511,11 @@ fn origin_url(root: &Path) -> Result<String> {
         .output()
         .map_err(|e| miette!("git remote get-url origin: {e}"))?;
     if !output.status.success() {
-        return Err(miette!("adoption refused: repository has no origin remote"));
+        return Err(miette!("{ORIGIN_REMOTE_REFUSAL}"));
     }
     let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if url.is_empty() {
-        return Err(miette!("adoption refused: repository has no origin remote"));
+        return Err(miette!("{ORIGIN_REMOTE_REFUSAL}"));
     }
     Ok(url)
 }
@@ -547,4 +549,42 @@ fn write_new(path: &Path, body: &str) -> Result<()> {
     file.write_all(body.as_bytes())
         .map_err(|e| miette!("write {}: {e}", path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod origin_url_tests {
+    use super::*;
+    use std::process::Command;
+    use tempfile::tempdir;
+
+    #[test]
+    fn origin_url_refusal_uses_shared_const() {
+        let src = include_str!("mod.rs");
+        assert_eq!(
+            src.matches("return Err(miette!(\"{ORIGIN_REMOTE_REFUSAL}\"))")
+                .count(),
+            2
+        );
+        assert!(
+            ORIGIN_REMOTE_REFUSAL.starts_with("adoption refused: repository has no origin remote")
+        );
+        assert!(ORIGIN_REMOTE_REFUSAL.contains(
+            "Next: git remote add origin <url> then ledgerful ledger recovery plan --output <path>"
+        ));
+    }
+
+    #[test]
+    fn origin_url_refuses_repo_without_origin() {
+        let tmp = tempdir().expect("tempdir");
+        let status = Command::new("git")
+            .args(["init"])
+            .current_dir(tmp.path())
+            .status()
+            .expect("git init");
+        assert!(status.success(), "git init failed");
+        let err = origin_url(tmp.path()).expect_err("must refuse");
+        let msg = format!("{err}");
+        assert_eq!(msg, ORIGIN_REMOTE_REFUSAL);
+        assert!(!tmp.path().join("recovery.json").exists());
+    }
 }

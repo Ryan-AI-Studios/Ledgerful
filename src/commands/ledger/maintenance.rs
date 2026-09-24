@@ -142,6 +142,12 @@ fn gc_protected_sidecar_tx(
     Some((pending.tx_id, reason))
 }
 
+/// Locked no-selector `--dry-run` plan. Does not scan layout, sidecars, or TTL.
+pub(crate) fn format_gc_no_selector_preview() -> &'static str {
+    "No selector specified: pass --stale and/or --orphans. Nothing was scanned.\n\
+     Dry-run completed. No transactions were modified.\n"
+}
+
 /// Locked `--dry-run` preview. `stale` / `orphans` `None` omits that class.
 /// Class `{n}` is the candidate count (protected already subtracted).
 /// Protected is always printed (empty → `(none)`). Footer is unconditional.
@@ -229,8 +235,11 @@ pub fn execute_ledger_gc(
     force: bool,
     dry_run: bool,
 ) -> Result<()> {
-    // No-args UX: show usage if neither mode was selected
     if !stale && !orphans {
+        if dry_run {
+            print!("{}", format_gc_no_selector_preview());
+            return Ok(());
+        }
         println!(
             "{}",
             "Usage: ledgerful ledger gc [--stale] [--orphans] [--ttl-hours <N>] [--force] [--dry-run]"
@@ -486,6 +495,18 @@ mod tests {
     use super::*;
     use camino::Utf8Path;
     use tempfile::tempdir;
+
+    #[test]
+    fn format_gc_no_selector_preview_pins_plan_and_omits_usage() {
+        let out = format_gc_no_selector_preview();
+        assert_eq!(
+            out,
+            "No selector specified: pass --stale and/or --orphans. Nothing was scanned.\n\
+             Dry-run completed. No transactions were modified.\n"
+        );
+        assert!(!out.contains("Usage:"), "{out}");
+        assert!(!out.contains("Protected"), "{out}");
+    }
 
     #[test]
     fn format_gc_preview__empty_stale_still_emits_orphans() {

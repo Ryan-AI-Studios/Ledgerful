@@ -117,6 +117,26 @@ fn rollback_row_count(tmp: &tempfile::TempDir, tx_id: &str) -> i64 {
 }
 
 #[test]
+fn ledger_gc__dry_run_no_selector__zero_plan() {
+    let tmp = tempdir().expect("tempdir");
+    let _root = init_repo(&tmp);
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["ledger", "gc", "--dry-run"]);
+    assert_eq!(code, 0, "stdout={stdout}; stderr={stderr}");
+    assert!(
+        stdout
+            .contains("No selector specified: pass --stale and/or --orphans. Nothing was scanned."),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("Dry-run completed. No transactions were modified."),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("Usage:"), "{stdout}");
+    assert!(!stdout.contains("Protected"), "{stdout}");
+    assert!(!stdout.contains("Stale PENDING"), "{stdout}");
+}
+
+#[test]
 fn ledger_gc__combined_empty_dry_run__prints_both_classes() {
     let tmp = tempdir().expect("tempdir");
     let _root = init_repo(&tmp);
