@@ -1797,6 +1797,7 @@ mod tests {
                 full: false,
                 json: false,
                 preview: false,
+                include: None,
             });
         let _: RegisterCommands = RegisterCommands::Rule {
             term: String::new(),

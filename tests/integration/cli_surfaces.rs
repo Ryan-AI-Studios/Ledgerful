@@ -343,6 +343,7 @@ fn test_services_diff() {
         full: false,
         json: false,
         preview: false,
+        include: None,
     };
     let config = Config::default();
     let result = execute_services_diff(args, &config);

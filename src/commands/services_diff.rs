@@ -5,9 +5,16 @@ use crate::output::table::Table;
 use crate::state::cli_session::{CliSession, env_session_id};
 use crate::state::storage::StorageManager;
 use chrono::Utc;
-use clap::Args;
+use clap::{Args, ValueEnum};
 use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream, Style};
+
+/// Extra inferred groups to include in `services list` (default omits zero-`api_routes` modules).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ServiceIncludeScope {
+    /// Directory-only inferred names with no HTTP `api_routes`
+    Modules,
+}
 
 #[derive(Args, Debug, Default)]
 pub struct ServicesDiffArgs {
@@ -20,6 +27,9 @@ pub struct ServicesDiffArgs {
     /// Infer topology in memory from the current index without persisting service_name
     #[arg(long)]
     pub preview: bool,
+    /// Restore zero-`api_routes` inferred directory groups omitted by default
+    #[arg(long, value_enum, value_name = "SCOPE")]
+    pub include: Option<ServiceIncludeScope>,
 }
 
 const FULL_FILES_CAP: usize = 200;
@@ -45,6 +55,7 @@ pub fn execute_services_diff(
         config.coverage.service_inference_state(),
         ServiceInferenceState::DisabledGlobally | ServiceInferenceState::DisabledForServices
     );
+    let include_modules = include_modules(&args);
     let (rows, is_preview) = if args.preview {
         (build_preview_rows(&storage, config, args.full)?, true)
     } else {
@@ -57,13 +68,55 @@ pub fn execute_services_diff(
             (persist, false)
         }
     };
+    let (rows, omitted_count) = filter_service_rows(rows, include_modules);
 
     if args.json {
-        emit_json(&storage, config, &layout, &args, &rows, is_preview)?;
+        emit_json(
+            &storage,
+            config,
+            &layout,
+            &args,
+            &rows,
+            is_preview,
+            omitted_count,
+        )?;
     } else {
-        emit_human(&storage, config, &layout, &args, &rows, is_preview)?;
+        emit_human(
+            &storage,
+            config,
+            &layout,
+            &args,
+            &rows,
+            is_preview,
+            omitted_count,
+        )?;
     }
     Ok(())
+}
+
+fn include_modules(args: &ServicesDiffArgs) -> bool {
+    matches!(args.include, Some(ServiceIncludeScope::Modules))
+}
+
+fn keep_emitted_service_row(source: &str, route_count: i64, include_modules: bool) -> bool {
+    include_modules || source == "declared" || route_count > 0
+}
+
+fn filter_service_rows(rows: Vec<ServiceRow>, include_modules: bool) -> (Vec<ServiceRow>, usize) {
+    let mut kept = Vec::new();
+    let mut omitted = 0usize;
+    for row in rows {
+        if keep_emitted_service_row(row.source, row.route_count, include_modules) {
+            kept.push(row);
+        } else {
+            omitted += 1;
+        }
+    }
+    (kept, omitted)
+}
+
+fn modules_omitted_footer(omitted_count: usize) -> String {
+    format!("Modules omitted: {omitted_count} (directory-only inferred). Use --include modules.")
 }
 
 fn keep_emitted_service_name(name: &str, config: &crate::config::model::Config) -> bool {
@@ -389,6 +442,7 @@ fn decorate_envelope(
     mut output: serde_json::Value,
     config: &crate::config::model::Config,
     preview: bool,
+    include_modules: bool,
 ) -> serde_json::Value {
     if let Some(obj) = output.as_object_mut() {
         obj.insert(
@@ -399,6 +453,9 @@ fn decorate_envelope(
         );
         if preview {
             obj.insert("preview".to_string(), serde_json::json!(true));
+        }
+        if include_modules {
+            obj.insert("includeModules".to_string(), serde_json::json!(true));
         }
         let declared = declared_envelope(config);
         if !declared.is_empty() {
@@ -415,12 +472,14 @@ fn emit_json(
     args: &ServicesDiffArgs,
     rows: &[ServiceRow],
     is_preview: bool,
+    _omitted_count: usize,
 ) -> Result<()> {
+    let include_modules = include_modules(args);
     let results: Vec<serde_json::Value> = rows.iter().map(|r| row_json(r, args.full)).collect();
     let mut output = crate::output::empty::format_json_empty_state(results, "results", || {
         empty_state_message(storage, config)
     });
-    output = decorate_envelope(output, config, is_preview);
+    output = decorate_envelope(output, config, is_preview, include_modules);
     let pending_session = if !is_preview
         && output.get("emptyReason").is_some()
         && let Some(id) = notice_id_for_services(config.coverage.service_inference_state())
@@ -429,7 +488,7 @@ fn emit_json(
         let mut session = CliSession::load(layout, env_session_id().as_deref(), Utc::now());
         let applied = apply_empty_notice(&mut session, id, &full, output);
         output = applied.json;
-        output = decorate_envelope(output, config, is_preview);
+        output = decorate_envelope(output, config, is_preview, include_modules);
         Some(session)
     } else {
         None
@@ -451,6 +510,7 @@ fn emit_human(
     args: &ServicesDiffArgs,
     rows: &[ServiceRow],
     is_preview: bool,
+    omitted_count: usize,
 ) -> Result<()> {
     let title = human_title(is_preview);
     println!(
@@ -469,6 +529,9 @@ fn emit_human(
             (full, None)
         };
         println!("{}", msg.if_supports_color(Stream::Stdout, |s| s.dimmed()));
+        if omitted_count > 0 {
+            println!("{}", modules_omitted_footer(omitted_count));
+        }
         if let Some(session) = pending_session {
             session.persist();
         }
@@ -511,6 +574,9 @@ fn emit_human(
                 println!("  ... and {more} more files (cap {FULL_FILES_CAP})");
             }
         }
+    }
+    if omitted_count > 0 {
+        println!("{}", modules_omitted_footer(omitted_count));
     }
     Ok(())
 }
@@ -782,6 +848,57 @@ mod services_diff_unit_tests {
         assert_eq!(before, after, "preview must not rewrite service_name");
         assert_eq!(before.0, 1);
         assert_eq!(before.1, "existing");
+    }
+
+    #[test]
+    fn services_emit_drops_directory_only_inferred() {
+        assert!(keep_emitted_service_row("declared", 0, false));
+        assert!(keep_emitted_service_row("inferred", 2, false));
+        assert!(keep_emitted_service_row("preview", 1, false));
+        assert!(!keep_emitted_service_row("inferred", 0, false));
+        assert!(!keep_emitted_service_row("preview", 0, false));
+        assert!(keep_emitted_service_row("inferred", 0, true));
+        let rows = vec![
+            ServiceRow {
+                name: "billing".to_string(),
+                file_count: 2,
+                route_count: 3,
+                source: "inferred",
+                root: Some("src/billing".to_string()),
+                files: Vec::new(),
+                files_truncated: false,
+            },
+            ServiceRow {
+                name: "fixtures".to_string(),
+                file_count: 1,
+                route_count: 0,
+                source: "inferred",
+                root: Some("fixtures".to_string()),
+                files: Vec::new(),
+                files_truncated: false,
+            },
+            ServiceRow {
+                name: "declared-zero".to_string(),
+                file_count: 0,
+                route_count: 0,
+                source: "declared",
+                root: Some("src/declared".to_string()),
+                files: Vec::new(),
+                files_truncated: false,
+            },
+        ];
+        let (kept, omitted) = filter_service_rows(rows.clone(), false);
+        assert_eq!(omitted, 1);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0].name, "billing");
+        assert_eq!(kept[1].name, "declared-zero");
+        let (restored, omitted_none) = filter_service_rows(rows, true);
+        assert_eq!(omitted_none, 0);
+        assert_eq!(restored.len(), 3);
+        assert_eq!(
+            modules_omitted_footer(1),
+            "Modules omitted: 1 (directory-only inferred). Use --include modules."
+        );
     }
 
     #[test]

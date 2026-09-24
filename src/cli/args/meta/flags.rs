@@ -1374,6 +1374,9 @@ impl Commands {
                     if args.preview {
                         f.push("preview");
                     }
+                    if args.include.is_some() {
+                        f.push("include");
+                    }
                 }
             },
             Commands::DataModels(args) => match &args.command {

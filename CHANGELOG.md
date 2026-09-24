@@ -17,6 +17,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`services list` drops directory-only inferred names; empty `deploy impact` says what would populate (0428):**
+  default list keeps declared or `api_routes` rows and names `--include modules`
+  when others are hidden. Human `deploy impact` `noMatches` leads with
+  classifiers plus one next (not reindex). JSON envelopes stay schemaVersion 1.
+
 - **`dependencies list --all` names lock-only transitives; empty `audit` says it does not scan (0427):**
   `--all` prints `relation` (`root` / `direct` / `transitive`) from the
   locked `(name, version)` map. Empty audit always names `--input` and
