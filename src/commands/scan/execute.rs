@@ -34,6 +34,16 @@ pub(super) fn should_skip_auto_analyze_graph(
     prospective || matches!(resolved_budget, Some(secs) if secs > 0)
 }
 
+fn scan_cancel_flag() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    #[cfg(test)]
+    {
+        if let Some(flag) = test_hooks::take_cancel() {
+            return flag;
+        }
+    }
+    crate::impact::budget::install_cancel_flag()
+}
+
 /// Whether scan-report RO honesty may print on stdout (human only).
 ///
 /// Machine paths (`--json` / `--out`) must not prefix stdout with honesty text
@@ -598,108 +608,79 @@ pub fn execute_scan_with_opts(
             return Ok(());
         }
 
-        if timeout.is_some() {
-            let mut config = load_config(&layout).unwrap_or_default();
-            crate::impact::budget::apply_resolved_history_budget(&mut config, None);
-            crate::impact::budget::apply_resolved_prospective_budget(&mut config, timeout);
-            let depth_note = crate::impact::enrichment::blast::apply_cli_blast_depth(
-                &mut config.impact.blast_depth,
-                config.impact.blast_depth_max,
-                blast_depth,
-            );
-            let storage = match auto_graph_storage {
-                Some(s) => s,
-                None => crate::commands::impact::open_storage_for_impact(&layout)?,
-            };
-            let analysis_mode = if base_ref.is_some() {
-                "base_ref"
-            } else {
-                "working_tree"
-            };
-            let cancel = crate::impact::budget::install_cancel_flag();
-            let history_opts = crate::impact::orchestrator::ImpactHistoryOpts::for_run(
-                false,
-                std::sync::Arc::clone(&cancel),
-                analysis_mode,
-                timeout,
+        // Working-tree / base_ref always take the persist-aware arm (0424).
+        // Omitted `--timeout` is `for_run(None)` (25s Instant + skip-persist).
+        // `--timeout 0` stays unbounded. Silent `execute_impact_silent*` is gone.
+        let mut config = load_config(&layout).unwrap_or_default();
+        crate::impact::budget::apply_resolved_history_budget(&mut config, None);
+        crate::impact::budget::apply_resolved_prospective_budget(&mut config, timeout);
+        let depth_note = crate::impact::enrichment::blast::apply_cli_blast_depth(
+            &mut config.impact.blast_depth,
+            config.impact.blast_depth_max,
+            blast_depth,
+        );
+        let storage = match auto_graph_storage {
+            Some(s) => s,
+            None => crate::commands::impact::open_storage_for_impact(&layout)?,
+        };
+        let analysis_mode = if base_ref.is_some() {
+            "base_ref"
+        } else {
+            "working_tree"
+        };
+        let cancel = scan_cancel_flag();
+        let history_opts = crate::impact::orchestrator::ImpactHistoryOpts::for_run(
+            false,
+            std::sync::Arc::clone(&cancel),
+            analysis_mode,
+            timeout,
+            &config,
+        );
+        let mut impact_packet =
+            crate::commands::impact::compute_impact_from_snapshot_in_memory_with_history(
+                &storage,
                 &config,
-            );
-            let mut impact_packet =
-                crate::commands::impact::compute_impact_from_snapshot_in_memory_with_history(
-                    &storage,
-                    &config,
-                    work_dir,
-                    snapshot,
-                    include_governance,
-                    analysis_mode,
-                    Vec::new(),
-                    history_opts,
-                )?;
-            if let Some(note) = depth_note {
-                impact_packet.analysis_warnings.push(note);
-                impact_packet.analysis_warnings.sort();
-                impact_packet.analysis_warnings.dedup();
-            }
-            let skip_persist = crate::impact::budget::should_skip_persist(
-                impact_packet.completeness.as_ref(),
-                &cancel,
-            );
-            if skip_persist {
-                let _ = storage.shutdown();
-                emit_scan_impact_in_memory(
-                    &impact_packet,
-                    write_impact_json,
-                    out,
-                    summary,
-                    full,
-                    false,
-                )?;
-                return Ok(());
-            }
-            if let Err(e) = storage.save_packet(&impact_packet) {
-                tracing::warn!("SQLite save failed: {e}");
-            }
-            let report_write_outcome = crate::state::reports::soft_write_impact_report(
-                &layout,
-                &impact_packet,
-                storage.is_read_only(),
+                work_dir,
+                snapshot,
+                include_governance,
+                analysis_mode,
+                Vec::new(),
+                history_opts,
             )?;
-            crate::commands::impact::apply_report_skip_honesty(
-                &mut impact_packet,
-                report_write_outcome,
-            );
+        if let Some(note) = depth_note {
+            impact_packet.analysis_warnings.push(note);
+            impact_packet.analysis_warnings.sort();
+            impact_packet.analysis_warnings.dedup();
+        }
+        let skip_persist = crate::impact::budget::should_skip_persist(
+            impact_packet.completeness.as_ref(),
+            &cancel,
+        );
+        if skip_persist {
             let _ = storage.shutdown();
-            if write_impact_json {
-                crate::output::json::emit_to(&impact_packet, out.as_deref())?;
-            } else {
-                crate::commands::impact::execute_impact_human(
-                    &impact_packet,
-                    summary,
-                    base_ref.is_some(),
-                    report_write_outcome,
-                )?;
-            }
+            emit_scan_impact_in_memory(
+                &impact_packet,
+                write_impact_json,
+                out,
+                summary,
+                full,
+                false,
+            )?;
             return Ok(());
         }
-
-        let (impact_packet, report_write_outcome) = if base_ref.is_some() {
-            crate::commands::impact::execute_impact_silent_with_snapshot_opts_storage(
-                snapshot,
-                blast_depth,
-                include_governance,
-                "base_ref",
-                auto_graph_storage,
-                None,
-            )?
-        } else {
-            crate::commands::impact::execute_impact_silent_with_depth_opts_storage(
-                blast_depth,
-                include_governance,
-                auto_graph_storage,
-                None,
-            )?
-        };
-
+        if let Err(e) = storage.save_packet(&impact_packet) {
+            tracing::warn!("SQLite save failed: {e}");
+        }
+        let report_write_outcome = crate::state::reports::soft_write_impact_report(
+            &layout,
+            &impact_packet,
+            storage.is_read_only(),
+        )?;
+        crate::commands::impact::apply_report_skip_honesty(
+            &mut impact_packet,
+            report_write_outcome,
+        );
+        let _ = storage.shutdown();
         if write_impact_json {
             crate::output::json::emit_to(&impact_packet, out.as_deref())?;
         } else {
@@ -934,5 +915,24 @@ fn print_pr_scan_summary(report: &PrScanReport) {
             table.add_row(vec![Cell::new(action), Cell::new(&change.path)]);
         }
         println!("{table}");
+    }
+}
+
+#[cfg(test)]
+pub(super) mod test_hooks {
+    use std::cell::RefCell;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    thread_local! {
+        static CANCEL: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+    }
+
+    pub fn set_cancel(flag: Option<Arc<AtomicBool>>) {
+        CANCEL.with(|c| *c.borrow_mut() = flag);
+    }
+
+    pub fn take_cancel() -> Option<Arc<AtomicBool>> {
+        CANCEL.with(|c| c.borrow().clone())
     }
 }
