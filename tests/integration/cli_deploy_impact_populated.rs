@@ -318,3 +318,38 @@ fn deploy_impact_enabled_non_git_is_no_matches() {
         "{stdout}"
     );
 }
+
+#[test]
+fn deploy_impact_empty_human_populate_next() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    seed_git_readme(root);
+    write_temp_config(root, false, false);
+    fs::write(root.join("notes.txt"), "no manifests\n").unwrap();
+
+    let (ok, stdout, stderr) = run_deploy_impact(root, false);
+    assert!(ok, "git-backed empty human should exit 0; stderr={stderr}");
+    assert!(
+        stdout.contains("Classifies dirty Docker / compose / Terraform / k8s YAML."),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("No deployment impact detected for current changes."),
+        "{stdout}"
+    );
+    assert!(
+        stdout
+            .contains("Next: add a matching manifest to the change, or there is no deploy impact."),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("index --incremental"),
+        "noMatches must not recommend reindex: {stdout}"
+    );
+
+    let (ok, json_out, json_err) = run_deploy_impact(root, true);
+    assert!(ok, "git-backed empty json should exit 0; stderr={json_err}");
+    let v = parse_object(&json_out, "empty-git-json");
+    assert_eq!(v["emptyReason"], "noMatches");
+    assert!(v.get("next").is_none(), "{v}");
+}

@@ -378,3 +378,77 @@ enabled = true
         "enabled persist-empty must keep index-advice emptyReason, got {reason:?}: {stdout}"
     );
 }
+
+#[test]
+fn services_list_omits_zero_route_modules() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    write_http_fixture(root);
+    fs::create_dir_all(root.join("fixtures")).unwrap();
+    fs::write(
+        root.join("fixtures").join("worker.rs"),
+        "fn helper() {}\nfn tick() { helper(); }\n",
+    )
+    .unwrap();
+    git_add_and_commit(root, "initial");
+    let (init_out, init_err, init_ok) = run_bin(root, &["init"]);
+    assert!(init_ok, "init failed: stdout={init_out} stderr={init_err}");
+    let (idx_out, idx_err, idx_ok) = run_bin(root, &["index", "--incremental"]);
+    assert!(
+        idx_ok,
+        "index --incremental failed: stdout={idx_out} stderr={idx_err}"
+    );
+
+    let (stdout, stderr, ok) = run_bin(root, &["services", "list"]);
+    assert!(ok, "services list failed: stderr={stderr}\nstdout={stdout}");
+    assert!(
+        !stdout.to_lowercase().contains("fixtures"),
+        "default list must omit zero-route fixtures: {stdout}"
+    );
+    assert!(
+        stdout.contains("Modules omitted:") && stdout.contains("--include modules"),
+        "default list must name the include escape: {stdout}"
+    );
+
+    let (inc_out, inc_err, inc_ok) = run_bin(root, &["services", "list", "--include", "modules"]);
+    assert!(
+        inc_ok,
+        "services list --include modules failed: stderr={inc_err}\nstdout={inc_out}"
+    );
+    assert!(
+        inc_out.to_lowercase().contains("fixtures"),
+        "--include modules must restore fixtures: {inc_out}"
+    );
+    assert!(
+        !inc_out.contains("Modules omitted:"),
+        "--include modules must omit the footer: {inc_out}"
+    );
+
+    let (json_out, json_err, json_ok) = run_bin(root, &["services", "list", "--json"]);
+    assert!(json_ok, "services list --json failed: stderr={json_err}");
+    let v: Value = serde_json::from_str(json_out.trim())
+        .unwrap_or_else(|e| panic!("services JSON: {e}\n{json_out}"));
+    assert_eq!(v["schemaVersion"], 1);
+    assert!(v.get("includeModules").is_none(), "{json_out}");
+    if let Some(results) = v["results"].as_array() {
+        assert!(
+            results
+                .iter()
+                .all(|row| row["service"].as_str() != Some("fixtures")),
+            "default JSON must omit fixtures: {json_out}"
+        );
+    }
+
+    let (inc_json, inc_json_err, inc_json_ok) = run_bin(
+        root,
+        &["services", "list", "--json", "--include", "modules"],
+    );
+    assert!(
+        inc_json_ok,
+        "--include modules --json failed: stderr={inc_json_err}"
+    );
+    let inc_v: Value = serde_json::from_str(inc_json.trim())
+        .unwrap_or_else(|e| panic!("include JSON: {e}\n{inc_json}"));
+    assert_eq!(inc_v["includeModules"], true);
+}

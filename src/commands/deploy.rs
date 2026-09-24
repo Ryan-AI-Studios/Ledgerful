@@ -367,13 +367,15 @@ fn emit_deploy_outcome(
         if completeness.is_some() {
             return Ok(());
         }
-        let (_, full) = deploy_empty_state_message(config);
+        let (reason, full) = deploy_empty_state_message(config);
         let (msg, pending_session) = if let Some(id) =
             notice_id_for_deploy(config.coverage.enabled, config.coverage.deploy.enabled)
         {
             let mut session = CliSession::load(layout, env_session_id().as_deref(), Utc::now());
             let applied = apply_empty_notice(&mut session, id, &full, serde_json::json!({}));
             (applied.human, Some(session))
+        } else if reason == EmptyReason::NoMatches {
+            (format_deploy_nomatch_human(), None)
         } else {
             (full, None)
         };
@@ -468,6 +470,15 @@ pub fn deploy_empty_state_message(config: &crate::config::model::Config) -> (Emp
             "No deployment impact detected for current changes.".to_string(),
         )
     }
+}
+
+/// Human `noMatches` lead: classifiers + verdict + one next (not reindex).
+/// JSON still uses `deploy_empty_state_message` (0300 / contract freeze).
+pub(crate) fn format_deploy_nomatch_human() -> String {
+    "Classifies dirty Docker / compose / Terraform / k8s YAML.\n\
+     No deployment impact detected for current changes.\n\
+     Next: add a matching manifest to the change, or there is no deploy impact."
+        .to_string()
 }
 
 #[derive(Args, Debug)]
@@ -776,6 +787,26 @@ mod tests {
         assert_eq!(reason, crate::output::empty::EmptyReason::NoMatches);
         assert!(msg.starts_with("No deployment impact detected"), "{msg}");
         assert!(!msg.starts_with(' '), "{msg}");
+    }
+
+    #[test]
+    fn deploy_nomatch_human_leads_with_classifiers() {
+        let msg = super::format_deploy_nomatch_human();
+        let lines: Vec<&str> = msg.lines().collect();
+        assert_eq!(
+            lines[0],
+            "Classifies dirty Docker / compose / Terraform / k8s YAML."
+        );
+        assert_eq!(
+            lines[1],
+            "No deployment impact detected for current changes."
+        );
+        assert_eq!(
+            lines[2],
+            "Next: add a matching manifest to the change, or there is no deploy impact."
+        );
+        assert!(!msg.contains("index --incremental"), "{msg}");
+        assert!(!msg.starts_with("No deployment impact detected"), "{msg}");
     }
 
     #[test]
