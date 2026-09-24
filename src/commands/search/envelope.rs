@@ -3,6 +3,7 @@
 //! `--json` → single camelCase envelope (`schemaVersion: 1`).
 //! `--json-lines` → legacy NDJSON BridgeRecord stream (pre-0136 `--json`).
 
+use super::preview::PreviewUnavailableReason;
 use crate::bridge::model::{BridgeDirection, BridgePayload, BridgeRecord, Privacy};
 use crate::semantic::{BackendStatus, SemanticReadiness};
 use serde::Serialize;
@@ -67,6 +68,12 @@ pub struct SearchHit {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<f64>,
     pub content: String,
+    /// Per-row source on `--semantic` mix hits. Omit on BM25/regex/hybrid.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    /// Why an `insight` hit has no preview. Envelope-only (0425).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_unavailable_reason: Option<PreviewUnavailableReason>,
 }
 
 /// Empty-index / FTS honesty (typed; never serialize-then-parse Insight content).
@@ -146,6 +153,9 @@ pub struct HitEmit {
     pub bridge_content: String,
     pub bridge_relevance: f64,
     pub bridge_memory_id: String,
+    /// Per-row source. Set only from the `--semantic` results loop.
+    pub engine: Option<&'static str>,
+    pub preview_unavailable_reason: Option<PreviewUnavailableReason>,
 }
 
 /// Collects machine output for envelope mode, or prints NDJSON in lines mode.
@@ -228,6 +238,8 @@ impl SearchCollector {
                     line: hit.line,
                     score: hit.score,
                     content: hit.content,
+                    engine: hit.engine.map(str::to_string),
+                    preview_unavailable_reason: hit.preview_unavailable_reason,
                 });
             }
             SearchJsonMode::Lines => {
@@ -446,6 +458,8 @@ mod tests {
                 line: None,
                 score: Some(1.5),
                 content: "plain".into(),
+                engine: None,
+                preview_unavailable_reason: None,
             }],
             search_index_status: None,
             semantic: None,
@@ -460,6 +474,8 @@ mod tests {
         assert!(v.get("fallbackUsed").is_none());
         assert!(v["results"][0].get("line").is_none());
         assert!(v["results"][0].get("score").is_some());
+        assert!(v["results"][0].get("engine").is_none());
+        assert!(v["results"][0].get("previewUnavailableReason").is_none());
         assert!(!s.contains("null"));
     }
 
@@ -550,6 +566,8 @@ mod tests {
                 line: Some(12),
                 score: Some(0.75),
                 content: "fn execute_search() {}".into(),
+                engine: Some("semantic".into()),
+                preview_unavailable_reason: None,
             }],
             search_index_status: None,
             semantic: None,
@@ -561,6 +579,8 @@ mod tests {
         assert_eq!(v["results"][0]["kind"], "insight");
         assert_eq!(v["results"][0]["content"], "fn execute_search() {}");
         assert_eq!(v["results"][0]["line"], 12);
+        assert_eq!(v["results"][0]["engine"], "semantic");
+        assert!(v["results"][0].get("previewUnavailableReason").is_none());
         assert!(!s.contains("(offset"));
         assert!(v["results"][0].get("offset").is_none());
     }
@@ -580,6 +600,8 @@ mod tests {
                 line: None,
                 score: Some(0.1),
                 content: String::new(),
+                engine: Some("semantic".into()),
+                preview_unavailable_reason: Some(PreviewUnavailableReason::FileUnreadable),
             }],
             search_index_status: None,
             semantic: None,
@@ -589,6 +611,11 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&s).expect("parse");
         assert_eq!(v["schemaVersion"], 1);
         assert!(v["results"][0].get("line").is_none());
+        assert_eq!(v["results"][0]["engine"], "semantic");
+        assert_eq!(
+            v["results"][0]["previewUnavailableReason"],
+            "fileUnreadable"
+        );
         assert!(!s.contains("\"line\":null"));
         assert!(!s.contains("(offset"));
     }
@@ -608,6 +635,8 @@ mod tests {
                 line: Some(1),
                 score: Some(1.0),
                 content: "fn verify_step_key".into(),
+                engine: None,
+                preview_unavailable_reason: None,
             }],
             search_index_status: None,
             semantic: None,

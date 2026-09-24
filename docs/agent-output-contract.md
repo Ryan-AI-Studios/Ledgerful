@@ -51,7 +51,7 @@ contract and follows `LEDGERFUL_TABLE_STYLE`. Purity inventory unchanged
 | `ledger stack --json` | yes (0281) | yes | schemaVersion 1 object `kind: "ledgerStack"`; `empty` true iff filtered rules/validators/mappings are all empty; `next` is the two clap register commands only when empty; `enforcementEnabled` from live config; omit-false `rulesNotEnforced` when rules exist and `start_change` would not block (`enforcementEnabled` and `gate.mode=enforce`). Item structs stay snake_case. No `emptyReason`. Not Daily 5 |
 | `ledger validator list --json` | yes | yes | **Bare array** of `CommitValidator` (snake_case). Empty catalog is `[]`. Not a schemaVersion object. Not Daily 5. Human empty is not a table (0 registered + next `--help`). |
 | `status --json` | yes (0149) | yes | **same payload** as `ledger status --json` |
-| `search --json` | yes | yes | 0136 envelope; empty results OK. Constructor `Err` sets existing `semantic.error` and does not emit Ready+empty readiness (0377). |
+| `search --json` | yes | yes | 0136 envelope; empty results OK. Constructor `Err` sets existing `semantic.error` and does not emit Ready+empty readiness (0377). Additive omit-empty `results[].engine` / `previewUnavailableReason` on `--semantic` mix hits (0425). `--json-lines` unchanged. |
 | `search-trigrams --json` | yes (0352) | yes | schemaVersion 1 object `kind: "searchTrigrams"`. Hidden CLI. Count-backed `totalMatching` is **not** an 0136 `search` key. `emptyReason` omit when `resultCount > 0`. `next` omit unless runnable (`ledgerful index` or `ledgerful search {accepted…}`). No `line`/`content`. CLI-only; no MCP. |
 | `bridge query --json` | yes (0366, 0402) | yes (exit 0) | Hidden CLI. schemaVersion 1 object `kind: "bridgeQuery"`. Closed `status`: `disabled` \| `unavailable` \| `failed` \| `empty` \| `populated`. `ok` agrees with process exit (`disabled`/`empty`/`populated` → 0; `unavailable`/`failed` → 1 after JSON). `query` is the joined string (`query.join(" ")`); unquoted multi-word is OK like `search` (flags before or after). Omit-empty `source` (`ipc` \| `cli`), `providerCommand`, `resultCount`, `results`, `skippedLines`, `message`, `next`. `results[]` only on `populated`. Not BridgeRecord NDJSON (0136 `--json-lines`). CLI-only; no MCP. |
 | `bridge export --json` / `--stdout` / `-o -` | yes (0367, 0394) | yes (exit 0) | Hidden CLI. **Not** `kind: bridgeExport`. Body is one BridgeRecord **0.3** Snapshot. Additive camelCase `payload.datasets[]` (always `impact` plus requested `--hotspots`/`--ledger`/`--madr`). `--timeout` is overall emit for `--hotspots` only (ignored otherwise; CLI > env `LEDGERFUL_BRIDGE_EXPORT_OVERALL_BUDGET_SECS` > `[bridge] export_overall_budget_secs` > 25; `0` disables). Skip-open / in-walk budget sets omit-empty `stop` (`budget` \| `cancelled`) and does **not** stamp `emptyReason: noMatches`. `--json` with no `--out` implies stdout (no default `.ledgerful` write). `--json --out <path>` writes the file and leaves stdout empty. `-o -` is stdout. `--stdout` + `--out <path>` errors. `--madr` row is `notWired`. Compact one-line is NDJSON-compatible; pretty `--json` is not importable as NDJSON lines. CLI-only; no MCP. |
@@ -1124,6 +1124,37 @@ multi-hit output.
 }
 ```
 
+`--semantic` mix example (additive keys; `kind` unchanged):
+
+```json
+{
+  "schemaVersion": 1,
+  "query": "verify scope resolution",
+  "mode": "semantic",
+  "limit": 3,
+  "truncated": false,
+  "resultCount": 2,
+  "results": [
+    {
+      "kind": "insight",
+      "path": "src/verify/plan.rs",
+      "engine": "semantic",
+      "score": 0.7463,
+      "content": "",
+      "previewUnavailableReason": "symbolNotInFile"
+    },
+    {
+      "kind": "bm25_match",
+      "path": "src/index/call_graph/mod.rs",
+      "line": 8,
+      "engine": "bm25",
+      "score": 15.7272,
+      "content": "plain snippet"
+    }
+  ]
+}
+```
+
 | Field | Type | Notes |
 |---|---|---|
 | `schemaVersion` | number | Always **1** |
@@ -1138,6 +1169,8 @@ multi-hit output.
 | `results[].line` | number \| **omitted** | Present only when known — never JSON `null` |
 | `results[].score` | number \| **omitted** | Same omit policy as `line` |
 | `results[].content` | string | **Plain** preview snippet. When the window is cut mid-identifier, the dangling ident is walked back. Agents pin `path` + `line`; `content` is not the source of truth. |
+| `results[].engine` | string \| **omitted** | Per-row source on `--semantic` mix hits only: `semantic` \| `bm25`. **Not** a second copy of envelope `mode`. Omit on BM25/regex/hybrid (including semantic fallthrough). `--json-lines` does not carry this key. |
+| `results[].previewUnavailableReason` | string \| **omitted** | Envelope-only (0425). Why an `insight` hit has no preview: `fileUnreadable` \| `symbolNotInFile` \| `previewWindowEmpty`. Set from the preview branch, not `content.is_empty()`. `--json-lines` frozen (no new BridgeRecord keys). |
 | `searchIndexStatus` | object \| **omitted** | Empty-index / FTS-rebuild honesty (`state`, `documentCount`, optional `remediation` / `error`) |
 | `semantic` | object \| **omitted** | On `--semantic` paths: readiness fields + optional `error` |
 | `fallbackUsed` | string \| **omitted** | When hybrid empty path used identifier-literal AllPaths fallback and produced ≥1 hit: `"identifier_literal"`. `schemaVersion` stays **1**; kind vocabulary unchanged (`regex_match` for those hits) |

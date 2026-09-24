@@ -17,6 +17,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`search --semantic` labels the mix and explains source-less previews (0425):**
+  each row names its engine (`[semantic dist: …]` / `[bm25: …]`; JSON
+  omit-empty `engine`). A missing preview prints a closed reason
+  (`fileUnreadable` / `symbolNotInFile` / `previewWindowEmpty`) instead
+  of bare `(source unavailable)`. Ranking and `kind` stay unchanged.
+
 - **`scan --impact` omitted `--timeout` uses the persist-aware arm (0424):**
   working-tree / `--base-ref` no longer take a silent re-snapshot path.
   Omitted `--timeout` and `--timeout 25` share `should_skip_persist`;

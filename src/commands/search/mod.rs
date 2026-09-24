@@ -346,6 +346,8 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                         bridge_content,
                         bridge_relevance: score,
                         bridge_memory_id: memory_id,
+                        engine: Some("semantic"),
+                        preview_unavailable_reason: preview.unavailable_reason,
                     });
                 }
                 for (path, score, snippet, line) in extra_lexical {
@@ -363,6 +365,8 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                         bridge_content,
                         bridge_relevance: score as f64,
                         bridge_memory_id: path,
+                        engine: Some("bm25"),
+                        preview_unavailable_reason: None,
                     });
                 }
             } else {
@@ -386,10 +390,10 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                         dist,
                     );
                     println!("{header}");
-                    if !preview.content.is_empty() {
+                    if let Some(reason) = preview.unavailable_reason {
+                        println!("{}", preview::format_semantic_unavailable_human(reason));
+                    } else if !preview.content.is_empty() {
                         println!("  {}", preview.content.replace('\n', "\n  "));
-                    } else if preview.read_failed {
-                        println!("  (source unavailable)");
                     }
                 }
                 for (path, score, snippet, line) in extra_lexical {
