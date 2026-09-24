@@ -21,6 +21,9 @@ pub(super) struct LedgerGraphData {
     pub heuristic: Vec<GraphRelation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completeness: Option<GraphCompleteness>,
+    /// Human next-command target. Not a JSON key (0426).
+    #[serde(skip)]
+    pub entity: String,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -361,6 +364,10 @@ pub(super) fn assemble_ledger_graph(
         derived: derived_relations,
         heuristic: heuristic_relations,
         completeness,
+        entity: tx_opt
+            .as_ref()
+            .map(|tx| tx.entity_normalized.clone())
+            .unwrap_or_default(),
     })
 }
 

@@ -17,6 +17,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`ledger gc --dry-run` and empty `ledger graph` buckets name the gap (0426):**
+  no-selector dry-run is a 0-plan (not Usage). Assembled-empty graph
+  buckets print why plus `ledger audit <entity>`. `--layer` hide
+  stays `None.`. JSON graph freeze. Recovery origin refuse names
+  `git remote add origin`.
+
 - **`search --semantic` labels the mix and explains source-less previews (0425):**
   each row names its engine (`[semantic dist: …]` / `[bm25: …]`; JSON
   omit-empty `engine`). A missing preview prints a closed reason
