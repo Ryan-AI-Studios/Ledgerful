@@ -317,6 +317,8 @@ pub(crate) fn perform_search(
                     bridge_content,
                     bridge_relevance: relevance,
                     bridge_memory_id: memory_id,
+                    engine: None,
+                    preview_unavailable_reason: None,
                 });
             }
         } else {
@@ -398,6 +400,8 @@ pub(crate) fn perform_search(
                     bridge_content,
                     bridge_relevance: 1.0,
                     bridge_memory_id: memory_id,
+                    engine: None,
+                    preview_unavailable_reason: None,
                 });
             }
         } else {
@@ -458,6 +462,8 @@ pub(crate) fn perform_search(
                     bridge_content,
                     bridge_relevance: score,
                     bridge_memory_id: memory_id,
+                    engine: None,
+                    preview_unavailable_reason: None,
                 });
             }
         } else {
@@ -544,6 +550,8 @@ fn emit_regex_style_hits(
                 bridge_content,
                 bridge_relevance: 1.0,
                 bridge_memory_id: memory_id,
+                engine: None,
+                preview_unavailable_reason: None,
             });
         }
     } else {
@@ -672,6 +680,8 @@ fn handle_fuzzy_fallback(
                     bridge_content,
                     bridge_relevance: score,
                     bridge_memory_id: memory_id,
+                    engine: None,
+                    preview_unavailable_reason: None,
                 });
             }
         } else {

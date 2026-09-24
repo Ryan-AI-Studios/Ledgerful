@@ -7,7 +7,17 @@
 use crate::search::tantivy_engine::trim_mid_identifier;
 use crate::util::fs::read_to_string_with_encoding;
 use crate::util::path::resolve_under_work_root;
+use serde::Serialize;
 use std::path::Path;
+
+/// Why a semantic hit has no inspectable preview (0425).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PreviewUnavailableReason {
+    FileUnreadable,
+    SymbolNotInFile,
+    PreviewWindowEmpty,
+}
 
 /// Search `--json` / human preview width (0298 keep 240).
 pub const SEARCH_PREVIEW_CHARS: usize = 240;
@@ -38,6 +48,7 @@ pub struct SemanticPreview {
     pub line: Option<usize>,
     pub content: String,
     pub read_failed: bool,
+    pub unavailable_reason: Option<PreviewUnavailableReason>,
 }
 
 /// Locate `name` in `file_path` under `work_root` and take a source window.
@@ -60,6 +71,7 @@ pub fn preview_semantic_hit(
             line: None,
             content: String::new(),
             read_failed: true,
+            unavailable_reason: Some(PreviewUnavailableReason::FileUnreadable),
         };
     };
 
@@ -70,6 +82,7 @@ pub fn preview_semantic_hit(
             line: None,
             content: String::new(),
             read_failed: false,
+            unavailable_reason: Some(PreviewUnavailableReason::SymbolNotInFile),
         };
     };
 
@@ -81,6 +94,11 @@ pub fn preview_semantic_hit(
     };
     let content = take_window(&source, window_start, max_chars);
     let line = Some(line_number_at(&source, window_start));
+    let unavailable_reason = if content.trim().is_empty() {
+        Some(PreviewUnavailableReason::PreviewWindowEmpty)
+    } else {
+        None
+    };
 
     SemanticPreview {
         path,
@@ -88,14 +106,26 @@ pub fn preview_semantic_hit(
         line,
         content,
         read_failed: false,
+        unavailable_reason,
     }
 }
 
-/// Pinned human template (0312 fold-in).
+/// Pinned human template (0425).
 pub fn format_semantic_human(name: &str, path: &str, line: Option<usize>, dist: f32) -> String {
     match line {
-        Some(n) => format!("- {name} ({path}:{n}) [dist: {dist:.4}]"),
-        None => format!("- {name} ({path}) [dist: {dist:.4}]"),
+        Some(n) => format!("- {name} ({path}:{n}) [semantic dist: {dist:.4}]"),
+        None => format!("- {name} ({path}) [semantic dist: {dist:.4}]"),
+    }
+}
+
+/// Pinned human reason line (0425). Includes the two leading spaces.
+pub fn format_semantic_unavailable_human(reason: PreviewUnavailableReason) -> &'static str {
+    match reason {
+        PreviewUnavailableReason::FileUnreadable => "  (source unavailable: file unreadable)",
+        PreviewUnavailableReason::SymbolNotInFile => "  (source unavailable: symbol not in file)",
+        PreviewUnavailableReason::PreviewWindowEmpty => {
+            "  (source unavailable: preview window empty)"
+        }
     }
 }
 
@@ -302,6 +332,10 @@ mod tests {
         assert!(preview.read_failed);
         assert_eq!(preview.line, None);
         assert!(preview.content.is_empty());
+        assert_eq!(
+            preview.unavailable_reason,
+            Some(PreviewUnavailableReason::FileUnreadable)
+        );
         assert_eq!(preview.path, "src/missing.rs");
         assert_eq!(preview.name, "ghost");
     }
@@ -320,6 +354,29 @@ mod tests {
         assert!(!preview.read_failed);
         assert_eq!(preview.line, None);
         assert!(preview.content.is_empty());
+        assert_eq!(
+            preview.unavailable_reason,
+            Some(PreviewUnavailableReason::SymbolNotInFile)
+        );
+    }
+
+    #[test]
+    fn semantic_preview_found_but_empty_window_is_preview_window_empty() {
+        let tmp = tempdir().expect("tmp");
+        write_src(tmp.path(), "src/lib.rs", "fn execute_search() {}\n");
+        let preview = preview_semantic_hit(
+            tmp.path(),
+            "src/lib.rs",
+            "execute_search",
+            50_000,
+            SEARCH_PREVIEW_CHARS,
+        );
+        assert!(!preview.read_failed);
+        assert!(preview.content.trim().is_empty());
+        assert_eq!(
+            preview.unavailable_reason,
+            Some(PreviewUnavailableReason::PreviewWindowEmpty)
+        );
     }
 
     #[test]
@@ -371,11 +428,31 @@ mod tests {
     fn format_semantic_human_pins_template() {
         assert_eq!(
             format_semantic_human("foo", "src/a.rs", Some(12), 0.125),
-            "- foo (src/a.rs:12) [dist: 0.1250]"
+            "- foo (src/a.rs:12) [semantic dist: 0.1250]"
         );
         assert_eq!(
             format_semantic_human("foo", "src/a.rs", None, 0.5),
-            "- foo (src/a.rs) [dist: 0.5000]"
+            "- foo (src/a.rs) [semantic dist: 0.5000]"
+        );
+    }
+
+    #[test]
+    fn format_semantic_unavailable_human_pins_templates() {
+        assert_eq!(
+            format_semantic_unavailable_human(PreviewUnavailableReason::FileUnreadable),
+            "  (source unavailable: file unreadable)"
+        );
+        assert_eq!(
+            format_semantic_unavailable_human(PreviewUnavailableReason::SymbolNotInFile),
+            "  (source unavailable: symbol not in file)"
+        );
+        assert_eq!(
+            format_semantic_unavailable_human(PreviewUnavailableReason::PreviewWindowEmpty),
+            "  (source unavailable: preview window empty)"
+        );
+        assert_ne!(
+            format_semantic_unavailable_human(PreviewUnavailableReason::FileUnreadable),
+            "  (source unavailable)"
         );
     }
 
@@ -395,7 +472,10 @@ mod tests {
             SEARCH_PREVIEW_CHARS,
         );
         let header = format_semantic_human(&preview.name, &preview.path, preview.line, 0.125);
-        assert_eq!(header, "- execute_search (src/lib.rs:1) [dist: 0.1250]");
+        assert_eq!(
+            header,
+            "- execute_search (src/lib.rs:1) [semantic dist: 0.1250]"
+        );
         assert!(
             !header.contains("at offset"),
             "human header must not be an offset label: {header}"

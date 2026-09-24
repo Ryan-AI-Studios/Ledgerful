@@ -96,6 +96,10 @@ Surfaces must distinguish:
 
 Never collapse (1), (2), or (4) into “no semantic matches.”
 
+A ranked `--semantic` hit with no inspectable preview names why
+(`fileUnreadable` / `symbolNotInFile` / `previewWindowEmpty`) — never a
+bare `(source unavailable)` placeholder.
+
 ## What happens without a backend
 
 - `ledgerful index --semantic` **refuses** with a message naming the config key
