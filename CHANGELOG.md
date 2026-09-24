@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.15] - 2026-09-24
+
 ### Security
 
 - **`doctor --json` warns when `config.toml` assigns a plaintext provider key (0422):**
