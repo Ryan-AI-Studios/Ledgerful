@@ -17,6 +17,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`dependencies list --all` names lock-only transitives; empty `audit` says it does not scan (0427):**
+  `--all` prints `relation` (`root` / `direct` / `transitive`) from the
+  locked `(name, version)` map. Empty audit always names `--input` and
+  `Findings: 0` plus official `osv-scanner scan --format json -L`. JSON
+  list stays schemaVersion 1 (omit-empty `relation`); audit JSON stays
+  unwrapped.
+
 - **`ledger gc --dry-run` and empty `ledger graph` buckets name the gap (0426):**
   no-selector dry-run is a 0-plan (not Usage). Assembled-empty graph
   buckets print why plus `ledger audit <entity>`. `--layer` hide

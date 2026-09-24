@@ -91,6 +91,7 @@ fn run_list(root: &std::path::Path, args: &[&str]) -> (bool, String, String) {
     let output = Command::new(LEDGERFUL_BIN)
         .args(args)
         .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
         .output()
         .unwrap();
     (
@@ -263,6 +264,29 @@ fn dependencies_list_all_json_full_lock() {
         .find(|p| p["name"] == "fixture-app")
         .expect("root in lock");
     assert!(root_pkg["source"].is_null() || root_pkg.get("source").is_none());
+    assert_eq!(root_pkg["relation"], "root");
+
+    let multi_v1 = packages
+        .iter()
+        .find(|p| p["name"] == "multi-ver" && p["version"] == "1.0.0")
+        .expect("multi-ver@1.0.0");
+    assert_eq!(multi_v1["relation"], "transitive");
+    let multi_v2 = packages
+        .iter()
+        .find(|p| p["name"] == "multi-ver" && p["version"] == "2.0.0")
+        .expect("multi-ver@2.0.0");
+    assert_eq!(multi_v2["relation"], "direct");
+
+    let n = packages
+        .iter()
+        .filter(|p| p["relation"] == "direct")
+        .count();
+    let m = packages
+        .iter()
+        .filter(|p| p["relation"] == "transitive")
+        .count();
+    let roots = packages.iter().filter(|p| p["relation"] == "root").count();
+    assert_eq!(n + m + roots, packages.len());
 }
 
 #[test]
@@ -283,6 +307,12 @@ fn dependencies_list_default_json_schema_envelope() {
     assert_eq!(v["schemaVersion"], 1);
     assert_eq!(v["mode"], "direct");
     assert!(v.get("truncated").is_none());
+    for p in v["packages"].as_array().unwrap() {
+        assert!(
+            p.get("relation").is_none() || p["relation"].is_null(),
+            "direct mode omits relation: {p}"
+        );
+    }
 }
 
 #[test]
@@ -316,6 +346,13 @@ fn dependencies_list_no_lock_honest_versions() {
     assert!(
         stdout_h.contains("no Cargo.lock") || stdout_h.contains("Cargo.lock not found"),
         "human note missing: {stdout_h}"
+    );
+
+    let (ok_all, stdout_all, _) = run_list(root, &["dependencies", "list", "--all"]);
+    assert!(ok_all);
+    assert!(
+        stdout_all.contains("Note: Cargo.lock not found — --all is empty."),
+        "no-lock --all footnote missing: {stdout_all}"
     );
 }
 
@@ -377,5 +414,86 @@ fn dependencies_list_missing_toml_fails() {
     assert!(
         stderr.contains("Cargo.toml") || _stdout.contains("Cargo.toml"),
         "clear error expected; stderr={stderr}"
+    );
+}
+
+#[test]
+fn dependencies_list_all_human_relation_and_footer() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    write_cargo_project(root, FIXTURE_TOML, Some(FIXTURE_LOCK));
+    fs::write(root.join("dummy.txt"), "content").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let _guard = DirGuard::new(root);
+
+    let (ok, stdout, stderr) = run_list(root, &["dependencies", "list", "--all"]);
+    assert!(ok, "stderr: {stderr}");
+    assert!(
+        stdout.contains("Relation"),
+        "expected Relation column: {stdout}"
+    );
+    assert!(
+        stdout.contains("Package") && stdout.contains("Version") && stdout.contains("Ecosystem"),
+        "expected pinned header: {stdout}"
+    );
+    assert!(stdout.contains("root"), "expected root relation: {stdout}");
+    assert!(
+        stdout.contains("direct") && stdout.contains("transitive"),
+        "expected relation values: {stdout}"
+    );
+    assert!(
+        stdout.contains("Direct:") && stdout.contains("Transitive (lock-only):"),
+        "expected lock-row footer: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Knowledge Graph"),
+        "must not claim KG: {stdout}"
+    );
+}
+
+#[test]
+fn dependencies_audit_empty_human_source_and_next() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    write_cargo_project(root, FIXTURE_TOML, Some(FIXTURE_LOCK));
+    fs::write(root.join("empty-osv.json"), r#"{"results":[]}"#).unwrap();
+    fs::write(root.join("dummy.txt"), "content").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let _guard = DirGuard::new(root);
+
+    let (init_ok, init_out, init_err) = run_list(root, &["init"]);
+    assert!(
+        init_ok,
+        "ledgerful init failed: stderr={init_err} stdout={init_out}"
+    );
+
+    let (ok, stdout, stderr) = run_list(
+        root,
+        &["dependencies", "audit", "--input", "empty-osv.json"],
+    );
+    assert!(ok, "stderr: {stderr}");
+    assert!(
+        stdout.contains("Source: --input empty-osv.json (osv-scanner JSON)"),
+        "expected interpolated source: {stdout}"
+    );
+    assert!(
+        stdout.contains("does not scan"),
+        "expected honesty: {stdout}"
+    );
+    assert!(
+        stdout.contains("Findings: 0"),
+        "expected Findings: {stdout}"
+    );
+    assert!(
+        stdout.contains("Next: osv-scanner scan --format json -L Cargo.lock > empty-osv.json"),
+        "expected official next: {stdout}"
+    );
+    assert!(
+        stdout.contains("then ledgerful dependencies audit --input empty-osv.json"),
+        "expected re-import next: {stdout}"
     );
 }
