@@ -348,6 +348,10 @@ fn test_ask_degrades_gracefully_when_local_model_unreachable() {
         stdout.contains("Retrieved context (local model unavailable, skipping synthesis):"),
         "expected spec context header on stdout, got: {stdout}"
     );
+    assert!(
+        !stdout.contains("[AskMeta]"),
+        "degrade-to-context must not print [AskMeta], got: {stdout}"
+    );
 }
 
 /// Track DX2 / 0158 L1: a 429 (rate limit) from the local completion endpoint
@@ -602,6 +606,27 @@ fn test_ask_empty_global_does_not_call_llm() {
         "empty-evidence refuse must exit 0 without credentials: {result:?}"
     );
     completions.assert_calls(0);
+
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["ask", "--semantic", "--", "What is Ledgerful?"])
+        .current_dir(tmp.path())
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .env_remove("GEMINI_API_KEY")
+        .env_remove("OPENROUTER_API_KEY")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "empty-global refuse must exit 0\nstdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !stdout.contains("[AskMeta]"),
+        "empty-global refuse must not print [AskMeta], got: {stdout}"
+    );
+    completions.assert_calls(0);
 }
 
 #[test]
@@ -745,6 +770,18 @@ fn ask_length_stop_exits_1_and_prints_footer_once() {
         !stderr.contains("Local model failed:"),
         "length stop must not enter the generic failure wrapper, got: {stderr}"
     );
+    assert!(
+        stdout.contains("[AskMeta]"),
+        "length stop must print [AskMeta] on stdout, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("truncated=yes"),
+        "length stop trailer must name truncated=yes, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("gatherMs="),
+        "length stop trailer must name gatherMs=, got: {stdout}"
+    );
 }
 
 #[test]
@@ -764,5 +801,174 @@ fn ask_length_stop_stop_reason_exits_0_without_footer() {
     assert!(
         !stderr.contains(ASK_LENGTH_STOP_FOOTER),
         "stop must not print the truncation footer, got: {stderr}"
+    );
+    assert!(
+        stdout.contains("[AskMeta]"),
+        "complete answer must print [AskMeta] on stdout, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("truncated=no"),
+        "complete answer trailer must name truncated=no, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("gatherMs="),
+        "complete answer trailer must name gatherMs=, got: {stdout}"
+    );
+}
+
+fn spawn_ask_with_provider_priority(content: &str) -> std::process::Output {
+    let _env_non_interactive = non_interactive();
+    let _env_gemini = TempEnv::remove("GEMINI_API_KEY");
+    let _env_openrouter = TempEnv::remove("OPENROUTER_API_KEY");
+    let _env_ollama = TempEnv::remove("OLLAMA_API_KEY");
+    let _env_ollama_cloud = TempEnv::remove("OLLAMA_CLOUD_API_KEY");
+
+    let server = httpmock::MockServer::start();
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/chat/completions");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .json_body(serde_json::json!({
+                "choices": [{
+                    "message": {"content": content},
+                    "finish_reason": "stop"
+                }]
+            }));
+    });
+
+    let tmp = tempdir().unwrap();
+    let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+    let _guard = DirGuard::from_utf8(root);
+    Command::new("git")
+        .arg("init")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().unwrap();
+    plant_dirty_diff(tmp.path(), &layout);
+    fs::write(
+        layout.config_file(),
+        format!(
+            "[local_model]\nbase_url = \"{}\"\ngeneration_model = \"test-model\"\nprefer_local = true\ntimeout_secs = 15\n[ask.providers]\n[[ask.providers.priority]]\nbackend = \"local\"\n",
+            server.base_url()
+        ),
+    )
+    .unwrap();
+
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    Command::new(ledgerful_bin)
+        .args([
+            "ask",
+            "--timeout",
+            "20",
+            "--",
+            "What does this codebase do?",
+        ])
+        .current_dir(tmp.path())
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .env_remove("GEMINI_API_KEY")
+        .env_remove("OPENROUTER_API_KEY")
+        .env_remove("OLLAMA_API_KEY")
+        .env_remove("OLLAMA_CLOUD_API_KEY")
+        .output()
+        .unwrap()
+}
+
+#[test]
+#[serial(env, cwd)]
+fn ask_meta_trailer_on_provider_priority_arm() {
+    let output = spawn_ask_with_provider_priority("priority-answer-token");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "priority-arm ask must exit 0\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("priority-answer-token"),
+        "priority-arm answer body must stay on stdout, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("[AskMeta]"),
+        "priority-arm must print [AskMeta], got: {stdout}"
+    );
+    assert!(
+        stdout.contains("provider=local"),
+        "priority-arm trailer must name kebab provider=local, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("gatherMs="),
+        "priority-arm trailer must name gatherMs=, got: {stdout}"
+    );
+}
+
+#[test]
+#[serial(env, cwd)]
+fn ask_meta_trailer_zeros_on_skip_then_answer() {
+    let _env_non_interactive = non_interactive();
+    let _env_gemini = TempEnv::remove("GEMINI_API_KEY");
+    let _env_openrouter = TempEnv::remove("OPENROUTER_API_KEY");
+    let _env_ollama = TempEnv::remove("OLLAMA_API_KEY");
+    let _env_ollama_cloud = TempEnv::remove("OLLAMA_CLOUD_API_KEY");
+
+    let server = httpmock::MockServer::start();
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/chat/completions");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .json_body(serde_json::json!({
+                "choices": [{
+                    "message": {"content": "pong-answer-token"},
+                    "finish_reason": "stop"
+                }]
+            }));
+    });
+
+    let tmp = tempdir().unwrap();
+    let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+    let _guard = DirGuard::from_utf8(root);
+    Command::new("git")
+        .arg("init")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().unwrap();
+    fs::write(
+        layout.config_file(),
+        format!(
+            "[local_model]\nbase_url = \"{}\"\ngeneration_model = \"test-model\"\nprefer_local = true\ntimeout_secs = 15\n",
+            server.base_url()
+        ),
+    )
+    .unwrap();
+
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["ask", "--timeout", "20", "--", "pong"])
+        .current_dir(tmp.path())
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .env_remove("GEMINI_API_KEY")
+        .env_remove("OPENROUTER_API_KEY")
+        .env_remove("OLLAMA_API_KEY")
+        .env_remove("OLLAMA_CLOUD_API_KEY")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "skip-then-answer must exit 0\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("pong-answer-token"),
+        "skip-then-answer must still print the model body, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("[AskMeta] semantic=0 bm25=0 kg=0 snippets=0"),
+        "skip-then-answer must emit a zeros trailer, got: {stdout}"
     );
 }
