@@ -87,6 +87,7 @@ pub(crate) fn snippet_keys_after_script(timeout: &str) -> String {
     )
 }
 
+#[allow(dead_code)] // tests + timeout-clause asserts; join path always windows
 pub(crate) fn same_file_page_script(timeout: &str) -> String {
     format!(
         "?[f1, n1, o1, f2, n2, o2, similarity] :=
@@ -102,6 +103,7 @@ pub(crate) fn same_file_page_script(timeout: &str) -> String {
     )
 }
 
+#[allow(dead_code)] // tests; join path always windows listed keys
 pub(crate) fn cross_file_page_script(timeout: &str) -> String {
     format!(
         "?[f1, n1, o1, f2, n2, o2, similarity] :=
@@ -338,6 +340,12 @@ fn list_snippet_keys(
                 if added < SEMANTIC_PAGE_SNIPPETS {
                     break;
                 }
+                // A deadline-bound scan must not walk `keys_after` on a large
+                // file: that cursor is one uninterruptible Rule 0. First page
+                // only; caller treats a full page as truncated → Budget.
+                if deadline.is_some() {
+                    break;
+                }
             }
         }
     }
@@ -359,6 +367,7 @@ pub(crate) fn page_semantic_hotspots(
 ) -> Result<(Vec<SemanticMatch>, Option<SemanticStop>)> {
     let mut acc = Vec::new();
     let mut keys_cache: BTreeMap<String, Vec<(String, i64)>> = BTreeMap::new();
+    let mut keys_truncated = false;
     for (i, left) in files.iter().enumerate() {
         if let Some(stop) = semantic_poll_stop(deadline, cancel) {
             return Ok((finalize_matches(acc, work_root), Some(stop)));
@@ -368,6 +377,9 @@ pub(crate) fn page_semantic_hotspots(
             Ok(k) => k,
             Err(stop) => return Ok((finalize_matches(acc, work_root), Some(stop))),
         };
+        if deadline.is_some() && left_keys.len() == SEMANTIC_PAGE_SNIPPETS {
+            keys_truncated = true;
+        }
         match run_same_file_pages(storage, left, threshold, &left_keys, deadline, cancel)? {
             Ok(rows) => acc.extend(rows),
             Err(stop) => return Ok((finalize_matches(acc, work_root), Some(stop))),
@@ -381,6 +393,9 @@ pub(crate) fn page_semantic_hotspots(
                     Ok(k) => k,
                     Err(stop) => return Ok((finalize_matches(acc, work_root), Some(stop))),
                 };
+            if deadline.is_some() && right_keys.len() == SEMANTIC_PAGE_SNIPPETS {
+                keys_truncated = true;
+            }
             match run_cross_file_pages(
                 storage,
                 left,
@@ -396,7 +411,8 @@ pub(crate) fn page_semantic_hotspots(
             }
         }
     }
-    Ok((finalize_matches(acc, work_root), None))
+    let stop = keys_truncated.then_some(SemanticStop::Budget);
+    Ok((finalize_matches(acc, work_root), stop))
 }
 
 fn cached_snippet_keys(
@@ -426,25 +442,16 @@ fn run_same_file_pages(
     deadline: Option<Instant>,
     cancel: &AtomicBool,
 ) -> Result<std::result::Result<Vec<SemanticMatch>, SemanticStop>> {
-    if keys.len() <= SEMANTIC_PAGE_SNIPPETS {
-        if let Some(stop) = semantic_poll_stop(deadline, cancel) {
-            return Ok(Err(stop));
-        }
-        let timeout = match timeout_or_budget(deadline) {
-            Ok(t) => t,
-            Err(stop) => return Ok(Err(stop)),
-        };
-        return run_join_page(
-            storage,
-            &same_file_page_script(&timeout),
-            threshold_params(left, threshold),
-        );
-    }
-
+    // Always bind listed keys. The `$left`-only same-file script joins every
+    // snippet in the file, so a first page of 64 keys on a large EXEC file
+    // would still run one uninterruptible full-file cosine.
     let mut acc = Vec::new();
     let windows = snippet_windows(keys);
-    for (i, left_win) in windows.iter().enumerate() {
-        for right_win in windows.iter().skip(i) {
+    // Full window×window product. Triangular skip(i) follows name order
+    // (`:order +name, +line_offset`), not `o1 < o2`, and drops valid
+    // same-file pairs when names are not monotonic with offsets.
+    for left_win in &windows {
+        for right_win in &windows {
             if let Some(stop) = semantic_poll_stop(deadline, cancel) {
                 return Ok(Err(stop));
             }
@@ -475,21 +482,8 @@ fn run_cross_file_pages(
     deadline: Option<Instant>,
     cancel: &AtomicBool,
 ) -> Result<std::result::Result<Vec<SemanticMatch>, SemanticStop>> {
-    if left_keys.len() <= SEMANTIC_PAGE_SNIPPETS && right_keys.len() <= SEMANTIC_PAGE_SNIPPETS {
-        if let Some(stop) = semantic_poll_stop(deadline, cancel) {
-            return Ok(Err(stop));
-        }
-        let timeout = match timeout_or_budget(deadline) {
-            Ok(t) => t,
-            Err(stop) => return Ok(Err(stop)),
-        };
-        return run_join_page(
-            storage,
-            &cross_file_page_script(&timeout),
-            pair_params(left, right, threshold),
-        );
-    }
-
+    // Always bind listed keys. `$left`×`$right` without windows joins every
+    // snippet in both files (DoD-1 hang on the first large EXEC pair).
     let mut acc = Vec::new();
     for left_win in snippet_windows(left_keys) {
         for right_win in snippet_windows(right_keys) {
@@ -875,6 +869,86 @@ mod tests {
             }),
             "cross-file window pairs required (n={})",
             paged.len()
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn find_semantic_hotspots__windowed_file_name_offset_disagree__equals_single_script() {
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let root = tempfile::tempdir().expect("root");
+        // Name order is the reverse of offset order so triangular skip(i)
+        // on `:order +name` windows would drop (low-offset, high-offset) pairs.
+        for i in 0..=SEMANTIC_PAGE_SNIPPETS {
+            let name_rank = SEMANTIC_PAGE_SNIPPETS - i;
+            plant(
+                &storage,
+                "src/wide.rs",
+                &format!("zz_{name_rank:03}"),
+                i as i64,
+                vec![1.0, 0.0, 0.0],
+            );
+        }
+        plant(&storage, "src/other.rs", "fn_o", 0, vec![1.0, 0.0, 0.0]);
+        let cancel = live_cancel();
+        let (paged, stop) =
+            find_semantic_hotspots(&storage, root.path(), 0.5, None, &cancel).expect("windowed");
+        assert!(stop.is_none(), "finished scan must omit stop: {stop:?}");
+        let single =
+            find_semantic_hotspots_single_script(&storage, root.path(), 0.5).expect("single");
+        let paged_keys: Vec<_> = paged.iter().map(match_key).collect();
+        let single_keys: Vec<_> = single.iter().map(match_key).collect();
+        assert_eq!(
+            paged_keys.len(),
+            single_keys.len(),
+            "name/offset-disagree count {} vs single {}",
+            paged_keys.len(),
+            single_keys.len()
+        );
+        assert_eq!(
+            paged_keys, single_keys,
+            "DoD-4b: name order must not drop same-file pairs"
+        );
+        assert!(
+            paged.iter().any(|m| {
+                m.file1 == "src/wide.rs"
+                    && m.file2 == "src/wide.rs"
+                    && m.offset1 == 0
+                    && m.offset2 == SEMANTIC_PAGE_SNIPPETS
+            }),
+            "cross-window low-offset/high-offset pair required (n={})",
+            paged.len()
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn find_semantic_hotspots__deadline_some__full_key_page__budget() {
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let root = tempfile::tempdir().expect("root");
+        for i in 0..=SEMANTIC_PAGE_SNIPPETS {
+            plant(
+                &storage,
+                "src/wide.rs",
+                &format!("fn_{i:03}"),
+                i as i64,
+                vec![1.0, 0.0, 0.0],
+            );
+        }
+        let cancel = live_cancel();
+        let deadline = Some(Instant::now() + Duration::from_secs(60));
+        let (paged, stop) =
+            find_semantic_hotspots(&storage, root.path(), 0.5, deadline, &cancel).expect("bounded");
+        assert_eq!(
+            stop,
+            Some(SemanticStop::Budget),
+            "first key page of 64 on a 65-snippet file is truncated"
+        );
+        assert!(
+            paged
+                .iter()
+                .all(|m| m.offset1 < SEMANTIC_PAGE_SNIPPETS && m.offset2 < SEMANTIC_PAGE_SNIPPETS),
+            "bounded page must not join keys past the first window: {paged:?}"
         );
     }
 
