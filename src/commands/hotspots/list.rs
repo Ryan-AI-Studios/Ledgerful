@@ -153,21 +153,47 @@ pub(super) fn execute_hotspots_list(
             println!("Analyzing semantic similarity hotspots (duplication)...");
         }
 
-        let matches = crate::semantic::hotspots::find_semantic_hotspots(
+        let (matches, semantic_stop) = crate::semantic::hotspots::find_semantic_hotspots(
             cozo,
             layout.root.as_std_path(),
             0.85,
+            overall_deadline,
+            &cancel,
         )?;
+        let completeness = semantic_stop.map(|stop| {
+            completeness_for_overall(
+                match stop {
+                    crate::semantic::hotspots::SemanticStop::Budget => CompletenessStop::Budget,
+                    crate::semantic::hotspots::SemanticStop::Cancelled => {
+                        CompletenessStop::Cancelled
+                    }
+                },
+                Some(overall_secs).filter(|s| *s > 0),
+                "semantic",
+            )
+        });
+        super::eprint_hotspots_overall_stop_if_budget(completeness.as_ref());
 
         if args.json {
             let limit = args.limit.unwrap_or(config.hotspots.limit);
             // find_semantic_hotspots ignores --limit; wrap_hotspots_list_json
             // truncates the already-computed Vec so echoing `limit` matches
             // the serialized `files` (no extra scan).
-            let output = wrap_hotspots_list_json(matches, limit);
+            let output = if completeness.is_some() {
+                wrap_hotspots_list_json_with_completeness(
+                    matches,
+                    limit,
+                    completeness.as_ref(),
+                    None,
+                )
+            } else {
+                wrap_hotspots_list_json(matches, limit)
+            };
             return super::write_json(&output, json_out);
         }
-        crate::output::human::print_semantic_hotspots(&matches);
+        if semantic_stop.is_none() || !matches.is_empty() {
+            crate::output::human::print_semantic_hotspots(&matches);
+        }
         return Ok(());
     }
 

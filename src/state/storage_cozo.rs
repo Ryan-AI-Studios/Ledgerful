@@ -51,6 +51,26 @@ pub struct GraphEdge {
     pub provenance_id: String,
 }
 
+/// Outcome of [`CozoStorage::run_script_classifying_kill`].
+#[derive(Debug)]
+pub enum CozoScriptOutcome {
+    Rows(NamedRows),
+    Killed,
+}
+
+/// Inspect the **unwrapped** Cozo error (pin uses miette 5). Do not
+/// substring-match a script-echo wrap (`CozoDB script error`).
+pub(crate) fn is_cozo_eval_killed(err: &(impl std::fmt::Display + std::fmt::Debug)) -> bool {
+    let display = err.to_string();
+    if display.contains("CozoDB script error") {
+        return false;
+    }
+    if display.contains("Running query is killed before completion") {
+        return true;
+    }
+    format!("{err:?}").contains("eval::killed")
+}
+
 pub struct CozoStorage {
     db: DbInstance,
     /// When true, [`Self::run_script`] uses `ScriptMutability::Immutable` so
@@ -110,6 +130,30 @@ impl CozoStorage {
         self.db
             .run_script(script, Default::default(), mutability)
             .map_err(|e| miette::miette!("CozoDB script error: {:?}. Script was: '{}'", e, script))
+    }
+
+    /// Run a script and classify Cozo `eval::killed` before the script-echo wrap.
+    /// Kill discards this page's rows; other errors still fail.
+    pub fn run_script_classifying_kill(
+        &self,
+        script: &str,
+        params: std::collections::BTreeMap<String, DataValue>,
+    ) -> Result<CozoScriptOutcome> {
+        let mutability = ScriptMutability::Immutable;
+        match self.db.run_script(script, params, mutability) {
+            Ok(rows) => Ok(CozoScriptOutcome::Rows(rows)),
+            Err(e) => {
+                if is_cozo_eval_killed(&e) {
+                    Ok(CozoScriptOutcome::Killed)
+                } else {
+                    Err(miette::miette!(
+                        "CozoDB script error: {:?}. Script was: '{}'",
+                        e,
+                        script
+                    ))
+                }
+            }
+        }
     }
 
     pub fn run_script_with_params(
