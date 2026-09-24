@@ -87,6 +87,10 @@ fn ledger_validator_list_populated_shows_args_dash_and_counts() {
         reg_code, 0,
         "register validator failed: {reg_err} {reg_out}"
     );
+    assert!(
+        reg_out.contains("Next: ledgerful ledger validator list"),
+        "register validator success must name list: {reg_out}"
+    );
 
     let (out, err, code) = run_cli(tmp.path(), &["ledger", "validator", "list"]);
     assert_eq!(code, 0, "populated list should exit 0: {err}");
@@ -140,6 +144,10 @@ fn ledger_validator_list_disable_then_shows_enabled_false() {
     assert_eq!(
         reg_code, 0,
         "register validator failed: {reg_err} {reg_out}"
+    );
+    assert!(
+        reg_out.contains("Next: ledgerful ledger validator list"),
+        "register validator success must name list: {reg_out}"
     );
 
     let (dis_out, dis_err, dis_code) = run_cli(

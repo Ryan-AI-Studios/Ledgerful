@@ -46,6 +46,7 @@ mod cli_impact;
 mod cli_index;
 mod cli_index_repair;
 mod cli_init;
+mod cli_intent_demo;
 mod cli_json_list_envelope;
 mod cli_ledger_gc;
 mod cli_ledger_graph;

@@ -34,7 +34,8 @@ Optional: `ledgerful session --json` — one-shot briefing (git/ledger/doctor/ch
 | `ledgerful ledger export-provenance [--limit N] [--offset N]` | Pretty **bare array** of committed entries, oldest first. `--limit`/`--offset` page that array; truncation is one stderr `truncated:` line. Not a `schemaVersion` wrap. |
 | `ledgerful export head [--out PATH] [--stdout]` | Thin `ChainHead` checkpoint. `--stdout` / `-o -` is exact JSON bytes (0182). File-mode SUCCESS is a checkpoint write, not a verification. |
 | `ledgerful export evidence [--profile soc2] [--out PATH] [--force] [--control ID]` | Writes a SOC2 zip (no `--json`). Default dest `ledgerful-soc2-evidence.zip` (demo: `ledgerful-DEMO-evidence.zip`). `gateModeDisclosure.chainContinuityStatus` `verified:` requires a gated walk plus a real stored signed head. Always pass `--out` to a tempfile on EXEC. |
-| `ledgerful viz [--output PATH] [--limit N] [--depth N] [--entity ID] [--view graph\|services]` | Writes a standalone HTML file (no `--json`). Default dest `reports/graph.html` or `reports/services.html`. Always pass `--output` to a tempfile on EXEC. Both views inline vis-network 10.1.2 (no CDN). Graph stdout/`#evidence`: `source: Cozo nodes/edges`, `limit:`, `truncated:`, `communities:`, `asset:`. Services gated: `source: declared overlay; inference gated` (optional `persisted N not shown`); enabled: `source: persisted service_roots`. |
+| `ledgerful viz [--output PATH] [--limit N] [--depth N] [--entity ID] [--view graph\|services]` | Writes a standalone HTML file (no `--json`). Default dest `reports/graph.html` or `reports/services.html`. Always pass `--output` to a tempfile on EXEC. Both views inline vis-network 10.1.2 (no CDN). Graph stdout/`#evidence`: `source: Cozo nodes/edges`, `limit:`, `truncated:`, `communities:`, `asset:`, then `Drawn: N nodes, M edges`. Services gated: `source: declared overlay; inference gated` (optional `persisted N not shown`); enabled: `source: persisted service_roots`. Services stdout has no `Drawn:`. |
+| `ledgerful intent demo` | Interactive TUI demo (mock data). Non-interactive / non-TTY exits non-zero; stderr names the refuse plus `Next: run \`ledgerful intent demo\` in an interactive terminal` (TUI demo, not a batch workflow). No `--json`. |
 
 ## `ledgerful ledger recovery plan` / `ledger recovery apply`
 
@@ -89,7 +90,7 @@ Pending/drift slice of `ledger status` (`--json` / `--compact` only). Bare `ledg
 
 ## `ledgerful ledger stack`
 
-SQLite inspect of commit-path stack rules / validators / mappings — not verify auto-policy, not `.ledgerful/rules.toml`, not `policy check`. Empty next: `ledgerful ledger register rule` and `ledgerful ledger register validator` (clap required flags on human/`--help` only; no mapping CLI; no `config set`). Human `TECH STACK RULES` prints `Blocking at start_change: yes|no` (two-factor: `ledger.enforcement_enabled` and `gate.mode=enforce`). `--json`: schemaVersion 1 object `kind: "ledgerStack"` (`empty` + `next`; snake_case item structs; omit-false `rulesNotEnforced`).
+SQLite inspect of commit-path stack rules / validators / mappings — not verify auto-policy, not `.ledgerful/rules.toml`, not `policy check`. Empty next: `ledgerful ledger register rule` and `ledgerful ledger register validator` (clap required flags on human/`--help` only; no mapping CLI; no `config set`). Register success next: rule → `ledgerful ledger stack`; validator → `ledgerful ledger validator list`. Human `TECH STACK RULES` prints `Blocking at start_change: yes|no` (two-factor: `ledger.enforcement_enabled` and `gate.mode=enforce`). `--json`: schemaVersion 1 object `kind: "ledgerStack"` (`empty` + `next`; snake_case item structs; omit-false `rulesNotEnforced`).
 
 ## `ledgerful ledger validator list`
 

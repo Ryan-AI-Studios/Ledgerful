@@ -43,6 +43,10 @@ struct SvcEdge {
     pattern: String,
 }
 
+fn format_graph_drawn(nodes: usize, edges: usize) -> String {
+    format!("Drawn: {nodes} nodes, {edges} edges")
+}
+
 fn graph_banner_tokens(limit: usize, truncated: bool, communities: &str) -> String {
     let truncated = if truncated { "yes" } else { "no" };
     format!(
@@ -271,6 +275,7 @@ pub fn execute_viz(
     write_viz_file(&out, &html)?;
     println!("{banner}");
     println!("Visualization generated at {}", out.display());
+    println!("{}", format_graph_drawn(nodes.len(), edges.len()));
     Ok(())
 }
 
@@ -969,6 +974,12 @@ mod tests {
             "vendored vis-network must not contain raw </script>"
         );
         assert!(VIS_NETWORK_JS.contains("vis.Network") || VIS_NETWORK_JS.contains("Network"));
+    }
+
+    #[test]
+    fn viz_graph_drawn_line_names_counts() {
+        assert_eq!(format_graph_drawn(3, 2), "Drawn: 3 nodes, 2 edges");
+        assert_eq!(format_graph_drawn(0, 0), "Drawn: 0 nodes, 0 edges");
     }
 
     #[test]

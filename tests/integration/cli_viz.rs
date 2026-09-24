@@ -1,6 +1,6 @@
 #![allow(non_snake_case)]
 
-use crate::common::{DirGuard, git_add_and_commit, setup_git_repo};
+use crate::common::{DirGuard, git_add_and_commit, run_cli, setup_git_repo};
 use ledgerful::commands::init::execute_init;
 use ledgerful::commands::viz::execute_viz;
 use ledgerful::state::storage::StorageManager;
@@ -259,4 +259,64 @@ fn viz_graph__entity_and_limit_plus_one_truncation() {
     let exact_html = fs::read_to_string(&exact_path).unwrap();
     assert!(exact_html.contains(&format!("limit: {node_count}")));
     assert!(exact_html.contains("truncated: no"));
+}
+
+#[test]
+fn viz_graph_stdout_prints_drawn() {
+    let (tmp, _guard) = init_repo();
+    let root = tmp.path();
+    let storage = StorageManager::init(root.join(".ledgerful/state/ledger.db").as_path()).unwrap();
+    let cozo = storage.cozo().expect("cozo after init");
+    cozo.run_script(
+        "?[id, label, category, risk_score, metadata] <- [ \
+            ['alpha', 'alpha', 'file', 0.1, '{}'], \
+            ['beta', 'beta', 'file', 0.2, '{}'], \
+            ['gamma', 'gamma', 'file', 0.3, '{}'] \
+         ] :put node",
+    )
+    .unwrap();
+    cozo.run_script(
+        "?[source, target, relation, confidence, provenance_id] <- [ \
+            ['alpha', 'beta', 'calls', 1.0, ''], \
+            ['gamma', 'gamma', 'self', 1.0, ''] \
+         ] :put edge",
+    )
+    .unwrap();
+    storage.shutdown().unwrap();
+
+    let out_path = root.join("drawn.html");
+    let out_str = out_path.to_str().expect("utf8 viz output");
+    let (stdout, stderr, code) = run_cli(root, &["viz", "--output", out_str, "--limit", "50"]);
+    assert_eq!(code, 0, "viz graph failed: {stderr} {stdout}");
+    assert!(
+        stdout.contains("source: Cozo nodes/edges"),
+        "missing banner: {stdout}"
+    );
+    assert!(
+        stdout.contains("Drawn:") && !stdout.contains("Drawn: 0 nodes, 0 edges"),
+        "seeded graph must print a non-zero Drawn line: {stdout}"
+    );
+    assert!(
+        stdout.contains("2 edges"),
+        "seeded two both-ends edges: {stdout}"
+    );
+}
+
+#[test]
+fn viz_services_stdout_omits_drawn() {
+    let (tmp, _guard) = init_repo();
+    let root = tmp.path();
+    let out_path = root.join("services-drawn.html");
+    let out_str = out_path.to_str().expect("utf8 services output");
+    let (stdout, stderr, code) = run_cli(
+        root,
+        &[
+            "viz", "--view", "services", "--output", out_str, "--limit", "50",
+        ],
+    );
+    assert_eq!(code, 0, "viz services failed: {stderr} {stdout}");
+    assert!(
+        !stdout.contains("Drawn:"),
+        "services stdout must not print graph Drawn: {stdout}"
+    );
 }
