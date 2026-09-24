@@ -17,6 +17,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`viz` names what was drawn; non-TTY `intent demo` and register success name a next (0429):**
+  graph stdout prints `Drawn: N nodes, M edges` after the path. Non-interactive
+  `intent demo` refuses on stderr with a TTY next. `ledger register`
+  success points at `ledger stack` / `validator list`.
+
 - **`services list` drops directory-only inferred names; empty `deploy impact` says what would populate (0428):**
   default list keeps declared or `api_routes` rows and names `--include modules`
   when others are hidden. Human `deploy impact` `noMatches` leads with

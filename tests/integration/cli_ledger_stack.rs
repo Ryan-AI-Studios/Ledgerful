@@ -188,6 +188,10 @@ fn ledger_stack_populated_omits_next_keeps_mappings_honesty() {
         ],
     );
     assert_eq!(reg_code, 0, "register rule failed: {reg_err} {reg_out}");
+    assert!(
+        reg_out.contains("Next: ledgerful ledger stack"),
+        "register rule success must name stack: {reg_out}"
+    );
 
     let (out, err, code) = run_cli(tmp.path(), &["ledger", "stack"]);
     assert_eq!(code, 0, "populated stack should exit 0: {err}");
@@ -255,6 +259,10 @@ fn ledger_stack_category_filter_drives_empty_and_next() {
         ],
     );
     assert_eq!(reg_code, 0, "register rule failed: {reg_err} {reg_out}");
+    assert!(
+        reg_out.contains("Next: ledgerful ledger stack"),
+        "register rule success must name stack: {reg_out}"
+    );
 
     let (bug_out, bug_err, bug_code) =
         run_cli(tmp.path(), &["ledger", "stack", "BUGFIX", "--json"]);
@@ -300,6 +308,10 @@ fn register_forbidden_term(root: &Path) {
         ],
     );
     assert_eq!(reg_code, 0, "register rule failed: {reg_err} {reg_out}");
+    assert!(
+        reg_out.contains("Next: ledgerful ledger stack"),
+        "register rule success must name stack: {reg_out}"
+    );
 }
 
 #[test]

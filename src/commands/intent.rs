@@ -1,10 +1,18 @@
 use crate::ui::intent_tui::{IntentState, run_tui};
 use miette::{IntoDiagnostic, Result};
 
+const INTENT_DEMO_REFUSE: &str =
+    "Cannot launch intent demo: terminal is non-interactive or not a TTY";
+const INTENT_DEMO_NEXT: &str = "Next: run `ledgerful intent demo` in an interactive terminal. This command is a TUI demo, not a non-interactive workflow.";
+
+pub(crate) fn format_intent_demo_refuse() -> String {
+    format!("{INTENT_DEMO_REFUSE}\n{INTENT_DEMO_NEXT}")
+}
+
 pub fn execute_intent_demo() -> Result<()> {
     use std::io::IsTerminal;
     if !crate::util::term::is_interactive() || !std::io::stdout().is_terminal() {
-        miette::bail!("Cannot launch intent demo: terminal is non-interactive or not a TTY");
+        miette::bail!("{}", format_intent_demo_refuse());
     }
 
     let mock_state = IntentState::new(
@@ -27,4 +35,19 @@ pub fn execute_intent_demo() -> Result<()> {
         println!("\nAborted intent entry.");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn intent_demo_refuse_names_tty_next() {
+        let s = format_intent_demo_refuse();
+        assert!(s.starts_with(INTENT_DEMO_REFUSE));
+        assert!(s.contains('\n'));
+        assert!(s.contains(INTENT_DEMO_NEXT));
+        assert_eq!(s, format!("{INTENT_DEMO_REFUSE}\n{INTENT_DEMO_NEXT}"));
+        assert!(!s.contains(&format!("{INTENT_DEMO_REFUSE} {INTENT_DEMO_NEXT}")));
+    }
 }
