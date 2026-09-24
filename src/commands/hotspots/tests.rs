@@ -2415,6 +2415,35 @@ fn hotspots_semantic__overall_expired__emits_empty_files_stage_semantic() {
 
 #[test]
 #[allow(non_snake_case)]
+fn hotspots_semantic__mid_query_budget__stage_semantic_no_provenance() {
+    use crate::impact::budget::{CompletenessStop, completeness_for_overall};
+    use crate::semantic::hotspots::SemanticMatch;
+
+    let completeness = completeness_for_overall(CompletenessStop::Budget, Some(25), "semantic");
+    let matches = vec![SemanticMatch {
+        file1: "src/a.rs".to_string(),
+        name1: "fn_a".to_string(),
+        offset1: 0,
+        file2: "src/b.rs".to_string(),
+        name2: "fn_b".to_string(),
+        offset2: 0,
+        similarity: 0.99,
+    }];
+    let output = wrap_hotspots_list_json_with_completeness(matches, 10, Some(&completeness), None);
+    assert_eq!(output["schemaVersion"], 1);
+    assert_eq!(output["completeness"]["stage"], "semantic");
+    assert_eq!(output["completeness"]["scope"], "overall");
+    assert_eq!(output["completeness"]["stop"], "budget");
+    assert_eq!(output["completeness"]["budgetSecs"], 25);
+    assert_eq!(output["files"].as_array().map(Vec::len), Some(1));
+    assert!(
+        output.get("provenance").is_none(),
+        "--semantic must omit provenance: {output}"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
 fn format_snapshot_persist_message__four_variants__locked_copy() {
     assert_eq!(
         format_snapshot_persist_message(CouplingsPersistOutcome::Persisted),

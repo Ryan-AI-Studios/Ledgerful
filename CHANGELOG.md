@@ -17,6 +17,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`hotspots --semantic` honors the 25s overall Instant (0423):**
+  the Cozo self-join is paged by `file_path` and stops with
+  `completeness.stage == "semantic"` plus `hotspots stopped: overall budget`.
+  `--timeout 0` stays unbounded. `--limit` remains emit-only.
+
 - **`index --check --strict` exits 1 when a typed surface is `stale` (0421):**
   `--strict` now consults `surfaces[]` (mapping / routes / embeddings /
   files / symbols), not only `staleFiles`. `FreshPopulated` stays a
