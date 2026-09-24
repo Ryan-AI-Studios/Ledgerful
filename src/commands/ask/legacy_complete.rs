@@ -1,5 +1,6 @@
 //! Legacy single-backend complete path for `ask` (no provider-priority chain).
 
+use crate::commands::ask::gather::{EvidenceCounts, ask_backend_token, format_ask_meta_line};
 use crate::commands::ask::{
     AskTimeoutKind, Backend, ask_completion_options, degrade_to_context, run_gemini_synthesis,
     sanitize_error_for_logging,
@@ -27,6 +28,8 @@ pub(crate) struct LegacyCompleteInputs<'a> {
     pub adaptive_mode: AdaptiveMode,
     pub truncated: bool,
     pub mode: GeminiMode,
+    pub evidence: EvidenceCounts,
+    pub gather_ms: u128,
 }
 
 pub(crate) fn execute_legacy_complete(inputs: LegacyCompleteInputs<'_>) -> Result<()> {
@@ -44,6 +47,8 @@ pub(crate) fn execute_legacy_complete(inputs: LegacyCompleteInputs<'_>) -> Resul
         adaptive_mode,
         truncated,
         mode,
+        evidence,
+        gather_ms,
     } = inputs;
 
     match resolved_backend {
@@ -86,6 +91,17 @@ pub(crate) fn execute_legacy_complete(inputs: LegacyCompleteInputs<'_>) -> Resul
                             .style(Style::new().bold().green()))
                     );
                     println!("{}", response.text);
+                    println!(
+                        "{}",
+                        format_ask_meta_line(
+                            &evidence,
+                            gather_ms,
+                            ask_backend_token(resolved_backend),
+                            crate::local_model::client::is_length_stop(
+                                response.stop_reason.as_deref()
+                            ),
+                        )
+                    );
                     crate::commands::ask::finish_printed_ask(response.stop_reason.as_deref())
                 }
                 Err(e) => {
@@ -107,7 +123,17 @@ pub(crate) fn execute_legacy_complete(inputs: LegacyCompleteInputs<'_>) -> Resul
                                 latest_packet,
                                 adaptive_mode,
                                 truncated,
-                            )
+                            )?;
+                            println!(
+                                "{}",
+                                format_ask_meta_line(
+                                    &evidence,
+                                    gather_ms,
+                                    ask_backend_token(Backend::Gemini),
+                                    false,
+                                )
+                            );
+                            Ok(())
                         });
                     }
                     // Full multi-cause report once on terminal (M6/M7).
@@ -149,16 +175,28 @@ pub(crate) fn execute_legacy_complete(inputs: LegacyCompleteInputs<'_>) -> Resul
                 }
             }
         }
-        Backend::Gemini => run_gemini_synthesis(
-            config,
-            base_system_prompt,
-            user_prompt,
-            relevant_chunks,
-            gemini_timeout,
-            mode,
-            latest_packet,
-            adaptive_mode,
-            truncated,
-        ),
+        Backend::Gemini => {
+            run_gemini_synthesis(
+                config,
+                base_system_prompt,
+                user_prompt,
+                relevant_chunks,
+                gemini_timeout,
+                mode,
+                latest_packet,
+                adaptive_mode,
+                truncated,
+            )?;
+            println!(
+                "{}",
+                format_ask_meta_line(
+                    &evidence,
+                    gather_ms,
+                    ask_backend_token(resolved_backend),
+                    false,
+                )
+            );
+            Ok(())
+        }
     }
 }

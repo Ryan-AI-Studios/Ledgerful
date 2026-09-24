@@ -8,9 +8,10 @@ use crate::commands::ask::mix::{
     is_definition_shaped, is_kg_source, rewrite_identifiers, rrf_merge, split_ranked_source,
 };
 use crate::commands::ask::{
-    fetch_kg_bm25, fetch_kg_neighborhood, gather_semantic_chunks, should_prune_impact,
+    Backend, fetch_kg_bm25, fetch_kg_neighborhood, gather_semantic_chunks, should_prune_impact,
 };
 use crate::config::model::Config;
+use crate::config::model::Provider;
 use crate::impact::packet::ImpactPacket;
 use crate::local_model::pruner::{self, RankedChunk};
 use crate::retrieval::query::{QueryIntent, classify_query};
@@ -52,7 +53,7 @@ pub(crate) struct GatherResult {
 }
 
 /// Pinned stderr evidence tokens (0312). `structural` is omit-empty (0395).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct EvidenceCounts {
     pub semantic: usize,
     pub bm25: usize,
@@ -71,6 +72,46 @@ pub(crate) fn format_evidence_line(counts: &EvidenceCounts) -> String {
         line.push_str(&format!(" structural={}", counts.structural));
     }
     line
+}
+
+/// CLI kebab tokens for stdout `[AskMeta] provider=` (not serde snake_case).
+pub(crate) fn ask_backend_token(backend: Backend) -> &'static str {
+    match backend {
+        Backend::Local => "local",
+        Backend::Gemini => "gemini",
+        Backend::OllamaCloud => "ollama-cloud",
+        Backend::OpenRouter => "openrouter",
+    }
+}
+
+/// CLI kebab tokens for the provider-priority arm.
+pub(crate) fn ask_provider_token(provider: Provider) -> &'static str {
+    match provider {
+        Provider::Local => "local",
+        Provider::Gemini => "gemini",
+        Provider::OllamaCloud => "ollama-cloud",
+        Provider::OpenRouter => "openrouter",
+    }
+}
+
+/// Stdout trailer after a model answer. `length_stopped` is **not** the
+/// packet `truncate_for_context` boolean; the printed key stays `truncated=`.
+pub(crate) fn format_ask_meta_line(
+    counts: &EvidenceCounts,
+    gather_ms: u128,
+    provider: &str,
+    length_stopped: bool,
+) -> String {
+    let truncated = if length_stopped { "yes" } else { "no" };
+    let structural = if counts.structural > 0 {
+        format!(" structural={}", counts.structural)
+    } else {
+        String::new()
+    };
+    format!(
+        "[AskMeta] semantic={} bm25={} kg={} snippets={}{structural} gatherMs={} provider={} truncated={}",
+        counts.semantic, counts.bm25, counts.kg, counts.snippets, gather_ms, provider, truncated
+    )
 }
 
 const INSTRUCTION_PHRASES: &[&str] = &[
@@ -903,6 +944,66 @@ mod tests {
             some,
             "[Evidence] semantic=2 bm25=1 kg=0 snippets=3 structural=4"
         );
+    }
+
+    #[test]
+    fn ask_backend_token_pins_kebab_literals() {
+        assert_eq!(ask_backend_token(Backend::Local), "local");
+        assert_eq!(ask_backend_token(Backend::Gemini), "gemini");
+        assert_eq!(ask_backend_token(Backend::OllamaCloud), "ollama-cloud");
+        assert_eq!(ask_backend_token(Backend::OpenRouter), "openrouter");
+        assert_eq!(ask_provider_token(Provider::Local), "local");
+        assert_eq!(ask_provider_token(Provider::Gemini), "gemini");
+        assert_eq!(ask_provider_token(Provider::OllamaCloud), "ollama-cloud");
+        assert_eq!(ask_provider_token(Provider::OpenRouter), "openrouter");
+    }
+
+    #[test]
+    fn ask_meta_line_names_counts_and_truncated() {
+        let zeros = format_ask_meta_line(&EvidenceCounts::default(), 12, "local", false);
+        assert_eq!(
+            zeros,
+            "[AskMeta] semantic=0 bm25=0 kg=0 snippets=0 gatherMs=12 provider=local truncated=no"
+        );
+        let stopped = format_ask_meta_line(
+            &EvidenceCounts {
+                semantic: 1,
+                bm25: 2,
+                kg: 3,
+                snippets: 4,
+                read_failed: 0,
+                structural: 0,
+            },
+            8,
+            "gemini",
+            true,
+        );
+        assert_eq!(
+            stopped,
+            "[AskMeta] semantic=1 bm25=2 kg=3 snippets=4 gatherMs=8 provider=gemini truncated=yes"
+        );
+        let with_structural = format_ask_meta_line(
+            &EvidenceCounts {
+                semantic: 2,
+                bm25: 1,
+                kg: 0,
+                snippets: 3,
+                read_failed: 0,
+                structural: 4,
+            },
+            5,
+            "ollama-cloud",
+            false,
+        );
+        assert_eq!(
+            with_structural,
+            "[AskMeta] semantic=2 bm25=1 kg=0 snippets=3 structural=4 gatherMs=5 provider=ollama-cloud truncated=no"
+        );
+        // Packet truncate_for_context must not flip the key when length_stopped is false.
+        let packet_truncated_context =
+            format_ask_meta_line(&EvidenceCounts::default(), 1, "openrouter", false);
+        assert!(packet_truncated_context.contains("truncated=no"));
+        assert!(!packet_truncated_context.contains("truncated=yes"));
     }
 
     #[test]

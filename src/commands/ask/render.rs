@@ -24,6 +24,8 @@ pub(crate) fn execute_ask_with_providers(
     adaptive_mode: crate::local_model::context::AdaptiveMode,
     truncated: bool,
     entries: &[crate::config::model::ProviderEntry],
+    evidence: &crate::commands::ask::gather::EvidenceCounts,
+    gather_ms: u128,
 ) -> Result<()> {
     use crate::commands::ask::{AskTimeoutKind, complete_timeout_override, resolve_ask_timeout};
     use crate::config::model::Provider;
@@ -121,6 +123,17 @@ pub(crate) fn execute_ask_with_providers(
                                 .style(Style::new().bold().green()))
                         );
                         println!("{}", response.text);
+                        println!(
+                            "{}",
+                            crate::commands::ask::gather::format_ask_meta_line(
+                                evidence,
+                                gather_ms,
+                                crate::commands::ask::gather::ask_provider_token(entry.backend),
+                                crate::local_model::client::is_length_stop(
+                                    response.stop_reason.as_deref()
+                                ),
+                            )
+                        );
                         return crate::commands::ask::finish_printed_ask(
                             response.stop_reason.as_deref(),
                         );
@@ -163,7 +176,18 @@ pub(crate) fn execute_ask_with_providers(
                     truncated,
                     entry.model.as_deref(),
                 ) {
-                    Ok(()) => return Ok(()),
+                    Ok(()) => {
+                        println!(
+                            "{}",
+                            crate::commands::ask::gather::format_ask_meta_line(
+                                evidence,
+                                gather_ms,
+                                crate::commands::ask::gather::ask_provider_token(entry.backend),
+                                false,
+                            )
+                        );
+                        return Ok(());
+                    }
                     Err(e) => {
                         let err_str =
                             crate::commands::ask::sanitize_error_for_logging(&format!("{e}"));

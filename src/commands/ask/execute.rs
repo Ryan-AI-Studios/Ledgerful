@@ -1,5 +1,5 @@
 use crate::commands::ask::gather::{
-    format_gather_elapsed_ms, gather_impact_and_bridge, gather_semantic_and_kg,
+    EvidenceCounts, format_gather_elapsed_ms, gather_impact_and_bridge, gather_semantic_and_kg,
     global_system_prompt,
 };
 use crate::commands::ask::legacy_complete::{LegacyCompleteInputs, execute_legacy_complete};
@@ -68,6 +68,7 @@ pub fn execute_ask(opts: ExecuteAskOpts) -> Result<()> {
 
     let explicit_semantic = semantic;
     let mut gathered;
+    let gather_ms;
     {
         let _stage = stage_span!("ask_gather").entered();
         let started = Instant::now();
@@ -82,10 +83,10 @@ pub fn execute_ask(opts: ExecuteAskOpts) -> Result<()> {
             limit,
             no_kg_fallback,
         );
+        gather_ms = started.elapsed().as_millis();
         eprintln!(
             "{}",
-            format_gather_elapsed_ms(started.elapsed().as_millis())
-                .if_supports_color(Stream::Stderr, |s| s.dimmed())
+            format_gather_elapsed_ms(gather_ms).if_supports_color(Stream::Stderr, |s| s.dimmed())
         );
     }
     let semantic = (explicit_semantic || gathered.is_global) && !gathered.gather_skipped_trivial;
@@ -161,6 +162,11 @@ pub fn execute_ask(opts: ExecuteAskOpts) -> Result<()> {
         // TA14: If a provider priority list is configured, try each provider
         // in order, falling back to the next on degradable errors. If all
         // providers fail, degrade to context-only output (R4).
+        let trailer_counts = if gathered.gather_skipped_trivial {
+            EvidenceCounts::default()
+        } else {
+            gathered.evidence
+        };
         if !config.ask.providers.priority.is_empty() {
             let entries =
                 resolve_provider_entries(&config, backend).map_err(|e| miette::miette!("{e}"))?;
@@ -175,6 +181,8 @@ pub fn execute_ask(opts: ExecuteAskOpts) -> Result<()> {
                 adaptive_mode,
                 truncated,
                 &entries,
+                &trailer_counts,
+                gather_ms,
             );
         }
 
@@ -192,6 +200,8 @@ pub fn execute_ask(opts: ExecuteAskOpts) -> Result<()> {
             adaptive_mode,
             truncated,
             mode,
+            evidence: trailer_counts,
+            gather_ms,
         })
     }
 }
