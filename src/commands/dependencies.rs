@@ -12,7 +12,7 @@ use clap::{Args, Subcommand};
 use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream, Style};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 const ECOSYSTEM: &str = "rust/cargo";
@@ -105,6 +105,9 @@ struct ListedPackage {
     /// Locked version; null when not selected / no lock.
     #[serde(skip_serializing_if = "Option::is_none")]
     version: Option<String>,
+    /// `root` | `direct` | `transitive` — `--all` only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    relation: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     kind: Option<String>,
     ecosystem: String,
@@ -419,6 +422,7 @@ fn resolve_list(root: &Path) -> Result<ResolvedList> {
             ListedPackage {
                 name: d.name,
                 version: locked,
+                relation: None,
                 kind: Some(d.kind.as_str().to_string()),
                 ecosystem: ECOSYSTEM.to_string(),
                 source,
@@ -438,11 +442,22 @@ fn resolve_list(root: &Path) -> Result<ResolvedList> {
             .then_with(|| a.target.cmp(&b.target))
     });
 
+    let declared_names: HashSet<String> = direct.iter().map(|p| p.name.clone()).collect();
     let mut lock_packages: Vec<ListedPackage> = packages
         .iter()
         .map(|p| ListedPackage {
             name: p.name.clone(),
             version: Some(p.version.clone()),
+            relation: Some(
+                classify_lock_relation(
+                    &p.name,
+                    &p.version,
+                    &root_info.name,
+                    &version_map,
+                    &declared_names,
+                )
+                .to_string(),
+            ),
             kind: None,
             ecosystem: ECOSYSTEM.to_string(),
             source: p.source.clone(),
@@ -462,6 +477,28 @@ fn resolve_list(root: &Path) -> Result<ResolvedList> {
         lock_package_count,
         lock_missing,
     })
+}
+
+/// Classify a lock row for `--all`. Direct is `(name, locked version)` from the
+/// H1 root deps map — not a name-only declared set (same-name unused versions
+/// stay `transitive`). Name-in-declared fallback only when that name has no
+/// resolved locked version.
+fn classify_lock_relation(
+    name: &str,
+    lock_version: &str,
+    root_name: &str,
+    version_map: &HashMap<String, String>,
+    declared_names: &HashSet<String>,
+) -> &'static str {
+    if name == root_name {
+        return "root";
+    }
+    match version_map.get(name) {
+        Some(direct_ver) if direct_ver == lock_version => "direct",
+        Some(_) => "transitive",
+        None if declared_names.contains(name) => "direct",
+        None => "transitive",
+    }
 }
 
 fn kind_rank(kind: Option<&str>) -> u8 {
@@ -529,21 +566,36 @@ fn execute_list(json: bool, verbose: bool, all: bool) -> Result<()> {
                 .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().green()))
         );
         let mut table = Table::new();
-        table.set_header(vec!["Package", "Version", "Ecosystem", "Source"]);
+        table.set_header(vec![
+            "Package",
+            "Version",
+            "Relation",
+            "Ecosystem",
+            "Source",
+        ]);
         for dep in &packages {
             table.add_row(vec![
                 dep.name.clone(),
                 version_display(&dep.version).to_string(),
+                dep.relation.clone().unwrap_or_else(|| "-".to_string()),
                 dep.ecosystem.clone(),
                 source_display(&dep.source).to_string(),
             ]);
         }
         println!("{}", table);
-        println!(
-            "\nLock packages total: {} · Direct declared: {}",
-            resolved.lock_package_count,
-            resolved.direct.len()
-        );
+        if resolved.lock_missing {
+            println!("\nNote: Cargo.lock not found — --all is empty.");
+        } else {
+            let direct_lock = packages
+                .iter()
+                .filter(|p| p.relation.as_deref() == Some("direct"))
+                .count();
+            let transitive_lock = packages
+                .iter()
+                .filter(|p| p.relation.as_deref() == Some("transitive"))
+                .count();
+            println!("\nDirect: {direct_lock} · Transitive (lock-only): {transitive_lock}");
+        }
     } else {
         let header = if resolved.lock_missing {
             "Project Dependencies (direct, from Cargo.toml; no Cargo.lock)"
@@ -609,6 +661,34 @@ fn execute_list(json: bool, verbose: bool, all: bool) -> Result<()> {
     Ok(())
 }
 
+fn count_audit_findings(result: &crate::index::advisories::OsvResult) -> usize {
+    result
+        .results
+        .iter()
+        .flat_map(|src| src.packages.iter())
+        .filter_map(|pkg| pkg.vulnerabilities.as_ref())
+        .map(|vulns| vulns.len())
+        .sum()
+}
+
+fn format_audit_honesty(input: &str, finding_count: usize) -> String {
+    let mut lines = vec![
+        format!(
+            "Source: --input {input} (osv-scanner JSON). This command does not scan; it imports the file into the graph."
+        ),
+        format!("Findings: {finding_count}"),
+    ];
+    if finding_count == 0 {
+        lines.push(format!(
+            "Next: osv-scanner scan --format json -L Cargo.lock > {input}"
+        ));
+        lines.push(format!(
+            "      then ledgerful dependencies audit --input {input}"
+        ));
+    }
+    lines.join("\n")
+}
+
 fn execute_audit(input: String, json: bool) -> Result<()> {
     // Audit still requires git layout + Cozo write (populate KG).
     let layout = get_layout()?;
@@ -657,6 +737,10 @@ fn execute_audit(input: String, json: bool) -> Result<()> {
             }
         }
         println!("{}", table);
+        println!(
+            "\n{}",
+            format_audit_honesty(&input, count_audit_findings(&result))
+        );
     }
 
     Ok(())
@@ -977,5 +1061,102 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
         let resolved = resolve_list(root).expect("resolve");
         assert_eq!(resolved.root.version, "0.1.0");
         assert_eq!(resolved.root.source, "manifest");
+    }
+
+    #[test]
+    fn list_all_relation_is_version_aware() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        write_fixture(
+            root,
+            r#"
+[package]
+name = "demo"
+version = "0.1.0"
+
+[dependencies]
+multi = "2"
+"#,
+            Some(
+                r#"
+version = 3
+
+[[package]]
+name = "demo"
+version = "0.1.0"
+dependencies = [
+ "multi 2.0.0",
+]
+
+[[package]]
+name = "multi"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "multi"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#,
+            ),
+        );
+
+        let resolved = resolve_list(root).expect("resolve");
+        let rel = |name: &str, ver: &str| {
+            resolved
+                .lock_packages
+                .iter()
+                .find(|p| p.name == name && p.version.as_deref() == Some(ver))
+                .and_then(|p| p.relation.as_deref())
+        };
+        assert_eq!(rel("demo", "0.1.0"), Some("root"));
+        assert_eq!(rel("multi", "2.0.0"), Some("direct"));
+        assert_eq!(rel("multi", "1.0.0"), Some("transitive"));
+        let root_rows = resolved
+            .lock_packages
+            .iter()
+            .filter(|p| p.relation.as_deref() == Some("root"))
+            .count();
+        let n = resolved
+            .lock_packages
+            .iter()
+            .filter(|p| p.relation.as_deref() == Some("direct"))
+            .count();
+        let m = resolved
+            .lock_packages
+            .iter()
+            .filter(|p| p.relation.as_deref() == Some("transitive"))
+            .count();
+        assert_eq!(n + m + root_rows, resolved.lock_package_count);
+    }
+
+    #[test]
+    fn format_audit_empty_source_and_next() {
+        let text = format_audit_honesty("scan.json", 0);
+        assert!(
+            text.contains("Source: --input scan.json (osv-scanner JSON)"),
+            "{text}"
+        );
+        assert!(text.contains("does not scan"), "{text}");
+        assert!(text.contains("Findings: 0"), "{text}");
+        assert!(
+            text.contains("Next: osv-scanner scan --format json -L Cargo.lock > scan.json"),
+            "{text}"
+        );
+        assert!(
+            text.contains("then ledgerful dependencies audit --input scan.json"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn format_audit_populated_omits_next() {
+        let text = format_audit_honesty("scan.json", 2);
+        assert!(text.contains("Findings: 2"), "{text}");
+        assert!(
+            text.contains("Source: --input scan.json (osv-scanner JSON)"),
+            "{text}"
+        );
+        assert!(!text.contains("Next:"), "{text}");
     }
 }
