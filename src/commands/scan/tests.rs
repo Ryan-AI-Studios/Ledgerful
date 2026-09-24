@@ -1,7 +1,7 @@
 use super::execute::{
     changes_include_observability_config, compute_pr_scan_affected_flows,
     compute_pr_scan_test_gaps, graph_is_missing_or_stale, maybe_auto_analyze_graph,
-    should_print_scan_report_honesty, should_skip_auto_analyze_graph,
+    should_print_scan_report_honesty, should_skip_auto_analyze_graph, test_hooks,
 };
 use super::git::{is_missing_base_commit_error, parse_pr_range, resolve_commit_oid};
 use super::validate::{
@@ -487,6 +487,27 @@ fn should_skip_auto_analyze_graph__prospective_or_resolved_budget() {
 }
 
 #[test]
+fn scan_working_tree_persist_arm_is_not_gated_on_timeout_is_some() {
+    let src = include_str!("execute.rs");
+    assert!(
+        src.contains("should_skip_persist"),
+        "working-tree / base_ref must stay on the persist-aware arm"
+    );
+    let persist_at = src
+        .find("should_skip_persist")
+        .expect("persist-aware arm must call should_skip_persist");
+    let after = src.get(persist_at..).unwrap_or("");
+    assert!(
+        !after.contains("execute_impact_silent"),
+        "silent execute_impact_silent* fallback must be gone after the persist-aware arm"
+    );
+    assert!(
+        !src.contains("if timeout.is_some()"),
+        "persist-aware arm must not be gated on clap timeout.is_some()"
+    );
+}
+
+#[test]
 fn scan_timeout_path_keeps_blast_depth_warning() {
     let src = include_str!("execute.rs");
     assert!(
@@ -729,4 +750,172 @@ fn prospective_snapshot_roots_paths_at_repo_root_not_cwd_subdir() {
     // Wrong root (nested subdir) would mark the same path as Added/missing.
     let wrong = build_prospective_snapshot(&root.join("nested"), &parsed).unwrap();
     assert_eq!(wrong.changes[0].change_type, ChangeType::Added);
+}
+
+fn hermetic_dirty_scan_repo() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    use crate::state::reports::{LATEST_IMPACT_REPORT, write_impact_report};
+    use std::fs;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    // Nest the git root so federated `scan_siblings` walks this empty parent
+    // instead of the process Temp directory (38s+ on a busy Windows Temp).
+    let root = dir.path().join("repo");
+    fs::create_dir_all(&root).expect("nested repo");
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(&root)
+        .output()
+        .expect("git init");
+    for (key, value) in [("user.email", "t@t.com"), ("user.name", "T")] {
+        let cfg = std::process::Command::new("git")
+            .args(["config", key, value])
+            .current_dir(&root)
+            .output()
+            .unwrap_or_else(|_| panic!("git config {key}"));
+        assert!(cfg.status.success(), "git config {key} failed");
+    }
+    fs::create_dir_all(root.join("src")).expect("mkdir");
+    fs::write(root.join("src/exists.rs"), "fn x() {}").expect("write");
+    std::process::Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(&root)
+        .output()
+        .expect("add");
+    std::process::Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(&root)
+        .output()
+        .expect("commit");
+    fs::write(root.join("src/exists.rs"), "fn x() { 1 }").expect("dirty");
+
+    let utf8 = camino::Utf8Path::from_path(&root).expect("utf8");
+    let layout = Layout::new(utf8);
+    layout.ensure_state_dir().expect("state");
+    fs::write(
+        layout.config_file(),
+        "[hotspots]\nhistory_budget_secs = 1\n[federation]\nscan_timeout_secs = 1\nscan_file_budget = 1\n",
+    )
+    .expect("destress config");
+    let seed = crate::impact::packet::ImpactPacket {
+        schema_version: "v1".to_string(),
+        head_hash: Some("SEED_MARKER_0424_SCAN_PERSIST".to_string()),
+        risk_reasons: vec!["seed-scan-persist-do-not-clobber".to_string()],
+        ..Default::default()
+    };
+    write_impact_report(&layout, &seed).expect("seed report");
+    let report_path = layout
+        .reports_dir()
+        .join(LATEST_IMPACT_REPORT)
+        .as_std_path()
+        .to_path_buf();
+    (dir, root, report_path)
+}
+
+#[test]
+#[allow(non_snake_case)]
+#[serial_test::serial(cwd)]
+fn execute_scan_with_opts__omitted_timeout_and_cancel__does_not_write_latest_impact() {
+    use crate::commands::scan::execute_scan_with_opts;
+    use crate::tests::DirGuard;
+    use std::fs;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    let (_dir, root, report_path) = hermetic_dirty_scan_repo();
+    let before = fs::read_to_string(&report_path).expect("read before");
+    assert!(before.contains("SEED_MARKER_0424_SCAN_PERSIST"));
+
+    let _cwd = DirGuard::new(&root);
+    test_hooks::set_cancel(Some(Arc::new(AtomicBool::new(true))));
+    let out = root.join("scan-out-0424-cancel.json");
+    execute_scan_with_opts(
+        true,
+        false,
+        true,
+        Some(out),
+        None,
+        None,
+        None,
+        None,
+        Vec::new(),
+        false,
+        None,
+        false,
+        None,
+    )
+    .expect("omitted timeout + cancel");
+    test_hooks::set_cancel(None);
+
+    let after = fs::read_to_string(&report_path).expect("read after");
+    assert_eq!(
+        before, after,
+        "omitted --timeout with injected cancel must not rewrite latest-impact.json"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+#[serial_test::serial(cwd)]
+#[serial_test::serial(env)]
+fn execute_scan_with_opts__timeout_zero_without_cancel__may_persist_latest_impact() {
+    use crate::commands::helpers::{LEDGERFUL_STATE_DIR_ENV, get_layout};
+    use crate::commands::scan::execute_scan_with_opts;
+    use crate::config::load::load_config;
+    use crate::impact::budget::HISTORY_BUDGET_ENV;
+    use crate::tests::DirGuard;
+    use std::fs;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    mod env_guard {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/integration/common/env_guard.rs"
+        ));
+    }
+    use env_guard::TempEnv;
+
+    let (_dir, root, report_path) = hermetic_dirty_scan_repo();
+    let before = fs::read_to_string(&report_path).expect("read before");
+    assert!(before.contains("SEED_MARKER_0424_SCAN_PERSIST"));
+
+    let _cwd = DirGuard::new(&root);
+    let _state = TempEnv::remove(LEDGERFUL_STATE_DIR_ENV);
+    let _hist = TempEnv::set(HISTORY_BUDGET_ENV, "1");
+    let _offline = TempEnv::set("LEDGERFUL_NO_NETWORK", "1");
+    let layout = get_layout().expect("temp layout");
+    let loaded = load_config(&layout).expect("destress config");
+    assert_eq!(
+        loaded.hotspots.history_budget_secs, 1,
+        "hermetic destress config must load"
+    );
+    assert_eq!(loaded.federation.scan_timeout_secs, 1);
+    test_hooks::set_cancel(Some(Arc::new(AtomicBool::new(false))));
+    let out = root.join("scan-out-0424-persist.json");
+    execute_scan_with_opts(
+        true,
+        false,
+        true,
+        Some(out),
+        None,
+        None,
+        None,
+        None,
+        Vec::new(),
+        false,
+        None,
+        false,
+        Some(0),
+    )
+    .expect("timeout 0 without cancel");
+
+    let after = fs::read_to_string(&report_path).expect("read after");
+    assert_ne!(
+        before, after,
+        "timeout 0 without cancel must be allowed to persist latest-impact.json"
+    );
+    assert!(
+        !after.contains("SEED_MARKER_0424_SCAN_PERSIST"),
+        "persisted packet must replace the 0424 seed marker"
+    );
 }

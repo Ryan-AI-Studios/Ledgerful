@@ -337,24 +337,30 @@ pub fn format_provenance_footer(p: &HotspotProvenance) -> String {
     }
 }
 
-/// CLI > env > config.toml > 45. Unparseable env warns and falls through.
-pub fn resolve_history_budget_secs(cli_timeout: Option<u64>, config_secs: u64) -> u64 {
-    if let Some(cli) = cli_timeout {
+/// CLI > env > config.toml. Unparseable env warns and falls through.
+/// Empty or whitespace-only env is treated as unset (no warn).
+pub fn resolve_cli_env_config_secs(cli: Option<u64>, env_name: &str, config_secs: u64) -> u64 {
+    if let Some(cli) = cli {
         return cli;
     }
-    match std::env::var(HISTORY_BUDGET_ENV) {
+    match std::env::var(env_name) {
         Ok(raw) if !raw.trim().is_empty() => match raw.trim().parse::<u64>() {
             Ok(v) => v,
             Err(_) => {
                 tracing::warn!(
                     value = %raw,
-                    "{HISTORY_BUDGET_ENV} is not a valid u64; falling through to config"
+                    "{env_name} is not a valid u64; falling through to config"
                 );
                 config_secs
             }
         },
         _ => config_secs,
     }
+}
+
+/// CLI > env > config.toml > 45. Unparseable env warns and falls through.
+pub fn resolve_history_budget_secs(cli_timeout: Option<u64>, config_secs: u64) -> u64 {
+    resolve_cli_env_config_secs(cli_timeout, HISTORY_BUDGET_ENV, config_secs)
 }
 
 /// Resolve once into `Config.hotspots.history_budget_secs` (runtime only).
@@ -368,22 +374,7 @@ pub fn apply_resolved_history_budget(
 
 /// CLI > env > config.toml > 25. Unparseable env warns and falls through.
 pub fn resolve_prospective_budget_secs(cli_timeout: Option<u64>, config_secs: u64) -> u64 {
-    if let Some(cli) = cli_timeout {
-        return cli;
-    }
-    match std::env::var(PROSPECTIVE_BUDGET_ENV) {
-        Ok(raw) if !raw.trim().is_empty() => match raw.trim().parse::<u64>() {
-            Ok(v) => v,
-            Err(_) => {
-                tracing::warn!(
-                    value = %raw,
-                    "{PROSPECTIVE_BUDGET_ENV} is not a valid u64; falling through to config"
-                );
-                config_secs
-            }
-        },
-        _ => config_secs,
-    }
+    resolve_cli_env_config_secs(cli_timeout, PROSPECTIVE_BUDGET_ENV, config_secs)
 }
 
 /// Resolve once into `Config.impact.prospective_budget_secs` (runtime only).
@@ -398,22 +389,7 @@ pub fn apply_resolved_prospective_budget(
 /// CLI > env > config.toml > 25. Unparseable env warns and falls through.
 /// Distinct from [`resolve_prospective_budget_secs`] and [`resolve_review_budget_secs`].
 pub fn resolve_hotspots_overall_budget_secs(cli_timeout: Option<u64>, config_secs: u64) -> u64 {
-    if let Some(cli) = cli_timeout {
-        return cli;
-    }
-    match std::env::var(HOTSPOTS_OVERALL_BUDGET_ENV) {
-        Ok(raw) if !raw.trim().is_empty() => match raw.trim().parse::<u64>() {
-            Ok(v) => v,
-            Err(_) => {
-                tracing::warn!(
-                    value = %raw,
-                    "{HOTSPOTS_OVERALL_BUDGET_ENV} is not a valid u64; falling through to config"
-                );
-                config_secs
-            }
-        },
-        _ => config_secs,
-    }
+    resolve_cli_env_config_secs(cli_timeout, HOTSPOTS_OVERALL_BUDGET_ENV, config_secs)
 }
 
 /// True when an overall Instant has already elapsed.
@@ -422,90 +398,28 @@ pub fn overall_deadline_fired(deadline: Option<Instant>) -> bool {
 }
 
 /// CLI > env > config.toml > 25. Unparseable env warns and falls through.
-/// Distinct from prospective / review / hotspots overall resolvers.
-/// CLI > env > config.toml > 25. Unparseable env warns and falls through.
 /// Distinct from prospective / review / hotspots / audit / deploy resolvers.
 pub fn resolve_bridge_export_overall_budget_secs(
     cli_timeout: Option<u64>,
     config_secs: u64,
 ) -> u64 {
-    if let Some(cli) = cli_timeout {
-        return cli;
-    }
-    match std::env::var(BRIDGE_EXPORT_OVERALL_BUDGET_ENV) {
-        Ok(raw) if !raw.trim().is_empty() => match raw.trim().parse::<u64>() {
-            Ok(v) => v,
-            Err(_) => {
-                tracing::warn!(
-                    value = %raw,
-                    "{BRIDGE_EXPORT_OVERALL_BUDGET_ENV} is not a valid u64; falling through to config"
-                );
-                config_secs
-            }
-        },
-        _ => config_secs,
-    }
+    resolve_cli_env_config_secs(cli_timeout, BRIDGE_EXPORT_OVERALL_BUDGET_ENV, config_secs)
 }
 
 pub fn resolve_audit_overall_budget_secs(cli_timeout: Option<u64>, config_secs: u64) -> u64 {
-    if let Some(cli) = cli_timeout {
-        return cli;
-    }
-    match std::env::var(AUDIT_OVERALL_BUDGET_ENV) {
-        Ok(raw) if !raw.trim().is_empty() => match raw.trim().parse::<u64>() {
-            Ok(v) => v,
-            Err(_) => {
-                tracing::warn!(
-                    value = %raw,
-                    "{AUDIT_OVERALL_BUDGET_ENV} is not a valid u64; falling through to config"
-                );
-                config_secs
-            }
-        },
-        _ => config_secs,
-    }
+    resolve_cli_env_config_secs(cli_timeout, AUDIT_OVERALL_BUDGET_ENV, config_secs)
 }
 
 /// CLI > env > config.toml > 25. Unparseable env warns and falls through.
 /// Distinct from [`resolve_prospective_budget_secs`] and [`resolve_review_budget_secs`].
 pub fn resolve_deploy_overall_budget_secs(cli_timeout: Option<u64>, config_secs: u64) -> u64 {
-    if let Some(cli) = cli_timeout {
-        return cli;
-    }
-    match std::env::var(DEPLOY_OVERALL_BUDGET_ENV) {
-        Ok(raw) if !raw.trim().is_empty() => match raw.trim().parse::<u64>() {
-            Ok(v) => v,
-            Err(_) => {
-                tracing::warn!(
-                    value = %raw,
-                    "{DEPLOY_OVERALL_BUDGET_ENV} is not a valid u64; falling through to config"
-                );
-                config_secs
-            }
-        },
-        _ => config_secs,
-    }
+    resolve_cli_env_config_secs(cli_timeout, DEPLOY_OVERALL_BUDGET_ENV, config_secs)
 }
 
 /// CLI > env > config.toml > 25. Unparseable env warns and falls through.
 /// Distinct from [`resolve_prospective_budget_secs`].
 pub fn resolve_review_budget_secs(cli_timeout: Option<u64>, config_secs: u64) -> u64 {
-    if let Some(cli) = cli_timeout {
-        return cli;
-    }
-    match std::env::var(REVIEW_BUDGET_ENV) {
-        Ok(raw) if !raw.trim().is_empty() => match raw.trim().parse::<u64>() {
-            Ok(v) => v,
-            Err(_) => {
-                tracing::warn!(
-                    value = %raw,
-                    "{REVIEW_BUDGET_ENV} is not a valid u64; falling through to config"
-                );
-                config_secs
-            }
-        },
-        _ => config_secs,
-    }
+    resolve_cli_env_config_secs(cli_timeout, REVIEW_BUDGET_ENV, config_secs)
 }
 
 /// Stderr token for an overall budget stop. `range` (review) is owned by
@@ -743,6 +657,52 @@ mod tests {
         drop(_env);
         let _bad = TempEnv::set(HISTORY_BUDGET_ENV, "nope");
         assert_eq!(resolve_history_budget_secs(None, 45), 45);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    #[serial_test::serial(env)]
+    fn resolve_cli_env_config_secs__empty_whitespace_invalid_zero_and_hundred() {
+        const ENV: &str = "LEDGERFUL_TEST_CLI_ENV_CONFIG_SECS";
+        let _clear = TempEnv::remove(ENV);
+        assert_eq!(resolve_cli_env_config_secs(None, ENV, 25), 25);
+        assert_eq!(resolve_cli_env_config_secs(Some(7), ENV, 25), 7);
+
+        let _empty = TempEnv::set(ENV, "");
+        assert_eq!(
+            resolve_cli_env_config_secs(None, ENV, 25),
+            25,
+            "empty env is unset (no warn, fall through to config)"
+        );
+        drop(_empty);
+
+        let _ws = TempEnv::set(ENV, "   ");
+        assert_eq!(
+            resolve_cli_env_config_secs(None, ENV, 25),
+            25,
+            "whitespace env is unset (no warn, fall through to config)"
+        );
+        drop(_ws);
+
+        let _bad = TempEnv::set(ENV, "invalid");
+        assert_eq!(
+            resolve_cli_env_config_secs(None, ENV, 25),
+            25,
+            "unparseable env warns and falls through to config"
+        );
+        drop(_bad);
+
+        let _zero = TempEnv::set(ENV, "0");
+        assert_eq!(resolve_cli_env_config_secs(None, ENV, 25), 0);
+        drop(_zero);
+
+        let _hundred = TempEnv::set(ENV, "100");
+        assert_eq!(resolve_cli_env_config_secs(None, ENV, 25), 100);
+        assert_eq!(
+            resolve_cli_env_config_secs(Some(3), ENV, 25),
+            3,
+            "CLI wins over env 100"
+        );
     }
 
     #[test]

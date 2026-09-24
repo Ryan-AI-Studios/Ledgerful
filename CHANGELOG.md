@@ -17,6 +17,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`scan --impact` omitted `--timeout` uses the persist-aware arm (0424):**
+  working-tree / `--base-ref` no longer take a silent re-snapshot path.
+  Omitted `--timeout` and `--timeout 25` share `should_skip_persist`;
+  `--timeout 0` stays unbounded. `LEDGERFUL_HISTORY_BUDGET_SECS` now
+  applies on the omitted-`--timeout` path.
+
 - **`hotspots --semantic` honors the 25s overall Instant (0423):**
   the Cozo self-join is paged by `file_path` and stops with
   `completeness.stage == "semantic"` plus `hotspots stopped: overall budget`.
