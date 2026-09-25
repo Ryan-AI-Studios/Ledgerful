@@ -51,6 +51,12 @@ jobs:
           set -euo pipefail
           chmod +x scripts/test-npm-publish-decision.sh scripts/npm-publish-decision.sh
           scripts/test-npm-publish-decision.sh
+      - name: Distribution floors matrix (0434)
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/test-refresh-distribution-floors.sh scripts/refresh-distribution-floors.sh
+          scripts/test-refresh-distribution-floors.sh
       - name: Run Gate B
         shell: bash
         run: |

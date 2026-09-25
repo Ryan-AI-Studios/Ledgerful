@@ -6,6 +6,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **In-tree brew/scoop templates and distribution-doc floors track Latest (0434):**
+  `packaging/` is bumped from published `*.sha256` bodies. After each tag,
+  `sync-engine-packaging` opens a packaging/docs PR; `release-pins.yml`
+  fails on `release pins` drift. Doc claim sites are rewritten from
+  `microsoft/winget-pkgs` manifests + GitHub Latest, not `winget search`.
+
 ## [0.2.15] - 2026-09-24
 
 ### Security

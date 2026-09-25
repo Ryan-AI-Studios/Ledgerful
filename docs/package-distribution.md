@@ -10,7 +10,7 @@ How Ledgerful reaches package managers. Distribution only — no engine runtime,
 | `cargo binstall --git …` | Engine-ready | `[package.metadata.binstall]` in `Cargo.toml`; uses release assets |
 | Homebrew tap | Live | Formula (CLI), not cask; tap-first (not homebrew-core); auto-bumped on each release |
 | Scoop bucket | Live | 64-bit portable `.zip` only; auto-bumped on each release |
-| winget (`Ledgerful.Ledgerful`) | Live at **0.2.13** (search 2026-09-18); GitHub **v0.2.14** published, index may lag | `winget install Ledgerful.Ledgerful`; `WINGET_TOKEN` is set; subsequent tags bump via SHA-pinned `winget-releaser` |
+| winget (`Ledgerful.Ledgerful`) | <!-- lf-floor:P-13 -->Live at **0.2.14** (manifests 2026-09-25); GitHub **v0.2.15** published, index may lag. Open version PR #440829.<!-- /lf-floor:P-13 --> | `winget install Ledgerful.Ledgerful`; `WINGET_TOKEN` is set; subsequent tags bump via SHA-pinned `winget-releaser` |
 | npm (`@ledgerful/mcp-server`) | Live | Independent wrapper version line; engine pin `ledgerfulEngineTag` (downloads release binary on install) |
 | crates.io `cargo install ledgerful` | **Not pursued** for distribution | Heavy native graph; prebuilt path preferred |
 
@@ -96,7 +96,7 @@ git push origin vX.Y.Z
 - `verify-manifests` (`needs: bump-manifests`): live `gh api` read of `homebrew-tap/ledgerful.rb` and `scoop-bucket/ledgerful.json` (not the job's own `bumped/` output).
 - `npm-publish` (`needs: publish` only; **nothing** depends on it): publishes `@ledgerful/mcp-server` via trusted publishing after release assets exist.
 
-### Post-cut pin closeout (0201)
+### Post-cut pin closeout (0201 / 0434)
 
 After a cut, `ledgerful release pins --json` (bare `ledgerful release` defaults
 to pins) diffs GitHub Latest tag + archive `assets[].digest` against in-tree
@@ -104,6 +104,18 @@ to pins) diffs GitHub Latest tag + archive `assets[].digest` against in-tree
 `@ledgerful/mcp-server` `ledgerfulEngineTag`. Overall `match` / `drift` /
 `unverified` (exit 0 / 1 / 2). This does **not** replace Gate A/B or
 `bump-manifests`.
+
+`release.yml` job `sync-engine-packaging` (`needs: bump-manifests`) copies the
+already-bumped tap/bucket files onto a **PR against `main`**
+(`chore/packaging-vX.Y.Z`, `RELEASE_CUT_TOKEN`; never `.github/`) and runs
+`scripts/refresh-distribution-floors.sh --write` so the five claim sites in
+`docs/installation.md` and `docs/package-distribution.md` track remotes
+(winget-pkgs directory listing + Latest tag — not `winget search`). Merge of
+that PR is a human decision.
+
+Workflow `release-pins.yml` is the visible floor on `push` to `main` for
+`packaging/**` and those two docs: fail on pins **drift (exit 1)**; warn on
+exit 2. It also runs `--check`. It is **not** a required protection check.
 
 ## Bump automation
 
@@ -188,7 +200,7 @@ On each release, job `bump-manifests` (after `publish`):
 
 **Invariant:** the bump script reads hashes **only** from published `.sha256` files. It never recomputes hashes from archives.
 
-`WINGET_TOKEN` **is set**; `winget-releaser` opens version PRs on subsequent tags. If the secret is unset, the job notices (`::notice::` + step summary) and skips — that is a failure mode, not the current ops story. Package `Ledgerful.Ledgerful` is live on winget at **0.2.13** (`winget search` 2026-09-18). GitHub Release **v0.2.14** is published; do not claim community-index 0.2.14 until search shows it.
+`WINGET_TOKEN` **is set**; `winget-releaser` opens version PRs on subsequent tags. If the secret is unset, the job notices (`::notice::` + step summary) and skips — that is a failure mode, not the current ops story. Package `Ledgerful.Ledgerful` is <!-- lf-floor:P-191 -->live on winget at **0.2.14** (`microsoft/winget-pkgs` `manifests/l/Ledgerful/Ledgerful`, 2026-09-25). GitHub Release **v0.2.15** is published; do not claim winget 0.2.15 until that directory exists. Open version PR #440829.<!-- /lf-floor:P-191 -->
 
 ### Local / CI fixture test
 
@@ -200,6 +212,8 @@ pwsh -File scripts/bump-manifests.ps1 `
   -OutDir $env:TEMP\bump-out
 
 cargo nextest run --test integration -E 'test(bump_manifests)'
+
+pwsh -File scripts/refresh-distribution-floors.ps1 -Check
 ```
 
 ```bash
@@ -208,13 +222,15 @@ scripts/bump-manifests.sh \
   --checksums-dir tests/fixtures/package-manifests/v0.1.8 \
   --packaging-dir packaging \
   --out-dir /tmp/bump-out
+
+bash scripts/test-refresh-distribution-floors.sh
 ```
 
 ## winget
 
-- Identifier: `Ledgerful.Ledgerful` (accepted 2026-07-30; live on winget at **0.2.13**, `winget search` 2026-09-18)
+- Identifier: `Ledgerful.Ledgerful` (accepted 2026-07-30; <!-- lf-floor:P-215 -->live on winget at **0.2.14**, manifests 2026-09-25<!-- /lf-floor:P-215 -->)
 - Install: `winget install Ledgerful.Ledgerful`
-- Note: community index **0.2.13**. GitHub Release **v0.2.14** published 2026-09-18; do not claim 0.2.14 live until search shows it. History: 0.2.12 was [#430322](https://github.com/microsoft/winget-pkgs/pull/430322) **merged** 2026-09-06; 0.2.11 was [#423248](https://github.com/microsoft/winget-pkgs/pull/423248) merged 2026-08-26; leftover [#415913](https://github.com/microsoft/winget-pkgs/pull/415913) (0.2.8) **merged**; [#416853](https://github.com/microsoft/winget-pkgs/pull/416853) (0.2.9) **closed-superseded**. The community index can lag a merge by minutes–hours; do not invent a `winget search` result.
+- Note: <!-- lf-floor:P-217 -->community index **0.2.14**. GitHub Release **v0.2.15** published 2026-09-25; do not claim 0.2.15 live until that directory exists. Open version PR #440829.<!-- /lf-floor:P-217 --> History: 0.2.12 was [#430322](https://github.com/microsoft/winget-pkgs/pull/430322) **merged** 2026-09-06; 0.2.11 was [#423248](https://github.com/microsoft/winget-pkgs/pull/423248) merged 2026-08-26; leftover [#415913](https://github.com/microsoft/winget-pkgs/pull/415913) (0.2.8) **merged**; [#416853](https://github.com/microsoft/winget-pkgs/pull/416853) (0.2.9) **closed-superseded**. The community index can lag a merge by minutes–hours; do not invent a `winget search` result.
 - Action: `vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e` (tag v2, SHA-pinned)
 - Installer regex: portable `ledgerful-x86_64-pc-windows-msvc.zip`
 - Secret: `WINGET_TOKEN` (PAT that can open PRs against `microsoft/winget-pkgs` via fork) — **is set**

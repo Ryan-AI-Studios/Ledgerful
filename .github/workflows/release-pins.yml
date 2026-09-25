@@ -1,0 +1,59 @@
+# 0434 — visible post-cut pin floor. Not a required protection check.
+# Fails on release-pins overall drift (exit 1). Exit 2 (unverified) warns.
+# Path filter omits mcp-server/package.json so the five-file cut merge does
+# not red this workflow before GitHub Latest exists.
+name: Release pins
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "packaging/**"
+      - "docs/installation.md"
+      - "docs/package-distribution.md"
+
+permissions:
+  contents: read
+
+jobs:
+  pins:
+    name: release pins + floors check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run release pins and floors --check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/refresh-distribution-floors.sh
+          tag="$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name)"
+          tmp="$(mktemp -d)"
+          gh release download "${tag}" \
+            --repo "${{ github.repository }}" \
+            --pattern "ledgerful-x86_64-unknown-linux-gnu.tar.gz" \
+            --dir "${tmp}" \
+            --clobber
+          tar -xzf "${tmp}/ledgerful-x86_64-unknown-linux-gnu.tar.gz" -C "${tmp}"
+          bin="${tmp}/ledgerful-x86_64-unknown-linux-gnu/ledgerful"
+          chmod +x "${bin}"
+          set +e
+          "${bin}" release --json
+          rc=$?
+          set -e
+          if [ "${rc}" -eq 1 ]; then
+            echo "error: release pins reported drift" >&2
+            exit 1
+          fi
+          if [ "${rc}" -eq 2 ]; then
+            echo "::warning::release pins unverified (exit 2); not failing the floor"
+          elif [ "${rc}" -ne 0 ]; then
+            echo "error: release pins exited ${rc}" >&2
+            exit "${rc}"
+          fi
+          scripts/refresh-distribution-floors.sh --check

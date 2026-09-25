@@ -681,6 +681,11 @@ jobs:
           head -n 40 bumped/homebrew/ledgerful.rb
           echo "---- scoop/ledgerful.json ----"
           cat bumped/scoop/ledgerful.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bumped-manifests
+          path: bumped/
+          if-no-files-found: error
       # NOTE: secrets context is NOT allowed in `if:` expressions (causes
       # "Unrecognized named-value: 'secrets'" and 0-job workflow failures).
       # Gate push vs fail inside the shell with env presence (require-secret.sh).
@@ -732,6 +737,111 @@ jobs:
             echo ""
             echo "Pushed v${version} to Ryan-AI-Studios/homebrew-tap and Ryan-AI-Studios/scoop-bucket."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # 0434: write bumped templates + distribution-doc floors back to a PR on
+  # main. Does not change bump-manifests / verify-manifests semantics.
+  # RELEASE_CUT_TOKEN cannot push .github/ — this job never stages workflows.
+  sync-engine-packaging:
+    name: Sync engine packaging templates
+    needs: bump-manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bumped-manifests
+          path: bumped
+      - name: Open packaging PR + overlay pins
+        shell: bash
+        env:
+          RELEASE_CUT_TOKEN: ${{ secrets.RELEASE_CUT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/require-secret.sh scripts/refresh-distribution-floors.sh
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p packaging/homebrew packaging/scoop
+          cp bumped/homebrew/ledgerful.rb packaging/homebrew/ledgerful.rb
+          cp bumped/scoop/ledgerful.json packaging/scoop/ledgerful.json
+          GH_TOKEN="${GITHUB_TOKEN}" scripts/refresh-distribution-floors.sh --write
+
+          git config user.name "ledgerful-release[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          open_sync="$(gh pr list --repo "${{ github.repository }}" --state open --json headRefName --jq '[.[] | select(.headRefName | startswith("chore/packaging-v"))] | length')"
+          existing_branch="$(git ls-remote --heads origin "chore/packaging-v${version}" | awk 'NF { print $1; exit }')"
+          if [ "${open_sync}" != "0" ]; then
+            echo "::notice::skipped: packaging-sync PR already open — not stacking"
+          elif [ -n "${existing_branch}" ]; then
+            echo "::notice::skipped: branch chore/packaging-v${version} already exists — not stacking"
+          else
+            scripts/require-secret.sh RELEASE_CUT_TOKEN
+            export GH_TOKEN="${RELEASE_CUT_TOKEN}"
+            gh auth setup-git
+            git add packaging/ docs/installation.md docs/package-distribution.md
+            if git diff --cached --quiet; then
+              echo "::notice::packaging templates and floors already match v${version}"
+            else
+              git commit -m "chore(packaging): pin templates to v${version}"
+              git push origin "HEAD:chore/packaging-v${version}"
+              gh pr create \
+                --repo "${{ github.repository }}" \
+                --base main \
+                --head "chore/packaging-v${version}" \
+                --title "chore(packaging): pin templates to v${version}" \
+                --body "$(cat <<EOF
+Post-tag closeout (0434). Copies \`bump-manifests\` output from the **tag** packaging tree onto \`main\` and refreshes the five distribution-doc claim sites from remotes.
+
+A concurrent \`main\`-side packaging edit would be overwritten by this copy.
+
+Does not touch \`.github/\`. Merge is a human decision (\`RELEASE_CUT_TOKEN\` has no commit-statuses write).
+EOF
+)"
+            fi
+          fi
+
+          overlay="$(mktemp -d)"
+          git clone --depth 1 --branch "${GITHUB_REF_NAME}" "https://github.com/${{ github.repository }}.git" "${overlay}/engine"
+          mkdir -p "${overlay}/engine/packaging/homebrew" "${overlay}/engine/packaging/scoop"
+          cp bumped/homebrew/ledgerful.rb "${overlay}/engine/packaging/homebrew/ledgerful.rb"
+          cp bumped/scoop/ledgerful.json "${overlay}/engine/packaging/scoop/ledgerful.json"
+          gh release download "${GITHUB_REF_NAME}" \
+            --repo "${{ github.repository }}" \
+            --pattern "ledgerful-x86_64-unknown-linux-gnu.tar.gz" \
+            --dir "${overlay}" \
+            --clobber
+          tar -xzf "${overlay}/ledgerful-x86_64-unknown-linux-gnu.tar.gz" -C "${overlay}"
+          bin="${overlay}/ledgerful-x86_64-unknown-linux-gnu/ledgerful"
+          chmod +x "${bin}"
+          run_pins() {
+            ( cd "${overlay}/engine" && "${bin}" release --json )
+          }
+          set +e
+          run_pins
+          rc=$?
+          if [ "${rc}" -eq 2 ]; then
+            echo "::warning::release pins unverified (exit 2); retrying once"
+            run_pins
+            rc=$?
+          fi
+          set -e
+          if [ "${rc}" -eq 1 ]; then
+            echo "error: overlay release pins reported drift" >&2
+            exit 1
+          fi
+          if [ "${rc}" -eq 2 ]; then
+            echo "::warning::overlay release pins still unverified after retry (not failing)"
+          elif [ "${rc}" -ne 0 ]; then
+            echo "error: overlay release pins exited ${rc}" >&2
+            exit "${rc}"
+          fi
 
   # Post-publish asset smoke (0098). needs: publish only so a failed bump-manifests
   # (missing token) does not delete version verification.
