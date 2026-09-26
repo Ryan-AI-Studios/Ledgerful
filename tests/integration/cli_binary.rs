@@ -107,10 +107,9 @@ fn readme_lists_every_default_help_command() {
         }
         names.push(name.to_string());
     }
-    assert_eq!(
-        names.len(),
-        45,
-        "default-features --help Commands: must list 45 names, got {}: {names:?}",
+    assert!(
+        names.len() >= 45,
+        "this binary's --help Commands: must list at least the 45 default-feature names, got {}: {names:?}",
         names.len()
     );
     let mut missing: Vec<String> = Vec::new();
