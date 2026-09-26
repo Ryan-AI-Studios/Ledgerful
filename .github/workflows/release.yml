@@ -1023,3 +1023,12 @@ EOF
           # Portable Windows zip from release.yml (not msi/exe installer)
           installers-regex: 'ledgerful-x86_64-pc-windows-msvc\.zip$'
           token: ${{ secrets.WINGET_TOKEN }}
+
+# ---------------------------------------------------------------------------
+# OPS NOTE (2026-09-26): tag-triggered only.
+# This workflow fires on `push: tags: ["v*"]` and manual `workflow_dispatch` - never on
+# a branch push. GitHub's registered workflow for this path has been reporting its own
+# name as the file path, and spawning 0-job "failure" runs on plain branch pushes (e.g.
+# the merge commit for chore/repo-hygiene-20260926). This comment-only commit exists to
+# force GitHub to re-register the workflow. Functional content is unchanged.
+# ---------------------------------------------------------------------------
