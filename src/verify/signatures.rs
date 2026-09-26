@@ -145,6 +145,9 @@ pub mod sig_exit {
     /// - `unsigned_fail` = unsigned rows counted only when signing is required
     /// - Chain breaks are reported via `invalid_count`-style path with exit 1
     ///   (callers set `chain_break=true`).
+    ///
+    /// Never returns [`POLICY`]. That const is kept for 0072 table completeness;
+    /// policy exits are requested by the command orchestrator.
     pub fn decide_signature_exit(
         invalid_count: usize,
         unsigned_fail: usize,

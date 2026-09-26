@@ -1,8 +1,8 @@
-use crate::commands::verify::enumerate_invalid_ledger_entries;
 use crate::config::model::GlobalRollupConfig;
 use crate::ledger::db::LedgerDb;
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
+use crate::verify::signatures::enumerate_invalid_ledger_entries;
 use camino::{Utf8Path, Utf8PathBuf};
 use ignore::WalkBuilder;
 use miette::{IntoDiagnostic, Result};
