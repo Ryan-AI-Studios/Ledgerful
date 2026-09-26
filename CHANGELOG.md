@@ -6,6 +6,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Root package metadata inherits from `[workspace.package]` (0439):**
+  `description`, `homepage`, `repository`, and `readme` are set with
+  `*.workspace = true` on root `[package]` so `cargo metadata` and
+  cargo-binstall `{ repo }` see non-empty values. Member
+  `ledgerful-ledger` inherits homepage/repository the same way.
+
 ### Changed
 
 - **Pure `verify` signature helpers live in `src/verify` (0438):**

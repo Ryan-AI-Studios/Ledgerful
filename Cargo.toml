@@ -3,6 +3,10 @@ name = "ledgerful"
 version = "0.2.15"
 edition = "2024"
 license-file = "LICENSE"
+description.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme.workspace = true
 
 [workspace]
 members = ["crates/ledgerful-ledger"]
