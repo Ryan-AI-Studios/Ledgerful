@@ -87,3 +87,45 @@ fn installation_md_has_live_brew_and_scoop_commands() {
         missing.join("\n  ")
     );
 }
+
+/// Locked Daily 5 fence literals (0436). Clap `before_help` names the door;
+/// this block is the skill Edit ladder made clap-valid (`search` needs QUERY).
+const DAILY_5_FENCE_LITERALS: &[&str] = &[
+    "ledgerful doctor --json",
+    "ledgerful change-context --json",
+    "ledgerful ledger status --compact",
+    "ledgerful search init --auto-index",
+    "ledgerful verify --scope fast",
+];
+
+#[test]
+fn readme_has_daily_5_front_door() {
+    let source = include_str!("../../README.md");
+    let heading = source
+        .find("## Daily 5")
+        .expect("README.md must have a ## Daily 5 heading");
+    let after = &source[heading..];
+    let fence_start = after
+        .find("```")
+        .expect("## Daily 5 must be followed by a fenced command block");
+    let after_open = &after[fence_start + 3..];
+    let nl = after_open
+        .find('\n')
+        .expect("Daily 5 opening fence must include a newline");
+    let body_and_rest = &after_open[nl + 1..];
+    let fence_end = body_and_rest
+        .find("```")
+        .expect("Daily 5 fenced block must close");
+    let body = &body_and_rest[..fence_end];
+    let mut missing: Vec<&str> = Vec::new();
+    for lit in DAILY_5_FENCE_LITERALS {
+        if !body.contains(lit) {
+            missing.push(lit);
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "Daily 5 fence is missing locked literals:\n  {}\nblock was:\n{body}",
+        missing.join("\n  ")
+    );
+}

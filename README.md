@@ -1,10 +1,78 @@
 # Ledgerful
 
-Ledgerful is a local-first Rust CLI for change intelligence and Gemini-assisted development. It turns repository edits into deterministic impact packets, risk summaries, hotspot rankings, targeted verification plans, and bounded Gemini context.
+Ledgerful is a local-first Rust CLI for deterministic change intelligence, transactional provenance, and codebase governance. It turns repository edits into impact packets, risk summaries, hotspot rankings, and targeted verification plans.
 
-The tool is designed to stay local and explain its work. It does not act as an autonomous coding agent.
+The tool is designed to stay local and explain its work. It does not act as an autonomous coding agent. Optional `ask` can use a Gemini HTTP backend (`GEMINI_API_KEY`) or a local model; Gemini is an optional Ask backend, not the product name.
 
-Ledgerful: existing `ledgerful` commands, hooks, and `.ledgerful/` state directories keep working unchanged. New installs also provide `ledgerful` and the short `ldg` alias.
+Existing `ledgerful` commands, hooks, and `.ledgerful/` state directories keep working unchanged. New installs also provide `ledgerful` and the short `ldg` alias.
+
+## Daily 5
+
+The same default path `--help` prints for agents:
+
+```powershell
+ledgerful doctor --json
+ledgerful change-context --json
+ledgerful ledger status --compact
+ledgerful search init --auto-index
+ledgerful verify --scope fast
+```
+
+First run on an empty `git init` repo is honest: doctor may create `.ledgerful/`, change-context can be `empty`, search can rebuild an empty index, and verify can pass with nothing to map. That sequence is clap-valid; it is not a setup wizard (`init` / `setup` / `demo` live later in this file).
+
+Captured 2026-09-26 with PATH `ledgerful 0.2.15 (4fc51f263901)` on `git init` only (execute tree `a8ced425`). Paths normalized to `C:\dev\my-project`. JSON is a real excerpt (`…` marks omitted keys and extra findings).
+
+`ledgerful doctor --json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "readyForPublish": true,
+  "summary": { "block": 0, "warn": 5, "info": 4, "…": "…" },
+  "findings": [
+    { "code": "graph-empty", "severity": "warn", "message": "Graph state: Empty (never indexed)" },
+    { "code": "search-empty", "severity": "warn", "message": "Search index: present but empty (0 documents); full-text search unusable until populated" },
+    { "code": "tool-gemini", "severity": "info", "message": "gemini NOT FOUND (optional CLI; not the Cloud Ask backend)" },
+    "…"
+  ],
+  "environment": {
+    "workRoot": "C:\\dev\\my-project",
+    "binaryVersion": "0.2.15",
+    "buildSha": "4fc51f263901"
+  },
+  "…": "omitted keys"
+}
+```
+
+`ledgerful change-context --json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "status": "empty",
+  "summary": "No file changes and no pending ledger transactions.",
+  "riskLevel": "low",
+  "…": "omitted keys"
+}
+```
+
+`ledgerful ledger status --compact`:
+
+```text
+Ledger [C:\dev\my-project]: 0 pending, 0 unaudited drift.
+```
+
+`ledgerful search init --auto-index` (stdout status lines):
+
+```text
+WARN Search index empty after rebuild (0 documents). No indexable content found — check ignore patterns; empty repo or filters may leave the index empty.
+```
+
+`ledgerful verify --scope fast`:
+
+```text
+Verification passed
+```
 
 ## Install
 
@@ -37,7 +105,7 @@ Manual install from a checkout (compiles from source):
 cargo install --path .
 ```
 
-The LSP daemon is behind an optional feature:
+The LSP `daemon` command and `usage` are optional Cargo features (not on default `--help`):
 
 ```powershell
 cargo install --path . --features daemon
@@ -45,7 +113,9 @@ cargo install --path . --features daemon
 
 See [docs/installation.md](docs/installation.md) for installer options, release assets, package managers, and agent bootstrap instructions.
 
-## Quickstart
+## First-time repo setup
+
+Daily 5 is the day-to-day door. To create `.ledgerful/` wiring, index, and a proof loop, see [`docs/golden-path.md`](docs/golden-path.md) and `ledgerful demo`. A one-time checkout sequence:
 
 ```powershell
 ledgerful init
@@ -58,69 +128,66 @@ ledgerful hotspots
 ledgerful ask "What should I verify next?"
 ```
 
+`ledgerful setup` is a guided wizard (welcome → init → doctor → first scan). It is not Daily 5.
+
 ## Commands
 
-- `init`: create `.ledgerful/`, starter config, starter rules, and `.gitignore` wiring.
-- `doctor`: report platform, shell, path, and tool health.
-- `index`: parse source code to build structural, entrypoint, call-graph, data-model, observability, and semantic vector indices. Supports SCIP ingestion.
-- `scan`: summarize staged and unstaged git changes.
-- `watch`: debounce file-system events into persisted batches.
-- `impact`: generate `latest-impact.json` with symbols, imports, runtime usage, complexity, temporal coupling, hotspots, CI predictions, and federated impact.
-- `verify`: build and run a deterministic verification plan using structural impact, temporal coupling, CI predictions, and Bayesian failure probability ordering. Includes `--explain` for LLM failure rationales.
-- `ask`: send sanitized impact context to Gemini or a local LLM. Supports natural-language `--semantic` codebase search.
-- `search`: sub-millisecond regex search via Tantivy trigrams and ranked BM25 codebase queries.
-- `hotspots`: rank files by temporal change frequency multiplied by complexity.
-- `surfaces` (alias `tour`): read-only inventory of advanced surfaces (ready / empty / gated). Does not enable coverage. Engine dogfood uses committed `.env.example` + `policies/` so schema and security can show ready after index.
-- `mcp`: run the Model Context Protocol stdio server for AI agent integration; also `mcp install|uninstall|status` for Top-N host config (claude-code, cursor, codex, copilot).
-- `viz`: export an interactive HTML Knowledge Graph visualization of codebase dependencies and risk heatmaps.
-- `federate`: export public interfaces, scan sibling repositories, and show live federated peers (path identity; `federate scan` prunes stale cache).
-- `ledger`: transactional architectural memory (start, commit, rollback, audit, search, adr).
-- `daemon`: optional LSP server with diagnostics, Hover, CodeLens, stale-data handling, and lifecycle management.
-- `reset`: remove derived local state. Preserves `ledger.db` by default; use `--include-ledger` to remove provenance data.
-- `demo`: generate a synthetic invoice-service repo with real signed ledger entries and a SOC2 evidence export. Fully offline, ~15-30s; cleans up by default (`--keep` to inspect).
-- `export evidence`: export a SOC2 evidence zip from the CLI (same artifact as the dashboard button). `--profile soc2 --out <path> [--force]`.
-- `timings`: local-only command self-timing (which of *your* commands is slow, and why). See [docs/self-timing.md](docs/self-timing.md).
+Default-features `--help` names, in clap order. Hidden variants (`bridge`, `search-trigrams`, `internal`) stay off this table. `services`, `deploy`, and `observability` stay callable and are marked `(gated)`.
 
-## Common Workflows
+| Command | Role |
+|---|---|
+| `init` | Initialize Ledgerful in the current repository |
+| `gate` | Gate mode configuration |
+| `policy` | Evaluate declared repository policy (CI merge gate) |
+| `release` | Diff GitHub Latest vs packaging templates, brew/scoop remotes, and npm engine pin |
+| `setup` | Guided onboarding wizard (welcome → init → doctor → first scan → success) |
+| `scan` | Scan git changes and identify affected symbols |
+| `impact` | Analyze impact of current changes |
+| `change-context` | Budgeted agent change packet (impact + doctor + ledger + readSet) |
+| `session` | One-shot agent session briefing (git + ledger + doctor + change-context + hotspots) |
+| `configure` | Applicable config gaps and named `--apply` after HITL (no TUI) |
+| `review` | Range review packet for agents (`kind: review`) |
+| `index` | Index the project for search and discovery |
+| `search` | Search the codebase using high-performance regex or semantic search |
+| `hotspots` | Rank files by change frequency and complexity (Hotspots) |
+| `endpoints` | List and filter API endpoints |
+| `symbols` | List indexed symbols (scoped path/changed/kind/pub inventory; not search) |
+| `surfaces` | Inventory of advanced surfaces (ready / empty / gated); alias `tour` |
+| `federate` | Manage cross-repo federation |
+| `data-models` | Manage data models and schema migrations |
+| `ci` | CI configuration and gate commands |
+| `dependencies` | Manage project dependencies and security advisories |
+| `security` | Manage security boundaries and policies |
+| `tests` | List tests validating a specific entity |
+| `ledger` | Manage project ledger and transactional provenance |
+| `verify` | Run verification plan (predictive Bayesian testing) |
+| `ask` | Ask Gemini or a local model for assistance based on the current context |
+| `intent` | Manage Ledgerful intent capture and TUI interaction |
+| `reset` | Reset Ledgerful state or configuration |
+| `doctor` | Health check for Ledgerful and local model stack |
+| `status` | Ledger pending/drift status (`--json` / `--compact`; not a full alias of `ledger status`) |
+| `config` | Configuration management |
+| `dead-code` | Detect likely dead code across the repository |
+| `audit` | Perform a holistic project audit or history for an entity |
+| `timings` | Local-only per-command timing analysis (Track 0043; `--global` is Track 0044) |
+| `viz` | Generate an interactive visualization of the knowledge graph |
+| `update` | Update the Ledgerful binary or migrate repository state |
+| `watch` | Watch repository for changes and run incremental graph sync |
+| `sync` | Team ledger synchronization [Available — opt-in shared-folder v1] |
+| `schedule` | Schedule nightly indexing and graph analysis tasks |
+| `viz-server` | Knowledge graph visualization server |
+| `export` | Export evidence artifacts (SOC2, etc.) |
+| `web` | Launch the Ledgerful local web dashboard |
+| `mcp` | Run the MCP server (stdio) or install/uninstall host platform config |
+| `openapi` | Print the canonical OpenAPI JSON spec for this build to stdout |
+| `demo` | Generate a disposable demonstration repo with signed ledger entries, cryptographic VALID proof, and a DEMO evidence export (see `docs/golden-path.md`) |
+| `services` (gated) | Service boundary and topology commands |
+| `deploy` (gated) | Deployment manifest and surface commands |
+| `observability` (gated) | Manage runtime observability and SLOs |
 
-Generate an impact report using first-parent git history:
+`daemon` and `usage` are absent from default `--help` (`--features daemon` / `usage-metrics`; install snippet above).
 
-```powershell
-ledgerful impact
-```
-
-Include all parent traversal for merge-heavy repositories:
-
-```powershell
-ledgerful impact --all-parents
-```
-
-Run predictive verification:
-
-```powershell
-ledgerful verify
-```
-
-Disable prediction and use rule-only verification:
-
-```powershell
-ledgerful verify --no-predict
-```
-
-Inspect risk hotspots:
-
-```powershell
-ledgerful hotspots --limit 20 --commits 500 --dir src --lang rs
-ledgerful hotspots --json
-```
-
-Use Gemini narrative reporting:
-
-```powershell
-ledgerful ask --narrative
-```
-
-### MCP agent install (Top-N platforms)
+## MCP agent install (Top-N platforms)
 
 Wire Ledgerful into supported agent hosts with one command (merge-only; never
 clobbers foreign MCP servers):
@@ -161,6 +228,8 @@ The npm wrapper downloads a checksummed GitHub release binary and launches
 `ledgerful mcp`. Set `LEDGERFUL_MCP_BIN_OVERRIDE` to a local binary for
 development or CI smoke tests.
 
+## Federation
+
 Use federated intelligence across sibling repositories:
 
 ```powershell
@@ -173,6 +242,8 @@ ledgerful impact
 `federate status` lists **live peers** (one row per path; name = folder
 basename). Run `federate scan` to refresh discovery and prune dead/self
 cache rows.
+
+## Provenance
 
 Track changes with transactional provenance:
 
@@ -199,15 +270,11 @@ ledgerful ledger audit --include-unaudited
 ledgerful ledger adr --output-dir docs/adr
 ```
 
-```powershell
-cargo run --features daemon -- daemon
-```
-
 ## Configuration
 
 Ledgerful stores repo-local state in `.ledgerful/`.
 
-- `.ledgerful/config.toml`: runtime configuration, watch debounce, Gemini timeout/context, temporal traversal, hotspot defaults, and ledger settings (enforcement, auto-reconcile, verification gating).
+- `.ledgerful/config.toml`: runtime configuration, watch debounce, Ask timeout/context, temporal traversal, hotspot defaults, and ledger settings (enforcement, auto-reconcile, verification gating).
 - `.ledgerful/rules.toml`: policy rules, protected paths, and required verification commands.
 
 Examples live in [docs/examples/config.toml](docs/examples/config.toml), [docs/examples/rules.toml](docs/examples/rules.toml), and [docs/examples/LEDGERFUL.md](docs/examples/LEDGERFUL.md).
@@ -224,28 +291,27 @@ Generated state is rebuildable and stays inside `.ledgerful/`.
 - `.ledgerful/state/schema.json`
 - `.ledgerful/state/current-batch.json`
 
-Impact packets are redacted before SQLite persistence. Gemini prompts are sanitized and truncated before subprocess execution.
+Impact packets are redacted before SQLite persistence. Ask prompts are sanitized and truncated before they leave the process.
 
-## Gemini
+## Ask (optional Gemini HTTP backend)
 
-Ledgerful shells out to the `gemini` CLI. Ensure it is on `PATH` before using `ledgerful ask`.
+Cloud Ask talks to the Gemini API over HTTP using `GEMINI_API_KEY` (process environment or a repo-local `.env`; `.env` is gitignored — use `.env.example` as the template). The `gemini` CLI is an optional local tool (`doctor` code `tool-gemini`); it is not the Cloud Ask backend.
 
-- `GEMINI_API_KEY` can be supplied from the process environment or a repo-local `.env` file. `.env` is ignored by git; use `.env.example` as the template.
-- By default, routine `analyze`, `suggest`, and narrative requests use `gemini-3.1-flash-lite` for lower latency and cost.
-- High-risk packets and `review-patch` requests use `gemini-3.1-pro` for deeper reasoning and code review.
+- By default, routine `analyze`, `suggest`, and narrative requests use `gemini-3.1-flash-lite`.
+- High-risk packets and `review-patch` requests use `gemini-3.1-pro`.
 - Set `gemini.model` in `.ledgerful/config.toml` only when you want one explicit model for every ask mode.
 - `--mode analyze`: blast-radius and risk reasoning
 - `--mode suggest`: targeted verification recommendations
 - `--mode review-patch`: patch review with live diff context
 - `--narrative`: senior-architect risk narrative generated from one structured prompt
 
-If Gemini fails after an impact packet is available, Ledgerful writes a fallback impact artifact or reports why it could not.
+If Ask fails after an impact packet is available, Ledgerful writes a fallback impact artifact or reports why it could not.
 
 ## Windows / WSL
 
 - Windows 11 + PowerShell is the primary environment.
 - Mixed Windows/WSL filesystem setups can be slower and may produce different tool availability.
-- Keep `git` and `gemini` installed in the environment where you run Ledgerful.
+- Keep `git` installed in the environment where you run Ledgerful. The `gemini` CLI is optional (see Ask above).
 
 ## Architecture
 

@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **README names Daily 5 as the human front door (0436):** the lead
+  matches local-first change intelligence; the copy-paste block is
+  `doctor --json` → `change-context --json` → `ledger status --compact`
+  → `search init --auto-index` → `verify --scope fast`. Command
+  reference lists default `--help` names plus gated `services` /
+  `deploy` / `observability`. Cloud Ask is HTTP + `GEMINI_API_KEY`;
+  the `gemini` CLI is optional.
+
 - **Command/feature split plus in-tree `ledgerful-ledger` crate (0435):**
   `ledger re-sign` topology preflight lives in the ledger module (CLI copy
   stays in commands). A mixed workspace adds `crates/ledgerful-ledger`
