@@ -1,4 +1,4 @@
-use crate::ledger::types::{AdrStatus, LedgerEntry};
+use crate::types::{AdrStatus, LedgerEntry};
 
 fn lifecycle_status_token(lifecycle: AdrStatus) -> &'static str {
     match lifecycle {
@@ -66,7 +66,7 @@ pub fn generate_madr_content(entry: &LedgerEntry, lifecycle: AdrStatus) -> Strin
 #[allow(non_snake_case)]
 mod tests {
     use super::*;
-    use crate::ledger::types::*;
+    use crate::types::*;
 
     #[test]
     fn test_slugify_summary() {

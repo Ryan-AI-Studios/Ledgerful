@@ -6,6 +6,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Command/feature split plus in-tree `ledgerful-ledger` crate (0435):**
+  `ledger re-sign` topology preflight lives in the ledger module (CLI copy
+  stays in commands). A mixed workspace adds `crates/ledgerful-ledger`
+  (`publish = false`) for types, chain, signatures, and SQLite rows. The
+  engine `src/ledger` facade keeps adapters that need parent modules.
+
 ### Fixed
 
 - **In-tree brew/scoop templates and distribution-doc floors track Latest (0434):**

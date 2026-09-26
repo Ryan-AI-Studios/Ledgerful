@@ -3954,6 +3954,7 @@ dependencies = [
  "indicatif",
  "inquire",
  "jsonc-parser",
+ "ledgerful-ledger",
  "libc",
  "miette 7.6.0",
  "mime_guess",
@@ -4021,6 +4022,30 @@ dependencies = [
  "windows-sys 0.61.2",
  "zeroize",
  "zip",
+]
+
+[[package]]
+name = "ledgerful-ledger"
+version = "0.2.15"
+dependencies = [
+ "camino",
+ "chrono",
+ "clap",
+ "ed25519-dalek",
+ "hex",
+ "miette 7.6.0",
+ "path-clean",
+ "rand 0.10.2",
+ "rstest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tracing",
+ "unicode-normalization",
+ "uuid",
 ]
 
 [[package]]

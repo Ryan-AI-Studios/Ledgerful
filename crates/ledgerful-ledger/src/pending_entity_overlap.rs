@@ -7,7 +7,7 @@
 use miette::Diagnostic;
 use thiserror::Error;
 
-use crate::ledger::types::Transaction;
+use crate::types::Transaction;
 
 /// Max overlapping paths printed on a collision report (sorted, then capped).
 pub const COLLISION_PATH_CAP: usize = 20;
@@ -128,7 +128,7 @@ pub fn format_collision_report(hits: &[CollisionHit]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ledger::types::{Category, Transaction};
+    use crate::types::{Category, Transaction};
     use rstest::rstest;
 
     fn pending_tx(id: &str, entity: &str, message: &str) -> Transaction {

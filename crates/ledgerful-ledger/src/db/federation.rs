@@ -1,4 +1,4 @@
-use crate::ledger::error::LedgerError;
+use crate::error::LedgerError;
 use rusqlite::Connection;
 
 pub fn get_federated_entries_by_entity(
@@ -6,7 +6,7 @@ pub fn get_federated_entries_by_entity(
     entity_normalized: &str,
     sibling_name: &str,
     days: u64,
-) -> Result<Vec<crate::ledger::types::LedgerEntry>, LedgerError> {
+) -> Result<Vec<crate::types::LedgerEntry>, LedgerError> {
     let mut stmt = conn.prepare(
         "SELECT id, tx_id, category, entry_type, entity, entity_normalized,
             change_type, summary, reason, is_breaking, committed_at,

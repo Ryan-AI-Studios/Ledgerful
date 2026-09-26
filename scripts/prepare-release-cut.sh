@@ -169,30 +169,81 @@ awk -v ver="$version" '
 ' "Cargo.toml" >"$cargo_tmp"
 mv "$cargo_tmp" "Cargo.toml"
 
-# 3. Cargo.lock: version field of package name = "ledgerful" only.
-# Offline-safe; for a pure version-only bump this matches cargo update -w
-# (0098 Phase 0). No silent cargo fallback — fail loud if the package block
-# is missing. Do not reintroduce `|| true` cargo paths (codex 0104 P2).
+# 2b. [workspace.package] version when present (0435 mixed workspace).
+if grep -q '^\[workspace.package\]' "Cargo.toml"; then
+  cargo_tmp="$(mktemp)"
+  awk -v ver="$version" '
+    BEGIN { in_wp = 0; done = 0 }
+    /^\[workspace.package\]/ { in_wp = 1; print; next }
+    in_wp && /^\[/ { in_wp = 0 }
+    in_wp && /^version = "/ {
+      print "version = \"" ver "\""
+      done = 1
+      next
+    }
+    { print }
+    END {
+      if (!done) {
+        print "error: [workspace.package] has no version = line" > "/dev/stderr"
+        exit 1
+      }
+    }
+  ' "Cargo.toml" >"$cargo_tmp"
+  mv "$cargo_tmp" "Cargo.toml"
+fi
+
+# 3. Cargo.lock: version field of package name = "ledgerful" and, when
+# present, "ledgerful-ledger" (0435 workspace member). Offline-safe.
 lock_tmp="$(mktemp)"
 awk -v ver="$version" '
-  BEGIN { in_pkg = 0; done = 0 }
+  BEGIN { in_pkg = 0; saw_root = 0; saw_member = 0; member_present = 0 }
   /^\[\[package\]\]/ { in_pkg = 0 }
+  /^name = "ledgerful-ledger"$/ { member_present = 1; in_pkg = 2; print; next }
   /^name = "ledgerful"$/ { in_pkg = 1; print; next }
   in_pkg && /^version = "/ {
     print "version = \"" ver "\""
+    if (in_pkg == 1) saw_root = 1
+    if (in_pkg == 2) saw_member = 1
     in_pkg = 0
-    done = 1
     next
   }
   { print }
   END {
-    if (!done) {
+    if (!saw_root) {
       print "error: package ledgerful not found in Cargo.lock" > "/dev/stderr"
+      exit 1
+    }
+    if (member_present && !saw_member) {
+      print "error: package ledgerful-ledger present but version not bumped" > "/dev/stderr"
       exit 1
     }
   }
 ' "Cargo.lock" >"$lock_tmp"
 mv "$lock_tmp" "Cargo.lock"
+
+# 3b. Workspace member lock version must match root when the member exists.
+lock_root="$(awk '
+  BEGIN { in_pkg = 0 }
+  /^\[\[package\]\]/ { in_pkg = 0 }
+  /^name = "ledgerful"$/ { in_pkg = 1; next }
+  in_pkg && /^version = "/ {
+    if (match($0, /"[^"]+"/)) print substr($0, RSTART + 1, RLENGTH - 2)
+    exit
+  }
+' "Cargo.lock")"
+lock_member="$(awk '
+  BEGIN { in_pkg = 0 }
+  /^\[\[package\]\]/ { in_pkg = 0 }
+  /^name = "ledgerful-ledger"$/ { in_pkg = 1; next }
+  in_pkg && /^version = "/ {
+    if (match($0, /"[^"]+"/)) print substr($0, RSTART + 1, RLENGTH - 2)
+    exit
+  }
+' "Cargo.lock")"
+if [ -n "$lock_member" ] && [ "$lock_root" != "$lock_member" ]; then
+  echo "error: Cargo.lock version mismatch ledgerful=${lock_root} ledgerful-ledger=${lock_member}" >&2
+  exit 1
+fi
 
 # 4. mcp-server/package.json: both ledgerfulEngineTag and version (patch bump).
 mcp_path="mcp-server/package.json"

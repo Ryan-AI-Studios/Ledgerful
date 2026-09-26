@@ -4,7 +4,7 @@
 //! mapper. Read surfaces (search / audit / MCP / REST) call these helpers;
 //! they must not import `hook_commit_msg`.
 
-use crate::ledger::types::{Category, LedgerEntry};
+use crate::types::{Category, LedgerEntry};
 use serde::Serialize;
 
 const ALLOWLISTED_TRAILER_KEYS: &[&str] = &[
@@ -327,10 +327,10 @@ mod tests {
             id: 1,
             tx_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string(),
             category: Category::Bugfix,
-            entry_type: crate::ledger::types::EntryType::Implementation,
+            entry_type: crate::types::EntryType::Implementation,
             entity: "0319-fixture-track".to_string(),
             entity_normalized: "0319-fixture-track".to_string(),
-            change_type: crate::ledger::types::ChangeType::Modify,
+            change_type: crate::types::ChangeType::Modify,
             summary: "summary".to_string(),
             reason: "why".to_string(),
             is_breaking: false,

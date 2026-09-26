@@ -996,7 +996,10 @@ mod tests {
         // Guard (0072): production signs v2 provenance basis. Timing columns
         // (duration_ms, command_timings, argv_hash, span_name) must never enter
         // that basis. v1 encode remains for dual-verify of historical rows only.
-        let crypto = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ledger/crypto.rs"));
+        let crypto = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/crates/ledgerful-ledger/src/crypto.rs"
+        ));
         assert!(
             crypto.contains("CURRENT_LEDGER_SIG_VERSION"),
             "crypto must export CURRENT_LEDGER_SIG_VERSION"

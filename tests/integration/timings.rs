@@ -492,7 +492,10 @@ fn doctor_cardinality_warning_fires() {
 fn signing_basis_crypto_untouched() {
     // Source inspection (0072): production uses v2 provenance basis; v1 encode
     // remains for dual-verify. Timing columns must never enter Ed25519 signing.
-    let crypto = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ledger/crypto.rs"));
+    let crypto = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/crates/ledgerful-ledger/src/crypto.rs"
+    ));
     assert!(crypto.contains("CURRENT_LEDGER_SIG_VERSION"));
     assert!(crypto.contains("sig_version:2"));
     assert!(crypto.contains("entity:{}"));

@@ -1,4 +1,4 @@
-use crate::ledger::types::{Category, ChangeType, EntryType, LedgerEntry};
+use crate::types::{Category, ChangeType, EntryType, LedgerEntry};
 use ed25519_dalek::{Signature, SignatureError, Signer, SigningKey, Verifier, VerifyingKey};
 
 use sha2::{Digest, Sha256};
@@ -483,7 +483,7 @@ pub fn content_digest_hex(payload_bytes: &[u8]) -> String {
 
 /// Derive `entity_normalized` the same way transaction commit does, for verify.
 ///
-/// Uses [`crate::util::path::normalize_relative_path`] against a fixed synthetic
+/// Uses [`crate::path::normalize_relative_path`] against a fixed synthetic
 /// repo root so verify does not need a live layout. Accepts both exact and
 /// ASCII-lowercased forms (Windows case-insensitive repos lower the path at
 /// commit time).
@@ -494,7 +494,7 @@ pub fn derive_entity_normalized(entity: &str) -> Option<String> {
     let root = Path::new(r"C:\__ledgerful_verify_root__");
     #[cfg(not(windows))]
     let root = Path::new("/__ledgerful_verify_root__");
-    crate::util::path::normalize_relative_path(root, &nfc_entity).ok()
+    crate::path::normalize_relative_path(root, &nfc_entity).ok()
 }
 
 /// Consistency check for `entity_normalized` (not signed; derive-at-verify).
@@ -919,7 +919,7 @@ enum ChainHeadVerifyError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ledger::types::{Category, ChangeType, EntryType};
+    use crate::types::{Category, ChangeType, EntryType};
 
     #[test]
     fn unix_key_mode_0600() {
@@ -1476,8 +1476,8 @@ mod tests {
         assert!(verify_ledger_entry_signature(&entry));
 
         // Mutate residual columns only — signature must remain VALID.
-        entry.verification_status = Some(crate::ledger::types::VerificationStatus::Verified);
-        entry.verification_basis = Some(crate::ledger::types::VerificationBasis::ManualInspection);
+        entry.verification_status = Some(crate::types::VerificationStatus::Verified);
+        entry.verification_basis = Some(crate::types::VerificationBasis::ManualInspection);
         entry.outcome_notes = Some("mutated notes".into());
         entry.observed = Some(true);
         entry.trace_id = Some("trace-mutated".into());

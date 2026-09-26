@@ -1,13 +1,11 @@
-//! Chain-head checkpoint helpers: shared LOCAL ordering, multi-format load,
-//! and checkpoint/exact compare for `verify --against-export`.
+//! Chain-head checkpoint helpers: shared LOCAL ordering and
+//! checkpoint/exact compare for `verify --against-export`.
 //!
-//! Ordering is load-bearing: `synthesize_chain_head` and against-export must
-//! agree so multi-entry pre-chain and post-chain export lengths stay consistent.
+//! Zip/JSON load of a retained head stays in the engine (`export` feature).
 
-use crate::ledger::crypto::compute_entry_hash_for_entry;
-use crate::ledger::types::{ChainHead, LedgerEntry};
+use crate::crypto::compute_entry_hash_for_entry;
+use crate::types::{ChainHead, LedgerEntry};
 use miette::Result;
-use std::path::Path;
 
 /// Non-error checkpoint outcome for `verify --json` (0321).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -55,7 +53,7 @@ pub enum CheckpointMode {
 
 /// Ordered LOCAL entries used for chain-head synthesis and checkpoint compare.
 ///
-/// Head-less. Re-sign and [`crate::export::soc2::synthesize_chain_head`] stay
+/// Head-less. Re-sign and engine `export::soc2::synthesize_chain_head` stay
 /// on this function. A real stored head uses [`ordered_local_for_head_with_head`].
 ///
 /// - **Post-chain** (any LOCAL entry with non-empty `prev_hash`): `iter_local_chain`
@@ -79,7 +77,7 @@ pub fn ordered_local_for_head_with_head<'a>(
         .any(|e| e.origin == "LOCAL" && e.prev_hash.as_deref().is_some_and(|p| !p.is_empty()));
 
     if any_linked {
-        let walk = crate::ledger::chain_iter::iter_local_chain_with_head(entries, head);
+        let walk = crate::chain_iter::iter_local_chain_with_head(entries, head);
         // Map walk order (owned clones) back to references into the input slice
         // so callers can hash without re-cloning entry payloads.
         walk.ordered
@@ -95,68 +93,6 @@ pub fn ordered_local_for_head_with_head<'a>(
         });
         local
     }
-}
-
-/// Load a retained chain head from a SOC2 evidence zip (`chain_head.json`
-/// entry) or a bare JSON file of the same `ChainHead` shape.
-///
-/// Preference: `.zip` extension → zip path; `.json` → bare JSON; otherwise try
-/// zip then bare JSON so extension-less artifacts still work.
-#[cfg(feature = "export")]
-pub fn load_checkpoint_head(path: &Path) -> Result<ChainHead> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-
-    match ext.as_str() {
-        "zip" => load_from_zip(path),
-        "json" => load_from_json_file(path),
-        _ => match load_from_zip(path) {
-            Ok(head) => Ok(head),
-            Err(zip_err) => match load_from_json_file(path) {
-                Ok(head) => Ok(head),
-                Err(json_err) => Err(miette::miette!(
-                    "Failed to load chain head from {}: not a valid zip ({}); not bare ChainHead JSON ({})",
-                    path.display(),
-                    zip_err,
-                    json_err
-                )),
-            },
-        },
-    }
-}
-
-#[cfg(feature = "export")]
-fn load_from_zip(path: &Path) -> Result<ChainHead> {
-    let file = std::fs::File::open(path)
-        .map_err(|e| miette::miette!("Failed to open export zip {}: {}", path.display(), e))?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| miette::miette!("Failed to read export zip {}: {}", path.display(), e))?;
-    let mut entry = archive
-        .by_name("chain_head.json")
-        .map_err(|e| miette::miette!("Export missing chain_head.json: {}", e))?;
-    let mut buf = Vec::new();
-    std::io::Read::read_to_end(&mut entry, &mut buf)
-        .map_err(|e| miette::miette!("Failed to read chain_head.json from export: {}", e))?;
-    let head: ChainHead = serde_json::from_slice(&buf)
-        .map_err(|e| miette::miette!("Failed to parse chain_head.json: {}", e))?;
-    Ok(head)
-}
-
-#[cfg(feature = "export")]
-fn load_from_json_file(path: &Path) -> Result<ChainHead> {
-    let buf = std::fs::read(path)
-        .map_err(|e| miette::miette!("Failed to read chain head file {}: {}", path.display(), e))?;
-    let head: ChainHead = serde_json::from_slice(&buf).map_err(|e| {
-        miette::miette!(
-            "Failed to parse chain head JSON from {}: {}",
-            path.display(),
-            e
-        )
-    })?;
-    Ok(head)
 }
 
 /// Compare ordered local entries + local head against a retained export head.
@@ -200,7 +136,7 @@ pub fn classify_against_export(
             target: "cli_summary",
             "Exported chain head is unsigned (synthesized), cannot verify signature; length/hash/genesis comparison completed."
         );
-    } else if !crate::ledger::crypto::verify_chain_head(
+    } else if !crate::crypto::verify_chain_head(
         &export_head.latest_entry_hash,
         &export_head.genesis,
         export_head.length,
@@ -304,7 +240,7 @@ fn classify_checkpoint(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ledger::types::{Category, ChangeType, EntryType};
+    use crate::types::{Category, ChangeType, EntryType};
 
     fn entry(tx: &str, prev: Option<&str>, committed_at: &str) -> LedgerEntry {
         LedgerEntry {
