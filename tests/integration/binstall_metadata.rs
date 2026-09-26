@@ -52,6 +52,8 @@ fn binstall_metadata__present_with_expected_url_templates() {
         toml.contains("[package.metadata.binstall]"),
         "missing [package.metadata.binstall] block"
     );
+    // URL pin for the binstall `{ repo }` host. `[workspace.package]` already
+    // contains this string, so it is not a root-package metadata guard.
     assert!(
         toml.contains("repository = \"https://github.com/Ryan-AI-Studios/Ledgerful\""),
         "repository URL required for binstall {{ repo }} template"
@@ -121,6 +123,13 @@ fn root_package_inherits_workspace_identity_keys() {
     assert!(
         package.get("edition").and_then(TomlValue::as_str).is_some(),
         "root [package].edition must stay a literal string"
+    );
+    assert!(
+        package
+            .get("license-file")
+            .and_then(TomlValue::as_str)
+            .is_some(),
+        "root [package].license-file must stay a literal string (do not set license-file.workspace)"
     );
 
     inherit_workspace_true(package, "description");
