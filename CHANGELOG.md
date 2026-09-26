@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Pure `verify` signature helpers live in `src/verify` (0438):**
+  classification, tally, exit decision, and invalid-entry enumerate moved
+  out of `commands/verify`. Colored summary lines and the
+  `verify_ledger_signatures*` orchestrators stay in commands. Public
+  `crate::commands::verify::…` names are unchanged.
+
 - **README names Daily 5 as the human front door (0436):** the lead
   matches local-first change intelligence; the copy-paste block is
   `doctor --json` → `change-context --json` → `ledger status --compact`
