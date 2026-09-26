@@ -1,5 +1,5 @@
-use crate::ledger::error::LedgerError;
-use crate::ledger::types::*;
+use crate::error::LedgerError;
+use crate::types::*;
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub fn get_adr_entries(

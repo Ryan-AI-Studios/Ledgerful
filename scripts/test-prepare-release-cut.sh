@@ -194,6 +194,48 @@ else
   assert_fail "normal cut: Cargo.lock ledgerful 0.2.4"
 fi
 
+# --- 2b. workspace member lock version tracks root (0435) --------------------
+fx2b="$TMP/workspace-member"
+make_fixture "$fx2b"
+cat >>"$fx2b/Cargo.toml" <<'EOF'
+
+[workspace]
+members = ["crates/ledgerful-ledger"]
+resolver = "3"
+
+[workspace.package]
+version = "0.2.3"
+edition = "2024"
+license-file = "LICENSE"
+EOF
+cat >>"$fx2b/Cargo.lock" <<'EOF'
+
+[[package]]
+name = "ledgerful-ledger"
+version = "0.2.3"
+EOF
+git -C "$fx2b" add -A
+git -C "$fx2b" commit -q -m "add workspace member"
+set +e
+out2b="$(run_prepare "$fx2b" "0.2.4" 2>&1)"
+rc2b=$?
+set -e
+if [ "$rc2b" -eq 0 ]; then
+  assert_pass "workspace member cut exits 0"
+else
+  assert_fail "workspace member cut exits 0" "exit ${rc2b}; out=${out2b}"
+fi
+if awk '/^name = "ledgerful-ledger"$/ {p=1; next} p && /^version = "/ {print; exit}' "$fx2b/Cargo.lock" | grep -q '0.2.4'; then
+  assert_pass "workspace member cut: Cargo.lock ledgerful-ledger 0.2.4"
+else
+  assert_fail "workspace member cut: Cargo.lock ledgerful-ledger 0.2.4"
+fi
+if grep -q '^\[workspace.package\]' "$fx2b/Cargo.toml" && grep -q '^version = "0.2.4"$' "$fx2b/Cargo.toml"; then
+  assert_pass "workspace member cut: workspace.package version 0.2.4"
+else
+  assert_fail "workspace member cut: workspace.package version 0.2.4"
+fi
+
 if grep -qE "^## \[0\.2\.4\] - ${expect_date}$" "$fx2/CHANGELOG.md"; then
   assert_pass "normal cut: dated CHANGELOG section"
 else

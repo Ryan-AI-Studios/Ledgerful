@@ -1,4 +1,4 @@
-use crate::ledger::error::LedgerError;
+use crate::error::LedgerError;
 use rusqlite::Connection;
 
 /// Shared FTS MATCH + filter predicates for ledger search and omitted-count.
@@ -21,7 +21,7 @@ fn fts_where(
     // FTS5 treats `-` as a column qualifier and an unescaped `"` as the end
     // of a phrase. Sanitize (double internal quotes, wrap once) so both stay
     // phrase text. Do not wrap before calling the helper.
-    let fts_query = crate::util::query::sanitize_fts5_query(query);
+    let fts_query = crate::query::sanitize_fts5_query(query);
     let mut clause = "WHERE ledger_fts MATCH ?1".to_string();
     let mut param_idx = 2u32;
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(fts_query)];
@@ -87,7 +87,7 @@ pub fn search_ledger(
     limit: Option<usize>,
     offset: usize,
     include_rollback: bool,
-) -> Result<Vec<crate::ledger::types::LedgerEntry>, LedgerError> {
+) -> Result<Vec<crate::types::LedgerEntry>, LedgerError> {
     let mut fts = fts_where(query, category, days, breaking_only);
     if !include_rollback {
         fts.clause.push_str(" AND l.entry_type != 'ROLLBACK'");

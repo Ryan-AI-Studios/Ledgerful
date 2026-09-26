@@ -1,30 +1,30 @@
-use crate::ledger::error::LedgerError;
-use crate::ledger::types::*;
+use crate::error::LedgerError;
+use crate::types::*;
 use rusqlite::Connection;
 
 pub fn get_unaudited_by_entity(
     conn: &Connection,
     entity_normalized: &str,
 ) -> Result<Option<Transaction>, LedgerError> {
-    crate::ledger::db::transactions::get_unaudited_by_entity(conn, entity_normalized)
+    crate::db::transactions::get_unaudited_by_entity(conn, entity_normalized)
 }
 
 pub fn upsert_unaudited_transaction(
     conn: &Connection,
     tx: &Transaction,
 ) -> Result<(), LedgerError> {
-    crate::ledger::db::transactions::upsert_unaudited_transaction(conn, tx)
+    crate::db::transactions::upsert_unaudited_transaction(conn, tx)
 }
 
 pub fn get_all_unaudited(conn: &Connection) -> Result<Vec<Transaction>, LedgerError> {
-    crate::ledger::db::transactions::get_all_unaudited(conn)
+    crate::db::transactions::get_all_unaudited(conn)
 }
 
 pub fn get_unaudited_by_pattern(
     conn: &Connection,
     pattern: &str,
 ) -> Result<Vec<Transaction>, LedgerError> {
-    crate::ledger::db::transactions::get_unaudited_by_pattern(conn, pattern)
+    crate::db::transactions::get_unaudited_by_pattern(conn, pattern)
 }
 
 /// Return drift status counts: (pending_count, unaudited_count).
@@ -45,7 +45,7 @@ pub fn drift_status_counts(conn: &Connection) -> Result<(usize, usize), LedgerEr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ledger::types::{Category, Transaction};
+    use crate::types::{Category, Transaction};
     use rusqlite::Connection;
 
     fn setup_in_memory_db() -> Connection {
@@ -121,7 +121,7 @@ mod tests {
         let tx2 = sample_tx("b.rs", "UNAUDITED");
         let tx3 = sample_tx("c.rs", "UNAUDITED");
 
-        crate::ledger::db::transactions::insert_transaction(&conn, &tx1).unwrap();
+        crate::db::transactions::insert_transaction(&conn, &tx1).unwrap();
         upsert_unaudited_transaction(&conn, &tx2).unwrap();
         upsert_unaudited_transaction(&conn, &tx3).unwrap();
 

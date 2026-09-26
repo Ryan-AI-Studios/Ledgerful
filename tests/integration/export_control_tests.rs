@@ -720,8 +720,8 @@ fn control_export__signing_basis_unchanged() {
     // Lock the v2 canonical codec (14-line payload) in encode_v2_payload.
     // entity/origin/author/risk/etc. are intentionally in the signed basis
     // (0072); residual fields (observed, prev_hash, verification_*, …) must not.
-    let crypto_source =
-        std::fs::read_to_string("src/ledger/crypto.rs").expect("crypto.rs source must be readable");
+    let crypto_source = std::fs::read_to_string("crates/ledgerful-ledger/src/crypto.rs")
+        .expect("crypto.rs source must be readable");
 
     let fn_start = crypto_source
         .find("pub fn encode_v2_payload")

@@ -3,6 +3,16 @@ name = "ledgerful"
 version = "0.2.15"
 edition = "2024"
 license-file = "LICENSE"
+
+[workspace]
+members = ["crates/ledgerful-ledger"]
+exclude = ["vendor/sqlite3-sys", "vendor/sqlite3-src"]
+resolver = "3"
+
+[workspace.package]
+version = "0.2.15"
+edition = "2024"
+license-file = "LICENSE"
 description = "Local-first change intelligence CLI for deterministic impact analysis and verification"
 homepage = "https://github.com/Ryan-AI-Studios/Ledgerful"
 repository = "https://github.com/Ryan-AI-Studios/Ledgerful"
@@ -26,6 +36,7 @@ pkg-fmt = "zip"
 bin-dir = "{ bin }{ binary-ext }"
 
 [dependencies]
+ledgerful-ledger = { path = "crates/ledgerful-ledger" }
 clap = { version = "4.6.6", features = ["derive"] }
 
 serde = { version = "1.0.229", features = ["derive"] }
@@ -188,6 +199,10 @@ path = "tests/ci/allowlist.rs"
 [[test]]
 name = "install_docs_truth"
 path = "tests/ci/install_docs_truth.rs"
+
+[[test]]
+name = "ledgerful_ledger_boundary"
+path = "tests/ci/ledgerful_ledger_boundary.rs"
 
 [[bin]]
 name = "ledgerful"

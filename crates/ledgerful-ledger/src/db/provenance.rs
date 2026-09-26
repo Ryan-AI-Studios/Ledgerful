@@ -1,5 +1,5 @@
-use crate::ledger::error::LedgerError;
-use crate::ledger::provenance::{ProvenanceAction, TokenProvenance};
+use crate::error::LedgerError;
+use crate::provenance::{ProvenanceAction, TokenProvenance};
 use rusqlite::{Connection, params};
 use std::str::FromStr;
 
@@ -63,7 +63,7 @@ pub fn get_token_provenance_by_entity(
 pub fn find_transactions_by_file(
     conn: &Connection,
     file_path: &str,
-) -> Result<Vec<crate::ledger::types::LedgerEntry>, LedgerError> {
+) -> Result<Vec<crate::types::LedgerEntry>, LedgerError> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT l.id, l.tx_id, l.category, l.entry_type, l.entity, l.entity_normalized,
             l.change_type, l.summary, l.reason, l.is_breaking, l.committed_at,
@@ -90,7 +90,7 @@ pub fn find_transactions_by_file(
 pub fn find_ledger_entries_by_changed_file(
     conn: &Connection,
     file_path: &str,
-) -> Result<Vec<crate::ledger::types::LedgerEntry>, LedgerError> {
+) -> Result<Vec<crate::types::LedgerEntry>, LedgerError> {
     let normalized = file_path.replace('\\', "/");
     let mut stmt = conn.prepare(
         "SELECT DISTINCT l.id, l.tx_id, l.category, l.entry_type, l.entity, l.entity_normalized,
