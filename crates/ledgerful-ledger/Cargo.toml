@@ -6,8 +6,8 @@ license-file.workspace = true
 publish = false
 description = "Ledgerful ledger core: types, chain, signatures, SQLite rows"
 readme = "README.md"
-homepage = "https://github.com/Ryan-AI-Studios/Ledgerful"
-repository = "https://github.com/Ryan-AI-Studios/Ledgerful"
+homepage.workspace = true
+repository.workspace = true
 
 [dependencies]
 camino = { version = "1.2.5", features = ["serde1"] }

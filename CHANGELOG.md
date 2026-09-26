@@ -6,6 +6,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Root package metadata inherits from `[workspace.package]` (0439):**
+  `description`, `homepage`, `repository`, and `readme` are set with
+  `*.workspace = true` on root `[package]` so `cargo metadata` and
+  cargo-binstall `{ repo }` see non-empty values. Member
+  `ledgerful-ledger` inherits homepage/repository the same way.
+
+- **In-tree brew/scoop templates and distribution-doc floors track Latest (0434):**
+  `packaging/` is bumped from published `*.sha256` bodies. After each tag,
+  `sync-engine-packaging` opens a packaging/docs PR; `release-pins.yml`
+  fails on `release pins` drift. Doc claim sites are rewritten from
+  `microsoft/winget-pkgs` manifests + GitHub Latest, not `winget search`.
+
 ### Changed
 
 - **Pure `verify` signature helpers live in `src/verify` (0438):**
@@ -27,14 +41,6 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   stays in commands). A mixed workspace adds `crates/ledgerful-ledger`
   (`publish = false`) for types, chain, signatures, and SQLite rows. The
   engine `src/ledger` facade keeps adapters that need parent modules.
-
-### Fixed
-
-- **In-tree brew/scoop templates and distribution-doc floors track Latest (0434):**
-  `packaging/` is bumped from published `*.sha256` bodies. After each tag,
-  `sync-engine-packaging` opens a packaging/docs PR; `release-pins.yml`
-  fails on `release pins` drift. Doc claim sites are rewritten from
-  `microsoft/winget-pkgs` manifests + GitHub Latest, not `winget search`.
 
 ## [0.2.15] - 2026-09-24
 
