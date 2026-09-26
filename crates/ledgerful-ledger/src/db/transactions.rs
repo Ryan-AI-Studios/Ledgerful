@@ -1,5 +1,5 @@
-use crate::ledger::error::LedgerError;
-use crate::ledger::types::*;
+use crate::error::LedgerError;
+use crate::types::*;
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub fn insert_transaction(conn: &Connection, tx: &Transaction) -> Result<(), LedgerError> {
@@ -394,7 +394,7 @@ pub fn update_ledger_entry_signature(
         tx_id,
         signature,
         public_key,
-        crate::ledger::crypto::CURRENT_LEDGER_SIG_VERSION,
+        crate::crypto::CURRENT_LEDGER_SIG_VERSION,
     )
 }
 
@@ -577,7 +577,7 @@ pub fn get_committed_ledger_entries_paginated(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ledger::types::{Category, ChangeType, EntryType, LedgerEntry, Transaction};
+    use crate::types::{Category, ChangeType, EntryType, LedgerEntry, Transaction};
     use rusqlite::Connection;
 
     fn setup_in_memory_db() -> Connection {

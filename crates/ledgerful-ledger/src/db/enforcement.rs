@@ -1,5 +1,5 @@
-use crate::ledger::enforcement::*;
-use crate::ledger::error::LedgerError;
+use crate::enforcement::*;
+use crate::error::LedgerError;
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub fn insert_tech_stack_rule(conn: &Connection, rule: &TechStackRule) -> Result<(), LedgerError> {

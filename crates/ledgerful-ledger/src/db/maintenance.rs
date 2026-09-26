@@ -1,4 +1,4 @@
-use crate::ledger::error::LedgerError;
+use crate::error::LedgerError;
 use rusqlite::Connection;
 
 pub fn get_stale_pending_transactions(
@@ -175,7 +175,7 @@ pub fn get_recent_ledger_entries_paginated(
     conn: &Connection,
     limit: usize,
     offset: usize,
-) -> Result<Vec<crate::ledger::types::LedgerEntry>, LedgerError> {
+) -> Result<Vec<crate::types::LedgerEntry>, LedgerError> {
     let mut stmt = conn.prepare(
         "SELECT id, tx_id, category, entry_type, entity, entity_normalized,
             change_type, summary, reason, is_breaking, committed_at,
@@ -200,7 +200,7 @@ pub fn get_recent_ledger_entries_paginated(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ledger::types::{Category, ChangeType, EntryType, LedgerEntry, Transaction};
+    use crate::types::{Category, ChangeType, EntryType, LedgerEntry, Transaction};
     use rusqlite::Connection;
 
     fn setup_in_memory_db() -> Connection {
@@ -327,22 +327,19 @@ mod tests {
     fn test_transaction_velocity() {
         let conn = setup_in_memory_db();
         let tx = sample_tx("a.rs", "PENDING");
-        crate::ledger::db::transactions::insert_transaction(&conn, &tx).unwrap();
-        crate::ledger::db::transactions::insert_ledger_entry(
-            &conn,
-            &sample_entry(&tx.tx_id, "a.rs"),
-        )
-        .unwrap();
+        crate::db::transactions::insert_transaction(&conn, &tx).unwrap();
+        crate::db::transactions::insert_ledger_entry(&conn, &sample_entry(&tx.tx_id, "a.rs"))
+            .unwrap();
 
         let v = get_transaction_velocity(&conn, 7).unwrap();
         assert_eq!(v, 1);
     }
 
     fn insert_entry(conn: &Connection, tx: &Transaction, entity: &str, origin: &str) {
-        crate::ledger::db::transactions::insert_transaction(conn, tx).unwrap();
+        crate::db::transactions::insert_transaction(conn, tx).unwrap();
         let mut entry = sample_entry(&tx.tx_id, entity);
         entry.origin = origin.to_string();
-        crate::ledger::db::transactions::insert_ledger_entry(conn, &entry).unwrap();
+        crate::db::transactions::insert_ledger_entry(conn, &entry).unwrap();
     }
 
     fn insert_changed_file(conn: &Connection, snapshot_id: i64, path: &str) {
@@ -563,8 +560,8 @@ mod tests {
             snapshot_id: None,
         };
         let new = sample_tx("new.rs", "PENDING");
-        crate::ledger::db::transactions::insert_transaction(&conn, &old).unwrap();
-        crate::ledger::db::transactions::insert_transaction(&conn, &new).unwrap();
+        crate::db::transactions::insert_transaction(&conn, &old).unwrap();
+        crate::db::transactions::insert_transaction(&conn, &new).unwrap();
 
         let stale = get_stale_pending_transactions(&conn, 7).unwrap();
         assert_eq!(stale.len(), 1);

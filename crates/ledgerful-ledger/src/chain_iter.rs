@@ -5,8 +5,8 @@
 //! (`origin != "LOCAL"`) are excluded from the local chain and counted as
 //! `SKIP (federated)`.
 
-use crate::ledger::crypto::compute_entry_hash_for_entry;
-use crate::ledger::types::{ChainHead, LedgerEntry};
+use crate::crypto::compute_entry_hash_for_entry;
+use crate::types::{ChainHead, LedgerEntry};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Result of walking the local ledger chain.
@@ -287,7 +287,7 @@ pub fn check_chain_links(ordered: &[LedgerEntry]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ledger::types::{Category, ChainHead, ChangeType, EntryType};
+    use crate::types::{Category, ChainHead, ChangeType, EntryType};
     use std::collections::BTreeMap;
 
     fn entry(tx: &str, prev: Option<&str>, origin: &str) -> LedgerEntry {
