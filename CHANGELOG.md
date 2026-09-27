@@ -8,6 +8,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`release.yml` 0-job push failures were invalid YAML (0442):** an
+  unindented 0434 heredoc inside `run: |` terminated the block scalar, so
+  GitHub never loaded the workflow. The packaging-sync PR body is built
+  with indented `printf` so the file parses.
+
 - **Optional `CI` job timeouts no longer mark the workflow cancelled (0440):**
   `mutation` and `search-perf` drop job-level `timeout-minutes` (that key
   cancelled the run after required jobs already passed). Step budgets stay
