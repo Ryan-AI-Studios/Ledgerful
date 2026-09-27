@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Optional `CI` job timeouts no longer mark the workflow cancelled (0440):**
+  `mutation` and `search-perf` drop job-level `timeout-minutes` (that key
+  cancelled the run after required jobs already passed). Step budgets stay
+  120 / 30 minutes; setup steps are bound to 15 minutes. Both jobs are
+  `continue-on-error` with `::warning::` and a job-summary line on a
+  budget miss.
+
 - **Root package metadata inherits from `[workspace.package]` (0439):**
   `description`, `homepage`, `repository`, and `readme` are set with
   `*.workspace = true` on root `[package]` so `cargo metadata` and
