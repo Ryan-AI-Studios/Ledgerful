@@ -2,8 +2,10 @@ use crate::state::storage_cozo::{CozoScriptOutcome, CozoStorage};
 use crate::util::path::{display_path_under_work_root, path_is_under_work_root};
 use cozo::{DataValue, Num};
 use miette::Result;
+use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
@@ -73,12 +75,14 @@ pub(crate) fn distinct_files_script(timeout: &str) -> String {
     format!("?[file_path] := *snippet_embedding{{file_path}} {timeout}")
 }
 
+#[cfg(test)]
 pub(crate) fn snippet_keys_script(timeout: &str) -> String {
     format!(
         "?[name, line_offset] := *snippet_embedding{{file_path: $left, name, line_offset}} :order +name, +line_offset :limit {SEMANTIC_PAGE_SNIPPETS} {timeout}"
     )
 }
 
+#[cfg(test)]
 pub(crate) fn snippet_keys_after_script(timeout: &str) -> String {
     format!(
         "?[name, line_offset] := *snippet_embedding{{file_path: $left, name, line_offset}}, name > $after_name
@@ -87,7 +91,7 @@ pub(crate) fn snippet_keys_after_script(timeout: &str) -> String {
     )
 }
 
-#[allow(dead_code)] // tests + timeout-clause asserts; join path always windows
+#[cfg(test)]
 pub(crate) fn same_file_page_script(timeout: &str) -> String {
     format!(
         "?[f1, n1, o1, f2, n2, o2, similarity] :=
@@ -103,7 +107,8 @@ pub(crate) fn same_file_page_script(timeout: &str) -> String {
     )
 }
 
-#[allow(dead_code)] // tests; join path always windows listed keys
+#[cfg(test)]
+#[allow(dead_code)]
 pub(crate) fn cross_file_page_script(timeout: &str) -> String {
     format!(
         "?[f1, n1, o1, f2, n2, o2, similarity] :=
@@ -118,6 +123,7 @@ pub(crate) fn cross_file_page_script(timeout: &str) -> String {
     )
 }
 
+#[cfg(test)]
 pub(crate) fn same_file_window_script(timeout: &str) -> String {
     format!(
         "left_win[n, o] <- $left_window
@@ -137,6 +143,7 @@ pub(crate) fn same_file_window_script(timeout: &str) -> String {
     )
 }
 
+#[cfg(test)]
 pub(crate) fn cross_file_window_script(timeout: &str) -> String {
     format!(
         "left_win[n, o] <- $left_window
@@ -155,6 +162,7 @@ pub(crate) fn cross_file_window_script(timeout: &str) -> String {
     )
 }
 
+#[cfg(test)]
 fn threshold_params(left: &str, threshold: f32) -> BTreeMap<String, DataValue> {
     let mut params = BTreeMap::new();
     params.insert("left".to_string(), DataValue::from(left));
@@ -165,12 +173,14 @@ fn threshold_params(left: &str, threshold: f32) -> BTreeMap<String, DataValue> {
     params
 }
 
+#[cfg(test)]
 fn pair_params(left: &str, right: &str, threshold: f32) -> BTreeMap<String, DataValue> {
     let mut params = threshold_params(left, threshold);
     params.insert("right".to_string(), DataValue::from(right));
     params
 }
 
+#[cfg(test)]
 fn snippet_windows(keys: &[(String, i64)]) -> Vec<&[(String, i64)]> {
     if keys.is_empty() {
         Vec::new()
@@ -179,6 +189,7 @@ fn snippet_windows(keys: &[(String, i64)]) -> Vec<&[(String, i64)]> {
     }
 }
 
+#[cfg(test)]
 fn keys_to_datavalue(keys: &[(String, i64)]) -> DataValue {
     DataValue::List(Box::new(
         keys.iter()
@@ -192,6 +203,7 @@ fn keys_to_datavalue(keys: &[(String, i64)]) -> DataValue {
     ))
 }
 
+#[cfg(test)]
 fn parse_match_row(row: &[DataValue]) -> Option<SemanticMatch> {
     let (
         Some(DataValue::Str(f1)),
@@ -228,6 +240,7 @@ fn parse_match_row(row: &[DataValue]) -> Option<SemanticMatch> {
     })
 }
 
+#[cfg(test)]
 fn parse_match_rows<R>(rows: impl IntoIterator<Item = R>) -> Vec<SemanticMatch>
 where
     R: AsRef<[DataValue]>,
@@ -261,6 +274,7 @@ fn finalize_matches(mut results: Vec<SemanticMatch>, work_root: &Path) -> Vec<Se
     results
 }
 
+#[cfg(test)]
 fn run_join_page(
     storage: &CozoStorage,
     script: &str,
@@ -301,6 +315,7 @@ fn list_distinct_files(
     }
 }
 
+#[cfg(test)]
 fn list_snippet_keys(
     storage: &CozoStorage,
     left: &str,
@@ -357,6 +372,7 @@ fn list_snippet_keys(
 /// Cross-file pages bind one later `$right` at a time (and window both
 /// sides at 64). A single `f1 < f2` against all later files is still one
 /// uninterruptible Rule 0 and overruns EXEC.
+#[cfg(test)]
 pub(crate) fn page_semantic_hotspots(
     storage: &CozoStorage,
     work_root: &Path,
@@ -415,6 +431,7 @@ pub(crate) fn page_semantic_hotspots(
     Ok((finalize_matches(acc, work_root), stop))
 }
 
+#[cfg(test)]
 fn cached_snippet_keys(
     storage: &CozoStorage,
     path: &str,
@@ -434,6 +451,7 @@ fn cached_snippet_keys(
     }
 }
 
+#[cfg(test)]
 fn run_same_file_pages(
     storage: &CozoStorage,
     left: &str,
@@ -472,6 +490,7 @@ fn run_same_file_pages(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn run_cross_file_pages(
     storage: &CozoStorage,
     left: &str,
@@ -506,12 +525,269 @@ fn run_cross_file_pages(
     Ok(Ok(acc))
 }
 
+/// Max owned snippets in one parallel scan task (0446). Shrink to 16, then 8,
+/// if an in-pool task measures > 1s.
+pub(crate) const SEMANTIC_SCAN_CHUNK: usize = 64;
+
+#[derive(Debug, Clone)]
+pub(crate) struct LoadedSnippet {
+    name: String,
+    line_offset: i64,
+    embedding: Vec<f32>,
+    /// f32 self-dot cast to f64 (`op_cos_dist` `a.dot(a) as f64`).
+    norm: f64,
+}
+
+type LoadedStore = BTreeMap<String, Vec<LoadedSnippet>>;
+
+fn file_snippets_script(timeout: &str) -> String {
+    format!(
+        "?[name, line_offset, embedding] := *snippet_embedding{{file_path: $left, name, line_offset, embedding}} {timeout}"
+    )
+}
+
+fn embedding_f32(v: &cozo::Vector) -> Option<Vec<f32>> {
+    match v {
+        cozo::Vector::F32(vec) => Some(vec.to_vec()),
+        cozo::Vector::F64(_) => None,
+    }
+}
+
+fn f32_self_dot(emb: &[f32]) -> f32 {
+    let mut acc: f32 = 0.0;
+    for &x in emb {
+        acc += x * x;
+    }
+    acc
+}
+
+fn snippet_is_usable(emb: &[f32]) -> bool {
+    if emb.is_empty() {
+        return false;
+    }
+    let mag_sq = f32_self_dot(emb);
+    mag_sq.is_finite() && mag_sq > 0.0 && emb.iter().all(|x| x.is_finite())
+}
+
+fn op_cos_sim(left: &LoadedSnippet, right: &LoadedSnippet) -> Option<f64> {
+    if left.embedding.len() != right.embedding.len() {
+        return None;
+    }
+    let mut dot: f32 = 0.0;
+    for i in 0..left.embedding.len() {
+        dot += left.embedding[i] * right.embedding[i];
+    }
+    let denom = (left.norm * right.norm).sqrt();
+    if denom == 0.0 || !denom.is_finite() {
+        return None;
+    }
+    let sim = f64::from(dot) / denom;
+    sim.is_finite().then_some(sim)
+}
+
+fn push_if_similar(
+    acc: &mut Vec<SemanticMatch>,
+    file1: &str,
+    left: &LoadedSnippet,
+    file2: &str,
+    right: &LoadedSnippet,
+    threshold: f32,
+) {
+    let Some(sim) = op_cos_sim(left, right) else {
+        return;
+    };
+    if sim > f64::from(threshold) {
+        acc.push(SemanticMatch {
+            file1: file1.to_string(),
+            name1: left.name.clone(),
+            offset1: left.line_offset as usize,
+            file2: file2.to_string(),
+            name2: right.name.clone(),
+            offset2: right.line_offset as usize,
+            similarity: sim as f32,
+        });
+    }
+}
+
+fn load_file_snippets(
+    storage: &CozoStorage,
+    path: &str,
+    deadline: Option<Instant>,
+    cancel: &AtomicBool,
+) -> Result<std::result::Result<Vec<LoadedSnippet>, SemanticStop>> {
+    if let Some(stop) = semantic_poll_stop(deadline, cancel) {
+        return Ok(Err(stop));
+    }
+    let timeout = match timeout_or_budget(deadline) {
+        Ok(t) => t,
+        Err(stop) => return Ok(Err(stop)),
+    };
+    let mut params = BTreeMap::new();
+    params.insert("left".to_string(), DataValue::from(path));
+    match storage.run_script_classifying_kill(&file_snippets_script(&timeout), params)? {
+        CozoScriptOutcome::Killed => Ok(Err(SemanticStop::Budget)),
+        CozoScriptOutcome::Rows(res) => {
+            let mut snippets = Vec::new();
+            for row in res.rows {
+                let (
+                    Some(DataValue::Str(name)),
+                    Some(DataValue::Num(Num::Int(off))),
+                    Some(DataValue::Vec(v)),
+                ) = (row.first(), row.get(1), row.get(2))
+                else {
+                    continue;
+                };
+                let Some(emb) = embedding_f32(v) else {
+                    continue;
+                };
+                if !snippet_is_usable(&emb) {
+                    continue;
+                }
+                let norm = f64::from(f32_self_dot(&emb));
+                snippets.push(LoadedSnippet {
+                    name: name.to_string(),
+                    line_offset: *off,
+                    embedding: emb,
+                    norm,
+                });
+            }
+            Ok(Ok(snippets))
+        }
+    }
+}
+
+/// Paged per-file embedding load. A stop returns an empty map and does not
+/// start the pool.
+pub(crate) fn load_semantic_embeddings(
+    storage: &CozoStorage,
+    deadline: Option<Instant>,
+    cancel: &AtomicBool,
+) -> Result<(LoadedStore, Option<SemanticStop>)> {
+    if let Some(stop) = semantic_poll_stop(deadline, cancel) {
+        return Ok((BTreeMap::new(), Some(stop)));
+    }
+    let files = match list_distinct_files(storage, deadline, cancel)? {
+        Ok(f) => f,
+        Err(stop) => return Ok((BTreeMap::new(), Some(stop))),
+    };
+    let mut by_file = BTreeMap::new();
+    for path in files {
+        match load_file_snippets(storage, &path, deadline, cancel)? {
+            Ok(snippets) => {
+                by_file.insert(path, snippets);
+            }
+            Err(stop) => return Ok((BTreeMap::new(), Some(stop))),
+        }
+    }
+    Ok((by_file, None))
+}
+
+fn scan_thread_count() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .max(1)
+}
+
+fn compare_owned_chunk(
+    files: &[String],
+    by_file: &LoadedStore,
+    file_idx: usize,
+    owned: &[LoadedSnippet],
+    threshold: f32,
+) -> Vec<SemanticMatch> {
+    let left_path = &files[file_idx];
+    let Some(left_all) = by_file.get(left_path) else {
+        return Vec::new();
+    };
+    let mut acc = Vec::new();
+    for left in owned {
+        for right in left_all {
+            if left.line_offset < right.line_offset {
+                push_if_similar(&mut acc, left_path, left, left_path, right, threshold);
+            }
+        }
+        for right_path in files.iter().skip(file_idx + 1) {
+            let Some(right_all) = by_file.get(right_path) else {
+                continue;
+            };
+            for right in right_all {
+                push_if_similar(&mut acc, left_path, left, right_path, right, threshold);
+            }
+        }
+    }
+    acc
+}
+
+/// Exact pairs on a private Rayon pool. `Budget` means a task skipped its
+/// pairs; the clock is not read after `install` returns.
+pub(crate) fn scan_semantic_pairs(
+    by_file: &LoadedStore,
+    threshold: f32,
+    deadline: Option<Instant>,
+    cancel: &AtomicBool,
+    chunk: usize,
+) -> Result<(Vec<SemanticMatch>, Option<SemanticStop>)> {
+    let files: Vec<String> = by_file.keys().cloned().collect();
+    let chunk = chunk.max(1);
+    let mut tasks: Vec<(usize, usize, usize)> = Vec::new();
+    for (file_idx, path) in files.iter().enumerate() {
+        let n = by_file.get(path).map(Vec::len).unwrap_or(0);
+        let mut start = 0usize;
+        while start < n {
+            let end = (start + chunk).min(n);
+            tasks.push((file_idx, start, end));
+            start = end;
+        }
+    }
+    let n_threads = scan_thread_count();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(n_threads)
+        .build()
+        .map_err(|e| miette::miette!("Failed to build semantic hotspot Rayon pool: {e}"))?;
+    let skipped = Arc::new(AtomicBool::new(false));
+    let matches = pool.install(|| {
+        tasks
+            .into_par_iter()
+            .flat_map(|(file_idx, start, end)| {
+                if cancel.load(Ordering::Relaxed) {
+                    skipped.store(true, Ordering::Relaxed);
+                    return Vec::new();
+                }
+                if deadline.is_some_and(|d| Instant::now() >= d) {
+                    skipped.store(true, Ordering::Relaxed);
+                    return Vec::new();
+                }
+                let path = &files[file_idx];
+                let Some(snips) = by_file.get(path) else {
+                    return Vec::new();
+                };
+                compare_owned_chunk(
+                    files.as_slice(),
+                    by_file,
+                    file_idx,
+                    &snips[start..end],
+                    threshold,
+                )
+            })
+            .collect::<Vec<SemanticMatch>>()
+    });
+    let stop = if cancel.load(Ordering::Relaxed) {
+        Some(SemanticStop::Cancelled)
+    } else if skipped.load(Ordering::Relaxed) {
+        Some(SemanticStop::Budget)
+    } else {
+        None
+    };
+    Ok((matches, stop))
+}
+
 /// Find high-similarity snippet pairs under `work_root` (0152 B2-H).
 ///
-/// Pages the self-join by sorted `file_path` so the overall Instant can
-/// interrupt between pages. Drops pairs where either path fails
-/// under-work-root (legacy absolute foreign). Absolute-under-root legacy
-/// keys are rewritten to relative for display.
+/// Loads embeddings per file, then exact-cosines on a private Rayon pool.
+/// Drops pairs where either path fails under-work-root (legacy absolute
+/// foreign). Absolute-under-root legacy keys are rewritten to relative
+/// for display.
 pub fn find_semantic_hotspots(
     storage: &CozoStorage,
     work_root: &Path,
@@ -522,11 +798,13 @@ pub fn find_semantic_hotspots(
     if let Some(stop) = semantic_poll_stop(deadline, cancel) {
         return Ok((Vec::new(), Some(stop)));
     }
-    let files = match list_distinct_files(storage, deadline, cancel)? {
-        Ok(f) => f,
-        Err(stop) => return Ok((Vec::new(), Some(stop))),
-    };
-    page_semantic_hotspots(storage, work_root, threshold, &files, deadline, cancel)
+    let (loaded, load_stop) = load_semantic_embeddings(storage, deadline, cancel)?;
+    if let Some(stop) = load_stop {
+        return Ok((Vec::new(), Some(stop)));
+    }
+    let (matches, scan_stop) =
+        scan_semantic_pairs(&loaded, threshold, deadline, cancel, SEMANTIC_SCAN_CHUNK)?;
+    Ok((finalize_matches(matches, work_root), scan_stop))
 }
 
 /// Legacy two-rule script (pre-0423). Tests only — pair-set equality.
@@ -923,7 +1201,7 @@ mod tests {
 
     #[test]
     #[allow(non_snake_case)]
-    fn find_semantic_hotspots__deadline_some__full_key_page__budget() {
+    fn find_semantic_hotspots__deadline_some__full_file__finishes() {
         let storage = CozoStorage::new_in_memory().expect("cozo");
         let root = tempfile::tempdir().expect("root");
         for i in 0..=SEMANTIC_PAGE_SNIPPETS {
@@ -939,16 +1217,20 @@ mod tests {
         let deadline = Some(Instant::now() + Duration::from_secs(60));
         let (paged, stop) =
             find_semantic_hotspots(&storage, root.path(), 0.5, deadline, &cancel).expect("bounded");
-        assert_eq!(
-            stop,
-            Some(SemanticStop::Budget),
-            "first key page of 64 on a 65-snippet file is truncated"
-        );
+        assert!(stop.is_none(), "65-snippet file must finish: {stop:?}");
+        let single =
+            find_semantic_hotspots_single_script(&storage, root.path(), 0.5).expect("single");
+        let paged_keys: Vec<_> = paged.iter().map(match_key).collect();
+        let single_keys: Vec<_> = single.iter().map(match_key).collect();
+        assert_eq!(paged_keys, single_keys, "deadline must not truncate keys");
         assert!(
-            paged
-                .iter()
-                .all(|m| m.offset1 < SEMANTIC_PAGE_SNIPPETS && m.offset2 < SEMANTIC_PAGE_SNIPPETS),
-            "bounded page must not join keys past the first window: {paged:?}"
+            paged.iter().any(|m| {
+                m.file1 == "src/wide.rs"
+                    && m.file2 == "src/wide.rs"
+                    && m.offset1 == 0
+                    && m.offset2 == SEMANTIC_PAGE_SNIPPETS
+            }),
+            "offsets 0 and 64 must be present: {paged:?}"
         );
     }
 
@@ -1072,6 +1354,122 @@ mod tests {
             "exec_find_ms={} stop={stop:?} n={}",
             t4.elapsed().as_millis(),
             matches.len()
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn load_semantic_embeddings__expired_instant__empty_map() {
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        plant(&storage, "src/a.rs", "fn_a", 0, vec![1.0, 0.0, 0.0]);
+        let expired = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        let cancel = live_cancel();
+        let (loaded, stop) =
+            load_semantic_embeddings(&storage, Some(expired), &cancel).expect("load");
+        assert!(
+            loaded.is_empty(),
+            "loader stop must not return a partial map: {loaded:?}"
+        );
+        assert_eq!(stop, Some(SemanticStop::Budget));
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn find_semantic_hotspots__parallel_scan_deadline_budget_stops_mid_scan() {
+        let snippets: Vec<LoadedSnippet> = (0..20_000)
+            .map(|i| {
+                let emb = if i < 2 {
+                    vec![1.0_f32, 0.0, 0.0]
+                } else {
+                    let t = i as f32;
+                    vec![t.sin(), t.cos(), 0.0]
+                };
+                LoadedSnippet {
+                    name: format!("fn_{i}"),
+                    line_offset: i as i64,
+                    embedding: emb.clone(),
+                    norm: f64::from(f32_self_dot(&emb)),
+                }
+            })
+            .collect();
+        let mut by_file = BTreeMap::new();
+        by_file.insert("src/wide.rs".to_string(), snippets);
+        let cancel = live_cancel();
+        let deadline = Some(Instant::now() + Duration::from_millis(200));
+        let started = Instant::now();
+        let (pairs, stop) =
+            scan_semantic_pairs(&by_file, 0.85, deadline, &cancel, SEMANTIC_SCAN_CHUNK)
+                .expect("scan");
+        let wall = started.elapsed();
+        assert_eq!(stop, Some(SemanticStop::Budget));
+        assert!(!pairs.is_empty(), "tasks that ran must keep their pairs");
+        assert!(
+            wall < Duration::from_secs(5),
+            "abort must observe Budget well under 5s, wall={wall:?}"
+        );
+    }
+
+    /// Phase 0 gate. Run `--ignored` in release; record walls in review.md.
+    #[test]
+    #[ignore]
+    #[allow(non_snake_case)]
+    fn find_semantic_hotspots__phase0_exec_parallel_scan_bench() {
+        let path = std::path::Path::new(r"C:\dev\ledgerful\.ledgerful\state\ledger.cozo");
+        let storage = CozoStorage::new_read_only(path).expect("open");
+        let cancel = live_cancel();
+        let t_load = Instant::now();
+        let (by_file, stop) = load_semantic_embeddings(&storage, None, &cancel).expect("load");
+        let load_wall = t_load.elapsed();
+        assert!(stop.is_none(), "unbounded load must finish: {stop:?}");
+        let n: usize = by_file.values().map(Vec::len).sum();
+        let max_file = by_file.values().map(Vec::len).max().unwrap_or(0);
+        let n_threads = scan_thread_count();
+        let chunk = SEMANTIC_SCAN_CHUNK;
+
+        let mut one_task = Duration::ZERO;
+        let n_threads_pool = n_threads;
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(n_threads_pool)
+            .build()
+            .expect("pool");
+        pool.install(|| {
+            if let Some((path, snips)) = by_file.iter().max_by_key(|(_, v)| v.len()) {
+                let files: Vec<String> = by_file.keys().cloned().collect();
+                let file_idx = files.iter().position(|p| p == path).unwrap_or(0);
+                let owned = &snips[..chunk.min(snips.len())];
+                let t = Instant::now();
+                let _ = compare_owned_chunk(&files, &by_file, file_idx, owned, 0.85);
+                one_task = t.elapsed();
+            }
+        });
+
+        let t_scan = Instant::now();
+        let (pairs, scan_stop) =
+            scan_semantic_pairs(&by_file, 0.85, None, &cancel, chunk).expect("scan");
+        let scan_wall = t_scan.elapsed();
+        eprintln!(
+            "phase0 threads={n_threads} files={} n={n} max_file={max_file} chunk={chunk} load_ms={} scan_ms={} load_scan_ms={} one_task_ms={} matches={} stop={scan_stop:?}",
+            by_file.len(),
+            load_wall.as_millis(),
+            scan_wall.as_millis(),
+            (load_wall + scan_wall).as_millis(),
+            one_task.as_millis(),
+            pairs.len(),
+        );
+        assert!(
+            load_wall + scan_wall < Duration::from_secs(20),
+            "load+scan {:?}",
+            load_wall + scan_wall
+        );
+        assert!(
+            one_task <= Duration::from_secs(1),
+            "in-pool 64-left task {one_task:?}"
+        );
+        assert!(
+            scan_stop.is_none(),
+            "unbounded scan must finish: {scan_stop:?}"
         );
     }
 }
