@@ -775,31 +775,29 @@ fn same_query_session_and_list_ranks_match() {
         skip_unindexed_complexity_fallback: true,
         ..HotspotQuery::default()
     };
-    let a = calculate_hotspots_detailed(&storage, &provider, &query).expect("first");
-    let b = calculate_hotspots_detailed(&storage, &provider, &query).expect("second");
-    let ranks_a: Vec<(String, i32)> = a
+    let calc = calculate_hotspots_detailed(&storage, &provider, &query).expect("calc");
+    let envelope = build_session(&layout, &storage, &Config::default()).expect("session");
+    let rank = |path: &str, score: f32| {
+        (
+            path.replace('\\', "/"),
+            (score * 1_000_000.0).round() as i32,
+        )
+    };
+    let session_ranks: Vec<(String, i32)> = envelope
         .hotspots
+        .files
         .iter()
-        .map(|h| {
-            (
-                h.path.to_string_lossy().replace('\\', "/"),
-                (h.score * 1_000_000.0).round() as i32,
-            )
-        })
+        .map(|f| rank(&f.path, f.score))
         .collect();
-    let ranks_b: Vec<(String, i32)> = b
+    let calc_ranks: Vec<(String, i32)> = calc
         .hotspots
         .iter()
-        .map(|h| {
-            (
-                h.path.to_string_lossy().replace('\\', "/"),
-                (h.score * 1_000_000.0).round() as i32,
-            )
-        })
+        .take(SESSION_HOTSPOT_LIMIT)
+        .map(|h| rank(&h.path.to_string_lossy(), h.score))
         .collect();
     assert_eq!(
-        ranks_a, ranks_b,
-        "same HotspotQuery must yield same path+score"
+        session_ranks, calc_ranks,
+        "session files must match post-fix calculate_hotspots_detailed path+score"
     );
     let _ = storage.shutdown();
 }
