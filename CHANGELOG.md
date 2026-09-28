@@ -8,6 +8,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`session` honors the hotspots overall Instant and skips the unindexed complexity fallback (0443):** `collect_hotspots` uses the same 25s Instant + `skip_unindexed_complexity_fallback` as `hotspots` list, so a finished 50/30 walk no longer spends ~80s in the `symbols` gap query.
+
 - **`release.yml` 0-job push failures were invalid YAML (0442):** an
   unindented 0434 heredoc inside `run: |` terminated the block scalar, so
   GitHub never loaded the workflow. The packaging-sync PR body is built

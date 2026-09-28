@@ -772,6 +772,7 @@ fn same_query_session_and_list_ranks_match() {
         limit: 5,
         exclude_test_paths: true,
         exclude_vendor_paths: true,
+        skip_unindexed_complexity_fallback: true,
         ..HotspotQuery::default()
     };
     let a = calculate_hotspots_detailed(&storage, &provider, &query).expect("first");
@@ -823,4 +824,202 @@ fn unmatched_windows_differ_and_are_labeled() {
     assert_eq!(list_v["filter"], "default");
     assert_eq!(session_v["daysRequested"], 30);
     assert!(list_v.get("daysRequested").is_none());
+}
+
+#[test]
+fn collect_hotspots_skip_flag_follows_overall_deadline() {
+    let src = include_str!("build.rs");
+    assert!(
+        src.contains("skip_unindexed_complexity_fallback: overall_deadline.is_some()"),
+        "session HotspotQuery must skip the unindexed symbols fallback when an overall Instant is present"
+    );
+    assert!(
+        src.contains("resolve_hotspots_overall_budget_secs(None,"),
+        "session must reuse the hotspots overall resolver with no CLI timeout"
+    );
+}
+
+#[test]
+fn session_hotspots_overall_deadline_zero_disables_instant() {
+    assert!(super::build::session_hotspots_overall_deadline(0).is_none());
+    assert!(super::build::session_hotspots_overall_deadline(25).is_some());
+}
+
+#[test]
+fn session_hotspot_completeness_overall_stop_omits_filter() {
+    use crate::impact::budget::{CompletenessFilter, CompletenessStop, HistoryWalkStop};
+    use std::sync::atomic::AtomicBool;
+    use std::time::{Duration, Instant};
+
+    let cancel = AtomicBool::new(false);
+    let expired = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .expect("clock");
+    let walk = |stop: HistoryWalkStop, walked: u64| super::build::SessionWalkCompleteness {
+        walk_stop: stop,
+        commits_requested: 50,
+        commits_walked: walked,
+        head: None,
+        history_budget_secs: 45,
+    };
+    let completeness = super::build::session_hotspot_completeness(
+        walk(HistoryWalkStop::Complete, 50),
+        Some(expired),
+        25,
+        &cancel,
+    )
+    .expect("overall stop");
+    let v = serde_json::to_value(&completeness).expect("json");
+    assert_eq!(v["stop"], "budget");
+    assert_eq!(v["scope"], "overall");
+    assert_eq!(v["stage"], "hotspots");
+    assert!(v.get("filter").is_none(), "overall stop omits filter: {v}");
+    assert_eq!(v["budgetSecs"], 25);
+
+    let future = Instant::now() + Duration::from_secs(25);
+    let finished = super::build::session_hotspot_completeness(
+        walk(HistoryWalkStop::Complete, 50),
+        Some(future),
+        25,
+        &cancel,
+    );
+    assert!(
+        finished.is_none(),
+        "in-budget complete walk omits completeness"
+    );
+
+    let walk_early = super::build::session_hotspot_completeness(
+        walk(HistoryWalkStop::Budget, 3),
+        Some(future),
+        25,
+        &cancel,
+    )
+    .expect("walk stop");
+    assert_eq!(walk_early.filter, Some(CompletenessFilter::Session));
+    assert!(walk_early.scope.is_none());
+    assert_eq!(walk_early.stop, CompletenessStop::Budget);
+    assert!(
+        super::emit::session_hotspots_budget_warn(Some(&walk_early)).is_none(),
+        "walk-early session completeness must not print the overall budget token"
+    );
+
+    let zero = super::build::session_hotspot_completeness(
+        walk(HistoryWalkStop::Complete, 50),
+        None,
+        0,
+        &cancel,
+    );
+    assert!(
+        zero.is_none(),
+        "overall_secs 0 is no Instant; complete walk omits completeness"
+    );
+}
+
+#[test]
+fn format_human_overall_completeness_stays_ten_lines_without_token() {
+    use crate::impact::budget::{CompletenessStop, completeness_for_overall};
+
+    let mut envelope = SessionEnvelope::default();
+    envelope.hotspots.completeness = Some(completeness_for_overall(
+        CompletenessStop::Budget,
+        Some(25),
+        "hotspots",
+    ));
+    let text = format_human(&envelope);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 10, "human summary must stay 10 lines: {text}");
+    assert!(
+        !text.contains("hotspots stopped"),
+        "token must not appear in format_human: {text}"
+    );
+    assert_eq!(
+        super::emit::session_hotspots_budget_warn(envelope.hotspots.completeness.as_ref()),
+        Some(crate::impact::budget::HOTSPOTS_BUDGET_WARN)
+    );
+}
+
+#[test]
+fn session_hotspot_file_from_skip_fallback_score_zero() {
+    use crate::impact::hotspots::{HotspotQuery, calculate_hotspots_detailed};
+    use crate::impact::temporal::{CommitFileSet, HistoryProvider};
+    use rusqlite::Connection;
+
+    struct CompleteWalk;
+    impl HistoryProvider for CompleteWalk {
+        fn get_history(
+            &self,
+            _max_commits: usize,
+            _max_days: Option<u64>,
+            _since_commit: Option<String>,
+            _all_parents: bool,
+        ) -> std::result::Result<Vec<CommitFileSet>, crate::git::GitError> {
+            let mut files = std::collections::HashSet::new();
+            files.insert(camino::Utf8PathBuf::from("hist.rs"));
+            Ok(vec![CommitFileSet {
+                files,
+                is_merge: false,
+                id: None,
+            }])
+        }
+    }
+
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute(
+        "CREATE TABLE symbols (file_path TEXT, cognitive_complexity INTEGER, cyclomatic_complexity INTEGER)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO symbols (file_path, cognitive_complexity, cyclomatic_complexity) VALUES ('hist.rs', 99, 99)",
+        [],
+    )
+    .unwrap();
+    let storage = StorageManager::init_from_conn(conn);
+
+    let skipped = calculate_hotspots_detailed(
+        &storage,
+        &CompleteWalk,
+        &HotspotQuery {
+            commits: 10,
+            limit: 50,
+            skip_unindexed_complexity_fallback: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let skipped_file = session_hotspot_file_from(
+        skipped
+            .hotspots
+            .iter()
+            .find(|h| h.path == std::path::Path::new("hist.rs"))
+            .expect("hist.rs ranked"),
+    );
+    assert_eq!(
+        skipped_file.score, 0.0,
+        "skip-flag true must not use unindexed symbols complexity"
+    );
+
+    let fallback = calculate_hotspots_detailed(
+        &storage,
+        &CompleteWalk,
+        &HotspotQuery {
+            commits: 10,
+            limit: 50,
+            skip_unindexed_complexity_fallback: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let fallback_file = session_hotspot_file_from(
+        fallback
+            .hotspots
+            .iter()
+            .find(|h| h.path == std::path::Path::new("hist.rs"))
+            .expect("hist.rs ranked"),
+    );
+    assert_ne!(
+        fallback_file.score, 0.0,
+        "skip-flag false must keep the unindexed symbols fallback score"
+    );
+    let _ = storage.shutdown();
 }

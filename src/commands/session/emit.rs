@@ -1,9 +1,25 @@
 //! Human / JSON emit for session briefing.
 
 use super::packet::SessionEnvelope;
+use crate::impact::budget::{
+    AnalysisCompleteness, CompletenessStop, HOTSPOTS_BUDGET_WARN, is_overall_stop,
+};
 use miette::Result;
 
+/// Stderr token only when session hotspot completeness is an overall budget stop.
+/// `format_human` never includes this string.
+pub(crate) fn session_hotspots_budget_warn(
+    completeness: Option<&AnalysisCompleteness>,
+) -> Option<&'static str> {
+    completeness
+        .filter(|c| is_overall_stop(c) && c.stop == CompletenessStop::Budget)
+        .map(|_| HOTSPOTS_BUDGET_WARN)
+}
+
 pub(crate) fn emit_session(envelope: &SessionEnvelope, json: bool) -> Result<()> {
+    if let Some(token) = session_hotspots_budget_warn(envelope.hotspots.completeness.as_ref()) {
+        eprintln!("{token}");
+    }
     if json {
         let out = serde_json::to_string_pretty(envelope)
             .map_err(|e| miette::miette!("Failed to serialize session: {e}"))?;
