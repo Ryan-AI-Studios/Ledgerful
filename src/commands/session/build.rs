@@ -8,7 +8,11 @@ use crate::config::checklist::build_config_checklist;
 use crate::config::model::Config;
 use crate::git::repo::{get_head_info, open_repo};
 use crate::git::status::get_repo_status;
-use crate::impact::budget::{CompletenessFilter, completeness_for_error, completeness_for_walk};
+use crate::impact::budget::{
+    AnalysisBudget, CompletenessFilter, HistoryWalkStop, completeness_for_error,
+    completeness_for_overall, completeness_for_walk, poll_overall_stop,
+    resolve_hotspots_overall_budget_secs,
+};
 use crate::impact::hotspots::{HotspotQuery, calculate_hotspots_detailed};
 use crate::impact::temporal::GixHistoryProvider;
 use crate::ledger::Transaction;
@@ -21,6 +25,9 @@ use crate::state::storage::StorageManager;
 use chrono::Utc;
 use miette::Result;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::time::{Duration, Instant};
 
 /// Build a session envelope for the current layout/storage/config.
 ///
@@ -247,7 +254,10 @@ fn collect_hotspots(
             );
         }
     };
-    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cancel = Arc::new(AtomicBool::new(false));
+    let overall_secs =
+        resolve_hotspots_overall_budget_secs(None, config.hotspots.overall_budget_secs);
+    let overall_deadline = session_hotspots_overall_deadline(overall_secs);
     let query = HotspotQuery {
         commits: commits as usize,
         days: Some(SESSION_HOTSPOT_DAYS),
@@ -255,10 +265,12 @@ fn collect_hotspots(
         decay_half_life: config.hotspots.decay_half_life,
         exclude_test_paths: true,
         exclude_vendor_paths: true,
-        budget: Some(crate::impact::budget::AnalysisBudget::from_secs(
+        budget: Some(AnalysisBudget::capped_by_overall(
             config.hotspots.history_budget_secs,
-            cancel,
+            overall_deadline,
+            Arc::clone(&cancel),
         )),
+        skip_unindexed_complexity_fallback: overall_deadline.is_some(),
         ..HotspotQuery::default()
     };
     let provider = GixHistoryProvider::new(&repo);
@@ -270,14 +282,17 @@ fn collect_hotspots(
                 .take(SESSION_HOTSPOT_LIMIT)
                 .map(|h| session_hotspot_file_with_head(h, &repo))
                 .collect();
-            let completeness = completeness_for_walk(
-                calc.walk_stop,
-                commits,
-                calc.commits_walked as u64,
-                Some(SESSION_HOTSPOT_DAYS),
-                CompletenessFilter::Session,
-                calc.head.clone(),
-                Some(config.hotspots.history_budget_secs).filter(|s| *s > 0),
+            let completeness = session_hotspot_completeness(
+                SessionWalkCompleteness {
+                    walk_stop: calc.walk_stop,
+                    commits_requested: commits,
+                    commits_walked: calc.commits_walked as u64,
+                    head: calc.head.clone(),
+                    history_budget_secs: config.hotspots.history_budget_secs,
+                },
+                overall_deadline,
+                overall_secs,
+                &cancel,
             );
             (
                 files,
@@ -298,6 +313,42 @@ fn collect_hotspots(
             session_hotspots_provenance(commits, None),
         ),
     }
+}
+
+pub(crate) fn session_hotspots_overall_deadline(overall_secs: u64) -> Option<Instant> {
+    (overall_secs > 0).then(|| Instant::now() + Duration::from_secs(overall_secs))
+}
+
+pub(crate) struct SessionWalkCompleteness {
+    pub walk_stop: HistoryWalkStop,
+    pub commits_requested: u64,
+    pub commits_walked: u64,
+    pub head: Option<String>,
+    pub history_budget_secs: u64,
+}
+
+pub(crate) fn session_hotspot_completeness(
+    walk: SessionWalkCompleteness,
+    overall_deadline: Option<Instant>,
+    overall_secs: u64,
+    cancel: &AtomicBool,
+) -> Option<crate::impact::budget::AnalysisCompleteness> {
+    if let Some(stop) = poll_overall_stop(overall_deadline, cancel) {
+        return Some(completeness_for_overall(
+            stop,
+            Some(overall_secs).filter(|s| *s > 0),
+            "hotspots",
+        ));
+    }
+    completeness_for_walk(
+        walk.walk_stop,
+        walk.commits_requested,
+        walk.commits_walked,
+        Some(SESSION_HOTSPOT_DAYS),
+        CompletenessFilter::Session,
+        walk.head,
+        Some(walk.history_budget_secs).filter(|s| *s > 0),
+    )
 }
 
 fn compose_session_next(
