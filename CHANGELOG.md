@@ -8,6 +8,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Hard-deadline units no longer read the repo `.env` (0445):** the two `hard_deadline` tests hold an empty temp cwd for the whole run so `cloud_fallback_env` cannot pick up operator keys after `isolate_cloud_env` unsets process env.
+
 - **`hotspots --semantic` finishes the exact pair scan on a private Rayon pool (0446):** embeddings load per file, then in-process cosine on `available_parallelism` threads (chunk 64). A finished run omits `completeness`; a deadline no longer keeps only the first 64 keys per file.
 
 - **`session` honors the hotspots overall Instant and skips the unindexed complexity fallback (0443):** `collect_hotspots` uses the same 25s Instant + `skip_unindexed_complexity_fallback` as `hotspots` list, so a finished 50/30 walk no longer spends ~80s in the `symbols` gap query.
