@@ -1630,6 +1630,8 @@ fn multi_cause_cloud_only_reasoning_only_no_false_local() {
 #[serial_test::serial(env)]
 fn hard_deadline_sizing_and_multi_cause_not_opaque_only() {
     let _iso = isolate_cloud_env();
+    let dir = tempfile::tempdir().expect("hermetic cwd");
+    let _cwd = crate::tests::DirGuard::new(dir.path());
     let server = MockServer::start();
     server.mock(|when, then| {
         when.method(httpmock::Method::POST)
@@ -1700,6 +1702,8 @@ fn hard_deadline_sizing_and_multi_cause_not_opaque_only() {
 fn hard_deadline_message_mentions_cascade_when_cloud_possible() {
     // Pure formula unit (no HTTP): with credentials, deadline expands.
     let _iso = isolate_cloud_env();
+    let dir = tempfile::tempdir().expect("hermetic cwd");
+    let _cwd = crate::tests::DirGuard::new(dir.path());
     let config = LocalModelConfig {
         base_url: "http://127.0.0.1:1".to_string(),
         ollama_cloud_url: Some("https://example.invalid".to_string()),
