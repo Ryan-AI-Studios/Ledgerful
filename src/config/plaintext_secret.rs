@@ -3,7 +3,7 @@
 //! Inspects the raw `config.toml` table so serde aliases cannot collapse
 //! `ollama_key` into `ollama_cloud_api_key`. Env / `.env` fills are ignored.
 
-use crate::commands::doctor::{DoctorCategory, DoctorFinding};
+use crate::doctor::finding::{DoctorCategory, DoctorFinding};
 use crate::state::layout::Layout;
 use std::fs;
 

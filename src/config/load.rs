@@ -127,8 +127,8 @@ fn sanitize_verify_steps(config: &mut Config) {
 
 /// Doctor-facing findings for config staleness / unknown keys. Sorted, empty
 /// when clean. Severity is **warn** / category **migration** (0109).
-pub fn doctor_config_findings(layout: &Layout) -> Vec<crate::commands::doctor::DoctorFinding> {
-    use crate::commands::doctor::{DoctorCategory, DoctorFinding};
+pub fn doctor_config_findings(layout: &Layout) -> Vec<crate::doctor::finding::DoctorFinding> {
+    use crate::doctor::finding::{DoctorCategory, DoctorFinding};
 
     let path = layout.config_file();
     if !path.exists() {

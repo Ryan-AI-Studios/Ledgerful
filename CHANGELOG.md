@@ -40,6 +40,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The doctor finding model (types and severity tallies) lives under src/doctor (0447):** `doctor --json` fields are unchanged.
+
 - **Colored signature summary is a free function in commands (0441):** `format_summary_line_colored` takes `&SignatureAggregateCounts` instead of an inherent impl on the engine type. Colour, wording, and `Stream::Stdout` are unchanged.
 
 - **Pure `verify` signature helpers live in `src/verify` (0438):**

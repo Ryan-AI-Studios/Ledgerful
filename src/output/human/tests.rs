@@ -95,7 +95,7 @@ fn doctor_summary_text_ascii_ok_fail() {
 
 #[test]
 fn print_doctor_report_ascii_chrome_only() {
-    use crate::commands::doctor::{DoctorCategory, DoctorFinding, summarize};
+    use crate::doctor::finding::{DoctorCategory, DoctorFinding, summarize};
 
     let findings = vec![
         DoctorFinding::warn("hook-template-stale", DoctorCategory::Gate, "hooks stale"),
@@ -285,7 +285,7 @@ fn format_signing_deferred_trailer_exact() {
 /// 0174 T1–T5: human 3-tier partition + --full expands hygiene.
 #[test]
 fn doctor_human_partition_three_tier() {
-    use crate::commands::doctor::{DoctorCategory, DoctorFinding};
+    use crate::doctor::finding::{DoctorCategory, DoctorFinding};
 
     let findings = vec![
         DoctorFinding::warn(
@@ -335,7 +335,7 @@ fn doctor_human_partition_three_tier() {
 /// 0225: later signing omitted from default Index Health; hygiene_count unchanged.
 #[test]
 fn doctor_human_partition_later_signing_omitted_not_hygiene() {
-    use crate::commands::doctor::{DoctorCategory, DoctorFinding, SessionPriority};
+    use crate::doctor::finding::{DoctorCategory, DoctorFinding, SessionPriority};
 
     let mut later_pin = DoctorFinding::warn("sig-pin", DoctorCategory::Signing, "no keys");
     later_pin.session_priority = SessionPriority::Later;
@@ -389,7 +389,7 @@ fn doctor_human_partition_later_signing_omitted_not_hygiene() {
 /// 0225 Codex P2-1: printer emits deferred trailer; `--full` expands bodies.
 #[test]
 fn print_doctor_report_later_trailer_and_full_expand() {
-    use crate::commands::doctor::{DoctorCategory, DoctorFinding, SessionPriority, summarize};
+    use crate::doctor::finding::{DoctorCategory, DoctorFinding, SessionPriority, summarize};
 
     fn later(code: &str, msg: &str) -> DoctorFinding {
         let mut f = DoctorFinding::warn(code, DoctorCategory::Signing, msg);
@@ -494,7 +494,7 @@ fn print_doctor_report_later_trailer_and_full_expand() {
 /// 0295: later_count is signing codes only — mixed optional later does not inflate.
 #[test]
 fn signing_deferred_trailer_counts_only_signing_later() {
-    use crate::commands::doctor::{DoctorCategory, DoctorFinding, SessionPriority, summarize};
+    use crate::doctor::finding::{DoctorCategory, DoctorFinding, SessionPriority, summarize};
 
     fn later_signing(code: &str, msg: &str) -> DoctorFinding {
         let mut f = DoctorFinding::warn(code, DoctorCategory::Signing, msg);
@@ -557,7 +557,7 @@ fn signing_deferred_trailer_counts_only_signing_later() {
 /// 0295 agy-01: zero signing-later + optional later omits the signing trailer.
 #[test]
 fn signing_deferred_trailer_omits_when_only_optional_later() {
-    use crate::commands::doctor::{DoctorCategory, DoctorFinding, SessionPriority, summarize};
+    use crate::doctor::finding::{DoctorCategory, DoctorFinding, SessionPriority, summarize};
 
     fn later_optional(code: &str, msg: &str) -> DoctorFinding {
         let mut f = DoctorFinding::info(code, DoctorCategory::Optional, msg);
@@ -610,7 +610,7 @@ fn signing_deferred_trailer_omits_when_only_optional_later() {
 
 #[test]
 fn print_doctor_report_hygiene_only_trailer_byte_stable_without_later() {
-    use crate::commands::doctor::{DoctorCategory, DoctorFinding, summarize};
+    use crate::doctor::finding::{DoctorCategory, DoctorFinding, summarize};
 
     let findings = vec![
         DoctorFinding::warn("hook-template-stale", DoctorCategory::Gate, "hooks stale"),
@@ -668,7 +668,7 @@ fn print_doctor_report_hygiene_only_trailer_byte_stable_without_later() {
 /// 0209-D: mixed info tool-gemini + optional warn; trailer uses warnOptional.
 #[test]
 fn doctor_mixed_info_tool_gemini_trailer_uses_warn_optional() {
-    use crate::commands::doctor::{DoctorCategory, DoctorFinding, split_doctor_warns};
+    use crate::doctor::finding::{DoctorCategory, DoctorFinding, split_doctor_warns};
 
     let findings = vec![
         DoctorFinding::info(
@@ -723,7 +723,7 @@ fn doctor_quiet_suppresses_remediation_gate() {
 /// 0226 invert of 0174 hook-template collapse: Warn/Gate is visible by default.
 #[test]
 fn doctor_human_hook_template_stale_visible_on_default() {
-    use crate::commands::doctor::{DoctorCategory, DoctorFinding, summarize};
+    use crate::doctor::finding::{DoctorCategory, DoctorFinding, summarize};
 
     let findings = vec![
         DoctorFinding::warn("hook-template-stale", DoctorCategory::Gate, "hooks stale"),
@@ -786,7 +786,7 @@ fn doctor_human_hook_template_stale_visible_on_default() {
 /// 0226 DoD-1 / DoD-4: acked later signing omits bodies and later trailer.
 #[test]
 fn doctor_human_acked_signing_omits_bodies_not_later_trailer() {
-    use crate::commands::doctor::{DoctorCategory, DoctorFinding, SessionPriority, summarize};
+    use crate::doctor::finding::{DoctorCategory, DoctorFinding, SessionPriority, summarize};
 
     fn acked_later(code: &str, msg: &str) -> DoctorFinding {
         let mut f = DoctorFinding::warn(code, DoctorCategory::Signing, msg);
@@ -1053,7 +1053,7 @@ fn wsl_support_line_mounted_and_unmounted() {
 
 #[test]
 fn print_doctor_report_ready_includes_scope_line() {
-    use crate::commands::doctor::{
+    use crate::doctor::finding::{
         DoctorCategory, DoctorFinding, READY_SCOPE_HUMAN_LINE, summarize,
     };
 
