@@ -18,26 +18,28 @@ pub use crate::verify::signatures::{
     sig_entry_stream, tally_signature_classes,
 };
 
-impl SignatureAggregateCounts {
-    /// Human summary line with gated colour (`Stream::Stdout` — lands on
-    /// `cli_summary` info! → stdout). Used by production emit and colour-gate tests.
-    pub fn format_summary_line_colored(&self) -> String {
-        let invalid = if self.invalid > 0 {
-            self.invalid
-                .if_supports_color(Stream::Stdout, |s| s.red())
-                .to_string()
-        } else {
-            self.invalid.to_string()
-        };
-        format!(
-            "\nSignature verification summary: {} valid, {} invalid, {} skipped, {} federated-skip.",
-            self.valid.if_supports_color(Stream::Stdout, |s| s.green()),
-            invalid,
-            self.skipped
-                .if_supports_color(Stream::Stdout, |s| s.yellow()),
-            self.federated_skip
-        )
-    }
+/// Human summary line with gated colour (`Stream::Stdout` — lands on
+/// `cli_summary` info! → stdout). Used by production emit and colour-gate tests.
+pub(crate) fn format_summary_line_colored(counts: &SignatureAggregateCounts) -> String {
+    let invalid = if counts.invalid > 0 {
+        counts
+            .invalid
+            .if_supports_color(Stream::Stdout, |s| s.red())
+            .to_string()
+    } else {
+        counts.invalid.to_string()
+    };
+    format!(
+        "\nSignature verification summary: {} valid, {} invalid, {} skipped, {} federated-skip.",
+        counts
+            .valid
+            .if_supports_color(Stream::Stdout, |s| s.green()),
+        invalid,
+        counts
+            .skipped
+            .if_supports_color(Stream::Stdout, |s| s.yellow()),
+        counts.federated_skip
+    )
 }
 
 /// Success line for signature verify — gated on `Stream::Stdout` (cli_summary info!).
@@ -317,7 +319,7 @@ pub fn verify_ledger_signatures_with_options_and_adoption(
     tracing::info!(
         target: "cli_summary",
         "{}",
-        aggregates.format_summary_line_colored()
+        format_summary_line_colored(&aggregates)
     );
 
     if all_valid {
@@ -1419,7 +1421,10 @@ fn collect_checkpoint_for_json(
 
 #[cfg(test)]
 mod sig_entry_stream_tests {
-    use super::{SignatureAggregateCounts, format_signature_success_line_colored};
+    use super::{
+        SignatureAggregateCounts, format_signature_success_line_colored,
+        format_summary_line_colored,
+    };
     use std::io::{self, Write};
     use std::sync::{Arc, Mutex};
     use tracing::Level;
@@ -1441,7 +1446,7 @@ mod sig_entry_stream_tests {
             federated_skip: 0,
             unsigned_fail: 0,
         };
-        let summary = aggregates.format_summary_line_colored();
+        let summary = format_summary_line_colored(&aggregates);
         let success = format_signature_success_line_colored();
         assert!(
             !summary.contains('\u{1b}'),
@@ -1453,6 +1458,13 @@ mod sig_entry_stream_tests {
         );
         assert!(summary.contains("3 valid"));
         assert!(summary.contains("1 invalid"));
+        assert_eq!(
+            summary,
+            format!(
+                "\nSignature verification summary: {}.",
+                aggregates.summary_counts_fragment()
+            )
+        );
         assert!(success.contains("All signature validations passed"));
         owo_colors::unset_override();
     }
@@ -1468,7 +1480,7 @@ mod sig_entry_stream_tests {
             federated_skip: 0,
             unsigned_fail: 0,
         };
-        let summary = aggregates.format_summary_line_colored();
+        let summary = format_summary_line_colored(&aggregates);
         let success = format_signature_success_line_colored();
         assert!(
             summary.contains('\u{1b}'),
