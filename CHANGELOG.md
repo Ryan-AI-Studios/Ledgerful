@@ -40,6 +40,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Policy.toml resolution lives under src/config (0449):** `policy check` JSON and the `policy.file` checklist id are unchanged.
+
 - **SCIP product-path detection and doctor SCIP findings live under src/scip (0448):** `doctor --json` codes and checklist ids are unchanged.
 
 - **The doctor finding model (types and severity tallies) lives under src/doctor (0447):** `doctor --json` fields are unchanged.
