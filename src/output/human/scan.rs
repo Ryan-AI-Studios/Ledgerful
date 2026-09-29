@@ -37,7 +37,7 @@ pub fn print_scan_summary(snapshot: &crate::git::RepoSnapshot) {
     if !snapshot.changes.is_empty() {
         // Prefer shared state (linked worktrees). Non-git → Layout::new(cwd) for
         // ignore-pattern config only — no DB open. Resolve-after-discover fails closed.
-        let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
+        let layout = match crate::state::layout::get_layout_or_cwd_if_not_git() {
             Ok(l) => l,
             Err(_) => {
                 // Rare: bad UTF-8 cwd. Use empty defaults without inventing state.
