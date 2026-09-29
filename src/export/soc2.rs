@@ -259,7 +259,7 @@ pub fn generate_soc2_export_with_options(
         build_mode_disclosure(&ledger_entries, &config.gate.mode, stored_head.as_ref());
     if has_db {
         let storage = StorageManager::open_read_only_sqlite_only(layout)?;
-        let decision = crate::commands::ledger_adopt::decide_adoption(
+        let decision = crate::ledger::adoption::decide_adoption(
             storage.get_connection(),
             &ledger_entries,
             stored_head.as_ref(),
