@@ -122,9 +122,9 @@ pub fn collapsed_next(already_shown: bool, full_next: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::surfaces::{SurfaceProbes, SurfaceStatus, classify_from_probes};
     use crate::state::cli_session::CliSession;
     use crate::state::layout::Layout;
+    use crate::surfaces::{SurfaceProbes, SurfaceStatus, classify_from_probes};
     use chrono::Utc;
     use serde_json::json;
     use tempfile::tempdir;
