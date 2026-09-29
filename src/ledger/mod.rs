@@ -6,6 +6,7 @@ pub use ledgerful_ledger::{
     session, types,
 };
 
+pub(crate) mod adoption;
 pub mod drift;
 pub mod federation;
 pub mod mode_history;

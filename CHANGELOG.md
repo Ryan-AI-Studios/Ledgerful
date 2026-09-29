@@ -40,6 +40,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Adoption decision lives under src/ledger (0451):** recovery plan/apply JSON and the stored-manifest query are unchanged.
+
 - **Surface classification lives under src/surfaces (0450):** `surfaces` JSON and the checklist surface ids are unchanged.
 
 - **Policy.toml resolution lives under src/config (0449):** `policy check` JSON and the `policy.file` checklist id are unchanged.

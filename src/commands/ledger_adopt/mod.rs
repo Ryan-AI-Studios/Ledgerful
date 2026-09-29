@@ -1,21 +1,21 @@
 //! Explicit legacy-row adoption. Extra-genesis rows stay outside the signed segment.
 
 mod backup;
-mod manifest;
 
+use crate::ledger::adoption::adoption_tx_id;
+use crate::ledger::adoption::manifest::{
+    HISTORICAL_CONTINUITY, RecoveryManifest, attestation_reason, build_manifest, diagnose,
+    eligible_rows, from_json, to_json,
+};
 use crate::ledger::crypto::{
     LedgerSignInput, compute_entry_hash_for_entry, keys_dir_path, sign_chain_head,
-    sign_ledger_entry_in_v2, verify_ledger_entry_signature,
+    sign_ledger_entry_in_v2,
 };
 use crate::ledger::db::LedgerDb;
 use crate::ledger::types::{Category, ChainHead, ChangeType, EntryType, LedgerEntry, Transaction};
 use crate::state::layout::{Layout, get_layout};
 use crate::state::storage::StorageManager;
 use backup::backup_for_adoption;
-use manifest::{
-    HISTORICAL_CONTINUITY, RecoveryManifest, attestation_reason, build_manifest, diagnose,
-    eligible_rows, from_json, to_json,
-};
 use miette::{Result, miette};
 use serde::Serialize;
 use std::fs::OpenOptions;
@@ -23,7 +23,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub use manifest::HISTORICAL_CONTINUITY as ADOPTION_CONTINUITY;
+pub use crate::ledger::adoption::manifest::HISTORICAL_CONTINUITY as ADOPTION_CONTINUITY;
+pub use crate::ledger::adoption::{AdoptionDecision, decide_adoption};
 
 pub(crate) const ORIGIN_REMOTE_REFUSAL: &str = "adoption refused: repository has no origin remote. Next: git remote add origin <url> then ledgerful ledger recovery plan --output <path>";
 
@@ -38,15 +39,6 @@ pub enum RecoveryCommand {
         yes: bool,
         json: bool,
     },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AdoptionDecision {
-    pub accepted: bool,
-    pub adopted_count: usize,
-    pub unresolved_count: usize,
-    pub manifest_digest: String,
-    pub message: String,
 }
 
 #[derive(Serialize)]
@@ -85,109 +77,6 @@ pub fn execute_ledger_recovery(command: RecoveryCommand) -> Result<()> {
             yes,
             json,
         } => execute_apply(&manifest, yes, json),
-    }
-}
-
-pub fn decide_adoption(
-    conn: &rusqlite::Connection,
-    entries: &[LedgerEntry],
-    head: Option<&ChainHead>,
-) -> AdoptionDecision {
-    let stored = match load_manifest_row(conn) {
-        Ok(Some(row)) => row,
-        Ok(None) => {
-            return AdoptionDecision {
-                accepted: false,
-                adopted_count: 0,
-                unresolved_count: 1,
-                manifest_digest: String::new(),
-                message: "no adoption manifest is stored".to_string(),
-            };
-        }
-        Err(err) => {
-            return AdoptionDecision {
-                accepted: false,
-                adopted_count: 0,
-                unresolved_count: 1,
-                manifest_digest: String::new(),
-                message: err.to_string(),
-            };
-        }
-    };
-    let diagnosis = diagnose(entries, head);
-    let unresolved = diagnosis
-        .candidate_tx_ids
-        .iter()
-        .filter(|id| stored.adopted.iter().all(|row| row.tx_id != **id))
-        .count();
-    let live = match eligible_rows(&diagnosis) {
-        Ok(rows) => rows,
-        Err(err) => {
-            return AdoptionDecision {
-                accepted: false,
-                adopted_count: stored.adopted.len(),
-                unresolved_count: unresolved.max(diagnosis.extra_genesis_count).max(1),
-                manifest_digest: stored.manifest_digest,
-                message: err.to_string(),
-            };
-        }
-    };
-    let live_manifest = match build_manifest(&stored.repo_identity, &stored.stored_head, live) {
-        Ok(manifest) => manifest,
-        Err(err) => {
-            return AdoptionDecision {
-                accepted: false,
-                adopted_count: stored.adopted.len(),
-                unresolved_count: unresolved.max(1),
-                manifest_digest: stored.manifest_digest,
-                message: err.to_string(),
-            };
-        }
-    };
-    if live_manifest.manifest_digest != stored.manifest_digest {
-        return AdoptionDecision {
-            accepted: false,
-            adopted_count: stored.adopted.len(),
-            unresolved_count: unresolved.max(1),
-            manifest_digest: stored.manifest_digest,
-            message: "stored adoption manifest does not match the current rows".to_string(),
-        };
-    }
-    let tx_id = adoption_tx_id(&stored.manifest_digest);
-    let maintenance = entries.iter().find(|entry| entry.tx_id == tx_id);
-    let Some(maintenance) = maintenance else {
-        return AdoptionDecision {
-            accepted: false,
-            adopted_count: stored.adopted.len(),
-            unresolved_count: unresolved.max(1),
-            manifest_digest: stored.manifest_digest,
-            message: format!("adoption maintenance entry {tx_id} is missing"),
-        };
-    };
-    if !verify_ledger_entry_signature(maintenance) {
-        return AdoptionDecision {
-            accepted: false,
-            adopted_count: stored.adopted.len(),
-            unresolved_count: unresolved.max(1),
-            manifest_digest: stored.manifest_digest,
-            message: "adoption maintenance signature is not valid".to_string(),
-        };
-    }
-    if maintenance.prev_hash.as_deref() != Some(stored.stored_head.as_str()) {
-        return AdoptionDecision {
-            accepted: false,
-            adopted_count: stored.adopted.len(),
-            unresolved_count: unresolved.max(1),
-            manifest_digest: stored.manifest_digest,
-            message: "adoption maintenance prev_hash is not the original head".to_string(),
-        };
-    }
-    AdoptionDecision {
-        accepted: unresolved == 0,
-        adopted_count: stored.adopted.len(),
-        unresolved_count: unresolved,
-        manifest_digest: stored.manifest_digest,
-        message: format!("historical continuity {HISTORICAL_CONTINUITY}"),
     }
 }
 
@@ -466,28 +355,6 @@ fn apply_attestation(
     }
 }
 
-fn load_manifest_row(conn: &rusqlite::Connection) -> Result<Option<RecoveryManifest>> {
-    let body: Option<String> = conn
-        .query_row(
-            "SELECT manifest_json FROM ledger_recovery_manifest ORDER BY created_at, manifest_digest LIMIT 1",
-            [],
-            |row| row.get(0),
-        )
-        .map(Some)
-        .or_else(|err| {
-            if matches!(err, rusqlite::Error::QueryReturnedNoRows) {
-                Ok(None)
-            } else {
-                Err(err)
-            }
-        })
-        .map_err(|e| miette!("read adoption manifest: {e}"))?;
-    match body {
-        Some(json) => Ok(Some(from_json(&json)?)),
-        None => Ok(None),
-    }
-}
-
 fn manifest_exists(conn: &rusqlite::Connection, digest: &str) -> Result<bool> {
     let count: i64 = conn
         .query_row(
@@ -497,10 +364,6 @@ fn manifest_exists(conn: &rusqlite::Connection, digest: &str) -> Result<bool> {
         )
         .map_err(|e| miette!("read adoption manifest: {e}"))?;
     Ok(count > 0)
-}
-
-fn adoption_tx_id(digest: &str) -> String {
-    format!("adopt-{digest}")
 }
 
 fn origin_url(root: &Path) -> Result<String> {

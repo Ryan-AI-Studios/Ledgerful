@@ -1,6 +1,6 @@
 //! Canonical recovery manifest. The digest is not the 0416 `sourceDigest`.
 
-use crate::commands::ledger_diagnose::classify::{self, Diagnosis};
+use super::classify::{self, Diagnosis};
 use crate::ledger::crypto::nfc_normalize;
 use crate::ledger::types::{ChainHead, LedgerEntry};
 use miette::{Result, miette};

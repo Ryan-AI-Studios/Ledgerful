@@ -1,17 +1,15 @@
 //! Read-only `ledger diagnose` (0416).
 
-pub(crate) mod classify;
-
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 
-use classify::{Diagnosis, PROVENANCE_LIMITS, classify};
 use miette::{Result, miette};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::commands::helpers::get_layout;
+use crate::ledger::adoption::classify::{self, Diagnosis, PROVENANCE_LIMITS, classify};
 use crate::ledger::db::LedgerDb;
 use crate::state::storage::StorageManager;
 
