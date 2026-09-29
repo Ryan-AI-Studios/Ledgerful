@@ -17,7 +17,7 @@ use miette::{IntoDiagnostic, Result};
 use std::path::PathBuf;
 use tracing::warn;
 
-/// Copied from `commands::doctor::checks::optional::SCIP_SKIP_SEGS`.
+/// Copied from `scip::presence::SCIP_SKIP_SEGS`.
 /// Do not import doctor into index (0343).
 const SKIP_SEGS: &[&str] = &[
     "vendor",
