@@ -4,6 +4,7 @@ pub mod error;
 pub mod load;
 pub mod model;
 pub mod plaintext_secret;
+pub(crate) mod policy_file;
 pub mod redact;
 pub mod starter;
 pub mod validate;
