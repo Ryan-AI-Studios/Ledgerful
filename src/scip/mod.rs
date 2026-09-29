@@ -3,6 +3,7 @@ pub mod edges;
 pub mod ingest;
 pub mod orchestrator;
 pub mod path_normalize;
+pub(crate) mod presence;
 pub mod range;
 pub mod resolver;
 pub mod stale_detect;

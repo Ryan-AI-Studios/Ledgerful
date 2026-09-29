@@ -47,6 +47,9 @@ use std::env;
 /// Message text only (no severity prefix) — severity lives on [`DoctorFinding`].
 pub const SIG_PIN_WARNING: &str = "no intent.trusted_public_keys pinned; crypto-valid signatures report VALID (unknown key). Pin keys after init or re-sign.";
 
+/// 0262 barrel: `doctor/tests.rs` reaches these via `super::*`.
+#[allow(unused_imports)]
+pub(crate) use crate::scip::presence::{collect_scip_findings, skip_scip_rel_path};
 #[cfg(test)]
 pub(crate) use checks::lifecycle::collect_legacy_migration_findings;
 pub(crate) use checks::lifecycle::split_brain_ledger_finding;
@@ -64,7 +67,6 @@ pub(crate) use checks::llm::{
 };
 #[cfg(test)]
 pub(crate) use checks::optional::chain_checkpoint_practice_finding;
-pub(crate) use checks::optional::{collect_scip_findings, skip_scip_rel_path};
 
 /// Options for [`execute_doctor`] (mapped from clap `DoctorArgs`).
 #[derive(Debug, Clone, Copy, Default)]
