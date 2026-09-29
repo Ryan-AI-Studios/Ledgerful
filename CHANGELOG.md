@@ -40,6 +40,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Human scan summary and self-timing persistence resolve layout through src/state (0453):** ignore-pattern filtering and timing persistence are unchanged.
+
 - **Flame JSON payload and the units legend live under src/state (0452):** `timings --flame` JSON keys and the stderr legend are unchanged.
 
 - **Adoption decision lives under src/ledger (0451):** recovery plan/apply JSON and the stored-manifest query are unchanged.
