@@ -1,4 +1,4 @@
-use crate::commands::doctor::{READY_SCOPE_HUMAN_LINE, is_observe_signing_later_code};
+use crate::doctor::finding::{READY_SCOPE_HUMAN_LINE, is_observe_signing_later_code};
 use crate::output::table::{
     TableStyleKind, bullet_with_style, doctor_section_rule, em_dash_with_style,
     middle_dot_with_style, resolve_table_style, status_mark_with_style,
@@ -177,14 +177,14 @@ pub fn wsl_support_line(is_wsl_mounted: bool) -> Option<&'static str> {
 /// - Optional Accelerators findings: Optional-category only when `full`.
 /// - `hygiene_count`: total hygiene findings (for collapse trailer when `!full`).
 pub fn partition_doctor_findings_for_human(
-    findings: &[crate::commands::doctor::DoctorFinding],
+    findings: &[crate::doctor::finding::DoctorFinding],
     full: bool,
 ) -> (
-    Vec<&crate::commands::doctor::DoctorFinding>,
-    Vec<&crate::commands::doctor::DoctorFinding>,
+    Vec<&crate::doctor::finding::DoctorFinding>,
+    Vec<&crate::doctor::finding::DoctorFinding>,
     usize,
 ) {
-    use crate::commands::doctor::{DoctorCategory, DoctorSeverity, is_action_critical, is_hygiene};
+    use crate::doctor::finding::{DoctorCategory, DoctorSeverity, is_action_critical, is_hygiene};
 
     let hygiene_count = findings.iter().filter(|f| is_hygiene(f)).count();
 
@@ -228,7 +228,7 @@ pub fn partition_doctor_findings_for_human(
 pub fn print_doctor_report(
     report: &DoctorReport,
     summary: &DoctorSummaryCounts,
-    findings: &[crate::commands::doctor::DoctorFinding],
+    findings: &[crate::doctor::finding::DoctorFinding],
     profile: DoctorHumanProfile,
 ) {
     let mut out = io::stdout();
@@ -243,7 +243,7 @@ pub(crate) fn print_doctor_report_to(
     out: &mut dyn Write,
     report: &DoctorReport,
     summary: &DoctorSummaryCounts,
-    findings: &[crate::commands::doctor::DoctorFinding],
+    findings: &[crate::doctor::finding::DoctorFinding],
     profile: DoctorHumanProfile,
 ) -> io::Result<()> {
     print_doctor_report_to_with_style(
@@ -260,11 +260,11 @@ pub(crate) fn print_doctor_report_to_with_style(
     out: &mut dyn Write,
     report: &DoctorReport,
     summary: &DoctorSummaryCounts,
-    findings: &[crate::commands::doctor::DoctorFinding],
+    findings: &[crate::doctor::finding::DoctorFinding],
     profile: DoctorHumanProfile,
     style: TableStyleKind,
 ) -> io::Result<()> {
-    let split = crate::commands::doctor::split_doctor_warns(findings);
+    let split = crate::doctor::finding::split_doctor_warns(findings);
     debug_assert_eq!(split.total, summary.warn);
     let summary_text = format_doctor_summary_text_with(
         style,
@@ -405,18 +405,18 @@ pub(crate) fn doctor_should_print_remediation(quiet: bool) -> bool {
 /// Print one finding line with optional remediation (suppressed when quiet).
 fn print_doctor_finding_line(
     out: &mut dyn Write,
-    f: &crate::commands::doctor::DoctorFinding,
+    f: &crate::doctor::finding::DoctorFinding,
     bullet: &str,
     quiet: bool,
 ) -> io::Result<()> {
     let prefix = match f.severity {
-        crate::commands::doctor::DoctorSeverity::Block => "[block]"
+        crate::doctor::finding::DoctorSeverity::Block => "[block]"
             .if_supports_color(Stream::Stdout, |s| s.red())
             .to_string(),
-        crate::commands::doctor::DoctorSeverity::Warn => "[warn]"
+        crate::doctor::finding::DoctorSeverity::Warn => "[warn]"
             .if_supports_color(Stream::Stdout, |s| s.yellow())
             .to_string(),
-        crate::commands::doctor::DoctorSeverity::Info => "[info]"
+        crate::doctor::finding::DoctorSeverity::Info => "[info]"
             .if_supports_color(Stream::Stdout, |s| s.cyan())
             .to_string(),
     };

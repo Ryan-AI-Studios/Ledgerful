@@ -6,6 +6,7 @@ pub mod config;
 pub mod contracts;
 pub mod coverage;
 pub mod docs;
+pub(crate) mod doctor;
 pub mod embed;
 pub mod exec;
 pub mod federated;

@@ -1,9 +1,10 @@
 mod binary_currency;
 pub(crate) mod binary_latest;
 pub(crate) mod checks;
-mod finding;
 mod fix;
 mod remediation;
+
+pub(crate) use crate::doctor::finding;
 
 pub use binary_currency::{
     BINARY_BEHIND_TREE_CODE, BINARY_BEHIND_TREE_REMEDIATION, BinaryCurrencyLag,
