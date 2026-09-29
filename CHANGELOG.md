@@ -40,6 +40,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Flame JSON payload and the units legend live under src/state (0452):** `timings --flame` JSON keys and the stderr legend are unchanged.
+
 - **Adoption decision lives under src/ledger (0451):** recovery plan/apply JSON and the stored-manifest query are unchanged.
 
 - **Surface classification lives under src/surfaces (0450):** `surfaces` JSON and the checklist surface ids are unchanged.

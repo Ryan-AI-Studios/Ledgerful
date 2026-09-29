@@ -89,6 +89,25 @@ pub struct FlameFold {
     pub total_weight_ms: i64,
 }
 
+/// Locked `--flame` human legend (stderr). `{days}` is the query window.
+pub(crate) fn flame_units_legend(days: u32) -> String {
+    format!(
+        "Collapsed stacks: last field is exclusive milliseconds (parent minus children, floor 1), summed over the last {days} day(s)."
+    )
+}
+
+/// Local `--flame --json` `data` object. Additive keys omit-empty when collapsed is empty.
+pub(crate) fn flame_json_payload(fold: &FlameFold, days: u32) -> serde_json::Value {
+    let mut data = serde_json::json!({ "collapsed": fold.collapsed });
+    if !fold.collapsed.is_empty() {
+        data["unique_stacks"] = serde_json::json!(fold.unique_stacks);
+        data["total_weight_ms"] = serde_json::json!(fold.total_weight_ms);
+        data["weight_unit"] = serde_json::json!("exclusive_ms");
+        data["window_days"] = serde_json::json!(days);
+    }
+    data
+}
+
 fn is_outer_row(row: &TimingRow) -> bool {
     row.span_name.is_none()
 }
@@ -1852,5 +1871,44 @@ mod tests {
     fn table_exists_after_migration() {
         let conn = setup();
         assert!(table_exists(&conn).unwrap());
+    }
+
+    #[test]
+    fn flame_units_legend_interpolates_days() {
+        assert_eq!(
+            flame_units_legend(30),
+            "Collapsed stacks: last field is exclusive milliseconds (parent minus children, floor 1), summed over the last 30 day(s)."
+        );
+        assert!(flame_units_legend(7).contains("last 7 day(s)."));
+    }
+
+    #[test]
+    fn flame_json_payload_nonempty_sets_unit_and_window() {
+        let fold = FlameFold {
+            collapsed: "search 10".into(),
+            unique_stacks: 1,
+            total_weight_ms: 10,
+        };
+        let data = flame_json_payload(&fold, 30);
+        assert_eq!(data["collapsed"], "search 10");
+        assert_eq!(data["unique_stacks"], 1);
+        assert_eq!(data["total_weight_ms"], 10);
+        assert_eq!(data["weight_unit"], "exclusive_ms");
+        assert_eq!(data["window_days"], 30);
+    }
+
+    #[test]
+    fn flame_json_payload_empty_omits_additive_keys() {
+        let fold = FlameFold {
+            collapsed: String::new(),
+            unique_stacks: 0,
+            total_weight_ms: 0,
+        };
+        let data = flame_json_payload(&fold, 30);
+        assert_eq!(data["collapsed"], "");
+        assert!(data.get("weight_unit").is_none());
+        assert!(data.get("window_days").is_none());
+        assert!(data.get("unique_stacks").is_none());
+        assert!(data.get("total_weight_ms").is_none());
     }
 }

@@ -871,7 +871,7 @@ fn execute_timings_global_flame(
 
     if args.json {
         let message = empty_timings_message(&collected, body.is_empty());
-        let data = crate::commands::timings::flame_json_payload(
+        let data = crate::state::storage::timings::flame_json_payload(
             &crate::state::storage::timings::FlameFold {
                 collapsed: body.clone(),
                 unique_stacks,
@@ -906,7 +906,10 @@ fn execute_timings_global_flame(
         return Ok(());
     }
 
-    eprintln!("{}", crate::commands::timings::flame_units_legend(days));
+    eprintln!(
+        "{}",
+        crate::state::storage::timings::flame_units_legend(days)
+    );
     println!("{body}");
     print_timings_degradation(&collected);
     Ok(())
