@@ -25,6 +25,7 @@ pub mod scip;
 pub mod search;
 pub mod semantic;
 pub mod state;
+pub(crate) mod surfaces;
 pub mod ui;
 pub mod util;
 pub mod verify;

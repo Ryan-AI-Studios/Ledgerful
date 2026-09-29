@@ -40,6 +40,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Surface classification lives under src/surfaces (0450):** `surfaces` JSON and the checklist surface ids are unchanged.
+
 - **Policy.toml resolution lives under src/config (0449):** `policy check` JSON and the `policy.file` checklist id are unchanged.
 
 - **SCIP product-path detection and doctor SCIP findings live under src/scip (0448):** `doctor --json` codes and checklist ids are unchanged.

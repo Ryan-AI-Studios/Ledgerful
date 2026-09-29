@@ -5,7 +5,6 @@
 //! `configure`) call [`apply_checklist_cookie`] after the catalog is shown.
 //! Human `session` does not persist.
 
-use crate::commands::surfaces::{SurfaceStatus, classify_surfaces, repo_root_cedar_present};
 use crate::config::model::{Config, ServiceInferenceState};
 use crate::config::policy_file::{PolicySource, resolve_policy};
 use crate::federated::links::present_federated_links;
@@ -15,6 +14,7 @@ use crate::scip::presence::{collect_scip_findings, skip_scip_rel_path};
 use crate::state::cli_session::CliSession;
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
+use crate::surfaces::{SurfaceStatus, classify_surfaces, repo_root_cedar_present};
 use chrono::{DateTime, Duration, Utc};
 use miette::IntoDiagnostic;
 use serde::{Deserialize, Serialize};

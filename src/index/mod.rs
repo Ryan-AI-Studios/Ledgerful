@@ -7,6 +7,7 @@ pub mod call_graph;
 pub mod centrality;
 pub mod ci_gates;
 pub mod content_cache;
+pub(crate) mod data_model_query;
 pub mod data_models;
 pub mod deploy_manifests;
 pub mod docs;
