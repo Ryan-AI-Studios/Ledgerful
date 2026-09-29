@@ -40,6 +40,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Colored signature summary is a free function in commands (0441):** `format_summary_line_colored` takes `&SignatureAggregateCounts` instead of an inherent impl on the engine type. Colour, wording, and `Stream::Stdout` are unchanged.
+
 - **Pure `verify` signature helpers live in `src/verify` (0438):**
   classification, tally, exit decision, and invalid-entry enumerate moved
   out of `commands/verify`. Colored summary lines and the
