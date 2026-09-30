@@ -9,7 +9,7 @@ mod fetch;
 mod parse;
 mod types;
 
-use crate::commands::doctor::is_ledgerful_engine_worktree;
+use crate::platform::is_ledgerful_engine_worktree;
 use classify::classify_pins;
 use fetch::{fetch_latest_pins, remotes_from_fetch};
 use miette::{IntoDiagnostic, Result};

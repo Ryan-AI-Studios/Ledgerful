@@ -327,6 +327,35 @@ pub fn detect_repository(root: &Path) -> RepositoryProfile {
     profile
 }
 
+/// Engine layout fingerprint: package name is exactly `ledgerful` **and**
+/// `src/cli/args/mod.rs` exists under that root.
+///
+/// Layout fingerprint only — if CLI layout moves, update this marker.
+/// Do **not** path-string match `"ledgerful"` in the directory name.
+pub fn is_ledgerful_engine_worktree(root: &Path) -> bool {
+    // Layout fingerprint: if CLI layout moves, update this marker.
+    if !root
+        .join("src")
+        .join("cli")
+        .join("args")
+        .join("mod.rs")
+        .is_file()
+    {
+        return false;
+    }
+    let Ok(content) = std::fs::read_to_string(root.join("Cargo.toml")) else {
+        return false;
+    };
+    let Ok(value) = toml::from_str::<toml::Value>(&content) else {
+        return false;
+    };
+    value
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        == Some("ledgerful")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -509,5 +538,38 @@ mod tests {
             profile.warnings,
             vec![DetectionWarning::DenoWorkspaceWithoutRootTasks]
         );
+    }
+
+    #[test]
+    fn engine_worktree_fingerprint_requires_name_and_cli_args_marker() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(
+            root.join("Cargo.toml"),
+            r#"[package]
+name = "my-app"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+        assert!(!is_ledgerful_engine_worktree(root));
+
+        fs::write(
+            root.join("Cargo.toml"),
+            r#"[package]
+name = "ledgerful"
+version = "0.2.5"
+"#,
+        )
+        .unwrap();
+        assert!(!is_ledgerful_engine_worktree(root));
+
+        fs::create_dir_all(root.join("src").join("cli").join("args")).unwrap();
+        fs::write(
+            root.join("src").join("cli").join("args").join("mod.rs"),
+            "// stub",
+        )
+        .unwrap();
+        assert!(is_ledgerful_engine_worktree(root));
     }
 }

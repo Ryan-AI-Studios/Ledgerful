@@ -8,6 +8,7 @@
 //! no `Command::new("git")` at doctor runtime.
 
 use super::finding::{DoctorCategory, DoctorFinding};
+use crate::platform::is_ledgerful_engine_worktree;
 use std::path::Path;
 
 /// Stable finding code (greppable; distinct from `tool-git`).
@@ -29,35 +30,6 @@ pub struct BinaryCurrencyLag {
     pub worktree_version: String,
     pub running_sha: String,
     pub worktree_head_sha: String,
-}
-
-/// Engine layout fingerprint: package name is exactly `ledgerful` **and**
-/// `src/cli/args/mod.rs` exists under that root.
-///
-/// Layout fingerprint only — if CLI layout moves, update this marker.
-/// Do **not** path-string match `"ledgerful"` in the directory name.
-pub fn is_ledgerful_engine_worktree(root: &Path) -> bool {
-    // Layout fingerprint: if CLI layout moves, update this marker.
-    if !root
-        .join("src")
-        .join("cli")
-        .join("args")
-        .join("mod.rs")
-        .is_file()
-    {
-        return false;
-    }
-    let Ok(content) = std::fs::read_to_string(root.join("Cargo.toml")) else {
-        return false;
-    };
-    let Ok(value) = toml::from_str::<toml::Value>(&content) else {
-        return false;
-    };
-    value
-        .get("package")
-        .and_then(|p| p.get("name"))
-        .and_then(|n| n.as_str())
-        == Some("ledgerful")
 }
 
 /// Worktree `package.version` from root `Cargo.toml`, when parseable and non-empty.
@@ -218,6 +190,7 @@ pub fn probe_binary_currency(
 mod tests {
     use super::*;
     use crate::commands::doctor::finding::{DoctorSeverity, dashboard_failures, ready_for_publish};
+    use crate::platform::is_ledgerful_engine_worktree;
     use std::fs;
     use tempfile::tempdir;
 
