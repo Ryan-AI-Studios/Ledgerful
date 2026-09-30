@@ -1,6 +1,6 @@
 //! `ledgerful release pins` — GitHub Latest vs packaging / npm / tap pins (0201).
 
-mod pins;
+pub(crate) mod pins;
 
 use miette::Result;
 

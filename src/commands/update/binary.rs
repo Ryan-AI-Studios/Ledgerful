@@ -1,6 +1,6 @@
 //! `update --binary`: Latest archive for release installs; cargo for engine dogfood.
 
-use crate::commands::doctor::binary_latest::{GITHUB_OWNER_REPO, parse_release_tag_name};
+use crate::commands::release::pins::{GITHUB_API_BASE, GITHUB_OWNER_REPO, parse_release_tag_name};
 use crate::platform::is_ledgerful_engine_worktree;
 use crate::util::network::network_disabled_from_env;
 use miette::{IntoDiagnostic, Result, miette};
@@ -58,7 +58,7 @@ impl BinaryUpdateCtx {
             dry_run,
             dest: None,
             fail_current_exe: false,
-            api_base: crate::commands::doctor::binary_latest::GITHUB_API_BASE.to_string(),
+            api_base: GITHUB_API_BASE.to_string(),
             download_base: GITHUB_DOWNLOAD_BASE.to_string(),
             layout_root: None,
             cwd: None,

@@ -122,14 +122,19 @@ pub(crate) fn parse_npm_document(v: &Value) -> Option<McpPin> {
     Some(pin)
 }
 
+/// Release JSON → `tag_name` only. Never reads `target_commitish`.
+pub(crate) fn parse_release_tag_name(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 /// Release JSON → tag + archive digests. Never reads `target_commitish`.
 pub(crate) fn parse_release_pins(value: &Value) -> Option<LatestPins> {
-    let tag = value
-        .get("tag_name")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())?
-        .to_string();
+    let tag = parse_release_tag_name(value)?;
     let version = strip_leading_v(&tag).to_string();
     let mut archives = std::collections::BTreeMap::new();
     if let Some(assets) = value.get("assets").and_then(Value::as_array) {

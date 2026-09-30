@@ -8,6 +8,7 @@
 
 use super::binary_currency::sha_prefix_equal;
 use super::finding::{DoctorCategory, DoctorFinding};
+use crate::commands::release::pins::parse_release_tag_name;
 use crate::git::repo::shorten_sha_for_display;
 use serde::Serialize;
 use std::cmp::Ordering;
@@ -147,16 +148,6 @@ fn strip_leading_v(s: &str) -> &str {
     s.strip_prefix('v')
         .or_else(|| s.strip_prefix('V'))
         .unwrap_or(s)
-}
-
-/// Release JSON → `tag_name` only. Never reads `target_commitish`.
-pub(crate) fn parse_release_tag_name(value: &serde_json::Value) -> Option<String> {
-    value
-        .get("tag_name")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
 }
 
 /// Commits JSON → top-level `sha` (40-hex). Reject empty / non-hex.
