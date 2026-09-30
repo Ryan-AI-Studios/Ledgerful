@@ -8,7 +8,7 @@
 //! no `Command::new("git")` at doctor runtime.
 
 use super::finding::{DoctorCategory, DoctorFinding};
-use crate::git::repo::shorten_sha_for_display;
+use crate::git::repo::{sha_prefix_equal, shorten_sha_for_display};
 use crate::platform::is_ledgerful_engine_worktree;
 use crate::platform::worktree_package_version;
 use std::path::Path;
@@ -32,22 +32,6 @@ pub struct BinaryCurrencyLag {
     pub worktree_version: String,
     pub running_sha: String,
     pub worktree_head_sha: String,
-}
-
-/// Lowercase hex normalize + prefix equality (7 vs 12 → equal).
-///
-/// Empty inputs are never equal.
-pub fn sha_prefix_equal(a: &str, b: &str) -> bool {
-    let a = normalize_sha_hex(a);
-    let b = normalize_sha_hex(b);
-    if a.is_empty() || b.is_empty() {
-        return false;
-    }
-    a.starts_with(&b) || b.starts_with(&a)
-}
-
-fn normalize_sha_hex(s: &str) -> String {
-    s.trim().to_ascii_lowercase()
 }
 
 /// Pure classifier with injected facts (unit-testable).

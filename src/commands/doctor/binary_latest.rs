@@ -6,13 +6,12 @@
 //!
 //! 0201 shipped its own `fetch_latest_pins`; this helper stays doctor-only.
 
-use super::binary_currency::sha_prefix_equal;
 use super::finding::{DoctorCategory, DoctorFinding};
 use crate::commands::release::pins::{
     GITHUB_API_VERSION, GITHUB_OWNER_REPO, parse_commit_sha, parse_release_tag_name,
     strip_leading_v,
 };
-use crate::git::repo::shorten_sha_for_display;
+use crate::git::repo::{sha_prefix_equal, shorten_sha_for_display};
 use serde::Serialize;
 use std::cmp::Ordering;
 use std::time::Duration;
