@@ -3,7 +3,7 @@ use super::emit::exit_code_for;
 use super::fetch::{fetch_latest_pins, remotes_from_fetch, user_agent};
 use super::parse::{
     parse_commit_sha, parse_homebrew_formula, parse_mcp_package, parse_release_pins,
-    parse_release_tag_name, parse_scoop_manifest,
+    parse_release_tag_name, parse_scoop_manifest, strip_leading_v,
 };
 use super::types::*;
 use serde_json::{Value, json};
@@ -416,6 +416,23 @@ fn parse_release_tag_name_reads_tag_name_only() {
 }
 
 #[test]
+fn strip_leading_v_strips_one_ascii_v() {
+    assert_eq!(strip_leading_v("v0.2.10"), "0.2.10");
+    assert_eq!(strip_leading_v("V0.2.10"), "0.2.10");
+    assert_eq!(strip_leading_v("0.2.10"), "0.2.10");
+    assert_eq!(strip_leading_v("vv0.2.10"), "v0.2.10");
+    assert_eq!(strip_leading_v("Vv0.2.10"), "v0.2.10");
+    assert_eq!(strip_leading_v("vV0.2.10"), "V0.2.10");
+    assert_eq!(strip_leading_v("VV0.2.10"), "V0.2.10");
+    assert_eq!(strip_leading_v(""), "");
+    assert_eq!(strip_leading_v("v"), "");
+    assert_eq!(strip_leading_v("V"), "");
+    assert_eq!(strip_leading_v(" v0.2.10"), " v0.2.10");
+    assert_eq!(strip_leading_v("v0.2.10 "), "0.2.10 ");
+    assert_eq!(strip_leading_v("version"), "ersion");
+}
+
+#[test]
 fn parse_release_ignores_target_commitish_main() {
     let v = release_json_with_sidecar();
     let pins = parse_release_pins(&v).expect("tag_name");
@@ -423,6 +440,7 @@ fn parse_release_ignores_target_commitish_main() {
     assert_ne!(pins.tag, "main");
     assert_eq!(v["target_commitish"], "main");
     assert!(pins.sha.is_none());
+    assert_eq!(pins.version, "0.2.10");
     assert_ne!(pins.version, "main");
 }
 
