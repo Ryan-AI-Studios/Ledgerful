@@ -2,7 +2,7 @@ use super::types::{AdvisoryInput, HomebrewPin, LatestPins, LocalPins, McpPin, Sc
 use serde_json::Value;
 use std::path::Path;
 
-pub(super) fn strip_leading_v(s: &str) -> &str {
+pub(crate) fn strip_leading_v(s: &str) -> &str {
     s.strip_prefix('v')
         .or_else(|| s.strip_prefix('V'))
         .unwrap_or(s)

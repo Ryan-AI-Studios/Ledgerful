@@ -8,7 +8,7 @@
 
 use super::binary_currency::sha_prefix_equal;
 use super::finding::{DoctorCategory, DoctorFinding};
-use crate::commands::release::pins::{parse_commit_sha, parse_release_tag_name};
+use crate::commands::release::pins::{parse_commit_sha, parse_release_tag_name, strip_leading_v};
 use crate::git::repo::shorten_sha_for_display;
 use serde::Serialize;
 use std::cmp::Ordering;
@@ -142,12 +142,6 @@ fn cmp_versions(a: &str, b: &str) -> Option<Ordering> {
 fn sha_usable(sha: &str) -> bool {
     let s = sha.trim();
     !s.is_empty() && !s.eq_ignore_ascii_case("unknown")
-}
-
-fn strip_leading_v(s: &str) -> &str {
-    s.strip_prefix('v')
-        .or_else(|| s.strip_prefix('V'))
-        .unwrap_or(s)
 }
 
 /// SHA prefix-equal Latest is Match even if versions differ.
@@ -993,6 +987,8 @@ mod tests {
 
         let got = fetch_github_latest(&server.base_url()).expect("peel");
         assert_eq!(got.tag, LATEST_TAG);
+        assert_eq!(got.version, "0.2.10");
+        assert_ne!(got.version, LATEST_TAG);
         assert_eq!(got.sha, LATEST_SHA);
         assert_ne!(got.sha, "main");
         assert_ne!(got.sha, TIP_SHA);
