@@ -3,6 +3,7 @@
 //! Does **not** call `build_change_context` / `--base-ref` (those diff
 //! `base…HEAD`). Does **not** rewrite `latest-impact.json`.
 
+use crate::commands::release::pins::{GITHUB_API_BASE, GITHUB_API_VERSION};
 use crate::commands::scan::{
     compute_pr_scan_affected_flows, compute_pr_scan_test_gaps, files_changed_between,
     parse_pr_range, resolve_commit_oid,
@@ -1434,7 +1435,7 @@ fn fetch_github_pr(token: &str, repo: &str, pr: &str) -> std::result::Result<Git
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(8))
         .build();
-    let url = format!("https://api.github.com/repos/{repo}/pulls/{pr}");
+    let url = format!("{GITHUB_API_BASE}/repos/{repo}/pulls/{pr}");
     let body = github_get_json(&agent, token, &url)?;
     let mut reqs = Vec::new();
     if let Some(text) = body.get("body").and_then(|v| v.as_str()) {
@@ -1447,7 +1448,7 @@ fn fetch_github_pr(token: &str, repo: &str, pr: &str) -> std::result::Result<Git
             });
         }
     }
-    let comments_url = format!("https://api.github.com/repos/{repo}/pulls/{pr}/comments");
+    let comments_url = format!("{GITHUB_API_BASE}/repos/{repo}/pulls/{pr}/comments");
     let mut findings = Vec::new();
     if let Ok(comments) = github_get_json(&agent, token, &comments_url)
         && let Some(arr) = comments.as_array()
@@ -1491,6 +1492,7 @@ fn github_get_json(
         .set("Authorization", &format!("Bearer {token}"))
         .set("User-Agent", "ledgerful-review")
         .set("Accept", "application/vnd.github+json")
+        .set("X-GitHub-Api-Version", GITHUB_API_VERSION)
         .call()
         .map_err(|e| format!("github http: {e}"))?;
     resp.into_json().map_err(|e| format!("github json: {e}"))
@@ -1652,10 +1654,10 @@ fn fetch_github_checks(
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(8))
         .build();
-    let url = format!("https://api.github.com/repos/{repo}/pulls/{pr}");
+    let url = format!("{GITHUB_API_BASE}/repos/{repo}/pulls/{pr}");
     let body = github_get_json(&agent, &token, &url).ok()?;
     let sha = body.get("head")?.get("sha")?.as_str()?.to_string();
-    let checks_url = format!("https://api.github.com/repos/{repo}/commits/{sha}/check-runs");
+    let checks_url = format!("{GITHUB_API_BASE}/repos/{repo}/commits/{sha}/check-runs");
     let json = github_get_json(&agent, &token, &checks_url).ok()?;
     let arr = json.get("check_runs")?.as_array()?;
     let mut items = Vec::new();
