@@ -1,7 +1,7 @@
 //! `update --binary`: Latest archive for release installs; cargo for engine dogfood.
 
 use crate::commands::doctor::binary_latest::{GITHUB_OWNER_REPO, parse_release_tag_name};
-use crate::commands::doctor::is_ledgerful_engine_worktree;
+use crate::platform::is_ledgerful_engine_worktree;
 use crate::util::network::network_disabled_from_env;
 use miette::{IntoDiagnostic, Result, miette};
 use owo_colors::{OwoColorize, Stream, Style};
