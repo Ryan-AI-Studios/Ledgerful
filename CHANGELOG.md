@@ -40,6 +40,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **GitHub owner and API base live under release pins (0460):** `doctor`, `release pins`, and `update --binary` resolve `Ryan-AI-Studios/Ledgerful` and `https://api.github.com` from release pins. Doctor duplicate consts are removed.
+
 - **Leading `v` strip lives under release pins (0459):** `doctor` and `release pins` still drop one leading `v` or `V` from a release tag when they store a version. A second `v` stays. Surrounding spaces stay.
 
 - **Commit SHA reader lives under release pins (0458):** `doctor` and `release pins` still read a top-level `sha` only when it is 40 hex characters. A short id, `main`, and a nested `commit.tree.sha` stay absent.

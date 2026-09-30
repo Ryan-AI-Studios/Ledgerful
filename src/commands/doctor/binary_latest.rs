@@ -8,17 +8,13 @@
 
 use super::binary_currency::sha_prefix_equal;
 use super::finding::{DoctorCategory, DoctorFinding};
-use crate::commands::release::pins::{parse_commit_sha, parse_release_tag_name, strip_leading_v};
+use crate::commands::release::pins::{
+    GITHUB_OWNER_REPO, parse_commit_sha, parse_release_tag_name, strip_leading_v,
+};
 use crate::git::repo::shorten_sha_for_display;
 use serde::Serialize;
 use std::cmp::Ordering;
 use std::time::Duration;
-
-/// Official product repo (`Cargo.toml` `package.repository`). Do not follow git origin.
-pub(crate) const GITHUB_OWNER_REPO: &str = "Ryan-AI-Studios/Ledgerful";
-
-/// Production GitHub REST base. Inject `base_url` in tests (httpmock).
-pub(crate) const GITHUB_API_BASE: &str = "https://api.github.com";
 
 pub(crate) const BINARY_BEHIND_LATEST_CODE: &str = "binary-behind-latest";
 pub(crate) const BINARY_AHEAD_OF_LATEST_CODE: &str = "binary-ahead-of-latest";
