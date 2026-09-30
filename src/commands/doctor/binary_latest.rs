@@ -8,7 +8,7 @@
 
 use super::binary_currency::sha_prefix_equal;
 use super::finding::{DoctorCategory, DoctorFinding};
-use crate::commands::release::pins::parse_release_tag_name;
+use crate::commands::release::pins::{parse_commit_sha, parse_release_tag_name};
 use crate::git::repo::shorten_sha_for_display;
 use serde::Serialize;
 use std::cmp::Ordering;
@@ -148,16 +148,6 @@ fn strip_leading_v(s: &str) -> &str {
     s.strip_prefix('v')
         .or_else(|| s.strip_prefix('V'))
         .unwrap_or(s)
-}
-
-/// Commits JSON → top-level `sha` (40-hex). Reject empty / non-hex.
-pub(crate) fn parse_commit_sha(value: &serde_json::Value) -> Option<String> {
-    let sha = value.get("sha").and_then(|v| v.as_str()).map(str::trim)?;
-    if sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()) {
-        Some(sha.to_ascii_lowercase())
-    } else {
-        None
-    }
 }
 
 /// SHA prefix-equal Latest is Match even if versions differ.

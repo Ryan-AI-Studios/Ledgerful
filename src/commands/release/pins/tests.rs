@@ -2,8 +2,8 @@ use super::classify::{classify_pins, expected_scoop_url};
 use super::emit::exit_code_for;
 use super::fetch::{fetch_latest_pins, remotes_from_fetch, user_agent};
 use super::parse::{
-    parse_homebrew_formula, parse_mcp_package, parse_release_pins, parse_release_tag_name,
-    parse_scoop_manifest,
+    parse_commit_sha, parse_homebrew_formula, parse_mcp_package, parse_release_pins,
+    parse_release_tag_name, parse_scoop_manifest,
 };
 use super::types::*;
 use serde_json::{Value, json};
@@ -312,6 +312,73 @@ fn release_json_with_sidecar() -> Value {
         }}"#
     ))
     .expect("fixture json")
+}
+
+#[test]
+fn parse_commit_sha_reads_top_level_sha_only() {
+    let v = json!({ "sha": LATEST_SHA });
+    assert_eq!(parse_commit_sha(&v).as_deref(), Some(LATEST_SHA));
+
+    let v = json!({ "sha": "C4A2308FE98548899105E33FF38232DFB229EC02" });
+    assert_eq!(parse_commit_sha(&v).as_deref(), Some(LATEST_SHA));
+
+    let v = json!({ "sha": format!("  {LATEST_SHA}  ") });
+    assert_eq!(parse_commit_sha(&v).as_deref(), Some(LATEST_SHA));
+
+    let v = json!({ "sha": &LATEST_SHA[..39] });
+    assert_eq!(parse_commit_sha(&v), None);
+
+    let v = json!({ "sha": format!("{LATEST_SHA}a") });
+    assert_eq!(parse_commit_sha(&v), None);
+
+    let v = json!({ "sha": "main" });
+    assert_eq!(parse_commit_sha(&v), None);
+
+    let v = json!({ "sha": "" });
+    assert_eq!(parse_commit_sha(&v), None);
+
+    let v = json!({ "sha": "   " });
+    assert_eq!(parse_commit_sha(&v), None);
+
+    let v = json!({});
+    assert_eq!(parse_commit_sha(&v), None);
+
+    let v = json!({ "sha": 1 });
+    assert_eq!(parse_commit_sha(&v), None);
+
+    let v = json!({ "sha": null });
+    assert_eq!(parse_commit_sha(&v), None);
+
+    let v = json!({ "sha": true });
+    assert_eq!(parse_commit_sha(&v), None);
+
+    let v = json!({ "sha": false });
+    assert_eq!(parse_commit_sha(&v), None);
+
+    let v = json!({ "sha": [] });
+    assert_eq!(parse_commit_sha(&v), None);
+
+    let v = json!({ "sha": {} });
+    assert_eq!(parse_commit_sha(&v), None);
+
+    let v = json!({ "commit": { "tree": { "sha": LATEST_SHA } } });
+    assert_eq!(parse_commit_sha(&v), None);
+
+    let v = json!({
+        "sha": LATEST_SHA,
+        "target_commitish": "main",
+        "commit": { "tree": { "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } }
+    });
+    assert_eq!(parse_commit_sha(&v).as_deref(), Some(LATEST_SHA));
+
+    let v = json!({ "sha": "b57f4472efb3" });
+    assert_eq!(parse_commit_sha(&v), None);
+
+    let v = json!({ "sha": "g".repeat(40) });
+    assert_eq!(parse_commit_sha(&v), None);
+
+    let v = json!({ "sha": "z4a2308fe98548899105e33ff38232dfb229ec02" });
+    assert_eq!(parse_commit_sha(&v), None);
 }
 
 #[test]
