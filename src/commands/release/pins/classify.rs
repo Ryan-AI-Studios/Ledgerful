@@ -5,7 +5,7 @@ use super::types::{
     ID_PACKAGING_SCOOP, ID_REMOTE_BUCKET, ID_REMOTE_TAP, KIND, LatestJson, LatestPins, McpPin,
     PinStatus, ReleasePinsEnvelope, RemoteFact, SCHEMA_VERSION, ScoopPin, Surface,
 };
-use crate::commands::doctor::shorten_sha_for_display;
+use crate::git::repo::shorten_sha_for_display;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 

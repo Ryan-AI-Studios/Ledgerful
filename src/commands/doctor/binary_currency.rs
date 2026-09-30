@@ -8,6 +8,7 @@
 //! no `Command::new("git")` at doctor runtime.
 
 use super::finding::{DoctorCategory, DoctorFinding};
+use crate::git::repo::shorten_sha_for_display;
 use crate::platform::is_ledgerful_engine_worktree;
 use crate::platform::worktree_package_version;
 use std::path::Path;
@@ -47,11 +48,6 @@ pub fn sha_prefix_equal(a: &str, b: &str) -> bool {
 
 fn normalize_sha_hex(s: &str) -> String {
     s.trim().to_ascii_lowercase()
-}
-
-/// First 12 lowercase hex characters of a full (or short) SHA for display/compare.
-pub fn shorten_sha_for_display(full_or_short: &str) -> String {
-    normalize_sha_hex(full_or_short).chars().take(12).collect()
 }
 
 /// Pure classifier with injected facts (unit-testable).

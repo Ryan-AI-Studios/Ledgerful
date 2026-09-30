@@ -28,6 +28,16 @@ pub fn get_head_info(repo: &Repository) -> Result<(Option<String>, Option<String
     Ok((hash, branch))
 }
 
+/// First 12 lowercase characters of a full (or short) SHA for display/compare.
+pub fn shorten_sha_for_display(full_or_short: &str) -> String {
+    full_or_short
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .take(12)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -50,5 +60,20 @@ mod tests {
         // On new repo, it's usually 'main' or 'master' even if unborn
         assert!(branch.is_some());
         Ok(())
+    }
+
+    #[test]
+    fn shorten_sha_for_display_trims_lowercases_and_takes_twelve() {
+        assert_eq!(
+            shorten_sha_for_display("  AAAAAAAAAAAABBBBBBBBBBBBBBBBBBBBBBBB  "),
+            "aaaaaaaaaaaa"
+        );
+        assert_eq!(shorten_sha_for_display("b57f447"), "b57f447");
+        assert_eq!(shorten_sha_for_display("   b57f447   "), "b57f447");
+        assert_eq!(shorten_sha_for_display("            b57f447"), "b57f447");
+        assert_eq!(shorten_sha_for_display(""), "");
+        assert_eq!(shorten_sha_for_display("   "), "");
+        assert_eq!(shorten_sha_for_display("unknown"), "unknown");
+        assert_eq!(shorten_sha_for_display("zzzzzzzzzzzzzzzz"), "zzzzzzzzzzzz");
     }
 }
