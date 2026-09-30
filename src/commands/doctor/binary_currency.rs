@@ -9,6 +9,7 @@
 
 use super::finding::{DoctorCategory, DoctorFinding};
 use crate::platform::is_ledgerful_engine_worktree;
+use crate::platform::worktree_package_version;
 use std::path::Path;
 
 /// Stable finding code (greppable; distinct from `tool-git`).
@@ -30,19 +31,6 @@ pub struct BinaryCurrencyLag {
     pub worktree_version: String,
     pub running_sha: String,
     pub worktree_head_sha: String,
-}
-
-/// Worktree `package.version` from root `Cargo.toml`, when parseable and non-empty.
-pub fn worktree_package_version(root: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(root.join("Cargo.toml")).ok()?;
-    let value: toml::Value = toml::from_str(&content).ok()?;
-    value
-        .get("package")
-        .and_then(|p| p.get("version"))
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
 }
 
 /// Lowercase hex normalize + prefix equality (7 vs 12 → equal).
@@ -191,6 +179,7 @@ mod tests {
     use super::*;
     use crate::commands::doctor::finding::{DoctorSeverity, dashboard_failures, ready_for_publish};
     use crate::platform::is_ledgerful_engine_worktree;
+    use crate::platform::worktree_package_version;
     use std::fs;
     use tempfile::tempdir;
 

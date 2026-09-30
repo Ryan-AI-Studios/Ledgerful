@@ -40,6 +40,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Worktree package version lives under src/platform (0455):** `doctor` still reads root `[package].version` as a trimmed literal string. A missing file, an unreadable manifest, unparseable TOML, a missing `version` key, a non-string version, and an empty string stay absent.
+
 - **Engine worktree fingerprint lives under src/platform (0454):** `doctor`, `release pins`, and `update --binary` still treat a root as the engine only when `package.name` is `ledgerful` and `src/cli/args/mod.rs` is present.
 
 - **Human scan summary and self-timing persistence resolve layout through src/state (0453):** ignore-pattern filtering and timing persistence are unchanged.

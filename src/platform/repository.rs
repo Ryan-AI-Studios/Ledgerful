@@ -356,6 +356,19 @@ pub fn is_ledgerful_engine_worktree(root: &Path) -> bool {
         == Some("ledgerful")
 }
 
+/// Worktree `package.version` from root `Cargo.toml`, when parseable and non-empty.
+pub fn worktree_package_version(root: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(root.join("Cargo.toml")).ok()?;
+    let value: toml::Value = toml::from_str(&content).ok()?;
+    value
+        .get("package")
+        .and_then(|p| p.get("version"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,5 +584,54 @@ version = "0.2.5"
         )
         .unwrap();
         assert!(is_ledgerful_engine_worktree(root));
+    }
+
+    #[test]
+    fn worktree_package_version_reads_literal_package_version() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        assert_eq!(worktree_package_version(root), None);
+
+        fs::write(root.join("Cargo.toml"), "not toml {{{").unwrap();
+        assert_eq!(worktree_package_version(root), None);
+
+        fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        assert_eq!(worktree_package_version(root), None);
+
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/foo\"]\n",
+        )
+        .unwrap();
+        assert_eq!(worktree_package_version(root), None);
+
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"x\"\nversion.workspace = true\n",
+        )
+        .unwrap();
+        assert_eq!(worktree_package_version(root), None);
+
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"x\"\nversion = \"\"\n",
+        )
+        .unwrap();
+        assert_eq!(worktree_package_version(root), None);
+
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"x\"\nversion = \"   \"\n",
+        )
+        .unwrap();
+        assert_eq!(worktree_package_version(root), None);
+
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"x\"\nversion = \"  0.2.5  \"\n",
+        )
+        .unwrap();
+        assert_eq!(worktree_package_version(root).as_deref(), Some("0.2.5"));
     }
 }
