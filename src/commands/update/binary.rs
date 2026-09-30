@@ -1,6 +1,8 @@
 //! `update --binary`: Latest archive for release installs; cargo for engine dogfood.
 
-use crate::commands::release::pins::{GITHUB_API_BASE, GITHUB_OWNER_REPO, parse_release_tag_name};
+use crate::commands::release::pins::{
+    GITHUB_API_BASE, GITHUB_API_VERSION, GITHUB_OWNER_REPO, parse_release_tag_name,
+};
 use crate::platform::is_ledgerful_engine_worktree;
 use crate::util::network::network_disabled_from_env;
 use miette::{IntoDiagnostic, Result, miette};
@@ -20,7 +22,6 @@ pub(crate) const ARCHIVE_LINUX: &str = "ledgerful-x86_64-unknown-linux-gnu.tar.g
 pub(crate) const ARCHIVE_MAC_X64: &str = "ledgerful-x86_64-apple-darwin.tar.gz";
 pub(crate) const ARCHIVE_MAC_ARM: &str = "ledgerful-aarch64-apple-darwin.tar.gz";
 
-const GITHUB_API_VERSION: &str = "2022-11-28";
 const METADATA_TIMEOUT: Duration = Duration::from_secs(2);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_SIDECAR_BYTES: u64 = 8 * 1024;

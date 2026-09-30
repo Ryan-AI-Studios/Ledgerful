@@ -10,7 +10,7 @@ pub(crate) const SCOOP_BUCKET_REPO: &str = "Ryan-AI-Studios/scoop-bucket";
 pub(crate) const SCOOP_BUCKET_PATH: &str = "ledgerful.json";
 pub(crate) const NPM_LATEST_URL: &str = "https://registry.npmjs.org/@ledgerful/mcp-server/latest";
 
-pub(super) const GITHUB_API_VERSION: &str = "2022-11-28";
+pub(crate) const GITHUB_API_VERSION: &str = "2022-11-28";
 pub(super) const KIND: &str = "releasePins";
 pub(super) const SCHEMA_VERSION: u32 = 1;
 

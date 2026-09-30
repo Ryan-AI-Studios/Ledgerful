@@ -18,7 +18,7 @@ use types::{ClassifyPinsInput, LocalPins, ReleasePinsEnvelope, RemotePins};
 
 pub(crate) use emit::{emit_release_pins, exit_code_for};
 pub(crate) use parse::{parse_commit_sha, parse_release_tag_name, strip_leading_v};
-pub(crate) use types::{GITHUB_API_BASE, GITHUB_OWNER_REPO, PinFetchEndpoints};
+pub(crate) use types::{GITHUB_API_BASE, GITHUB_API_VERSION, GITHUB_OWNER_REPO, PinFetchEndpoints};
 
 fn resolve_engine_root() -> Result<Option<std::path::PathBuf>> {
     let current_dir = std::env::current_dir().into_diagnostic()?;
