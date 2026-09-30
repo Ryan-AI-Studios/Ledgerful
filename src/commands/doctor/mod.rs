@@ -6,13 +6,13 @@ mod remediation;
 
 pub(crate) use crate::doctor::finding;
 
-pub use crate::git::repo::shorten_sha_for_display;
+pub use crate::git::repo::{sha_prefix_equal, shorten_sha_for_display};
 pub use crate::platform::is_ledgerful_engine_worktree;
 pub use crate::platform::worktree_package_version;
 pub use binary_currency::{
     BINARY_BEHIND_TREE_CODE, BINARY_BEHIND_TREE_REMEDIATION, BinaryCurrencyLag,
     build_binary_behind_tree_finding, classify_binary_currency, compose_binary_currency_message,
-    probe_binary_currency, sha_prefix_equal,
+    probe_binary_currency,
 };
 pub use finding::{
     DoctorCategory, DoctorFinding, DoctorSeverity, DoctorSummary, NOT_REQUIRED_FOR_READY,

@@ -38,6 +38,22 @@ pub fn shorten_sha_for_display(full_or_short: &str) -> String {
         .collect()
 }
 
+/// Lowercase hex normalize + prefix equality (7 vs 12 → equal).
+///
+/// Empty inputs are never equal.
+pub fn sha_prefix_equal(a: &str, b: &str) -> bool {
+    let a = normalize_sha_hex(a);
+    let b = normalize_sha_hex(b);
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    a.starts_with(&b) || b.starts_with(&a)
+}
+
+fn normalize_sha_hex(s: &str) -> String {
+    s.trim().to_ascii_lowercase()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -75,5 +91,19 @@ mod tests {
         assert_eq!(shorten_sha_for_display("   "), "");
         assert_eq!(shorten_sha_for_display("unknown"), "unknown");
         assert_eq!(shorten_sha_for_display("zzzzzzzzzzzzzzzz"), "zzzzzzzzzzzz");
+    }
+
+    #[test]
+    fn sha_prefix_equal_accepts_either_prefix_after_trim_and_lowercase() {
+        assert!(sha_prefix_equal("B57F4472EFB3", "b57f4472efb3"));
+        assert!(sha_prefix_equal("b57f447", "b57f4472efb3"));
+        assert!(sha_prefix_equal("b57f4472efb3", "b57f447"));
+        assert!(sha_prefix_equal("  b57f447  ", "B57F4472EFB3"));
+        assert!(sha_prefix_equal("unknown", "Unknown"));
+        assert!(!sha_prefix_equal("", "b57f447"));
+        assert!(!sha_prefix_equal("b57f447", ""));
+        assert!(!sha_prefix_equal("", ""));
+        assert!(!sha_prefix_equal("   ", "b57f447"));
+        assert!(!sha_prefix_equal("abcd", "abce"));
     }
 }

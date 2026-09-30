@@ -40,6 +40,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **SHA prefix equality lives under src/git (0462):** `doctor` still treats one commit id as equal to another when, after trim and ASCII lowercase, either is a prefix of the other. Empty input stays unequal. The 12-character display shortener is unchanged.
+
 - **GitHub API version lives under release pins (0461):** `doctor`, `release pins`, and `update --binary` send `X-GitHub-Api-Version: 2022-11-28` from release pins. Doctor and update duplicate consts are removed.
 
 - **GitHub owner and API base live under release pins (0460):** `doctor`, `release pins`, and `update --binary` resolve `Ryan-AI-Studios/Ledgerful` and `https://api.github.com` from release pins. Doctor duplicate consts are removed.
