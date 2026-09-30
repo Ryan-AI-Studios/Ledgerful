@@ -3,7 +3,7 @@ use super::emit::exit_code_for;
 use super::fetch::{fetch_latest_pins, remotes_from_fetch, user_agent};
 use super::parse::{
     parse_commit_sha, parse_homebrew_formula, parse_mcp_package, parse_release_pins,
-    parse_release_tag_name, parse_scoop_manifest, strip_leading_v,
+    parse_release_tag_name, parse_scoop_manifest, parse_ver, strip_leading_v,
 };
 use super::types::*;
 use serde_json::{Value, json};
@@ -430,6 +430,22 @@ fn strip_leading_v_strips_one_ascii_v() {
     assert_eq!(strip_leading_v(" v0.2.10"), " v0.2.10");
     assert_eq!(strip_leading_v("v0.2.10 "), "0.2.10 ");
     assert_eq!(strip_leading_v("version"), "ersion");
+}
+
+#[test]
+fn parse_ver_reads_numeric_triple_after_trim_one_v_build_and_pre() {
+    assert_eq!(parse_ver("0.2.10+build"), Some((0, 2, 10)));
+    assert_eq!(parse_ver("0.2.10-rc.1"), Some((0, 2, 10)));
+    assert_eq!(parse_ver("v0.2.10"), Some((0, 2, 10)));
+    assert_eq!(parse_ver("V0.2.10"), Some((0, 2, 10)));
+    assert_eq!(parse_ver("  v0.2.10 "), Some((0, 2, 10)));
+    assert_eq!(parse_ver("0.2.10+build"), parse_ver("0.2.10"));
+    assert_eq!(parse_ver("0.2.10.1"), Some((0, 2, 10)));
+    assert_eq!(parse_ver("vv0.2.10"), None);
+    assert_eq!(parse_ver("0.2"), None);
+    assert_eq!(parse_ver("0.2.x"), None);
+    assert_eq!(parse_ver(""), None);
+    assert_eq!(parse_ver("   "), None);
 }
 
 #[test]

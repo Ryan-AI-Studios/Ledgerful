@@ -8,6 +8,31 @@ pub(crate) fn strip_leading_v(s: &str) -> &str {
         .unwrap_or(s)
 }
 
+/// Tiny local `X.Y.Z` parse (not a semver crate).
+///
+/// Strip one leading `v`. Strip `+` build metadata and `-pre` suffixes
+/// before splitting. Parse failure skips the **behind** arm only.
+pub(crate) fn parse_ver(raw: &str) -> Option<(u32, u32, u32)> {
+    let s = raw.trim();
+    let s = s
+        .strip_prefix('v')
+        .or_else(|| s.strip_prefix('V'))
+        .unwrap_or(s);
+    let s = match s.split_once('+') {
+        Some((core, _)) => core,
+        None => s,
+    };
+    let s = match s.split_once('-') {
+        Some((core, _)) => core,
+        None => s,
+    };
+    let mut parts = s.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    Some((major, minor, patch))
+}
+
 pub(super) fn normalize_digest(raw: &str) -> String {
     let s = raw.trim();
     let s = s
