@@ -6,8 +6,9 @@
 //!
 //! 0201 shipped its own `fetch_latest_pins`; this helper stays doctor-only.
 
-use super::binary_currency::{sha_prefix_equal, shorten_sha_for_display};
+use super::binary_currency::sha_prefix_equal;
 use super::finding::{DoctorCategory, DoctorFinding};
+use crate::git::repo::shorten_sha_for_display;
 use serde::Serialize;
 use std::cmp::Ordering;
 use std::time::Duration;
