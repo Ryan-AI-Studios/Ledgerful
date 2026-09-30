@@ -9,7 +9,8 @@
 use super::binary_currency::sha_prefix_equal;
 use super::finding::{DoctorCategory, DoctorFinding};
 use crate::commands::release::pins::{
-    GITHUB_OWNER_REPO, parse_commit_sha, parse_release_tag_name, strip_leading_v,
+    GITHUB_API_VERSION, GITHUB_OWNER_REPO, parse_commit_sha, parse_release_tag_name,
+    strip_leading_v,
 };
 use crate::git::repo::shorten_sha_for_display;
 use serde::Serialize;
@@ -19,7 +20,6 @@ use std::time::Duration;
 pub(crate) const BINARY_BEHIND_LATEST_CODE: &str = "binary-behind-latest";
 pub(crate) const BINARY_AHEAD_OF_LATEST_CODE: &str = "binary-ahead-of-latest";
 
-const GITHUB_API_VERSION: &str = "2022-11-28";
 const FETCH_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Published GitHub Latest facts after a successful peel.
