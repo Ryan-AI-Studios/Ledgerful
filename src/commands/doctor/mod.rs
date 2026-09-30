@@ -243,7 +243,7 @@ pub fn execute_doctor(opts: DoctorRunOpts) -> Result<()> {
         None
     } else {
         Some(std::thread::spawn(|| {
-            binary_latest::fetch_github_latest(binary_latest::GITHUB_API_BASE)
+            binary_latest::fetch_github_latest(crate::commands::release::pins::GITHUB_API_BASE)
         }))
     };
 
