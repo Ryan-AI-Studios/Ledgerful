@@ -163,7 +163,8 @@ pub(crate) fn parse_release_pins(value: &Value) -> Option<LatestPins> {
     })
 }
 
-pub(super) fn parse_commit_sha(value: &Value) -> Option<String> {
+/// Commits JSON → top-level `sha` (40-hex). Reject empty / non-hex.
+pub(crate) fn parse_commit_sha(value: &Value) -> Option<String> {
     let sha = value.get("sha").and_then(Value::as_str).map(str::trim)?;
     if sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()) {
         Some(sha.to_ascii_lowercase())

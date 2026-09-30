@@ -17,7 +17,7 @@ use parse::{read_advisory, read_locals};
 use types::{ClassifyPinsInput, LocalPins, ReleasePinsEnvelope, RemotePins};
 
 pub(crate) use emit::{emit_release_pins, exit_code_for};
-pub(crate) use parse::parse_release_tag_name;
+pub(crate) use parse::{parse_commit_sha, parse_release_tag_name};
 pub(crate) use types::{GITHUB_API_BASE, GITHUB_OWNER_REPO, PinFetchEndpoints};
 
 fn resolve_engine_root() -> Result<Option<std::path::PathBuf>> {

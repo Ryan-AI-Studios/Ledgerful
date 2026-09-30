@@ -40,6 +40,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Commit SHA reader lives under release pins (0458):** `doctor` and `release pins` still read a top-level `sha` only when it is 40 hex characters. A short id, `main`, and a nested `commit.tree.sha` stay absent.
+
 - **GitHub release tag reader lives under release pins (0457):** `doctor` and `update --binary` still read Latest `tag_name` only. `target_commitish` is still ignored. An empty tag stays absent.
 
 - **SHA display shortening lives under src/git (0456):** `doctor` and `release pins` still take the first 12 lowercase characters of a commit id. Empty input stays empty. Prefix equality stays on the doctor command.
