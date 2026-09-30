@@ -2,7 +2,8 @@ use super::classify::{classify_pins, expected_scoop_url};
 use super::emit::exit_code_for;
 use super::fetch::{fetch_latest_pins, remotes_from_fetch, user_agent};
 use super::parse::{
-    parse_homebrew_formula, parse_mcp_package, parse_release_pins, parse_scoop_manifest,
+    parse_homebrew_formula, parse_mcp_package, parse_release_pins, parse_release_tag_name,
+    parse_scoop_manifest,
 };
 use super::types::*;
 use serde_json::{Value, json};
@@ -311,6 +312,40 @@ fn release_json_with_sidecar() -> Value {
         }}"#
     ))
     .expect("fixture json")
+}
+
+#[test]
+fn parse_release_tag_name_reads_tag_name_only() {
+    let v = json!({
+        "tag_name": "v0.2.10",
+        "target_commitish": "main",
+        "sha": "should-not-win"
+    });
+    assert_eq!(parse_release_tag_name(&v).as_deref(), Some("v0.2.10"));
+
+    let v = json!({ "tag_name": "  v0.2.10  " });
+    assert_eq!(parse_release_tag_name(&v).as_deref(), Some("v0.2.10"));
+
+    let v = json!({ "tag_name": "" });
+    assert_eq!(parse_release_tag_name(&v), None);
+
+    let v = json!({ "tag_name": "   " });
+    assert_eq!(parse_release_tag_name(&v), None);
+
+    let v = json!({});
+    assert_eq!(parse_release_tag_name(&v), None);
+
+    let v = json!({ "tag_name": 1 });
+    assert_eq!(parse_release_tag_name(&v), None);
+
+    let v = json!({ "tag_name": null });
+    assert_eq!(parse_release_tag_name(&v), None);
+
+    let v = json!({ "tag_name": true });
+    assert_eq!(parse_release_tag_name(&v), None);
+
+    let v = json!({ "target_commitish": "main" });
+    assert_eq!(parse_release_tag_name(&v), None);
 }
 
 #[test]
