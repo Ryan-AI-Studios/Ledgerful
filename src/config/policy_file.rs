@@ -1,4 +1,5 @@
 //! `.ledgerful/policy.toml` resolution (0449). ADR path coverage predicates (0465).
+//! Change-set path adapter (0469).
 //!
 //! File load, parse, and synthesized defaults. The predicates serve
 //! `max_risk_without_adr` and `verification_must_pass`. The policy check command
@@ -293,6 +294,20 @@ pub(crate) fn normalize_repo_path(path: &str) -> String {
     path.replace('\\', "/").trim_matches('/').trim().to_string()
 }
 
+/// Change-set adapter over `normalize_repo_path` (0469); drops empties, then sorts and dedupes.
+///
+/// This is not `crate::index::normalize::normalize_repo_path` and it does not evaluate policy.
+pub(crate) fn file_changes_to_paths(changes: &[crate::git::FileChange]) -> Vec<String> {
+    let mut paths: Vec<String> = changes
+        .iter()
+        .map(|c| normalize_repo_path(&c.path.to_string_lossy()))
+        .filter(|p| !p.is_empty())
+        .collect();
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
 /// True when `path` looks like an ADR document (case-insensitive).
 ///
 /// Matches: `/adr/` or `/adrs/` path segments, `.adr.md` suffix, or
@@ -335,6 +350,47 @@ pub fn entity_covers_path(entity: &str, path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_changes_to_paths_normalizes_sorts_and_drops_empty() {
+        let changes = [
+            crate::git::FileChange {
+                path: std::path::PathBuf::from(r"src\b.rs"),
+                change_type: crate::git::ChangeType::Modified,
+                is_staged: false,
+            },
+            crate::git::FileChange {
+                path: std::path::PathBuf::from("src/a.rs"),
+                change_type: crate::git::ChangeType::Added,
+                is_staged: true,
+            },
+            crate::git::FileChange {
+                path: std::path::PathBuf::from("src/a.rs"),
+                change_type: crate::git::ChangeType::Deleted,
+                is_staged: false,
+            },
+            crate::git::FileChange {
+                path: std::path::PathBuf::from(r"src\a.rs"),
+                change_type: crate::git::ChangeType::Modified,
+                is_staged: false,
+            },
+            crate::git::FileChange {
+                path: std::path::PathBuf::from("/"),
+                change_type: crate::git::ChangeType::Modified,
+                is_staged: false,
+            },
+            crate::git::FileChange {
+                path: std::path::PathBuf::from(" /src/a.rs "),
+                change_type: crate::git::ChangeType::Modified,
+                is_staged: false,
+            },
+        ];
+        assert_eq!(
+            file_changes_to_paths(&changes),
+            vec!["/src/a.rs", "src/a.rs", "src/b.rs"]
+        );
+        assert!(file_changes_to_paths(&[]).is_empty());
+    }
 
     #[test]
     fn is_adr_document_path_detects_known_patterns() {

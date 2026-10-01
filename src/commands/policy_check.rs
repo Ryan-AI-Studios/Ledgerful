@@ -22,7 +22,7 @@ pub use crate::config::policy_file::{
     PolicyConfig, PolicyMode, PolicyRules, PolicySource, RiskThreshold, entity_covers_path,
     is_adr_document_path, load_policy_from_git, parse_policy_toml,
 };
-use crate::config::policy_file::{normalize_repo_path, resolve_policy};
+use crate::config::policy_file::{file_changes_to_paths, normalize_repo_path, resolve_policy};
 
 /// Stable schema version for `PolicyCheckReport`. Breaking changes bump this.
 pub const POLICY_CHECK_SCHEMA_VERSION: u32 = 1;
@@ -926,17 +926,6 @@ fn format_uncovered_paths_suffix(uncovered: &[String]) -> String {
     } else {
         format!("; uncovered: {}", listed.join(", "))
     }
-}
-
-fn file_changes_to_paths(changes: &[crate::git::FileChange]) -> Vec<String> {
-    let mut paths: Vec<String> = changes
-        .iter()
-        .map(|c| normalize_repo_path(&c.path.to_string_lossy()))
-        .filter(|p| !p.is_empty())
-        .collect();
-    paths.sort();
-    paths.dedup();
-    paths
 }
 
 // ---------------------------------------------------------------------------
