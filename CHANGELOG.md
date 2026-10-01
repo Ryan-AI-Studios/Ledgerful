@@ -40,6 +40,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Human audit churn row lives under the audit human surface (0472):** `ledger audit` still prints each top-churned-files row with a width-40 path and the count word `entries`. The audit command prints that row in cyan. It does not own the word. Velocity still says `Total Commits:`.
+
 - **Human audit hotspot row lives under the hotspot display surface (0471):** `ledger audit` still prints each top-hotspots row with a `display:` label and two decimal places. The audit command prints that row. It does not own the label. JSON `score` stays 0–1. The hotspot table still prints a `Display` column at three decimal places.
 
 - **Human audit reason and risk lines live under ledger reason labels (0470):** `ledger audit` still prefixes a trailer-only reason with `[trailer] ` and still appends `(from category …)` when the risk matches the category map. The audit command prints those lines. It does not own them. JSON reason fields stay unlabeled by those suffixes.

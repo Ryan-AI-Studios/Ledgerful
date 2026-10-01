@@ -19,7 +19,7 @@ use crate::ledger::reason::{format_audit_reason_line, format_audit_risk_line};
 use crate::ledger::transaction::TransactionManager;
 use crate::ledger::types::LedgerEntry;
 use crate::ledger::ui::{LedgerStatus, get_change_type_icon, get_status_icon, with_icon};
-use crate::output::human::format_audit_hotspot_line;
+use crate::output::human::{format_audit_hotspot_line, format_churn_line};
 use crate::output::table::{apply_table_style, resolve_table_style};
 use crate::state::storage::StorageManager;
 use crate::verify::results::VERIFY_HISTORY;
@@ -762,11 +762,6 @@ fn audit_entries_from_ledger_entries(
     Ok(audit_entries)
 }
 
-/// Uncolored TOP CHURNED FILES row (count word is `entries`, not `commits`).
-pub(crate) fn format_churn_line(entity: &str, count: i64) -> String {
-    format!("  {entity:<40} {count} entries")
-}
-
 fn ci_trend_human_placeholder(ci_trend_corrupt: bool) -> &'static str {
     if ci_trend_corrupt {
         "CI trend unreadable (ciTrendCorrupt)."
@@ -1290,21 +1285,6 @@ mod tests {
                 < json["completeness"]["commitsRequested"].as_u64().unwrap()
         );
         assert!(json.get("hotspots").is_some(), "hotspots sibling required");
-    }
-
-    #[test]
-    fn format_churn_line_uses_entries_not_commits() {
-        let line = format_churn_line("CHANGELOG.md", 12);
-        assert!(
-            line.contains("entries"),
-            "churn unit must be entries: {line}"
-        );
-        assert!(
-            !line.contains("commits"),
-            "churn unit must not be commits: {line}"
-        );
-        assert!(line.contains("CHANGELOG.md"));
-        assert!(line.contains("12"));
     }
 
     #[test]
