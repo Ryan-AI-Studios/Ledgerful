@@ -2,8 +2,10 @@
 //!
 //! Public paths stay `crate::output::human::{print_*, DoctorReport, ...}`.
 //! 0471 also re-exports the `pub(crate)` audit `display:` row;
-//! that is not a table printer.
+//! that is not a table printer. 0472 also re-exports the
+//! `pub(crate)` audit `entries` row.
 
+mod audit;
 mod dead_code;
 mod doctor;
 mod hotspots;
@@ -11,6 +13,7 @@ mod impact;
 mod scan;
 mod verify;
 
+pub(crate) use audit::format_churn_line;
 pub(crate) use dead_code::print_dead_code_grouped_to;
 pub use dead_code::{
     DEAD_CODE_DISPATCH_SCOPE_LINE, DEAD_CODE_EMPTY_STATE, DEAD_CODE_HONESTY_FOOTER,
