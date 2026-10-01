@@ -1,4 +1,5 @@
 //! Emit-time reason/risk labels and write-side trailer stripping.
+//! Human audit Reason and Risk lines (0470).
 //!
 //! No SQLite columns. Do not put computed fields on the rusqlite `LedgerEntry`
 //! mapper. Read surfaces (search / audit / MCP / REST) call these helpers;
@@ -128,6 +129,24 @@ pub fn classify_risk_source(risk: Option<&str>, category: Category) -> Option<&'
         Some("category")
     } else {
         Some("explicit")
+    }
+}
+
+/// Human Reason line (0470); prefixes `[trailer] ` only when `classify_reason_kind` returns `"trailer"`; this is not the JSON `reason_kind` field.
+pub fn format_audit_reason_line(reason: &str) -> String {
+    if classify_reason_kind(reason) == Some("trailer") {
+        format!("[trailer] {reason}")
+    } else {
+        reason.to_string()
+    }
+}
+
+/// Human Risk line (0470); appends ` (from category {category})` only when `classify_risk_source(Some(risk), category)` returns `"category"`; `Category`'s `Display` stays the screaming name.
+pub fn format_audit_risk_line(risk: &str, category: Category) -> String {
+    if classify_risk_source(Some(risk), category) == Some("category") {
+        format!("{risk} (from category {category})")
+    } else {
+        risk.to_string()
     }
 }
 
@@ -301,6 +320,45 @@ mod tests {
             Some("explicit")
         );
         assert_eq!(classify_risk_source(None, Category::Bugfix), None);
+    }
+
+    #[test]
+    fn format_audit_lines_prefix_trailer_and_category_source() {
+        let trailer = "Co-authored-by: Cursor <cursoragent@cursor.com>";
+        let reason = format_audit_reason_line(trailer);
+        assert!(
+            reason.starts_with("[trailer] "),
+            "human Reason must prefix [trailer]: {reason}"
+        );
+        assert!(reason.contains(trailer));
+        let risk = format_audit_risk_line("HIGH", Category::Bugfix);
+        assert_eq!(risk, "HIGH (from category BUGFIX)");
+        let prose = format_audit_reason_line("Store a substantive why.");
+        assert_eq!(prose, "Store a substantive why.");
+        let printed_reason = format!("  Reason:  {reason}");
+        let printed_risk = format!("  Risk:    {risk}");
+        assert!(
+            printed_reason.contains("Reason:") && printed_reason.contains("[trailer]"),
+            "printer line must keep Reason: + [trailer]: {printed_reason}"
+        );
+        assert!(
+            printed_risk.contains("Risk:") && printed_risk.contains("(from category BUGFIX)"),
+            "printer line must keep Risk: + category source: {printed_risk}"
+        );
+        assert_eq!(format_audit_risk_line("LOW", Category::Bugfix), "LOW");
+        assert_eq!(
+            format_audit_reason_line("Refactor: extract helper"),
+            "Refactor: extract helper"
+        );
+        assert_eq!(format_audit_reason_line(""), "");
+        assert_eq!(
+            format_audit_risk_line("MEDIUM", Category::Refactor),
+            "MEDIUM (from category REFACTOR)"
+        );
+        assert_eq!(
+            format_audit_risk_line("TRIVIAL", Category::Docs),
+            "TRIVIAL (from category DOCS)"
+        );
     }
 
     #[test]
