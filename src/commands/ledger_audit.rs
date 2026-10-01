@@ -15,6 +15,7 @@ use crate::impact::hotspots::{HotspotQuery, calculate_hotspots_detailed};
 use crate::impact::packet::Hotspot;
 use crate::impact::temporal::GixHistoryProvider;
 use crate::ledger::db::LedgerDb;
+use crate::ledger::reason::{format_audit_reason_line, format_audit_risk_line};
 use crate::ledger::transaction::TransactionManager;
 use crate::ledger::types::LedgerEntry;
 use crate::ledger::ui::{LedgerStatus, get_change_type_icon, get_status_icon, with_icon};
@@ -1106,25 +1107,6 @@ pub(crate) fn audit_entity_payload(
     Ok(AuditEntityPayload { exact, related })
 }
 
-pub(crate) fn format_audit_reason_line(reason: &str) -> String {
-    if crate::ledger::reason::classify_reason_kind(reason) == Some("trailer") {
-        format!("[trailer] {reason}")
-    } else {
-        reason.to_string()
-    }
-}
-
-pub(crate) fn format_audit_risk_line(
-    risk: &str,
-    category: crate::ledger::types::Category,
-) -> String {
-    if crate::ledger::reason::classify_risk_source(Some(risk), category) == Some("category") {
-        format!("{risk} (from category {category})")
-    } else {
-        risk.to_string()
-    }
-}
-
 fn print_audit_entry_list_from_audit(entries: &[AuditEntry]) -> Result<()> {
     for entry in entries {
         let prefix = if entry.origin == "LOCAL" {
@@ -2100,31 +2082,6 @@ mod tests {
         );
         assert!(line.contains("src/lib.rs"));
         assert!(line.contains("3.29"));
-    }
-
-    #[test]
-    fn audit_human_trailer_reason_prefixed() {
-        let trailer = "Co-authored-by: Cursor <cursoragent@cursor.com>";
-        let reason = format_audit_reason_line(trailer);
-        assert!(
-            reason.starts_with("[trailer] "),
-            "human Reason must prefix [trailer]: {reason}"
-        );
-        assert!(reason.contains(trailer));
-        let risk = format_audit_risk_line("HIGH", crate::ledger::types::Category::Bugfix);
-        assert_eq!(risk, "HIGH (from category BUGFIX)");
-        let prose = format_audit_reason_line("Store a substantive why.");
-        assert_eq!(prose, "Store a substantive why.");
-        let printed_reason = format!("  Reason:  {reason}");
-        let printed_risk = format!("  Risk:    {risk}");
-        assert!(
-            printed_reason.contains("Reason:") && printed_reason.contains("[trailer]"),
-            "printer line must keep Reason: + [trailer]: {printed_reason}"
-        );
-        assert!(
-            printed_risk.contains("Risk:") && printed_risk.contains("(from category BUGFIX)"),
-            "printer line must keep Risk: + category source: {printed_risk}"
-        );
     }
 
     fn with_changed_files_fixture(

@@ -40,6 +40,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Human audit reason and risk lines live under ledger reason labels (0470):** `ledger audit` still prefixes a trailer-only reason with `[trailer] ` and still appends `(from category …)` when the risk matches the category map. The audit command prints those lines. It does not own them. JSON reason fields stay unlabeled by those suffixes.
+
 - **Policy change-set paths live under policy.toml config (0469):** `policy check` still turns a git change list into forward-slash paths, drops empties, and sorts and dedupes them before the ADR risk rule. The check command calls that helper. It does not own it.
 
 - **Lifecycle ledger-entry counts live under src/state (0468):** `doctor` still warns on committed `verified` rows with no bound `verification_results` row, and still tallies LOCAL rows with `sig_version` below 2 for the `sig-version` finding and `--fix` plan. The command builds those findings. It does not own the SQL.
