@@ -18,11 +18,11 @@ use miette::{IntoDiagnostic, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use crate::config::policy_file::resolve_policy;
 pub use crate::config::policy_file::{
-    PolicyConfig, PolicyMode, PolicyRules, PolicySource, RiskThreshold, load_policy_from_git,
-    parse_policy_toml,
+    PolicyConfig, PolicyMode, PolicyRules, PolicySource, RiskThreshold, entity_covers_path,
+    is_adr_document_path, load_policy_from_git, parse_policy_toml,
 };
+use crate::config::policy_file::{normalize_repo_path, resolve_policy};
 
 /// Stable schema version for `PolicyCheckReport`. Breaking changes bump this.
 pub const POLICY_CHECK_SCHEMA_VERSION: u32 = 1;
@@ -915,54 +915,6 @@ struct ResolvedRisk {
     changed_paths: Vec<String>,
 }
 
-// ---------------------------------------------------------------------------
-// ADR covering helpers (max_risk_without_adr)
-// ---------------------------------------------------------------------------
-
-/// Forward-slash normalize and trim leading/trailing slashes for stable compare.
-fn normalize_repo_path(path: &str) -> String {
-    path.replace('\\', "/").trim_matches('/').trim().to_string()
-}
-
-/// True when `path` looks like an ADR document (case-insensitive).
-///
-/// Matches: `/adr/` or `/adrs/` path segments, `.adr.md` suffix, or
-/// `architecture-decision` anywhere in the path.
-pub fn is_adr_document_path(path: &str) -> bool {
-    let n = normalize_repo_path(path).to_ascii_lowercase();
-    if n.is_empty() {
-        return false;
-    }
-    n.contains("/adr/")
-        || n.starts_with("adr/")
-        || n.contains("/adrs/")
-        || n.starts_with("adrs/")
-        || n.ends_with(".adr.md")
-        || n.contains("architecture-decision")
-}
-
-/// True when a non-empty ADR `entity` covers a changed `path`.
-///
-/// - entity equals path
-/// - path starts with `entity/` (entity is a directory/module scope)
-/// - entity starts with `path/` (entity more specific under a changed tree)
-///
-/// Empty entities never cover.
-pub fn entity_covers_path(entity: &str, path: &str) -> bool {
-    let e = normalize_repo_path(entity);
-    let p = normalize_repo_path(path);
-    if e.is_empty() || p.is_empty() {
-        return false;
-    }
-    if e.eq_ignore_ascii_case(&p) {
-        return true;
-    }
-    // Case-insensitive prefix checks with a path-separator boundary.
-    let e_lower = e.to_ascii_lowercase();
-    let p_lower = p.to_ascii_lowercase();
-    p_lower.starts_with(&format!("{e_lower}/")) || e_lower.starts_with(&format!("{p_lower}/"))
-}
-
 /// Format a trailing note listing up to 5 sorted uncovered paths for violation messages.
 fn format_uncovered_paths_suffix(uncovered: &[String]) -> String {
     if uncovered.is_empty() {
@@ -1162,33 +1114,6 @@ mod tests {
             PrRiskLevel::Medium,
             RiskThreshold::High
         ));
-    }
-
-    #[test]
-    fn is_adr_document_path_detects_known_patterns() {
-        assert!(is_adr_document_path("docs/adr/0001-policy.md"));
-        assert!(is_adr_document_path("docs/adrs/0001.md"));
-        assert!(is_adr_document_path("adr/foo.md"));
-        assert!(is_adr_document_path("docs/foo.adr.md"));
-        assert!(is_adr_document_path("docs/architecture-decision-record.md"));
-        assert!(is_adr_document_path("Docs/ADR/Upper.md")); // case-insensitive
-        assert!(!is_adr_document_path("Cargo.toml"));
-        assert!(!is_adr_document_path("src/address.rs")); // no false positive on "adr" substring alone
-        assert!(!is_adr_document_path(""));
-    }
-
-    #[test]
-    fn entity_covers_path_equality_and_scope() {
-        assert!(entity_covers_path("Cargo.toml", "Cargo.toml"));
-        assert!(entity_covers_path("src", "src/commands/policy_check.rs"));
-        assert!(entity_covers_path(
-            "src/commands/policy_check.rs",
-            "src/commands"
-        )); // entity more specific under changed tree
-        assert!(!entity_covers_path("docs/unrelated", "Cargo.toml"));
-        assert!(!entity_covers_path("", "Cargo.toml")); // empty never covers
-        assert!(!entity_covers_path("srcx", "src/foo.rs")); // not a prefix boundary
-        assert!(entity_covers_path("Src/Foo.rs", "src/foo.rs")); // case-insensitive
     }
 
     #[test]

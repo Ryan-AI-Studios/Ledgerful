@@ -40,6 +40,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **ADR path coverage predicates live under policy.toml config (0465):** `policy check` still treats a path as an ADR when it has an `adr` or `adrs` segment, a `.adr.md` suffix, or `architecture-decision`, and an entity still covers a path by equality or a slash-bounded prefix. The check command calls those predicates. It does not own them.
+
 - **Trace env-var include globs compile without unwrap (0466):** `detect_trace_env_vars` compiles the matcher from the `Glob` that already parsed. A failed exclude-set build uses an empty set that matches nothing.
 
 - **Review GitHub calls use the pins API base and version (0464):** `review` builds its four pull and check-run URLs from `GITHUB_API_BASE` and sends `X-GitHub-Api-Version: 2022-11-28` from release pins. Bearer auth and `User-Agent: ledgerful-review` stay. The other GitHub clients stay separate functions.
