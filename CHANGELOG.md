@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.16] - 2026-10-01
+
 ### Fixed
 
 - **Hard-deadline units no longer read the repo `.env` (0445):** the two `hard_deadline` tests hold an empty temp cwd for the whole run so `cloud_fallback_env` cannot pick up operator keys after `isolate_cloud_env` unsets process env.
