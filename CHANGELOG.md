@@ -40,6 +40,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Hotspot trend insert lives under src/state (0467):** `hotspots trend` and the post-commit hook still skip a `hotspot_trends` snapshot when that commit hash is already stored or the sorted path and score pairs match the previous sample, and a locked database still retries three times at 50 ms. The hook calculates hotspots. It does not own the write.
+
 - **ADR path coverage predicates live under policy.toml config (0465):** `policy check` still treats a path as an ADR when it has an `adr` or `adrs` segment, a `.adr.md` suffix, or `architecture-decision`, and an entity still covers a path by equality or a slash-bounded prefix. The check command calls those predicates. It does not own them.
 
 - **Trace env-var include globs compile without unwrap (0466):** `detect_trace_env_vars` compiles the matcher from the `Glob` that already parsed. A failed exclude-set build uses an empty set that matches nothing.

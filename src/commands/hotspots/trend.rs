@@ -1,11 +1,11 @@
 use super::list::persist_hotspots_and_couplings;
-use crate::commands::hook_post_commit::insert_hotspot_trends_with_retry;
 use crate::impact::budget::{HotspotProvenance, HotspotProvenanceSource, format_provenance_footer};
 use crate::impact::hotspots::{HotspotQuery, calculate_hotspots, normalize_score};
 use crate::impact::temporal::GixHistoryProvider;
 use crate::output::human::HOTSPOT_DISPLAY_HEADER;
 use crate::output::table::build_premium_table;
 use crate::state::storage::StorageManager;
+use crate::state::storage::hotspot_trends::insert_hotspot_trends_with_retry;
 use crate::util::term::prompt_yes_no;
 use chrono::Utc;
 use miette::{IntoDiagnostic, Result};

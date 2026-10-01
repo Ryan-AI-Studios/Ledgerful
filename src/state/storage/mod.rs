@@ -1,4 +1,5 @@
 pub mod connection;
+pub mod hotspot_trends;
 pub mod ledger;
 pub mod migrations;
 pub mod packets;
