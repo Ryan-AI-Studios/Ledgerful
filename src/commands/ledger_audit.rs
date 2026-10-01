@@ -19,11 +19,11 @@ use crate::ledger::reason::{format_audit_reason_line, format_audit_risk_line};
 use crate::ledger::transaction::TransactionManager;
 use crate::ledger::types::LedgerEntry;
 use crate::ledger::ui::{LedgerStatus, get_change_type_icon, get_status_icon, with_icon};
+use crate::output::human::format_audit_hotspot_line;
 use crate::output::table::{apply_table_style, resolve_table_style};
 use crate::state::storage::StorageManager;
 use crate::verify::results::VERIFY_HISTORY;
 use std::io::Write;
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
@@ -765,11 +765,6 @@ fn audit_entries_from_ledger_entries(
 /// Uncolored TOP CHURNED FILES row (count word is `entries`, not `commits`).
 pub(crate) fn format_churn_line(entity: &str, count: i64) -> String {
     format!("  {entity:<40} {count} entries")
-}
-
-/// Uncolored TOP HOTSPOTS row. Label is `display:` (ln), not `score:` (0–1).
-pub(crate) fn format_audit_hotspot_line(path: &Path, display_score: f32) -> String {
-    format!("  {:<40} display: {:.2}", path.display(), display_score)
 }
 
 fn ci_trend_human_placeholder(ci_trend_corrupt: bool) -> &'static str {
@@ -2067,21 +2062,6 @@ mod tests {
             crate::impact::budget::resolve_history_budget_secs(None, 45),
             45
         );
-    }
-
-    #[test]
-    fn format_audit_hotspot_line_uses_display_not_score() {
-        let line = format_audit_hotspot_line(std::path::Path::new("src/lib.rs"), 3.29);
-        assert!(
-            line.contains("display:"),
-            "hotspot unit must be display: {line}"
-        );
-        assert!(
-            !line.contains("score:"),
-            "hotspot unit must not be score: {line}"
-        );
-        assert!(line.contains("src/lib.rs"));
-        assert!(line.contains("3.29"));
     }
 
     fn with_changed_files_fixture(

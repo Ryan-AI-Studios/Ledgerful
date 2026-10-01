@@ -1,6 +1,8 @@
 //! Human-facing CLI printers, split by surface (0252).
 //!
 //! Public paths stay `crate::output::human::{print_*, DoctorReport, ...}`.
+//! 0471 also re-exports the `pub(crate)` audit `display:` row;
+//! that is not a table printer.
 
 mod dead_code;
 mod doctor;
@@ -25,6 +27,7 @@ pub use doctor::{
     format_signing_deferred_trailer_with, partition_doctor_findings_for_human, print_doctor_report,
     wsl_support_line,
 };
+pub(crate) use hotspots::format_audit_hotspot_line;
 pub use hotspots::{
     HOTSPOT_DISPLAY_HEADER, print_hotspots, print_hotspots_table,
     print_hotspots_table_with_centrality, print_semantic_hotspots,

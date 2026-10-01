@@ -40,6 +40,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Human audit hotspot row lives under the hotspot display surface (0471):** `ledger audit` still prints each top-hotspots row with a `display:` label and two decimal places. The audit command prints that row. It does not own the label. JSON `score` stays 0–1. The hotspot table still prints a `Display` column at three decimal places.
+
 - **Human audit reason and risk lines live under ledger reason labels (0470):** `ledger audit` still prefixes a trailer-only reason with `[trailer] ` and still appends `(from category …)` when the risk matches the category map. The audit command prints those lines. It does not own them. JSON reason fields stay unlabeled by those suffixes.
 
 - **Policy change-set paths live under policy.toml config (0469):** `policy check` still turns a git change list into forward-slash paths, drops empties, and sorts and dedupes them before the ADR risk rule. The check command calls that helper. It does not own it.
