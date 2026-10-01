@@ -40,6 +40,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Policy change-set paths live under policy.toml config (0469):** `policy check` still turns a git change list into forward-slash paths, drops empties, and sorts and dedupes them before the ADR risk rule. The check command calls that helper. It does not own it.
+
 - **Lifecycle ledger-entry counts live under src/state (0468):** `doctor` still warns on committed `verified` rows with no bound `verification_results` row, and still tallies LOCAL rows with `sig_version` below 2 for the `sig-version` finding and `--fix` plan. The command builds those findings. It does not own the SQL.
 
 - **Hotspot trend insert lives under src/state (0467):** `hotspots trend` and the post-commit hook still skip a `hotspot_trends` snapshot when that commit hash is already stored or the sorted path and score pairs match the previous sample, and a locked database still retries three times at 50 ms. The hook calculates hotspots. It does not own the write.
