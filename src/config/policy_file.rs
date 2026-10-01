@@ -1,6 +1,7 @@
-//! `.ledgerful/policy.toml` resolution (0449).
+//! `.ledgerful/policy.toml` resolution (0449). ADR path coverage predicates (0465).
 //!
-//! File load, parse, and synthesized defaults. The policy check command
+//! File load, parse, and synthesized defaults. The predicates serve
+//! `max_risk_without_adr` and `verification_must_pass`. The policy check command
 //! stays in the command layer. This is not `crate::policy` (rules.toml).
 
 use crate::config::load::load_config;
@@ -284,9 +285,83 @@ pub fn parse_policy_toml(text: &str) -> Result<PolicyConfig> {
     Ok(cfg)
 }
 
+/// Forward-slash normalize and trim leading/trailing slashes for stable compare.
+///
+/// This is not `crate::index::normalize::normalize_repo_path` (`&Path`, slash
+/// conversion, no trim).
+pub(crate) fn normalize_repo_path(path: &str) -> String {
+    path.replace('\\', "/").trim_matches('/').trim().to_string()
+}
+
+/// True when `path` looks like an ADR document (case-insensitive).
+///
+/// Matches: `/adr/` or `/adrs/` path segments, `.adr.md` suffix, or
+/// `architecture-decision` anywhere in the path.
+pub fn is_adr_document_path(path: &str) -> bool {
+    let n = normalize_repo_path(path).to_ascii_lowercase();
+    if n.is_empty() {
+        return false;
+    }
+    n.contains("/adr/")
+        || n.starts_with("adr/")
+        || n.contains("/adrs/")
+        || n.starts_with("adrs/")
+        || n.ends_with(".adr.md")
+        || n.contains("architecture-decision")
+}
+
+/// True when a non-empty ADR `entity` covers a changed `path`.
+///
+/// - entity equals path
+/// - path starts with `entity/` (entity is a directory/module scope)
+/// - entity starts with `path/` (entity more specific under a changed tree)
+///
+/// Empty entities never cover.
+pub fn entity_covers_path(entity: &str, path: &str) -> bool {
+    let e = normalize_repo_path(entity);
+    let p = normalize_repo_path(path);
+    if e.is_empty() || p.is_empty() {
+        return false;
+    }
+    if e.eq_ignore_ascii_case(&p) {
+        return true;
+    }
+    // Case-insensitive prefix checks with a path-separator boundary.
+    let e_lower = e.to_ascii_lowercase();
+    let p_lower = p.to_ascii_lowercase();
+    p_lower.starts_with(&format!("{e_lower}/")) || e_lower.starts_with(&format!("{p_lower}/"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_adr_document_path_detects_known_patterns() {
+        assert!(is_adr_document_path("docs/adr/0001-policy.md"));
+        assert!(is_adr_document_path("docs/adrs/0001.md"));
+        assert!(is_adr_document_path("adr/foo.md"));
+        assert!(is_adr_document_path("docs/foo.adr.md"));
+        assert!(is_adr_document_path("docs/architecture-decision-record.md"));
+        assert!(is_adr_document_path("Docs/ADR/Upper.md")); // case-insensitive
+        assert!(!is_adr_document_path("Cargo.toml"));
+        assert!(!is_adr_document_path("src/address.rs")); // no false positive on "adr" substring alone
+        assert!(!is_adr_document_path(""));
+    }
+
+    #[test]
+    fn entity_covers_path_equality_and_scope() {
+        assert!(entity_covers_path("Cargo.toml", "Cargo.toml"));
+        assert!(entity_covers_path("src", "src/commands/policy_check.rs"));
+        assert!(entity_covers_path(
+            "src/commands/policy_check.rs",
+            "src/commands"
+        )); // entity more specific under changed tree
+        assert!(!entity_covers_path("docs/unrelated", "Cargo.toml"));
+        assert!(!entity_covers_path("", "Cargo.toml")); // empty never covers
+        assert!(!entity_covers_path("srcx", "src/foo.rs")); // not a prefix boundary
+        assert!(entity_covers_path("Src/Foo.rs", "src/foo.rs")); // case-insensitive
+    }
 
     #[test]
     fn parse_policy_toml_defaults() {
