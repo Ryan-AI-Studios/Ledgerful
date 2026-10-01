@@ -297,11 +297,26 @@ mod tests {
     }
 
     #[test]
+    fn test_invalid_include_before_valid_still_flags() {
+        let env_deps = vec![EnvVarDep {
+            var_name: "OTEL_EXPORTER_OTLP_ENDPOINT".to_string(),
+            declared: true,
+            evidence: "std::env::var(\"OTEL_EXPORTER_OTLP_ENDPOINT\")".to_string(),
+        }];
+        let patterns = vec!["[".to_string(), "OTEL_*".to_string()];
+        let changes = detect_trace_env_vars(&env_deps, &patterns, &[]);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].var_name, "OTEL_EXPORTER_OTLP_ENDPOINT");
+        assert_eq!(changes[0].pattern, "OTEL_*");
+    }
+
+    #[test]
     fn test_invalid_exclude_glob_does_not_panic_and_include_still_matches() {
         // "[" fails at Glob::new and never enters the builder, so build() stays
         // Ok on an empty set. It does not reach the Err arm. That arm is
-        // GlobSet::empty() and cannot panic. Do not invent a glob that fails
-        // DFA construction.
+        // GlobSet::empty(). GlobSet::new returns Err from required_exts.build()
+        // or regexes.regex_set() after Glob::new succeeded. This track does not
+        // force that regex-set error.
         let env_deps = vec![EnvVarDep {
             var_name: "OTEL_EXPORTER_OTLP_ENDPOINT".to_string(),
             declared: true,
@@ -315,14 +330,31 @@ mod tests {
     }
 
     #[test]
-    fn test_production_text_before_mod_tests_has_no_unwrap() {
-        let prefix = include_str!("traces.rs")
+    fn test_production_text_before_mod_tests_has_no_unwrap_or_expect() {
+        let source = include_str!("traces.rs");
+        let prefix = source
             .split("mod tests")
             .next()
-            .expect("traces.rs contains mod tests");
+            .expect("split always yields a first piece");
+        assert!(
+            prefix.len() < source.len(),
+            "mod tests delimiter must truncate the production prefix"
+        );
+        assert!(
+            prefix.contains("pub fn detect_trace_env_vars"),
+            "production prefix must include detect_trace_env_vars"
+        );
+        assert!(
+            !prefix.contains("fn test_"),
+            "production prefix must not include test functions"
+        );
         assert!(
             !prefix.contains(".unwrap("),
             "production text before mod tests must not contain .unwrap("
+        );
+        assert!(
+            !prefix.contains(".expect("),
+            "production text before mod tests must not contain .expect("
         );
     }
 }
