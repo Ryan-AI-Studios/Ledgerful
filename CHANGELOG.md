@@ -40,6 +40,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Lifecycle ledger-entry counts live under src/state (0468):** `doctor` still warns on committed `verified` rows with no bound `verification_results` row, and still tallies LOCAL rows with `sig_version` below 2 for the `sig-version` finding and `--fix` plan. The command builds those findings. It does not own the SQL.
+
 - **Hotspot trend insert lives under src/state (0467):** `hotspots trend` and the post-commit hook still skip a `hotspot_trends` snapshot when that commit hash is already stored or the sorted path and score pairs match the previous sample, and a locked database still retries three times at 50 ms. The hook calculates hotspots. It does not own the write.
 
 - **ADR path coverage predicates live under policy.toml config (0465):** `policy check` still treats a path as an ADR when it has an `adr` or `adrs` segment, a `.adr.md` suffix, or `architecture-decision`, and an entity still covers a path by equality or a slash-bounded prefix. The check command calls those predicates. It does not own them.

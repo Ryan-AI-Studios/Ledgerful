@@ -37,6 +37,7 @@ use crate::output::human::print_doctor_report;
 use crate::platform::{PathKind, check_tools, classify_path, current_platform, detect_shell};
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
+use crate::state::storage::ledger::count_entries_below_sig_version;
 use chrono::Utc;
 use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream, Style};
@@ -344,8 +345,7 @@ pub fn execute_doctor(opts: DoctorRunOpts) -> Result<()> {
                     .ok()
                     .flatten()
             });
-        let v1_count =
-            checks::lifecycle::count_entries_below_sig_version(storage.get_connection(), 2).ok();
+        let v1_count = count_entries_below_sig_version(storage.get_connection(), 2).ok();
         Some(plan_doctor_fix(
             &findings,
             pub_hex.as_deref(),
