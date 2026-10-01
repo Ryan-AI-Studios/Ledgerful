@@ -3,7 +3,8 @@ use crate::commands::doctor::remediation::{build_sig_pin_finding, build_sig_vers
 use crate::output::human::DoctorReport;
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
-use miette::{IntoDiagnostic, Result};
+use crate::state::storage::ledger::{count_entries_below_sig_version, count_phantom_verified};
+use miette::Result;
 use owo_colors::{OwoColorize, Stream};
 
 /// Four-surface legacy migration checks (0094 DoD-6). Structured findings with
@@ -88,40 +89,6 @@ fn doctor_gitignore_legacy_findings(root: &camino::Utf8Path) -> Vec<DoctorFindin
     }
 }
 
-/// Count committed ledger entries marked Verified without a verification_results row.
-fn count_phantom_verified(conn: &rusqlite::Connection) -> Result<i64> {
-    let count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM ledger_entries le
-             WHERE le.verification_status = 'verified'
-               AND NOT EXISTS (
-                   SELECT 1 FROM verification_results vr WHERE vr.tx_id = le.tx_id
-               )",
-            [],
-            |row| row.get(0),
-        )
-        .into_diagnostic()?;
-    Ok(count)
-}
-
-/// Count LOCAL committed ledger rows with `sig_version < below`.
-///
-/// Defensive: returns `Err` when the table/column is missing (fresh repos).
-/// Callers should use `if let Ok(count) = …` and omit the count on error.
-pub(crate) fn count_entries_below_sig_version(
-    conn: &rusqlite::Connection,
-    below: u32,
-) -> Result<i64> {
-    let count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM ledger_entries
-             WHERE origin = 'LOCAL' AND sig_version < ?1",
-            [below as i64],
-            |row| row.get(0),
-        )
-        .into_diagnostic()?;
-    Ok(count)
-}
 enum GateModeOutcome {
     Ok(String),
     NoHistory(String),
