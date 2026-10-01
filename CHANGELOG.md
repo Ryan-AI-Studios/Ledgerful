@@ -40,6 +40,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Trace env-var include globs compile without unwrap (0466):** `detect_trace_env_vars` compiles the matcher from the `Glob` that already parsed. A failed exclude-set build uses an empty set that matches nothing.
+
 - **Review GitHub calls use the pins API base and version (0464):** `review` builds its four pull and check-run URLs from `GITHUB_API_BASE` and sends `X-GitHub-Api-Version: 2022-11-28` from release pins. Bearer auth and `User-Agent: ledgerful-review` stay. The other GitHub clients stay separate functions.
 
 - **X.Y.Z version parser lives under release pins (0463):** `doctor` still reads a numeric `major.minor.patch` after trim, one leading `v` or `V`, and a `+` build or `-` prerelease suffix. A second `v` stays unparsed. `strip_leading_v` is unchanged.

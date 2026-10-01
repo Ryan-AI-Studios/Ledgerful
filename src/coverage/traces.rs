@@ -1,8 +1,6 @@
 use crate::impact::packet::{ChangedFile, TraceConfigChange, TraceConfigType, TraceEnvVarChange};
 use crate::index::env_schema::EnvVarDep;
-use globset::{Glob, GlobSetBuilder};
-#[cfg(test)]
-use std::path::PathBuf;
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use tracing::warn;
 
 pub fn detect_trace_config_changes(
@@ -57,8 +55,8 @@ pub fn detect_trace_env_vars(
     for pat in patterns {
         match Glob::new(pat) {
             Ok(glob) => {
+                compiled_patterns.push((pat.clone(), glob.compile_matcher()));
                 pattern_builder.add(glob);
-                compiled_patterns.push((pat.clone(), Glob::new(pat).unwrap().compile_matcher()));
             }
             Err(e) => {
                 warn!("Invalid trace env-var glob pattern '{}': {}", pat, e);
@@ -80,7 +78,7 @@ pub fn detect_trace_env_vars(
 
     let exclude_set = match exclude_builder.build() {
         Ok(set) => set,
-        Err(_) => GlobSetBuilder::new().build().unwrap(),
+        Err(_) => GlobSet::empty(),
     };
 
     let mut changes = Vec::new();
@@ -109,6 +107,7 @@ mod tests {
     use super::*;
     use crate::impact::packet::ChangedFile;
     use crate::index::env_schema::EnvVarDep;
+    use std::path::PathBuf;
 
     #[test]
     fn test_otel_collector_yaml_detected() {
@@ -283,5 +282,47 @@ mod tests {
         let patterns = vec!["OTEL_*".to_string()];
         let changes = detect_trace_env_vars(&env_deps, &patterns, &[]);
         assert_eq!(changes.len(), 0);
+    }
+
+    #[test]
+    fn test_invalid_include_glob_does_not_panic_or_match() {
+        let env_deps = vec![EnvVarDep {
+            var_name: "OTEL_EXPORTER_OTLP_ENDPOINT".to_string(),
+            declared: true,
+            evidence: "std::env::var(\"OTEL_EXPORTER_OTLP_ENDPOINT\")".to_string(),
+        }];
+        let patterns = vec!["[".to_string()];
+        let changes = detect_trace_env_vars(&env_deps, &patterns, &[]);
+        assert_eq!(changes.len(), 0);
+    }
+
+    #[test]
+    fn test_invalid_exclude_glob_does_not_panic_and_include_still_matches() {
+        // "[" fails at Glob::new and never enters the builder, so build() stays
+        // Ok on an empty set. It does not reach the Err arm. That arm is
+        // GlobSet::empty() and cannot panic. Do not invent a glob that fails
+        // DFA construction.
+        let env_deps = vec![EnvVarDep {
+            var_name: "OTEL_EXPORTER_OTLP_ENDPOINT".to_string(),
+            declared: true,
+            evidence: "std::env::var(\"OTEL_EXPORTER_OTLP_ENDPOINT\")".to_string(),
+        }];
+        let patterns = vec!["OTEL_*".to_string()];
+        let exclude = vec!["[".to_string()];
+        let changes = detect_trace_env_vars(&env_deps, &patterns, &exclude);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].var_name, "OTEL_EXPORTER_OTLP_ENDPOINT");
+    }
+
+    #[test]
+    fn test_production_text_before_mod_tests_has_no_unwrap() {
+        let prefix = include_str!("traces.rs")
+            .split("mod tests")
+            .next()
+            .expect("traces.rs contains mod tests");
+        assert!(
+            !prefix.contains(".unwrap("),
+            "production text before mod tests must not contain .unwrap("
+        );
     }
 }
