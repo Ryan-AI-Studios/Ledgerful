@@ -10,7 +10,7 @@ How Ledgerful reaches package managers. Distribution only — no engine runtime,
 | `cargo binstall --git …` | Engine-ready | `[package.metadata.binstall]` in `Cargo.toml`; uses release assets |
 | Homebrew tap | Live | Formula (CLI), not cask; tap-first (not homebrew-core); auto-bumped on each release |
 | Scoop bucket | Live | 64-bit portable `.zip` only; auto-bumped on each release |
-| winget (`Ledgerful.Ledgerful`) | <!-- lf-floor:P-13 -->Live at **0.2.14** (manifests 2026-09-25); GitHub **v0.2.15** published, index may lag. Open version PR #440829.<!-- /lf-floor:P-13 --> | `winget install Ledgerful.Ledgerful`; `WINGET_TOKEN` is set; subsequent tags bump via SHA-pinned `winget-releaser` |
+| winget (`Ledgerful.Ledgerful`) | <!-- lf-floor:P-13 -->Live at **0.2.15** (manifests 2026-10-02); GitHub **v0.2.16** published, index may lag.<!-- /lf-floor:P-13 --> | `winget install Ledgerful.Ledgerful`; `WINGET_TOKEN` is set; subsequent tags bump via SHA-pinned `winget-releaser` |
 | npm (`@ledgerful/mcp-server`) | Live | Independent wrapper version line; engine pin `ledgerfulEngineTag` (downloads release binary on install) |
 | crates.io `cargo install ledgerful` | **Not pursued** for distribution | Heavy native graph; prebuilt path preferred |
 
@@ -200,7 +200,7 @@ On each release, job `bump-manifests` (after `publish`):
 
 **Invariant:** the bump script reads hashes **only** from published `.sha256` files. It never recomputes hashes from archives.
 
-`WINGET_TOKEN` **is set**; `winget-releaser` opens version PRs on subsequent tags. If the secret is unset, the job notices (`::notice::` + step summary) and skips — that is a failure mode, not the current ops story. Package `Ledgerful.Ledgerful` is <!-- lf-floor:P-191 -->live on winget at **0.2.14** (`microsoft/winget-pkgs` `manifests/l/Ledgerful/Ledgerful`, 2026-09-25). GitHub Release **v0.2.15** is published; do not claim winget 0.2.15 until that directory exists. Open version PR #440829.<!-- /lf-floor:P-191 -->
+`WINGET_TOKEN` **is set**; `winget-releaser` opens version PRs on subsequent tags. If the secret is unset, the job notices (`::notice::` + step summary) and skips — that is a failure mode, not the current ops story. Package `Ledgerful.Ledgerful` is <!-- lf-floor:P-191 -->live on winget at **0.2.15** (`microsoft/winget-pkgs` `manifests/l/Ledgerful/Ledgerful`, 2026-10-02). GitHub Release **v0.2.16** is published; do not claim winget 0.2.16 until that directory exists.<!-- /lf-floor:P-191 -->
 
 ### Local / CI fixture test
 
@@ -228,9 +228,9 @@ bash scripts/test-refresh-distribution-floors.sh
 
 ## winget
 
-- Identifier: `Ledgerful.Ledgerful` (accepted 2026-07-30; <!-- lf-floor:P-215 -->live on winget at **0.2.14**, manifests 2026-09-25<!-- /lf-floor:P-215 -->)
+- Identifier: `Ledgerful.Ledgerful` (accepted 2026-07-30; <!-- lf-floor:P-215 -->live on winget at **0.2.15**, manifests 2026-10-02<!-- /lf-floor:P-215 -->)
 - Install: `winget install Ledgerful.Ledgerful`
-- Note: <!-- lf-floor:P-217 -->community index **0.2.14**. GitHub Release **v0.2.15** published 2026-09-25; do not claim 0.2.15 live until that directory exists. Open version PR #440829.<!-- /lf-floor:P-217 --> History: 0.2.12 was [#430322](https://github.com/microsoft/winget-pkgs/pull/430322) **merged** 2026-09-06; 0.2.11 was [#423248](https://github.com/microsoft/winget-pkgs/pull/423248) merged 2026-08-26; leftover [#415913](https://github.com/microsoft/winget-pkgs/pull/415913) (0.2.8) **merged**; [#416853](https://github.com/microsoft/winget-pkgs/pull/416853) (0.2.9) **closed-superseded**. The community index can lag a merge by minutes–hours; do not invent a `winget search` result.
+- Note: <!-- lf-floor:P-217 -->community index **0.2.15**. GitHub Release **v0.2.16** published 2026-10-02; do not claim 0.2.16 live until that directory exists.<!-- /lf-floor:P-217 --> History: 0.2.12 was [#430322](https://github.com/microsoft/winget-pkgs/pull/430322) **merged** 2026-09-06; 0.2.11 was [#423248](https://github.com/microsoft/winget-pkgs/pull/423248) merged 2026-08-26; leftover [#415913](https://github.com/microsoft/winget-pkgs/pull/415913) (0.2.8) **merged**; [#416853](https://github.com/microsoft/winget-pkgs/pull/416853) (0.2.9) **closed-superseded**. The community index can lag a merge by minutes–hours; do not invent a `winget search` result.
 - Action: `vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e` (tag v2, SHA-pinned)
 - Installer regex: portable `ledgerful-x86_64-pc-windows-msvc.zip`
 - Secret: `WINGET_TOKEN` (PAT that can open PRs against `microsoft/winget-pkgs` via fork) — **is set**
