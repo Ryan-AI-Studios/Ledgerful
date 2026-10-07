@@ -9,6 +9,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - **`graph export` writes the Cozo knowledge graph as GraphML or Cypher (0474):** `ledgerful graph export --format graphml|cypher` reads the node and edge store read-only. It is not `ledger graph`. Stdout is the document, or `wrote:` when `--output` is set. A selection cut by `--limit` says `truncated: yes` on stderr.
+- **`graph path` reports the directed fewest-hop chain (0475):** `ledgerful graph path --from ID --to ID [--relation REL]` reads the Cozo `edge` store. A missing path is exit 0 with `path: none`. A missing node is exit 1. No `--json`. Not `ledger graph`.
 
 ## [0.2.16] - 2026-10-02
 
