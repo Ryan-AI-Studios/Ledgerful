@@ -163,6 +163,7 @@ impl Commands {
             },
             Commands::DeadCode(DeadCodeArgs { json, .. }) => *json,
             Commands::Viz(VizArgs { .. }) => false,
+            Commands::Graph { .. } => false,
             Commands::Update(UpdateArgs { .. }) => false,
             Commands::Watch(WatchArgs { json, .. }) => *json,
             #[cfg(feature = "sync")]

@@ -1228,6 +1228,23 @@ impl Commands {
                     f.push("view");
                 }
             }
+            Commands::Graph { command } => match command {
+                GraphCommands::Export(args) => {
+                    if args.output.is_some() {
+                        f.push("output");
+                    }
+                    f.push("format");
+                    if args.entity.is_some() {
+                        f.push("entity");
+                    }
+                    if args.depth.is_some() {
+                        f.push("depth");
+                    }
+                    if args.limit != 1000 {
+                        f.push("limit");
+                    }
+                }
+            },
             Commands::Update(UpdateArgs {
                 migrate,
                 binary,

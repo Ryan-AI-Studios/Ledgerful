@@ -171,6 +171,7 @@ Default-features `--help` names, in clap order. Hidden variants (`bridge`, `sear
 | `audit` | Perform a holistic project audit or history for an entity |
 | `timings` | Local-only per-command timing analysis (Track 0043; `--global` is Track 0044) |
 | `viz` | Generate an interactive visualization of the knowledge graph |
+| `graph` | Export the Cozo knowledge graph (GraphML / Cypher) |
 | `update` | Update the Ledgerful binary or migrate repository state |
 | `watch` | Watch repository for changes and run incremental graph sync |
 | `sync` | Team ledger synchronization [Available — opt-in shared-folder v1] |

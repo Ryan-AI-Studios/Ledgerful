@@ -93,6 +93,7 @@ Understand the "blast radius" of any change before it is committed.
         Express/Fastify, FastAPI/Flask — **route map, not** CRG call-chain traces.
 *   **Knowledge Graph (KG)**: CozoDB-backed graph of structural and semantic links with Datalog reachability queries.
 *   **Dependency Visualization**: `viz` command exports interactive HTML dependency maps with risk heatmaps.
+*   **Graph interchange**: `graph export` writes the Cozo knowledge graph as GraphML or Cypher. This is not `ledger graph`.
 
 ## 3. High-Performance Code Search & Navigation
 

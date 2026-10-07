@@ -1,8 +1,8 @@
 use crate::cli::args::{
     AskArgs, AuditArgs, ChangeContextArgs, Cli, Commands, ConfigureArgs, DeadCodeArgs, DemoArgs,
-    DoctorArgs, ImpactArgs, InitArgs, LedgerCommands, ResetArgs, ReviewArgs, ScanArgs,
-    SearchTrigramsArgs, SessionArgs, SetupArgs, StatusArgs, SurfacesArgs, TimingsCliArgs,
-    UpdateArgs, VizArgs, WatchArgs,
+    DoctorArgs, GraphCommands, GraphExportFormatArg, ImpactArgs, InitArgs, LedgerCommands,
+    ResetArgs, ReviewArgs, ScanArgs, SearchTrigramsArgs, SessionArgs, SetupArgs, StatusArgs,
+    SurfacesArgs, TimingsCliArgs, UpdateArgs, VizArgs, WatchArgs,
 };
 use miette::{IntoDiagnostic, Result};
 use std::env;
@@ -314,6 +314,25 @@ pub fn run_with(cli: Cli) -> Result<()> {
             let path = output.map(std::path::PathBuf::from);
             crate::commands::viz::execute_viz(path, limit, depth, entity, view)
         }
+        Commands::Graph { command } => match command {
+            GraphCommands::Export(args) => {
+                let format = match args.format {
+                    GraphExportFormatArg::Graphml => {
+                        crate::commands::graph_export::GraphExportFormat::Graphml
+                    }
+                    GraphExportFormatArg::Cypher => {
+                        crate::commands::graph_export::GraphExportFormat::Cypher
+                    }
+                };
+                crate::commands::graph_export::execute_graph_export(
+                    format,
+                    args.output.map(std::path::PathBuf::from),
+                    args.limit,
+                    args.entity,
+                    args.depth,
+                )
+            }
+        },
         Commands::Update(UpdateArgs {
             migrate,
             binary,

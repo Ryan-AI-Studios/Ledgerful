@@ -6,6 +6,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`graph export` writes the Cozo knowledge graph as GraphML or Cypher (0474):** `ledgerful graph export --format graphml|cypher` reads the node and edge store read-only. It is not `ledger graph`. Stdout is the document, or `wrote:` when `--output` is set. A selection cut by `--limit` says `truncated: yes` on stderr.
+
 ## [0.2.16] - 2026-10-02
 
 ### Fixed

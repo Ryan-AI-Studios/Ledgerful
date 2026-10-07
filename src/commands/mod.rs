@@ -17,6 +17,7 @@ pub mod dx1_templates;
 pub mod endpoints;
 pub mod federate;
 pub mod gate;
+pub mod graph_export;
 pub mod helpers;
 pub mod hook_commit_msg;
 pub mod hook_post_commit;
