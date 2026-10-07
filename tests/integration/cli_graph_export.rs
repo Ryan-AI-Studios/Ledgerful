@@ -362,15 +362,47 @@ fn graph_export__entity_bounded_walk__depth_limits_and_traverses_bidirectional()
 #[test]
 fn graph_export__depth_without_entity__returns_expected_error() {
     let tmp = git_repo();
-    let storage = init_storage(tmp.path());
-    storage.shutdown().expect("shutdown");
     let (stdout, stderr, code) = run(
         tmp.path(),
         &["graph", "export", "--format", "graphml", "--depth", "1"],
     );
     assert_ne!(code, 0);
     assert!(stderr.contains("--depth requires --entity"), "{stderr}");
+    assert!(!stderr.contains("Storage not initialized"), "{stderr}");
     assert!(!stdout_text(&stdout).contains("<graphml"));
+    assert!(!tmp.path().join(".ledgerful").exists());
+}
+
+#[test]
+fn graph_export__dangling_edge__dropped_without_crash() {
+    let tmp = git_repo();
+    seed(
+        tmp.path(),
+        vec![node("a", "A", "file", 0.0, json!({}))],
+        vec![edge("a", "missing", "calls", 1.0, "prov-missing")],
+    );
+    let (stdout, stderr, code) = run(
+        tmp.path(),
+        &[
+            "graph", "export", "--format", "graphml", "--entity", "a", "--depth", "1",
+        ],
+    );
+    assert_eq!(code, 0, "{stderr}");
+    assert!(!stderr.contains("is not in the node table"), "{stderr}");
+    summary_has(
+        &stderr,
+        &[
+            "truncated: no",
+            "emitted_nodes: 1",
+            "emitted_edges: 0",
+            "store_nodes: 1",
+            "store_edges: 1",
+        ],
+    );
+    let body = stdout_text(&stdout);
+    assert!(body.contains("<data key=\"node_id\">a</data>"));
+    assert!(!body.contains("missing"));
+    assert!(!body.contains("<edge "));
 }
 
 #[test]
