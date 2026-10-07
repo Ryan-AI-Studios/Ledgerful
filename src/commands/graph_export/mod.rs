@@ -10,6 +10,7 @@ use render::{ExportGraph, render};
 use std::io::Write;
 use std::path::Path;
 
+pub(crate) use load::escape_script_literal;
 pub use render::ExportFormat as GraphExportFormat;
 
 pub const DEFAULT_LIMIT: u64 = 1000;

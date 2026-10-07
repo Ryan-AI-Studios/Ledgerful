@@ -332,6 +332,9 @@ pub fn run_with(cli: Cli) -> Result<()> {
                     args.depth,
                 )
             }
+            GraphCommands::Path(args) => {
+                crate::commands::graph_path::execute_graph_path(args.from, args.to, args.relation)
+            }
         },
         Commands::Update(UpdateArgs {
             migrate,

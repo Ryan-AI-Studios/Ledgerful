@@ -258,7 +258,7 @@ Tips:
     Timings(TimingsCliArgs),
     /// Generate an interactive visualization of the knowledge graph
     Viz(VizArgs),
-    /// Export the Cozo knowledge graph (GraphML / Cypher).
+    /// Export or walk the Cozo knowledge graph (GraphML / Cypher, or a directed path).
     ///
     /// This is the Cozo knowledge graph, not ledger graph.
     Graph {

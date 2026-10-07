@@ -147,6 +147,7 @@ impl Commands {
             Commands::Viz(VizArgs { .. }) => "viz",
             Commands::Graph { command } => match command {
                 GraphCommands::Export(_) => "graph_export",
+                GraphCommands::Path(_) => "graph_path",
             },
             Commands::Update(UpdateArgs { .. }) => "update",
             Commands::Watch(WatchArgs { .. }) => "watch",
