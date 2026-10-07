@@ -39,6 +39,7 @@ mod cli_dx7_config_hints;
 mod cli_export_provenance;
 mod cli_federate;
 mod cli_gate;
+mod cli_graph_export;
 mod cli_hook_repair;
 mod cli_hotspots;
 mod cli_hotspots_explain;

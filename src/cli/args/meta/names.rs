@@ -145,6 +145,9 @@ impl Commands {
             },
             Commands::DeadCode(DeadCodeArgs { .. }) => "dead_code",
             Commands::Viz(VizArgs { .. }) => "viz",
+            Commands::Graph { command } => match command {
+                GraphCommands::Export(_) => "graph_export",
+            },
             Commands::Update(UpdateArgs { .. }) => "update",
             Commands::Watch(WatchArgs { .. }) => "watch",
             #[cfg(feature = "sync")]

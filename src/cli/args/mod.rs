@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 
 mod agent;
 mod coverage;
+mod graph;
 mod index;
 mod inventory;
 mod ledger;
@@ -12,6 +13,7 @@ mod ops;
 
 pub use agent::*;
 pub use coverage::*;
+pub use graph::*;
 pub use index::*;
 pub use inventory::*;
 pub use ledger::*;
@@ -256,6 +258,13 @@ Tips:
     Timings(TimingsCliArgs),
     /// Generate an interactive visualization of the knowledge graph
     Viz(VizArgs),
+    /// Export the Cozo knowledge graph (GraphML / Cypher).
+    ///
+    /// This is the Cozo knowledge graph, not ledger graph.
+    Graph {
+        #[command(subcommand)]
+        command: GraphCommands,
+    },
     /// Update the Ledgerful binary or migrate repository state
     #[command(alias = "upgrade")]
     Update(UpdateArgs),

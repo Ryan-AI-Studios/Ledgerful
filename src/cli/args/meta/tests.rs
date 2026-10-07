@@ -1,5 +1,6 @@
 use crate::cli::args::{
-    ChangeContextArgs, Cli, Commands, DoctorArgs, ImpactArgs, InitArgs, LedgerCommands, ScanArgs,
+    ChangeContextArgs, Cli, Commands, DoctorArgs, GraphCommands, GraphExportFormatArg, ImpactArgs,
+    InitArgs, LedgerCommands, ScanArgs,
 };
 use crate::ledger::types::Category;
 use clap::{CommandFactory, Parser};
@@ -715,5 +716,105 @@ fn scan_mode_docs_requires_impact_and_rejects_unknown() {
     assert_eq!(
         parse(&["scan", "--impact", "--mode", "docs"]).argv_shape(),
         "scan|impact,mode"
+    );
+}
+
+#[test]
+fn graph_export_format_required() {
+    let bare = Cli::try_parse_from(["ledgerful", "graph"]);
+    assert!(bare.is_err(), "bare graph must not default to export");
+    let missing = Cli::try_parse_from(["ledgerful", "graph", "export"]);
+    let err = missing.expect_err("format is required").to_string();
+    assert!(
+        err.to_ascii_lowercase().contains("format"),
+        "missing --format should name the flag, got {err}"
+    );
+}
+
+#[test]
+fn graph_export_limit_range_rejects_0_and_1001() {
+    for bad in ["0", "1001"] {
+        let err = Cli::try_parse_from([
+            "ledgerful",
+            "graph",
+            "export",
+            "--format",
+            "graphml",
+            "--limit",
+            bad,
+        ]);
+        assert!(err.is_err(), "--limit {bad} must be a clap error");
+    }
+    match parse(&["graph", "export", "--format", "graphml", "--limit", "1"]) {
+        Commands::Graph {
+            command: GraphCommands::Export(args),
+        } => {
+            assert_eq!(args.limit, 1);
+            assert_eq!(args.format, GraphExportFormatArg::Graphml);
+            assert!(args.depth.is_none());
+        }
+        other => panic!("expected graph export, got {other:?}"),
+    }
+    match parse(&["graph", "export", "--format", "cypher", "--limit", "1000"]) {
+        Commands::Graph {
+            command: GraphCommands::Export(args),
+        } => {
+            assert_eq!(args.limit, 1000);
+            assert_eq!(args.format, GraphExportFormatArg::Cypher);
+        }
+        other => panic!("expected graph export, got {other:?}"),
+    }
+}
+
+#[test]
+fn graph_export_command_name() {
+    let parsed = parse(&["graph", "export", "--format", "graphml"]);
+    assert_eq!(parsed.command_name(), "graph_export");
+    assert!(!parsed.is_machine_output());
+    assert_eq!(parsed.argv_shape(), "graph_export|format");
+    let shaped = parse(&[
+        "graph",
+        "export",
+        "--format",
+        "cypher",
+        "--limit",
+        "1",
+        "--entity",
+        "a",
+        "--depth",
+        "0",
+        "--output",
+        "out.graphml",
+    ]);
+    assert_eq!(
+        shaped.argv_shape(),
+        "graph_export|depth,entity,format,limit,output"
+    );
+    match shaped {
+        Commands::Graph {
+            command: GraphCommands::Export(args),
+        } => {
+            assert_eq!(args.depth, Some(0));
+            assert_eq!(args.entity.as_deref(), Some("a"));
+        }
+        other => panic!("expected graph export, got {other:?}"),
+    }
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn graph_export_help__names_knowledge_graph() {
+    let mut cmd = Cli::command();
+    let long_help = cmd.render_long_help().to_string();
+    assert!(
+        long_help.contains("knowledge graph"),
+        "root help should name the knowledge graph"
+    );
+    let graph = cmd.find_subcommand_mut("graph").expect("graph subcommand");
+    let graph_help = graph.render_long_help().to_string();
+    assert!(graph_help.contains("knowledge graph"));
+    assert!(
+        graph_help.contains("not ledger graph"),
+        "graph help must say this is not ledger graph, got {graph_help}"
     );
 }
