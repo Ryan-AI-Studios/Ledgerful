@@ -108,16 +108,18 @@ fn load_walk(
             by_id.insert(node.id.clone(), node);
         }
     }
-    let mut nodes = Vec::with_capacity(walk.ids.len());
+    let mut nodes = Vec::new();
+    let mut present = HashSet::new();
     for id in &walk.ids {
-        let node = by_id.remove(id).ok_or_else(|| {
-            miette!("graph export: node {id} is referenced by an edge and is not in the node table")
-        })?;
-        nodes.push(node);
+        if let Some(node) = by_id.remove(id) {
+            present.insert(id.clone());
+            nodes.push(node);
+        }
     }
     let edges = walk
         .edges
         .into_iter()
+        .filter(|edge| present.contains(&edge.source) && present.contains(&edge.target))
         .map(|edge| ExportEdge {
             source: edge.source,
             target: edge.target,
@@ -268,7 +270,7 @@ pub(crate) fn both_ends_script(ids: &[String]) -> Option<String> {
 fn incident_script(ids: &[String]) -> Option<String> {
     let allowed = allowed_rule(ids)?;
     Some(format!(
-        "{allowed}\nincident[source, target, relation, confidence, provenance_id] := *edge{{source, target, relation, confidence, provenance_id}}, allowed[source]\nincident[source, target, relation, confidence, provenance_id] := *edge{{source, target, relation, confidence, provenance_id}}, allowed[target]\n?[source, target, relation, confidence, provenance_id] := incident[source, target, relation, confidence, provenance_id]\n"
+        "{allowed}\nincident[source, target, relation, confidence, provenance_id] := *edge{{source, target, relation, confidence, provenance_id}}, allowed[source], *node{{id: target}}\nincident[source, target, relation, confidence, provenance_id] := *edge{{source, target, relation, confidence, provenance_id}}, allowed[target], *node{{id: source}}\n?[source, target, relation, confidence, provenance_id] := incident[source, target, relation, confidence, provenance_id]\n"
     ))
 }
 
@@ -576,5 +578,23 @@ mod tests {
         assert!(capped.truncated);
         assert_eq!(capped.edges.len(), 1);
         assert_eq!(capped.edges[0].relation, "calls");
+    }
+
+    #[test]
+    fn escape_script_literal__quote_and_backslash__single_pass() {
+        let input = ['a', '\'', '\\', 'b'];
+        let escaped = escape_script_literal(&input.iter().collect::<String>());
+        let chars: Vec<char> = escaped.chars().collect();
+        assert_eq!(chars, vec!['a', '\\', '\'', '\\', '\\', 'b']);
+        assert!(!escaped.contains("''"));
+    }
+
+    #[test]
+    fn incident_script__joins_far_end_to_node() {
+        let script = incident_script(&["a".into()]).unwrap();
+        assert!(script.contains("*node{id: target}"));
+        assert!(script.contains("*node{id: source}"));
+        assert!(script.contains("allowed[source]"));
+        assert!(script.contains("allowed[target]"));
     }
 }

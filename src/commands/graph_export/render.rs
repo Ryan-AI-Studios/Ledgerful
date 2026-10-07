@@ -406,6 +406,14 @@ mod tests {
                 .contains("{&quot;a&quot;:{&quot;c&quot;:2,&quot;d&quot;:1},&quot;b&quot;:1}")
         );
         assert!(!rendered.body.contains('\r'));
+        let data_at = rendered
+            .body
+            .find("<data key=\"truncated\">")
+            .expect("graph data");
+        let node_at = rendered.body.find("<node ").expect("node");
+        let edge_at = rendered.body.find("<edge ").expect("edge");
+        assert!(data_at < node_at);
+        assert!(node_at < edge_at);
         assert_balanced(&rendered.body);
         assert_eq!(fmt_finite(0.0, "zero").unwrap(), "0.0");
         assert_eq!(fmt_finite(0.5, "half").unwrap(), "0.5");
@@ -457,11 +465,11 @@ mod tests {
     #[test]
     fn cypher_render__quote_backslash_newline__escaped() {
         let mut graph = sample_graph();
-        graph.nodes[0].label = "a'b\\c\n\u{0001}".into();
+        graph.nodes[0].label = "a'b\\c\n\t\u{0001}".into();
         graph.edges.clear();
         graph.nodes[0].metadata = None;
         let body = render(&graph, ExportFormat::Cypher).unwrap().body;
-        assert!(body.contains("n.label = 'a\\'b\\\\c\\n\\u0001'"));
+        assert!(body.contains("n.label = 'a\\'b\\\\c\\n\\t\\u0001'"));
         assert!(body.contains("n.risk_score = 0.0"));
         assert!(!body.contains("n.metadata"));
     }

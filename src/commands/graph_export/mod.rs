@@ -22,14 +22,14 @@ pub fn execute_graph_export(
     entity: Option<String>,
     depth: Option<u32>,
 ) -> Result<()> {
+    if depth.is_some() && entity.is_none() {
+        miette::bail!("--depth requires --entity");
+    }
     let layout = crate::commands::helpers::get_layout()?;
     let storage = crate::state::storage::StorageManager::open_read_only(&layout)?;
     let cozo = storage
         .cozo()
         .ok_or_else(|| miette!("CozoDB not initialized. Run 'index' first."))?;
-    if depth.is_some() && entity.is_none() {
-        miette::bail!("--depth requires --entity");
-    }
     let selection = if let Some(entity) = entity {
         Selection::Walk {
             entity,
