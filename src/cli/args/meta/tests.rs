@@ -767,6 +767,36 @@ fn graph_export_limit_range_rejects_0_and_1001() {
 }
 
 #[test]
+fn graph_path_records_from_to_and_optional_relation() {
+    match parse(&["graph", "path", "--from", "a", "--to", "b"]) {
+        Commands::Graph {
+            command: GraphCommands::Path(args),
+        } => {
+            assert_eq!(args.from, "a");
+            assert_eq!(args.to, "b");
+            assert!(args.relation.is_none());
+        }
+        other => panic!("expected graph path, got {other:?}"),
+    }
+    let parsed = parse(&["graph", "path", "--from", "a", "--to", "b"]);
+    assert_eq!(parsed.command_name(), "graph_path");
+    assert!(!parsed.is_machine_output());
+    assert_eq!(parsed.argv_shape(), "graph_path|from,to");
+    let shaped = parse(&[
+        "graph",
+        "path",
+        "--relation",
+        "calls",
+        "--from",
+        "a",
+        "--to",
+        "b",
+    ]);
+    assert_eq!(shaped.argv_shape(), "graph_path|from,relation,to");
+    assert!(Cli::try_parse_from(["ledgerful", "graph", "path"]).is_err());
+}
+
+#[test]
 fn graph_export_command_name() {
     let parsed = parse(&["graph", "export", "--format", "graphml"]);
     assert_eq!(parsed.command_name(), "graph_export");

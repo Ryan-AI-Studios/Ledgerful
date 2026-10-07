@@ -282,7 +282,7 @@ fn nodes_by_id_script(ids: &[String]) -> Option<String> {
 /// Cozo single-quoted literals escape `\` and `'` with a backslash
 /// (`cozoscript.pest` `s_char`, unescape in `parse/expr.rs`). A doubled
 /// quote does not parse on the pinned cozo rev.
-fn escape_script_literal(s: &str) -> String {
+pub(crate) fn escape_script_literal(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {

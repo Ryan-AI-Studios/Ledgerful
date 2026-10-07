@@ -1244,6 +1244,13 @@ impl Commands {
                         f.push("limit");
                     }
                 }
+                GraphCommands::Path(args) => {
+                    f.push("from");
+                    f.push("to");
+                    if args.relation.is_some() {
+                        f.push("relation");
+                    }
+                }
             },
             Commands::Update(UpdateArgs {
                 migrate,

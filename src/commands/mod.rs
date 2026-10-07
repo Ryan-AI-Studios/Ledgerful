@@ -18,6 +18,7 @@ pub mod endpoints;
 pub mod federate;
 pub mod gate;
 pub mod graph_export;
+pub mod graph_path;
 pub mod helpers;
 pub mod hook_commit_msg;
 pub mod hook_post_commit;

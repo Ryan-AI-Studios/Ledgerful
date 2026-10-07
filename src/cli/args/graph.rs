@@ -13,6 +13,23 @@ pub enum GraphExportFormatArg {
 pub enum GraphCommands {
     /// Write GraphML or Cypher for the Cozo knowledge graph
     Export(GraphExportArgs),
+    /// Directed fewest-hop path on the Cozo edge store.
+    ///
+    /// Not `ledger graph`. No hop cap and no `--json`.
+    Path(GraphPathArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct GraphPathArgs {
+    /// Start node id in the Cozo `node` table
+    #[arg(long)]
+    pub from: String,
+    /// Goal node id in the Cozo `node` table
+    #[arg(long)]
+    pub to: String,
+    /// Keep only edges whose stored relation equals this string
+    #[arg(long)]
+    pub relation: Option<String>,
 }
 
 #[derive(Args, Debug)]
