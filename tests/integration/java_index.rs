@@ -257,3 +257,61 @@ fn java_index_user_and_store_fixture() {
         "two-constructor new Dual() stays UNRESOLVED; edges={edge_rows:?}"
     );
 }
+
+#[test]
+fn java_index_distinct_constructor_callers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+    setup_git_repo(root.as_std_path());
+    let src = root.join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        src.join("Pair.java"),
+        r#"package com.example;
+class A { A() { aOnly(); } void aOnly() {} }
+class B { B() { bOnly(); } void bOnly() {} }
+"#,
+    )
+    .unwrap();
+
+    let state = root.join(".ledgerful_java").join("state");
+    fs::create_dir_all(&state).unwrap();
+    let db = state.join("ledger.db");
+    let storage = StorageManager::init(db.as_std_path()).unwrap();
+    let mut indexer = ProjectIndexer::new(storage, root.clone(), Config::default());
+    indexer.full_index().expect("full_index pair");
+    indexer.build_call_graph().expect("build_call_graph");
+
+    let conn = indexer.storage().get_connection();
+    let mut edges = conn
+        .prepare(
+            "SELECT caller.qualified_name, se.resolution_status, callee.qualified_name \
+             FROM structural_edges se \
+             JOIN project_symbols caller ON se.caller_symbol_id = caller.id \
+             LEFT JOIN project_symbols callee ON se.callee_symbol_id = callee.id",
+        )
+        .unwrap();
+    let edge_rows: Vec<(String, String, Option<String>)> = edges
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    drop(edges);
+
+    assert!(
+        edge_rows.iter().any(|(caller, status, callee)| {
+            caller == "com.example.A.<init>"
+                && status == "RESOLVED"
+                && callee.as_deref() == Some("com.example.A.aOnly")
+        }),
+        "A.<init> → aOnly; edges={edge_rows:?}"
+    );
+    assert!(
+        edge_rows.iter().any(|(caller, status, callee)| {
+            caller == "com.example.B.<init>"
+                && status == "RESOLVED"
+                && callee.as_deref() == Some("com.example.B.bOnly")
+        }),
+        "B.<init> → bOnly; edges={edge_rows:?}"
+    );
+}

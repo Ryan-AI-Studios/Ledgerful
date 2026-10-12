@@ -203,6 +203,41 @@ mod tests {
     }
 
     #[test]
+    fn test_analyze_file_real_run_ignores_heavier_anonymous_run() {
+        let tmp = tempdir().unwrap();
+        let relative = Path::new("Host.java");
+        let source = r#"
+package com.example;
+public class Host {
+  void run() {
+    if (true) {}
+  }
+  void start() {
+    Runnable r = new Runnable() {
+      public void run() {
+        if (true) {
+          if (false) {}
+        }
+      }
+    };
+  }
+}
+"#;
+        std::fs::write(tmp.path().join(relative), source).unwrap();
+        let outcome = analyze_file(relative, tmp.path());
+        let symbols = outcome.symbols.expect("java symbols");
+        let run = symbols
+            .iter()
+            .find(|sym| sym.name == "run")
+            .expect("run symbol");
+        assert_eq!(
+            run.cyclomatic_complexity,
+            Some(2),
+            "real run is base + one if; anonymous run must not paint it"
+        );
+    }
+
+    #[test]
     fn test_analyze_file_marks_read_failures() {
         let tmp = tempdir().unwrap();
         let path = Path::new("missing.rs");

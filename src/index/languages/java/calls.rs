@@ -11,8 +11,14 @@ use tree_sitter::{Node, Parser};
 
 struct TypeInfo {
     simple_name: String,
+    type_qn: String,
     init_qn: String,
     ctor_count: usize,
+}
+
+enum CreationTypeKey {
+    Simple(String),
+    Scoped(Vec<String>),
 }
 
 pub fn extract_calls(path: &Path, content: &str, _symbols: &[Symbol]) -> Result<Vec<CallEdge>> {
@@ -39,7 +45,15 @@ pub fn extract_calls(path: &Path, content: &str, _symbols: &[Symbol]) -> Result<
     );
 
     let mut edges = Vec::new();
-    collect_edges(path, root, content, &method_counts, &types, &mut edges);
+    collect_edges(
+        path,
+        root,
+        content,
+        &package,
+        &method_counts,
+        &types,
+        &mut edges,
+    );
 
     edges.sort_by(|a, b| {
         a.caller_name
@@ -70,6 +84,7 @@ fn collect_inventory(
             };
             types.push(TypeInfo {
                 simple_name: name.clone(),
+                type_qn,
                 init_qn,
                 ctor_count: count_constructors(node),
             });
@@ -128,23 +143,25 @@ fn collect_edges(
     path: &Path,
     node: Node,
     content: &str,
+    package: &str,
     method_counts: &HashMap<String, usize>,
     types: &[TypeInfo],
     edges: &mut Vec<CallEdge>,
 ) {
     match node.kind() {
         "method_invocation" => {
-            if let Some(edge) = method_invocation_edge(path, node, content, method_counts) {
+            if let Some(edge) = method_invocation_edge(path, node, content, package, method_counts)
+            {
                 edges.push(edge);
             }
         }
         "object_creation_expression" => {
-            if let Some(edge) = object_creation_edge(path, node, content, types) {
+            if let Some(edge) = object_creation_edge(path, node, content, package, types) {
                 edges.push(edge);
             }
         }
         "explicit_constructor_invocation" => {
-            if let Some(edge) = explicit_ctor_edge(path, node, content) {
+            if let Some(edge) = explicit_ctor_edge(path, node, content, package) {
                 edges.push(edge);
             }
         }
@@ -156,7 +173,7 @@ fn collect_edges(
         if skip_anonymous_or_enum_constant_body(child) {
             continue;
         }
-        collect_edges(path, child, content, method_counts, types, edges);
+        collect_edges(path, child, content, package, method_counts, types, edges);
     }
 }
 
@@ -164,6 +181,7 @@ fn method_invocation_edge(
     path: &Path,
     node: Node,
     content: &str,
+    package: &str,
     method_counts: &HashMap<String, usize>,
 ) -> Option<CallEdge> {
     let name = field_text(node, "name", content);
@@ -187,7 +205,7 @@ fn method_invocation_edge(
         }
     };
     Some(CallEdge {
-        caller_name: enclosing_caller(node, content),
+        caller_name: enclosing_caller(node, content, package),
         caller_file: path.to_path_buf(),
         callee_name,
         callee_file: None,
@@ -202,10 +220,10 @@ fn unique_or_overload(
     name: &str,
     method_counts: &HashMap<String, usize>,
 ) -> (String, ResolutionStatus) {
-    if method_counts.get(name).copied().unwrap_or(0) == 1 {
-        (name.to_string(), ResolutionStatus::Resolved)
-    } else {
-        (format!("{name}.overload"), ResolutionStatus::Unresolved)
+    match method_counts.get(name).copied().unwrap_or(0) {
+        1 => (name.to_string(), ResolutionStatus::Resolved),
+        0 => (format!("{name}.external"), ResolutionStatus::Unresolved),
+        _ => (format!("{name}.overload"), ResolutionStatus::Unresolved),
     }
 }
 
@@ -227,37 +245,125 @@ fn creation_has_class_body(node: Node) -> bool {
     node.children(&mut cursor).any(|c| c.kind() == "class_body")
 }
 
+fn creation_type_key(node: Node, content: &str) -> Option<CreationTypeKey> {
+    if node.kind() == "generic_type" {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "type_arguments" {
+                continue;
+            }
+            if child.kind() == "scoped_type_identifier" {
+                return creation_type_key(child, content);
+            }
+            break;
+        }
+    }
+    match node.kind() {
+        "type_identifier" | "identifier" | "generic_type" => {
+            let name = simple_type_name(node, content);
+            if name.is_empty() {
+                None
+            } else {
+                Some(CreationTypeKey::Simple(name))
+            }
+        }
+        "scoped_type_identifier" => {
+            let segments = scoped_type_segments(node, content);
+            if segments.is_empty() {
+                None
+            } else {
+                Some(CreationTypeKey::Scoped(segments))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn scoped_type_segments(node: Node, content: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    collect_type_segments(node, content, &mut segments);
+    segments
+}
+
+fn collect_type_segments(node: Node, content: &str, out: &mut Vec<String>) {
+    let kind = node.kind();
+    if kind == "type_arguments" || kind.contains("annotation") {
+        return;
+    }
+    if matches!(kind, "type_identifier" | "identifier") {
+        let name = node_text(node, content);
+        if !name.is_empty() {
+            out.push(name);
+        }
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_type_segments(child, content, out);
+    }
+}
+
+fn type_qn_has_segment_suffix(type_qn: &str, key: &[String]) -> bool {
+    if key.is_empty() {
+        return false;
+    }
+    let qn_segs: Vec<&str> = type_qn.split('.').filter(|seg| !seg.is_empty()).collect();
+    if key.len() > qn_segs.len() {
+        return false;
+    }
+    let start = qn_segs.len() - key.len();
+    qn_segs[start..]
+        .iter()
+        .zip(key.iter())
+        .all(|(qn_seg, key_seg)| *qn_seg == key_seg.as_str())
+}
+
+fn creation_last_segment(key: &CreationTypeKey) -> String {
+    match key {
+        CreationTypeKey::Simple(name) => name.clone(),
+        CreationTypeKey::Scoped(segments) => segments.last().cloned().unwrap_or_default(),
+    }
+}
+
 fn object_creation_edge(
     path: &Path,
     node: Node,
     content: &str,
+    package: &str,
     types: &[TypeInfo],
 ) -> Option<CallEdge> {
     let type_node = creation_type_node(node)?;
-    let simple = simple_type_name(type_node, content);
-    if simple.is_empty() {
+    let key = creation_type_key(type_node, content)?;
+    let last = creation_last_segment(&key);
+    if last.is_empty() {
         return None;
     }
     let has_body = creation_has_class_body(node);
-    let matches: Vec<&TypeInfo> = types.iter().filter(|t| t.simple_name == simple).collect();
+    let matches: Vec<&TypeInfo> = match &key {
+        CreationTypeKey::Simple(name) => types.iter().filter(|t| t.simple_name == *name).collect(),
+        CreationTypeKey::Scoped(segments) => types
+            .iter()
+            .filter(|t| type_qn_has_segment_suffix(&t.type_qn, segments))
+            .collect(),
+    };
     let (callee_name, status) = if !has_body && matches.len() == 1 && matches[0].ctor_count == 1 {
         (matches[0].init_qn.clone(), ResolutionStatus::Resolved)
     } else {
-        (format!("new.{simple}"), ResolutionStatus::Unresolved)
+        (format!("new.{last}"), ResolutionStatus::Unresolved)
     };
     Some(CallEdge {
-        caller_name: enclosing_caller(node, content),
+        caller_name: enclosing_caller(node, content, package),
         caller_file: path.to_path_buf(),
         callee_name,
         callee_file: None,
         call_kind: CallKind::Direct,
         resolution_status: status,
         confidence: CallKind::Direct.default_confidence(),
-        evidence: format!("new:{simple}"),
+        evidence: format!("new:{last}"),
     })
 }
 
-fn explicit_ctor_edge(path: &Path, node: Node, content: &str) -> Option<CallEdge> {
+fn explicit_ctor_edge(path: &Path, node: Node, content: &str, package: &str) -> Option<CallEdge> {
     let ctor = node.child_by_field_name("constructor")?;
     let which = match ctor.kind() {
         "this" => "this",
@@ -265,7 +371,7 @@ fn explicit_ctor_edge(path: &Path, node: Node, content: &str) -> Option<CallEdge
         _ => return None,
     };
     Some(CallEdge {
-        caller_name: enclosing_caller(node, content),
+        caller_name: enclosing_caller(node, content, package),
         caller_file: path.to_path_buf(),
         callee_name: format!("ctor.{which}"),
         callee_file: None,
@@ -276,24 +382,39 @@ fn explicit_ctor_edge(path: &Path, node: Node, content: &str) -> Option<CallEdge
     })
 }
 
-fn enclosing_caller(node: Node, content: &str) -> String {
+fn enclosing_caller(node: Node, content: &str, package: &str) -> String {
+    let mut name: Option<String> = None;
+    let mut types_inner_first: Vec<String> = Vec::new();
     let mut current = node.parent();
     while let Some(parent) = current {
         match parent.kind() {
-            "method_declaration" => {
-                let name = field_text(parent, "name", content);
-                if !name.is_empty() {
-                    return name;
+            "method_declaration" if name.is_none() => {
+                let method = field_text(parent, "name", content);
+                if !method.is_empty() {
+                    name = Some(method);
                 }
             }
-            "constructor_declaration" | "compact_constructor_declaration" => {
-                return "<init>".to_string();
+            "constructor_declaration" | "compact_constructor_declaration" if name.is_none() => {
+                name = Some("<init>".to_string());
+            }
+            kind if is_type_kind(kind) => {
+                let type_name = field_text(parent, "name", content);
+                if !type_name.is_empty() {
+                    types_inner_first.push(type_name);
+                }
             }
             _ => {}
         }
         current = parent.parent();
     }
-    "<file>".to_string()
+    let Some(name) = name else {
+        return "<file>".to_string();
+    };
+    if types_inner_first.is_empty() {
+        return "<file>".to_string();
+    }
+    types_inner_first.reverse();
+    join_qualified(package, &types_inner_first, &name)
 }
 
 #[cfg(test)]
@@ -316,7 +437,7 @@ public class User {
         let edges = extract_calls(Path::new("User.java"), content, &symbols).unwrap();
         let bare = edges
             .iter()
-            .find(|e| e.callee_name == "save" && e.caller_name == "create")
+            .find(|e| e.callee_name == "save" && e.caller_name == "com.example.User.create")
             .expect("bare save");
         assert_eq!(bare.resolution_status, ResolutionStatus::Resolved);
         let recv = edges
@@ -344,7 +465,7 @@ public class Store {
             .find(|e| e.callee_name == "save.overload")
             .expect("overload encoding");
         assert_eq!(overload.resolution_status, ResolutionStatus::Unresolved);
-        assert_eq!(overload.caller_name, "callOn");
+        assert_eq!(overload.caller_name, "com.example.Store.callOn");
     }
 
     #[test]
@@ -437,16 +558,26 @@ enum Color {
 "#;
         let edges = extract_calls(Path::new("Host.java"), content, &[]).unwrap();
         assert!(
-            edges.iter().all(|e| e.caller_name != "run"),
-            "anonymous / enum-constant run() bodies must not emit calls; edges={edges:?}"
-        );
-        assert!(
             edges.iter().any(|e| {
-                e.caller_name == "start"
+                e.caller_name == "com.example.Host.start"
                     && e.callee_name == "new.Runnable"
                     && e.resolution_status == ResolutionStatus::Unresolved
             }),
             "anonymous new still records unresolved new.Runnable; edges={edges:?}"
+        );
+        assert!(
+            edges
+                .iter()
+                .all(|e| e.caller_name != "run" && !e.caller_name.ends_with(".run")),
+            "anonymous / enum-constant run() bodies must not emit calls; edges={edges:?}"
+        );
+        assert!(
+            edges.iter().all(|e| {
+                e.callee_name != "save"
+                    && e.callee_name != "save.overload"
+                    && e.callee_name != "save.external"
+            }),
+            "skipped bodies must not emit save; edges={edges:?}"
         );
     }
 
@@ -522,6 +653,204 @@ public class User {
             .iter()
             .find(|e| e.callee_name == "save")
             .expect("save");
-        assert_eq!(edge.caller_name, "<init>");
+        assert_eq!(edge.caller_name, "com.example.User.<init>");
+    }
+
+    #[test]
+    fn distinct_constructor_callers_keep_qualified_init() {
+        let content = r#"
+package com.example;
+class A { A() { aOnly(); } void aOnly() {} }
+class B { B() { bOnly(); } void bOnly() {} }
+"#;
+        let edges = extract_calls(Path::new("Pair.java"), content, &[]).unwrap();
+        assert!(
+            edges.iter().any(|e| {
+                e.caller_name == "com.example.A.<init>"
+                    && e.callee_name == "aOnly"
+                    && e.resolution_status == ResolutionStatus::Resolved
+            }),
+            "A.<init> calls aOnly; edges={edges:?}"
+        );
+        assert!(
+            edges.iter().any(|e| {
+                e.caller_name == "com.example.B.<init>"
+                    && e.callee_name == "bOnly"
+                    && e.resolution_status == ResolutionStatus::Resolved
+            }),
+            "B.<init> calls bOnly; edges={edges:?}"
+        );
+    }
+
+    #[test]
+    fn initializer_without_method_reports_file() {
+        let content = r#"
+package com.example;
+class Host {
+  { save(); }
+  void save() {}
+}
+"#;
+        let edges = extract_calls(Path::new("Host.java"), content, &[]).unwrap();
+        assert!(
+            edges
+                .iter()
+                .any(|e| e.caller_name == "<file>" && e.callee_name == "save"),
+            "instance initializer has no enclosing method; edges={edges:?}"
+        );
+    }
+
+    #[test]
+    fn explicit_this_and_super_use_qualified_init_caller() {
+        let content = r#"
+package com.example;
+class Base { Base(int x) {} }
+class Child extends Base {
+  Child() { this(1); }
+  Child(int x) { super(x); }
+}
+"#;
+        let edges = extract_calls(Path::new("Child.java"), content, &[]).unwrap();
+        assert!(
+            edges.iter().any(|e| {
+                e.caller_name == "com.example.Child.<init>" && e.callee_name == "ctor.this"
+            }),
+            "this() caller is the enclosing <init>; edges={edges:?}"
+        );
+        assert!(
+            edges.iter().any(|e| {
+                e.caller_name == "com.example.Child.<init>" && e.callee_name == "ctor.super"
+            }),
+            "super() caller is the enclosing <init>; edges={edges:?}"
+        );
+    }
+
+    #[test]
+    fn zero_same_file_defs_use_external_not_overload() {
+        let content = r#"
+package com.example;
+class Uses {
+  void m() { max(); this.max(); }
+}
+"#;
+        let edges = extract_calls(Path::new("Uses.java"), content, &[]).unwrap();
+        let external: Vec<_> = edges
+            .iter()
+            .filter(|e| {
+                e.callee_name == "max.external"
+                    && e.resolution_status == ResolutionStatus::Unresolved
+                    && e.evidence == "call_expr:max()"
+            })
+            .collect();
+        assert_eq!(
+            external.len(),
+            2,
+            "bare max() and this.max() are both external; edges={edges:?}"
+        );
+        assert!(
+            edges.iter().all(|e| e.callee_name != "max.overload"),
+            "count 0 must not be overload; edges={edges:?}"
+        );
+    }
+
+    #[test]
+    fn scoped_new_matches_type_qn_segment_suffix() {
+        let path = Path::new("T.java");
+        let other_box = r#"
+package com.example;
+class Box { Box() {} }
+class Uses { void m() { new com.other.Box(); } }
+"#;
+        let edges = extract_calls(path, other_box, &[]).unwrap();
+        assert!(
+            edges.iter().any(|e| {
+                e.callee_name == "new.Box" && e.resolution_status == ResolutionStatus::Unresolved
+            }),
+            "com.other.Box must not bind local Box; edges={edges:?}"
+        );
+        assert!(
+            edges
+                .iter()
+                .all(|e| e.callee_name != "com.example.Box.<init>"),
+            "local Box.<init> must not win; edges={edges:?}"
+        );
+
+        let both = r#"
+package com.example;
+class Host { class Inner { Inner() {} } }
+class Other { class Inner { Inner() {} } }
+class Uses { void m() { new Other.Inner(); } }
+"#;
+        let edges = extract_calls(path, both, &[]).unwrap();
+        assert!(
+            edges.iter().any(|e| {
+                e.callee_name == "com.example.Other.Inner.<init>"
+                    && e.resolution_status == ResolutionStatus::Resolved
+            }),
+            "Other.Inner binds the suffix type; edges={edges:?}"
+        );
+
+        let host_only = r#"
+package com.example;
+class Host { class Inner { Inner() {} } }
+class Uses { void m() { new Other.Inner(); } }
+"#;
+        let edges = extract_calls(path, host_only, &[]).unwrap();
+        assert!(
+            edges.iter().any(|e| {
+                e.callee_name == "new.Inner" && e.resolution_status == ResolutionStatus::Unresolved
+            }),
+            "Other.Inner with only Host.Inner stays unresolved; edges={edges:?}"
+        );
+
+        let not_other = r#"
+package com.example;
+class NotOther { class Inner { Inner() {} } }
+class Uses { void m() { new Other.Inner(); } }
+"#;
+        let edges = extract_calls(path, not_other, &[]).unwrap();
+        assert!(
+            edges.iter().any(|e| {
+                e.callee_name == "new.Inner" && e.resolution_status == ResolutionStatus::Unresolved
+            }),
+            "NotOther.Inner must not match Other.Inner; edges={edges:?}"
+        );
+        assert!(
+            edges
+                .iter()
+                .all(|e| e.callee_name != "com.example.NotOther.Inner.<init>"),
+            "segment suffix must not use ends_with; edges={edges:?}"
+        );
+
+        let anon = r#"
+package com.example;
+class Box { Box() {} }
+class Uses { void m() { new com.example.Box() { }; } }
+"#;
+        let edges = extract_calls(path, anon, &[]).unwrap();
+        assert!(
+            edges.iter().any(|e| {
+                e.callee_name == "new.Box" && e.resolution_status == ResolutionStatus::Unresolved
+            }),
+            "direct class_body keeps new unresolved; edges={edges:?}"
+        );
+
+        let generic_inner = r#"
+package com.example;
+class Outer { class Inner { Inner() {} } }
+class Uses { void m() { new Outer<String>.Inner(); } }
+"#;
+        let edges = extract_calls(path, generic_inner, &[]).unwrap();
+        assert!(
+            edges.iter().any(|e| {
+                e.callee_name == "com.example.Outer.Inner.<init>"
+                    && e.resolution_status == ResolutionStatus::Resolved
+            }),
+            "Outer<String>.Inner skips the type argument; edges={edges:?}"
+        );
+        assert!(
+            edges.iter().all(|e| e.callee_name != "new.String"),
+            "String is not a segment; edges={edges:?}"
+        );
     }
 }

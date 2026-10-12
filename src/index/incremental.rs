@@ -1,7 +1,7 @@
 #[cfg(test)]
 use crate::config::model::Config;
 use crate::index::bindings::FileBinding;
-use crate::index::call_graph::CallEdge;
+use crate::index::call_graph::{CallEdge, CallerLookupRow, lookup_caller_id};
 use crate::index::module_path::derive_module_path;
 use crate::index::orchestrator::{BINARY_EXTENSIONS, ProjectIndexer, SUPPORTED_EXTENSIONS};
 use crate::index::resolve::{
@@ -321,17 +321,24 @@ impl IncrementalSyncEngine {
 
             // Get caller symbols in this file
             let mut caller_stmt = tx
-                .prepare("SELECT id, symbol_name FROM project_symbols WHERE file_id = ?1")
+                .prepare(
+                    "SELECT id, symbol_name, qualified_name, symbol_kind \
+                     FROM project_symbols WHERE file_id = ?1",
+                )
                 .into_diagnostic()?;
             let caller_rows = caller_stmt
                 .query_map([file_id], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                    Ok(CallerLookupRow {
+                        id: row.get(0)?,
+                        symbol_name: row.get(1)?,
+                        qualified_name: row.get(2)?,
+                        symbol_kind: row.get(3)?,
+                    })
                 })
                 .into_diagnostic()?;
-            let mut caller_by_name: HashMap<String, i64> = HashMap::new();
+            let mut caller_lookup = Vec::new();
             for row in caller_rows {
-                let (sym_id, name) = row.into_diagnostic()?;
-                caller_by_name.insert(name, sym_id);
+                caller_lookup.push(row.into_diagnostic()?);
             }
             drop(caller_stmt);
 
@@ -344,9 +351,9 @@ impl IncrementalSyncEngine {
             };
 
             for call in &item.calls {
-                let caller_symbol_id = match caller_by_name.get(&call.caller_name) {
-                    Some(&id) => id,
-                    None => continue,
+                let Some(caller_symbol_id) = lookup_caller_id(&call.caller_name, &caller_lookup)
+                else {
+                    continue;
                 };
 
                 let caller_qualified = symbol_maps
@@ -660,6 +667,96 @@ pub fn main() { helper(); }
             .run_script("?[id] := *node{id: id}, id = 'urn:ledgerful:file:src/lib.rs'")
             .unwrap();
         assert_eq!(res.rows.len(), 1);
+    }
+
+    #[test]
+    fn test_process_batch_java_constructor_callers_keep_distinct_init_edges() {
+        let storage = in_memory_storage_with_cozo();
+        let (_dir, repo_path) = temp_repo_with_file(
+            "Pair.java",
+            r#"
+package com.example;
+class A { A() { aOnly(); } void aOnly() {} }
+class B { B() { bOnly(); } void bOnly() {} }
+"#,
+        );
+
+        let indexer = ProjectIndexer::new(storage, repo_path.clone(), Config::default());
+        let mut engine = IncrementalSyncEngine::new(indexer, repo_path.clone());
+
+        let conn = engine.indexer.storage().get_connection();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, parse_status, last_indexed_at) \
+             VALUES ('src/Pair.java', 'Java', 'OK', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at) \
+             VALUES (?1, 'old.A', 'A', 'Class', '2026-01-01T00:00:00Z')",
+            [file_id],
+        )
+        .unwrap();
+        let _ = conn;
+
+        let batch = WatchBatch::new(vec![WatchEvent {
+            path: repo_path.join("src/Pair.java"),
+            kind: WatchEventKind::Modify,
+        }]);
+        let delta = engine.process_batch(&batch).unwrap();
+        assert!(
+            delta.edges_added >= 2,
+            "both resolved constructor calls must reach Cozo; delta={delta:?}"
+        );
+
+        let conn = engine.indexer.storage().get_connection();
+        let mut stmt = conn
+            .prepare(
+                "SELECT caller.qualified_name \
+                 FROM structural_edges se \
+                 JOIN project_symbols caller ON se.caller_symbol_id = caller.id",
+            )
+            .unwrap();
+        let callers: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        drop(stmt);
+        assert!(
+            callers.iter().any(|name| name == "com.example.A.<init>"),
+            "sqlite caller A.<init>; callers={callers:?}"
+        );
+        assert!(
+            callers.iter().any(|name| name == "com.example.B.<init>"),
+            "sqlite caller B.<init>; callers={callers:?}"
+        );
+
+        let cozo = engine.indexer.cozo().unwrap();
+        let res = cozo
+            .run_script("?[source, target, relation] := *edge{source, target, relation}")
+            .unwrap();
+        let sources: Vec<String> = res
+            .rows
+            .iter()
+            .filter_map(|row| match row.first() {
+                Some(cozo::DataValue::Str(source)) => Some(source.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            sources
+                .iter()
+                .any(|source| source == "urn:ledgerful:symbol:com.example.A.<init>"),
+            "cozo source A.<init>; sources={sources:?}"
+        );
+        assert!(
+            sources
+                .iter()
+                .any(|source| source == "urn:ledgerful:symbol:com.example.B.<init>"),
+            "cozo source B.<init>; sources={sources:?}"
+        );
     }
 
     #[test]

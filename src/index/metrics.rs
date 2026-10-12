@@ -317,10 +317,7 @@ fn skip_nested_complexity_child(child: Node, language: Language) -> bool {
                     | "method_declaration"
                     | "constructor_declaration"
                     | "compact_constructor_declaration"
-            ) || (child.kind() == "class_body"
-                && child
-                    .parent()
-                    .is_some_and(|parent| parent.kind() == "object_creation_expression"))
+            ) || crate::index::languages::java::common::skip_anonymous_or_enum_constant_body(child)
         }
         _ => false,
     }
@@ -436,6 +433,13 @@ impl ComplexityScorer for NativeComplexityScorer {
             }
 
             for child in node.children(&mut cursor) {
+                if matches!(language, Language::Java)
+                    && crate::index::languages::java::common::skip_anonymous_or_enum_constant_body(
+                        child,
+                    )
+                {
+                    continue;
+                }
                 stack.push(child);
             }
         }
@@ -820,6 +824,70 @@ public class User {
         assert_eq!(
             create.cyclomatic, 3,
             "anonymous class_body if must not raise outer; got {create:?} functions={:?}",
+            result.functions
+        );
+    }
+
+    #[test]
+    fn java_anonymous_and_enum_constant_bodies_are_not_discovered() {
+        let source = r#"
+package com.example;
+public class User {
+  public void create(boolean a, boolean b) {
+    if (a && b) {
+      save();
+    }
+    Runnable r = new Runnable() {
+      public void run() {
+        if (false) {}
+      }
+    };
+    class Inner {
+      void m() {
+        if (true) {}
+      }
+    }
+  }
+  private void save() {}
+}
+enum Color {
+  RED {
+    void run() {
+      if (true) {}
+    }
+  };
+  void run() {}
+}
+"#;
+        let scorer = NativeComplexityScorer::new();
+        let result = scorer
+            .score_file(Utf8Path::new("User.java"), source, Language::Java)
+            .expect("score java discovery");
+        let create = result
+            .functions
+            .iter()
+            .find(|f| f.name == "create")
+            .expect("create");
+        assert_eq!(create.cyclomatic, 3, "anonymous if must not raise create");
+        let runs: Vec<_> = result
+            .functions
+            .iter()
+            .filter(|f| f.name == "run")
+            .collect();
+        assert_eq!(
+            runs.len(),
+            1,
+            "anonymous and enum-constant run bodies must not score; functions={:?}",
+            result.functions
+        );
+        assert_eq!(
+            runs[0].cyclomatic, 1,
+            "the remaining run is the enum method, not the constant body; got {:?}",
+            runs[0]
+        );
+        assert!(
+            result.functions.iter().any(|f| f.name == "m"),
+            "named inner method still scores; functions={:?}",
             result.functions
         );
     }
