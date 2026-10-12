@@ -89,6 +89,8 @@ fn cmp_hop_edge(left: &HopEdge, right: &HopEdge) -> std::cmp::Ordering {
 
 fn header(from: &str, to: &str, found: bool, hops: Option<usize>) -> String {
     let path = if found { "yes" } else { "none" };
+    let from = escape_tsv_field(from);
+    let to = escape_tsv_field(to);
     let mut out = format!(
         "source: Cozo nodes/edges\nfrom: {from}\nto: {to}\ndirection: source-to-target\npath: {path}\n"
     );
@@ -125,10 +127,13 @@ fn bfs_script(from: &str, to: &str, relation: Option<&str>) -> String {
         Some(relation) => {
             let relation_lit = escape_script_literal(relation);
             format!(
-                "edges[src, dst] := *edge{{source: src, target: dst, relation: '{relation_lit}'}}"
+                "edges[src, dst] := *edge{{source: src, target: dst, relation: '{relation_lit}'}}, *node{{id: src}}, *node{{id: dst}}"
             )
         }
-        None => "edges[src, dst] := *edge{source: src, target: dst}".to_string(),
+        None => {
+            "edges[src, dst] := *edge{source: src, target: dst}, *node{id: src}, *node{id: dst}"
+                .to_string()
+        }
     };
     format!(
         "{edges}\nstart[] <- [['{from_lit}']]\ngoal[] <- [['{to_lit}']]\n?[fr, to, path] <~ ShortestPathBFS(edges[], start[], goal[])\n"
@@ -259,17 +264,43 @@ mod tests {
         let script = bfs_script("a'b\\c", "z", None);
         assert!(script.contains("a\\'b\\\\c"), "{script}");
         assert!(!script.contains("''"), "{script}");
-        assert!(script.contains("edges[src, dst] := *edge{source: src, target: dst}\n"));
+        assert!(script.contains(
+            "edges[src, dst] := *edge{source: src, target: dst}, *node{id: src}, *node{id: dst}\n"
+        ));
         assert!(script.contains("?[fr, to, path] <~ ShortestPathBFS(edges[], start[], goal[])"));
     }
 
     #[test]
     fn bfs_script__relation__named_literal() {
         let script = bfs_script("a", "b", Some("calls"));
-        assert!(
-            script
-                .contains("edges[src, dst] := *edge{source: src, target: dst, relation: 'calls'}")
-        );
+        assert!(script.contains(
+            "edges[src, dst] := *edge{source: src, target: dst, relation: 'calls'}, *node{id: src}, *node{id: dst}"
+        ));
+    }
+
+    #[test]
+    fn header__controls__single_physical_line() {
+        let out = header("a\\b\tc\rd\ne", "w\\x\ty\rz\nv", true, Some(1));
+        let from_lines: Vec<_> = out
+            .lines()
+            .filter(|line| line.starts_with("from:"))
+            .collect();
+        let to_lines: Vec<_> = out.lines().filter(|line| line.starts_with("to:")).collect();
+        assert_eq!(from_lines.len(), 1, "{out}");
+        assert_eq!(to_lines.len(), 1, "{out}");
+        let from = from_lines[0];
+        let to = to_lines[0];
+        for value in [from, to] {
+            assert!(value.contains("\\\\"), "{value}");
+            assert!(value.contains("\\t"), "{value}");
+            assert!(value.contains("\\r"), "{value}");
+            assert!(value.contains("\\n"), "{value}");
+            assert!(!value.contains('\t'), "{value}");
+            assert!(!value.contains('\r'), "{value}");
+        }
+        assert!(!out.contains('\t'), "{out}");
+        assert!(!out.contains('\r'), "{out}");
+        assert!(out.ends_with("hops: 1\n"), "{out}");
     }
 
     #[test]

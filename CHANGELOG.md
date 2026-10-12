@@ -8,6 +8,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`graph path` walks only node ids; header from/to stay one physical line (0479):** `ShortestPathBFS` uses edges whose both ends exist as `node` rows. A dangling intermediate is `path: none`. Stderr `from:` / `to:` run through `escape_tsv_field`.
+
 - **`graph export --entity` emits last-hop edges among kept nodes (0478):** a walk whose last hop admits two neighbors now includes the stored edge between those neighbors. `--depth` without `--entity` is rejected before storage opens.
 
 - **`--scope fast` injects nextest for `include_str!` cheap docs (0480):** NonCodeCheap still skips freshness, but a docs-only edit to a file compiled into a test via `include_str!` now injects those nextest stems instead of running zero tests.
