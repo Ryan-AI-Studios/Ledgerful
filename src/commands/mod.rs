@@ -1,5 +1,6 @@
 pub mod ask;
 pub mod ask_routing;
+pub mod bench;
 pub mod bridge;
 pub mod change_context;
 pub mod config;

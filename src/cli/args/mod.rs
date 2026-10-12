@@ -256,6 +256,8 @@ Tips:
     Audit(AuditArgs),
     /// Local-only per-command timing analysis (Track 0043; `--global` is Track 0044)
     Timings(TimingsCliArgs),
+    /// Run a pinned live CLI workload N times (not timings history)
+    Bench(BenchCliArgs),
     /// Generate an interactive visualization of the knowledge graph
     Viz(VizArgs),
     /// Export or walk the Cozo knowledge graph (GraphML / Cypher, or a directed path).

@@ -287,6 +287,50 @@ fn graph_layer_unknown_value_rejected() {
 }
 
 #[test]
+fn bench_fixture_required_unless_compare() {
+    let err = Cli::try_parse_from(["ledgerful", "bench"]);
+    assert!(err.is_err(), "bench without --fixture must fail clap");
+    let cmd = parse(&["bench", "--fixture", "C:\\tmp\\fx", "--json"]);
+    assert!(cmd.is_machine_output());
+    assert_eq!(cmd.command_name(), "bench");
+    assert!(
+        cmd.argv_shape().contains("fixture"),
+        "argv_shape must record fixture: {}",
+        cmd.argv_shape()
+    );
+}
+
+#[test]
+fn bench_unknown_workload_rejected() {
+    let err = Cli::try_parse_from([
+        "ledgerful",
+        "bench",
+        "--fixture",
+        ".",
+        "--workload",
+        "hotspots-semantic",
+    ]);
+    assert!(err.is_err(), "expected ValueEnum reject, got {err:?}");
+}
+
+#[test]
+fn bench_compare_conflicts_with_fixture() {
+    let err = Cli::try_parse_from([
+        "ledgerful",
+        "bench",
+        "--fixture",
+        ".",
+        "--compare",
+        "a.json",
+        "b.json",
+    ]);
+    assert!(
+        err.is_err(),
+        "expected --compare / --fixture conflict, got {err:?}"
+    );
+}
+
+#[test]
 fn graph_compact_json_refused() {
     let err = Cli::try_parse_from(["ledgerful", "ledger", "graph", "abc", "--compact", "--json"]);
     assert!(

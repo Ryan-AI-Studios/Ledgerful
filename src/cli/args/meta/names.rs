@@ -135,6 +135,7 @@ impl Commands {
             Commands::Doctor(DoctorArgs { .. }) => "doctor",
             Commands::Status(StatusArgs { .. }) => "status",
             Commands::Timings(TimingsCliArgs { .. }) => "timings",
+            Commands::Bench(BenchCliArgs { .. }) => "bench",
             Commands::Config { command } => match command {
                 ConfigCommands::Verify { .. } => "config_verify",
                 ConfigCommands::View { .. } => "config_view",

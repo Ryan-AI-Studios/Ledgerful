@@ -8,6 +8,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`ledgerful bench` (0477):** run one pinned CLI child (`index-cold` default) N times against `--fixture`, print p50/p95 via `percentile_sorted`, sha-gate the 12-hex embed, write `kind` `workloadBench` under `/output/`. `--compare` emits `workloadBenchCompare` (`delta = b - a`). Not `timings`, not a `criterion` crate.
+
 - **Java structural index (0476):** `.java` files get native symbols, same-file calls, imports, and complexity. Constructor symbols are named `<init>`. Receiver calls, overloads, and extra constructors stay unresolved via dotted `callee_name` (`obj.save`, `{name}.overload`, `new.{type}`). No routes, models, observability, SCIP, or cross-file resolution.
 
 - **`graph export` writes the Cozo knowledge graph as GraphML or Cypher (0474):** `ledgerful graph export --format graphml|cypher` reads the node and edge store read-only. It is not `ledger graph`. Stdout is the document, or `wrote:` when `--output` is set. A selection cut by `--limit` says `truncated: yes` on stderr.

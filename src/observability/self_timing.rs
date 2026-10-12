@@ -161,8 +161,8 @@ impl TimedCommand {
     /// Begin timing for a command. No-ops when opted out, when the command is
     /// `timings` itself (self-exclusion), or when the feature is inactive.
     pub fn start(command: &str, argv_shape: &str) -> Self {
-        // Skip recording timings-about-timings; always no-op when disabled.
-        if command == "timings" || !is_self_timing_enabled() {
+        // Skip recording timings-about-timings or live `bench` samples; always no-op when disabled.
+        if command == "timings" || command == "bench" || !is_self_timing_enabled() {
             return Self {
                 run_id: String::new(),
                 command: command.to_string(),
@@ -825,6 +825,13 @@ mod tests {
     fn timings_command_start_is_inactive() {
         // Self-exclusion: querying timings must not record a timings row.
         let t = TimedCommand::start("timings", "timings");
+        assert!(!t.is_active());
+        assert!(t.run_id().is_empty());
+    }
+
+    #[test]
+    fn bench_command_start_is_inactive() {
+        let t = TimedCommand::start("bench", "bench|fixture,json");
         assert!(!t.is_active());
         assert!(t.run_id().is_empty());
     }

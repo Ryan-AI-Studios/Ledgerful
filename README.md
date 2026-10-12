@@ -170,6 +170,7 @@ Default-features `--help` names, in clap order. Hidden variants (`bridge`, `sear
 | `dead-code` | Detect likely dead code across the repository |
 | `audit` | Perform a holistic project audit or history for an entity |
 | `timings` | Local-only per-command timing analysis (Track 0043; `--global` is Track 0044) |
+| `bench` | Run a pinned live CLI workload N times (not timings history) |
 | `viz` | Generate an interactive visualization of the knowledge graph |
 | `graph` | Export the Cozo knowledge graph (GraphML / Cypher), or the directed fewest-hop path between two nodes |
 | `update` | Update the Ledgerful binary or migrate repository state |

@@ -475,6 +475,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
                 })
             }
         }
+        Commands::Bench(args) => crate::commands::bench::execute_bench(args),
     };
 
     // Usage metrics counter hook: increment counter and try flush

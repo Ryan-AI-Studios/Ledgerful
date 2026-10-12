@@ -332,6 +332,69 @@ pub struct TimingsCliArgs {
     pub opt_out: bool,
 }
 
+/// Default `--runs` for `ledgerful bench` (named const; clap `range(1..=30)`).
+pub const DEFAULT_BENCH_RUNS: u32 = 5;
+
+/// Locked CLI child workload for `ledgerful bench`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum BenchWorkload {
+    /// Full `index` against `--fixture` (cold: wipe fixture `.ledgerful` between runs).
+    #[default]
+    IndexCold,
+}
+
+impl BenchWorkload {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::IndexCold => "index-cold",
+        }
+    }
+
+    pub fn child_args(self) -> &'static [&'static str] {
+        match self {
+            Self::IndexCold => &["index"],
+        }
+    }
+
+    pub fn start_state(self) -> &'static str {
+        match self {
+            Self::IndexCold => "cold",
+        }
+    }
+}
+
+/// Live CLI workload harness (not `timings` history).
+#[derive(Args, Debug)]
+pub struct BenchCliArgs {
+    /// Git fixture the child indexes. Required unless `--compare`. Parent stays on the engine.
+    #[arg(long, value_name = "PATH", required_unless_present = "compare")]
+    pub fixture: Option<PathBuf>,
+    /// Locked workload name (ValueEnum).
+    #[arg(long, value_enum, default_value_t = BenchWorkload::IndexCold)]
+    pub workload: BenchWorkload,
+    /// Sample count.
+    #[arg(
+        long,
+        default_value_t = DEFAULT_BENCH_RUNS,
+        value_parser = clap::value_parser!(u32).range(1..=30)
+    )]
+    pub runs: u32,
+    /// JSON output path for a run (default `output/bench/<buildSha>-<workload>.json` under the engine).
+    #[arg(long, value_name = "PATH")]
+    pub output: Option<PathBuf>,
+    /// Emit `workloadBench` / `workloadBenchCompare` JSON on stdout.
+    #[arg(long)]
+    pub json: bool,
+    /// Compare two `workloadBench` JSON files (`delta = b - a`).
+    #[arg(
+        long,
+        num_args = 2,
+        value_names = ["PATH_A", "PATH_B"],
+        conflicts_with_all = ["fixture", "workload", "runs", "output"]
+    )]
+    pub compare: Vec<PathBuf>,
+}
+
 /// Generate a disposable demonstration repo.
 #[derive(Args, Debug)]
 pub struct DemoArgs {

@@ -40,6 +40,7 @@ enough, per inner span:
 - Raw argv or any flag **values** (paths, tx-ids, queries, free text)
 - Anything over the network
 - The `timings` command itself (self-exclusion — querying/exporting history must not pollute the series with self-observation noise)
+- The `bench` command (live workload runner; samples live in `workloadBench` JSON, not `command_timings`)
 
 ## Where it lives
 
@@ -70,6 +71,17 @@ ledgerful timings --prune --inner --older-than 30d  # inner spans
 
 `doctor` warns if total rows exceed 10 000 or if distinct `span_name` values in
 30 days exceed 1 000 (cardinality guard).
+
+## Relationship to `ledgerful bench`
+
+`ledgerful bench` is a **live** CLI child-process harness, not history. The parent stays on the engine checkout and sha-gates `LEDGERFUL_GIT_SHA` against `git rev-parse --short=12 HEAD` via `get_layout_or_cwd_if_not_git()`. `--fixture PATH` is required and is only the child's `-C`. Default JSON lands under gitignored `/output/bench/`. `self_timing` excludes `bench` so harness wall times do not mix into `command_timings` (0330).
+
+```powershell
+ledgerful bench --fixture <temp-copy> --json
+ledgerful bench --compare output/bench/<shaA>-index-cold.json output/bench/<shaB>-index-cold.json
+```
+
+Do not pass the engine checkout as `--fixture`.
 
 ## Relationship to `usage-metrics`
 
