@@ -8,6 +8,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Bench cold wipe and compare honesty (0482):** cold prep creates the empty state tree and does not migrate the legacy sibling. `--compare` refuses a mismatched `os` or `targetTriple`. `fixtureId` skips `target` and `node_modules`.
+
 - **Java extractor residuals (0481):** complexity discovery skips anonymous-class and enum-constant bodies. Callers use the symbol qualified name, so two `<init>` symbols in one file keep their own edges. A bare call with no same-file method is `{name}.external`. A scoped `new` matches a segment suffix of the type qualified name.
 
 - **`graph path` walks only node ids; header from/to stay one physical line (0479):** `ShortestPathBFS` uses edges whose both ends exist as `node` rows. A dangling intermediate is `path: none`. Stderr `from:` / `to:` run through `escape_tsv_field`.
