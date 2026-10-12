@@ -26,6 +26,9 @@ pub enum GroupedProcessError {
         timeout: Duration,
         /// Kill/reap diagnostics when the group kill path partially fails.
         detail: String,
+        /// Captured stderr from `spawn_wait_grouped_captured`; empty for
+        /// `spawn_wait_grouped` (no pipes).
+        stderr: String,
     },
 }
 
@@ -90,7 +93,11 @@ pub fn spawn_wait_grouped(
             if let Some(e) = reap_err {
                 detail.push_str(&format!("process reap failed ({e:?})"));
             }
-            return Err(GroupedProcessError::Timeout { timeout, detail });
+            return Err(GroupedProcessError::Timeout {
+                timeout,
+                detail,
+                stderr: String::new(),
+            });
         }
     };
 
@@ -162,7 +169,7 @@ pub fn spawn_wait_grouped_captured(
             let kill_err = child.start_kill().err();
             let reap_err = child.wait().err();
             let _ = join_reader(stdout_handle);
-            let _ = join_reader(stderr_handle);
+            let captured_stderr = join_reader(stderr_handle);
             let mut detail = String::new();
             if let Some(e) = kill_err {
                 detail.push_str(&format!("process-group kill failed ({e:?}); "));
@@ -170,7 +177,11 @@ pub fn spawn_wait_grouped_captured(
             if let Some(e) = reap_err {
                 detail.push_str(&format!("process reap failed ({e:?})"));
             }
-            return Err(GroupedProcessError::Timeout { timeout, detail });
+            return Err(GroupedProcessError::Timeout {
+                timeout,
+                detail,
+                stderr: captured_stderr.output,
+            });
         }
     };
 
@@ -266,8 +277,14 @@ mod tests {
         let start = Instant::now();
         let err = spawn_wait_grouped(cmd, Duration::from_millis(400)).unwrap_err();
         assert!(
-            matches!(err, GroupedProcessError::Timeout { .. }),
-            "expected timeout, got {err:?}"
+            matches!(
+                err,
+                GroupedProcessError::Timeout {
+                    stderr: ref s,
+                    ..
+                } if s.is_empty()
+            ),
+            "expected timeout with empty stderr, got {err:?}"
         );
         // Timeout is the invariant. The wall only catches a hung reap and
         // must stay well below ping -n 30 (~29s) / sleep 30.
@@ -295,6 +312,33 @@ mod tests {
         };
         let err = spawn_wait_grouped(cmd, Duration::from_millis(500)).unwrap_err();
         assert!(matches!(err, GroupedProcessError::Timeout { .. }));
+    }
+
+    #[test]
+    fn grouped_captured_timeout_includes_stderr() {
+        let cmd = if cfg!(windows) {
+            let mut c = Command::new("cmd");
+            c.args([
+                "/C",
+                "echo bench-timeout-stderr 1>&2 & ping -n 30 127.0.0.1",
+            ]);
+            c
+        } else {
+            let mut c = Command::new("sh");
+            c.args(["-c", "echo bench-timeout-stderr >&2; sleep 30"]);
+            c
+        };
+        let err =
+            spawn_wait_grouped_captured(cmd, Duration::from_millis(800), 1024 * 1024).unwrap_err();
+        match err {
+            GroupedProcessError::Timeout { stderr, .. } => {
+                assert!(
+                    stderr.contains("bench-timeout-stderr"),
+                    "timeout must carry child stderr, got {stderr:?}"
+                );
+            }
+            other => panic!("expected Timeout, got {other:?}"),
+        }
     }
 
     fn marker_len(path: &std::path::Path) -> u64 {

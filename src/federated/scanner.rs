@@ -733,7 +733,9 @@ fn run_federate_export(sibling_root: &Utf8Path, sync_timeout: Duration) -> Resul
             sibling_root,
             status.code()
         )),
-        Err(crate::exec::grouped::GroupedProcessError::Timeout { timeout, detail }) => {
+        Err(crate::exec::grouped::GroupedProcessError::Timeout {
+            timeout, detail, ..
+        }) => {
             warn!(
                 "ledgerful federate export for sibling at {} exceeded sync timeout ({:?}); killing process group",
                 sibling_root, timeout

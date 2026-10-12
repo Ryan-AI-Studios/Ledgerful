@@ -3,6 +3,7 @@ mod ask_auto_scan;
 mod ask_empty_tree;
 mod ask_kg_fallback;
 mod ask_structural_queries;
+mod bench;
 mod binstall_metadata;
 mod bridge_ask_tests;
 mod bridge_export_tests;

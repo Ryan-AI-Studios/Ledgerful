@@ -404,6 +404,33 @@ impl Commands {
                     f.push("opt_out");
                 }
             }
+            Commands::Bench(BenchCliArgs {
+                fixture,
+                workload,
+                runs,
+                output,
+                json,
+                compare,
+            }) => {
+                if fixture.is_some() {
+                    f.push("fixture");
+                }
+                if *workload != crate::cli::args::BenchWorkload::IndexCold {
+                    f.push("workload");
+                }
+                if *runs != crate::cli::args::DEFAULT_BENCH_RUNS {
+                    f.push("runs");
+                }
+                if output.is_some() {
+                    f.push("output");
+                }
+                if *json {
+                    f.push("json");
+                }
+                if !compare.is_empty() {
+                    f.push("compare");
+                }
+            }
             Commands::Search(SearchCliArgs {
                 query: _,
                 regex,
