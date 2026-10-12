@@ -321,7 +321,7 @@ pub fn build_plan_scoped_with_options(
     // 0480: union `include_str!` cheap-doc stems the same way.
     let scoped_stems = conn.and_then(|c| query_scoped_test_files(c, packet));
     if let Some(mut test_stems) = scoped_stems {
-        let inject = union_cheap_inject_stems(packet, &mut test_stems);
+        let inject = union_cheap_inject_stems(packet, profile, &mut test_stems);
         return build_fast_scoped_plan(packet, &test_stems, inject, config.suite_timeout_secs);
     }
 
@@ -430,10 +430,16 @@ struct CheapInject {
 }
 
 /// Union packaging + `include_str!` cheap-doc stems into `stems`.
-fn union_cheap_inject_stems(packet: &ImpactPacket, stems: &mut Vec<String>) -> CheapInject {
+/// Doc stems require a Rust profile (engine-dogfood nextest). Packaging A2
+/// still injects `bump_manifests` when `profile.rust` is None.
+fn union_cheap_inject_stems(
+    packet: &ImpactPacket,
+    profile: &crate::platform::repository::RepositoryProfile,
+    stems: &mut Vec<String>,
+) -> CheapInject {
     CheapInject {
         packaging: union_bump_manifests_if_needed(packet, stems),
-        include_str: union_include_str_material_stems(packet, stems),
+        include_str: profile.rust.is_some() && union_include_str_material_stems(packet, stems),
     }
 }
 

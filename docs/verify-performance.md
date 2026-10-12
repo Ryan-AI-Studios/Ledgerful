@@ -41,7 +41,7 @@ the same overlay. The rest lives in `build_plan_scoped_with_options`:
 | **EmptyChanges** | `packet.changes` empty after overlay (checked **before** stem query) | Same cheap plan as LiveEmpty |
 | **HeadMismatch** | `test_mapping` populated + index `head_hash` ≠ packet head | **Auto-repair once** (bounded incremental) **without** `--auto-index`; re-classify; still lag → **refuse**. Not silent ScopedOk on stems alone. |
 | **EmptyMapping** | `test_mapping` count == 0 / table missing | **Refuse** unless `--auto-index` (try once; still empty → refuse). Bootstrap cost is opt-in. |
-| **ScopedOk** | freshness Ok + `test_mapping` yields stems for changed files | Existing 3-step scoped plan; **union** stem `bump_manifests` when any packaging / bump-script path is in the classified set (A2 mixed); **union** `INCLUDE_STR_MATERIAL` stems when any `include_str!` cheap path is in the classified set (0480 mixed) |
+| **ScopedOk** | freshness Ok + `test_mapping` yields stems for changed files | Existing 3-step scoped plan; **union** stem `bump_manifests` when any packaging / bump-script path is in the classified set (A2 mixed); **union** `INCLUDE_STR_MATERIAL` stems when any `include_str!` cheap path is in the classified set **and** Rust is detected (0480 mixed; skip doc inject when `profile.rust` is None; packaging A2 still injects without rust) |
 | **MappingRefuse** | empty mapping (no flag), head-lag still unusable after repair, PacketHeadMissing without flag, no stems, no DB, unmapped src/openapi | **Refuse** — do **not** execute full. Exit ≠ 0. `scopeExecuted: "refused"`, `plan.refused=true`, empty steps |
 
 **Escape hatches:**

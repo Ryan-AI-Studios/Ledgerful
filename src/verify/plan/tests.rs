@@ -2352,6 +2352,91 @@ fn test_mixed_src_mapped_plus_include_str_doc_unions_stems() {
 }
 
 #[test]
+fn test_mixed_src_mapped_plus_include_str_doc_no_rust_skips_doc_stems() {
+    let packet = ImpactPacket {
+        head_hash: Some("matched-head".to_string()),
+        changes: vec![
+            ChangedFile {
+                path: PathBuf::from("src/commands/hotspots.rs"),
+                ..Default::default()
+            },
+            ChangedFile {
+                path: PathBuf::from("README.md"),
+                ..Default::default()
+            },
+        ],
+        ..ImpactPacket::default()
+    };
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute(
+        "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
+             tested_symbol_id INTEGER, tested_file_id INTEGER)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE project_files (id INTEGER PRIMARY KEY, file_path TEXT)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE index_metadata (key TEXT PRIMARY KEY, value TEXT)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO index_metadata (key, value) VALUES ('head_hash', 'matched-head')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path) VALUES (1, 'src/commands/hotspots.rs')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path) VALUES (2, 'tests/integration/cli_hotspots.rs')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id) \
+             VALUES (10, 2, 20, 1)",
+        [],
+    )
+    .unwrap();
+
+    let plan = plan_fast(
+        &packet,
+        Some(&conn),
+        &crate::platform::repository::RepositoryProfile::default(),
+    );
+    assert!(
+        !plan.refused,
+        "mapped src + README without rust must still ScopedOk; reason={:?}",
+        plan.fallback_reason
+    );
+    let nextest = nextest_step(&plan).expect("ScopedOk nextest from mapping");
+    assert!(
+        nextest.command.contains("test(cli_hotspots)"),
+        "original mapping stem must remain, got {}",
+        nextest.command
+    );
+    assert!(
+        !nextest
+            .command
+            .contains("test(readme_has_daily_5_front_door)"),
+        "no-rust ScopedOk must not inject include_str stems, got {}",
+        nextest.command
+    );
+    assert!(
+        !nextest.description.contains("include_str"),
+        "no-rust description must not name include_str, got {}",
+        nextest.description
+    );
+}
+
+#[test]
 fn test_mixed_src_unmapped_plus_packaging_still_mapping_refuse() {
     let packet = ImpactPacket {
         head_hash: Some("matched-head".to_string()),
