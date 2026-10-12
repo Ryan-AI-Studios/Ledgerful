@@ -2,7 +2,8 @@ use super::*;
 use crate::impact::packet::{ChangedFile, FileAnalysisStatus, ImpactPacket};
 use crate::policy::mode::Mode;
 use crate::policy::rules::{GlobalRules, PathRule, Rules};
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 fn empty_packet() -> ImpactPacket {
     ImpactPacket {
@@ -1909,7 +1910,7 @@ fn plan_fast(
 
 #[test]
 fn test_non_code_changelog_docs_cheap_no_nextest() {
-    let packet = packet_with_paths(&["CHANGELOG.md", "docs/installation.md"]);
+    let packet = packet_with_paths(&["CHANGELOG.md", "docs/architecture.md"]);
     let plan = plan_fast(&packet, None, &rust_profile());
     assert!(!plan.refused);
     assert!(plan.fallback_reason.is_none());
@@ -1928,7 +1929,7 @@ fn test_non_code_changelog_docs_cheap_no_nextest() {
             .steps
             .iter()
             .any(|s| s.command.contains("nextest") || s.command.contains("cargo test")),
-        "docs/CHANGELOG cheap path must not schedule tests, got {:?}",
+        "unreferenced docs/CHANGELOG cheap path must not schedule tests, got {:?}",
         plan.steps
     );
     assert!(
@@ -1977,21 +1978,194 @@ fn test_scripts_bump_manifests_ps1_injects_stem() {
 
 #[test]
 fn test_docs_only_does_not_inject_bump_manifests() {
+    let unreferenced = packet_with_paths(&["docs/architecture.md"]);
+    let unreferenced_plan = plan_fast(&unreferenced, None, &rust_profile());
+    assert!(!unreferenced_plan.refused);
+    assert!(
+        nextest_step(&unreferenced_plan).is_none(),
+        "unreferenced docs must not inject nextest, got {:?}",
+        unreferenced_plan.steps
+    );
     let packet = packet_with_paths(&["docs/installation.md"]);
     let plan = plan_fast(&packet, None, &rust_profile());
     assert!(!plan.refused);
+    let nextest = nextest_step(&plan).expect("include_str docs must inject nextest");
     assert!(
-        nextest_step(&plan).is_none(),
-        "docs-only must not inject bump_manifests, got {:?}",
-        plan.steps
+        !nextest.command.contains("bump_manifests"),
+        "installation.md must not inject bump_manifests, got {}",
+        nextest.command
     );
     assert!(
-        !plan
-            .steps
-            .iter()
-            .any(|s| s.command.contains("bump_manifests")),
-        "docs-only must not mention bump_manifests, got {:?}",
+        !nextest.command.contains("test(install_docs_truth)"),
+        "vacuous install_docs_truth stem is forbidden, got {}",
+        nextest.command
+    );
+    assert!(
+        nextest
+            .command
+            .contains("test(installation_md_has_live_brew_and_scoop_commands)"),
+        "expected installation stem, got {}",
+        nextest.command
+    );
+    assert!(
+        nextest
+            .command
+            .contains("test(no_stale_package_manager_availability_language)"),
+        "expected no_stale stem, got {}",
+        nextest.command
+    );
+}
+
+#[test]
+fn test_include_str_docs_inject_readme_and_keep_envelope() {
+    let packet = packet_with_paths(&["README.md"]);
+    let plan = plan_fast(&packet, None, &rust_profile());
+    assert!(!plan.refused);
+    assert!(plan.fallback_reason.is_none());
+    let nextest = nextest_step(&plan).expect("README include_str must inject nextest");
+    assert!(
+        nextest
+            .command
+            .contains("test(readme_has_daily_5_front_door)"),
+        "expected readme stem, got {}",
+        nextest.command
+    );
+    assert!(
+        nextest
+            .command
+            .contains("test(no_stale_package_manager_availability_language)"),
+        "expected no_stale stem, got {}",
+        nextest.command
+    );
+    assert!(
+        nextest.description.contains("include_str"),
+        "description must name include_str, got {}",
+        nextest.description
+    );
+    assert!(
+        !nextest.description.contains("via test_mapping"),
+        "injected description must not claim test_mapping, got {}",
+        nextest.description
+    );
+    assert!(
+        !nextest.description.contains("packaging"),
+        "docs-only must not claim packaging, got {}",
+        nextest.description
+    );
+}
+
+#[test]
+fn test_include_str_multi_referenced_docs_union_stems() {
+    let packet = packet_with_paths(&["docs/Ledgerful/skill.md", "docs/Call-Resolution.md"]);
+    let plan = plan_fast(&packet, None, &rust_profile());
+    let nextest = nextest_step(&plan).expect("multi-ref docs must inject");
+    for stem in [
+        "call_resolution_docs_honesty_ceiling",
+        "test_daily5_skill_sot_contains_five_argv_substrings",
+        "test_daily5_skill_sot_is_ai_only_procedure",
+    ] {
+        assert!(
+            nextest.command.contains(&format!("test({stem})")),
+            "union missing {stem}: {}",
+            nextest.command
+        );
+    }
+    let command = &nextest.command;
+    let first = command.find("test(call_resolution_docs_honesty_ceiling)");
+    let second = command.find("test(test_daily5_skill_sot_contains_five_argv_substrings)");
+    assert!(
+        first.is_some() && second.is_some() && first < second,
+        "stems must be sorted in -E, got {command}"
+    );
+}
+
+#[test]
+fn test_include_str_plus_packaging_is_one_nextest_step() {
+    let packet = packet_with_paths(&["docs/installation.md", "packaging/homebrew/ledgerful.rb"]);
+    let plan = plan_fast(&packet, None, &rust_profile());
+    let nextest_steps: Vec<_> = plan
+        .steps
+        .iter()
+        .filter(|s| s.command.contains("nextest"))
+        .collect();
+    assert_eq!(
+        nextest_steps.len(),
+        1,
+        "packaging + include_str must be one nextest step, got {:?}",
         plan.steps
+    );
+    let nextest = nextest_steps[0];
+    assert!(
+        nextest.command.contains("test(bump_manifests)"),
+        "{}",
+        nextest.command
+    );
+    assert!(
+        nextest
+            .command
+            .contains("test(installation_md_has_live_brew_and_scoop_commands)"),
+        "{}",
+        nextest.command
+    );
+    assert!(
+        nextest.description.contains("bump_manifests")
+            && nextest.description.contains("include_str"),
+        "composite description, got {}",
+        nextest.description
+    );
+}
+
+#[test]
+fn test_include_str_docs_no_rust_profile_skips_nextest() {
+    let packet = packet_with_paths(&["docs/installation.md"]);
+    let plan = plan_fast(
+        &packet,
+        None,
+        &crate::platform::repository::RepositoryProfile::default(),
+    );
+    assert!(!plan.refused);
+    assert!(
+        nextest_step(&plan).is_none(),
+        "non-Rust profile must not inject doc nextest, got {:?}",
+        plan.steps
+    );
+}
+
+#[test]
+fn test_packaging_no_rust_profile_still_injects_bump_manifests() {
+    let packet = packet_with_paths(&["packaging/homebrew/ledgerful.rb"]);
+    let plan = plan_fast(
+        &packet,
+        None,
+        &crate::platform::repository::RepositoryProfile::default(),
+    );
+    assert!(!plan.refused);
+    let nextest = nextest_step(&plan).expect("packaging A2 injects without rust");
+    assert!(
+        nextest.command.contains("test(bump_manifests)"),
+        "expected bump_manifests without rust, got {}",
+        nextest.command
+    );
+}
+
+#[test]
+fn test_include_str_plus_unreferenced_doc_still_injects() {
+    let packet = packet_with_paths(&["docs/installation.md", "docs/architecture.md"]);
+    let plan = plan_fast(&packet, None, &rust_profile());
+    assert!(!plan.refused);
+    assert!(plan.fallback_reason.is_none());
+    let nextest = nextest_step(&plan).expect("referenced + unreferenced still injects");
+    assert!(
+        nextest
+            .command
+            .contains("test(installation_md_has_live_brew_and_scoop_commands)"),
+        "expected installation stem, got {}",
+        nextest.command
+    );
+    assert!(
+        !nextest.command.contains("bump_manifests"),
+        "mixed docs must not inject bump_manifests, got {}",
+        nextest.command
     );
 }
 
@@ -2087,6 +2261,177 @@ fn test_mixed_src_mapped_plus_packaging_unions_stem() {
     assert!(
         !nextest.description.contains("via test_mapping"),
         "unioned description must not claim test_mapping, got {}",
+        nextest.description
+    );
+}
+
+#[test]
+fn test_mixed_src_mapped_plus_include_str_doc_unions_stems() {
+    let packet = ImpactPacket {
+        head_hash: Some("matched-head".to_string()),
+        changes: vec![
+            ChangedFile {
+                path: PathBuf::from("src/commands/hotspots.rs"),
+                ..Default::default()
+            },
+            ChangedFile {
+                path: PathBuf::from("README.md"),
+                ..Default::default()
+            },
+        ],
+        ..ImpactPacket::default()
+    };
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute(
+        "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
+             tested_symbol_id INTEGER, tested_file_id INTEGER)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE project_files (id INTEGER PRIMARY KEY, file_path TEXT)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE index_metadata (key TEXT PRIMARY KEY, value TEXT)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO index_metadata (key, value) VALUES ('head_hash', 'matched-head')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path) VALUES (1, 'src/commands/hotspots.rs')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path) VALUES (2, 'tests/integration/cli_hotspots.rs')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id) \
+             VALUES (10, 2, 20, 1)",
+        [],
+    )
+    .unwrap();
+
+    let plan = plan_fast(&packet, Some(&conn), &rust_profile());
+    assert!(
+        !plan.refused,
+        "mapped src + README must ScopedOk with union; reason={:?}",
+        plan.fallback_reason
+    );
+    let nextest = nextest_step(&plan).expect("ScopedOk nextest");
+    assert!(
+        nextest.command.contains("test(cli_hotspots)"),
+        "original mapping stem must remain, got {}",
+        nextest.command
+    );
+    assert!(
+        nextest
+            .command
+            .contains("test(readme_has_daily_5_front_door)"),
+        "0480 must union README include_str stem, got {}",
+        nextest.command
+    );
+    assert!(
+        nextest.description.contains("include_str"),
+        "unioned description must name include_str, got {}",
+        nextest.description
+    );
+    assert!(
+        !nextest.description.contains("via test_mapping"),
+        "unioned description must not claim test_mapping, got {}",
+        nextest.description
+    );
+}
+
+#[test]
+fn test_mixed_src_mapped_plus_include_str_doc_no_rust_skips_doc_stems() {
+    let packet = ImpactPacket {
+        head_hash: Some("matched-head".to_string()),
+        changes: vec![
+            ChangedFile {
+                path: PathBuf::from("src/commands/hotspots.rs"),
+                ..Default::default()
+            },
+            ChangedFile {
+                path: PathBuf::from("README.md"),
+                ..Default::default()
+            },
+        ],
+        ..ImpactPacket::default()
+    };
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute(
+        "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
+             tested_symbol_id INTEGER, tested_file_id INTEGER)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE project_files (id INTEGER PRIMARY KEY, file_path TEXT)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE index_metadata (key TEXT PRIMARY KEY, value TEXT)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO index_metadata (key, value) VALUES ('head_hash', 'matched-head')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path) VALUES (1, 'src/commands/hotspots.rs')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path) VALUES (2, 'tests/integration/cli_hotspots.rs')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id) \
+             VALUES (10, 2, 20, 1)",
+        [],
+    )
+    .unwrap();
+
+    let plan = plan_fast(
+        &packet,
+        Some(&conn),
+        &crate::platform::repository::RepositoryProfile::default(),
+    );
+    assert!(
+        !plan.refused,
+        "mapped src + README without rust must still ScopedOk; reason={:?}",
+        plan.fallback_reason
+    );
+    let nextest = nextest_step(&plan).expect("ScopedOk nextest from mapping");
+    assert!(
+        nextest.command.contains("test(cli_hotspots)"),
+        "original mapping stem must remain, got {}",
+        nextest.command
+    );
+    assert!(
+        !nextest
+            .command
+            .contains("test(readme_has_daily_5_front_door)"),
+        "no-rust ScopedOk must not inject include_str stems, got {}",
+        nextest.command
+    );
+    assert!(
+        !nextest.description.contains("include_str"),
+        "no-rust description must not name include_str, got {}",
         nextest.description
     );
 }
@@ -2192,6 +2537,388 @@ fn test_openapi_json_is_not_non_code_cheap() {
         "openapi.json must not be NonCodeCheap; steps={:?} reason={:?}",
         plan.steps, plan.fallback_reason
     );
+}
+
+#[test]
+fn test_include_str_material_table_matches_live_cheap_sites() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut live: Vec<String> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
+    for dir in ["src", "tests", "crates"] {
+        walk_rs_files(
+            &crate_root.join(dir),
+            &crate_root,
+            &mut |rel, src| {
+                live.extend(collect_cheap_include_str_paths(rel, src)?);
+                Ok(())
+            },
+            &mut failures,
+        );
+    }
+    assert!(
+        failures.is_empty(),
+        "unresolved include_str! forms:\n  {}",
+        failures.join("\n  ")
+    );
+    live.sort();
+    live.dedup();
+    let table: Vec<String> = INCLUDE_STR_MATERIAL
+        .iter()
+        .map(|(p, _)| (*p).to_string())
+        .collect();
+    assert_eq!(
+        live, table,
+        "cheap include_str! paths drifted from INCLUDE_STR_MATERIAL"
+    );
+    for (path, stems) in INCLUDE_STR_MATERIAL {
+        assert!(
+            !stems.is_empty(),
+            "INCLUDE_STR_MATERIAL[{path}] must have a non-empty stem list"
+        );
+    }
+}
+
+#[test]
+fn test_include_str_concat_extra_args_is_unresolved() {
+    let src =
+        "include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/docs/installation.md\", \"x\"))";
+    let err = collect_cheap_include_str_paths("src/foo.rs", src).unwrap_err();
+    assert!(
+        err.contains("unresolved concat"),
+        "extra concat args must fail, got {err}"
+    );
+}
+
+fn walk_rs_files(
+    dir: &Path,
+    crate_root: &Path,
+    visit: &mut impl FnMut(&str, &str) -> Result<(), String>,
+    failures: &mut Vec<String>,
+) {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let entries = match fs::read_dir(&current) {
+            Ok(e) => e,
+            Err(e) => {
+                failures.push(format!("{}: read_dir failed: {e}", current.display()));
+                continue;
+            }
+        };
+        let mut kids = Vec::new();
+        for entry in entries {
+            match entry {
+                Ok(e) => kids.push(e),
+                Err(e) => {
+                    failures.push(format!("{}: read_dir entry failed: {e}", current.display()))
+                }
+            }
+        }
+        kids.sort_by_key(|e| e.file_name());
+        for entry in kids {
+            let path = entry.path();
+            let name = entry.file_name();
+            if name == ".git" || name == "target" || name == "node_modules" || name == "vendor" {
+                continue;
+            }
+            let meta = match fs::symlink_metadata(&path) {
+                Ok(m) => m,
+                Err(e) => {
+                    failures.push(format!("{}: symlink_metadata failed: {e}", path.display()));
+                    continue;
+                }
+            };
+            if meta.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let rel = path
+                .strip_prefix(crate_root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let src = match fs::read_to_string(&path) {
+                Ok(s) => s,
+                Err(e) => {
+                    failures.push(format!("{rel}: read_to_string failed: {e}"));
+                    continue;
+                }
+            };
+            if let Err(e) = visit(&rel, &src) {
+                failures.push(e);
+            }
+        }
+    }
+}
+
+fn collect_cheap_include_str_paths(source_rel: &str, src: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for arg in parse_include_str_args(source_rel, src)? {
+        let resolved = match arg {
+            IncludeStrArg::Literal(rel) => resolve_from_source(source_rel, &rel),
+            IncludeStrArg::CargoManifestConcat(rel) => {
+                join_repo(&cargo_manifest_prefix(source_rel), &rel)
+            }
+        };
+        if is_non_code_cheap_path(Path::new(&resolved)) {
+            out.push(resolved);
+        }
+    }
+    Ok(out)
+}
+
+enum IncludeStrArg {
+    Literal(String),
+    CargoManifestConcat(String),
+}
+
+fn parse_include_str_args(source_rel: &str, src: &str) -> Result<Vec<IncludeStrArg>, String> {
+    let mut args = Vec::new();
+    let mut i = 0;
+    while let Some(start) = find_code_include_str(src, i) {
+        let after_bang = start + "include_str!".len();
+        let j = skip_ws(src, after_bang);
+        if j >= src.len() || src.as_bytes()[j] != b'(' {
+            i = after_bang;
+            continue;
+        }
+        let inner_start = j + 1;
+        let inner_end = match find_matching_paren(src, j) {
+            Some(end) => end,
+            None => {
+                return Err(format!("{source_rel}: unbalanced include_str invocation"));
+            }
+        };
+        let inner = src[inner_start..inner_end].trim();
+        args.push(parse_include_str_inner(source_rel, inner)?);
+        i = inner_end + 1;
+    }
+    Ok(args)
+}
+
+/// Byte offset of the next `include_str!` that is not inside a comment or string.
+fn find_code_include_str(src: &str, from: usize) -> Option<usize> {
+    let b = src.as_bytes();
+    let mut i = from;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut in_string = false;
+    let mut escaped = false;
+    while i < b.len() {
+        let c = b[i];
+        if in_line_comment {
+            if c == b'\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_block_comment {
+            if c == b'*' && i + 1 < b.len() && b[i + 1] == b'/' {
+                in_block_comment = false;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if in_string {
+            if escaped {
+                escaped = false;
+                i += 1;
+                continue;
+            }
+            if c == b'\\' {
+                escaped = true;
+                i += 1;
+                continue;
+            }
+            if c == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if c == b'/' && i + 1 < b.len() {
+            if b[i + 1] == b'/' {
+                in_line_comment = true;
+                i += 2;
+                continue;
+            }
+            if b[i + 1] == b'*' {
+                in_block_comment = true;
+                i += 2;
+                continue;
+            }
+        }
+        if c == b'"' {
+            in_string = true;
+            i += 1;
+            continue;
+        }
+        if c == b'i' && src.get(i..).is_some_and(|s| s.starts_with("include_str!")) {
+            let prev_ok = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
+            if prev_ok {
+                return Some(i);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn parse_include_str_inner(source_rel: &str, inner: &str) -> Result<IncludeStrArg, String> {
+    let t = inner.trim();
+    if let Some(lit) = parse_rust_string_literal(t) {
+        return Ok(IncludeStrArg::Literal(lit));
+    }
+    if let Some(rest) = t.strip_prefix("concat!") {
+        let rest = rest.trim_start();
+        if !rest.starts_with('(') {
+            return Err(format!("{source_rel}: concat! missing '('"));
+        }
+        let inner_end = find_matching_paren(rest, 0)
+            .ok_or_else(|| format!("{source_rel}: unbalanced concat!("))?;
+        let concat_inner = rest[1..inner_end].trim();
+        return parse_cargo_manifest_concat(source_rel, concat_inner);
+    }
+    Err(format!("{source_rel}: unresolved include_str! form: {t}"))
+}
+
+fn parse_cargo_manifest_concat(source_rel: &str, inner: &str) -> Result<IncludeStrArg, String> {
+    let compact: String = inner.split_whitespace().collect();
+    const PREFIX: &str = "env!(\"CARGO_MANIFEST_DIR\"),\"";
+    if let Some(rest) = compact.strip_prefix(PREFIX)
+        && let Some(rel) = rest.strip_suffix('"')
+    {
+        if rel.contains('"') {
+            return Err(format!(
+                "{source_rel}: unresolved concat! form (only env!(CARGO_MANIFEST_DIR)+string allowed): {inner}"
+            ));
+        }
+        let stripped = rel.strip_prefix('/').unwrap_or(rel);
+        return Ok(IncludeStrArg::CargoManifestConcat(
+            stripped.replace('\\', "/"),
+        ));
+    }
+    Err(format!(
+        "{source_rel}: unresolved concat! form (only env!(CARGO_MANIFEST_DIR)+string allowed): {inner}"
+    ))
+}
+
+fn parse_rust_string_literal(s: &str) -> Option<String> {
+    let s = s.trim();
+    if s.len() < 2 || !s.starts_with('"') || !s.ends_with('"') {
+        return None;
+    }
+    let inner = &s[1..s.len() - 1];
+    let mut out = String::new();
+    let mut chars = inner.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next()? {
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                '\\' => out.push('\\'),
+                '"' => out.push('"'),
+                other => out.push(other),
+            }
+        } else if c == '"' {
+            return None;
+        } else {
+            out.push(c);
+        }
+    }
+    Some(out)
+}
+
+fn skip_ws(src: &str, mut i: usize) -> usize {
+    let b = src.as_bytes();
+    while i < b.len() && b[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i
+}
+
+fn find_matching_paren(src: &str, open_idx: usize) -> Option<usize> {
+    let b = src.as_bytes();
+    if open_idx >= b.len() || b[open_idx] != b'(' {
+        return None;
+    }
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, &c) in b.iter().enumerate().skip(open_idx) {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if c == b'\\' {
+                escaped = true;
+                continue;
+            }
+            if c == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            b'"' => in_string = true,
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn cargo_manifest_prefix(source_rel: &str) -> String {
+    let parts: Vec<&str> = source_rel.split('/').collect();
+    if parts.len() >= 2 && parts[0] == "crates" {
+        format!("{}/{}", parts[0], parts[1])
+    } else {
+        String::new()
+    }
+}
+
+fn resolve_from_source(source_rel: &str, include_rel: &str) -> String {
+    let parent = match source_rel.rsplit_once('/') {
+        Some((dir, _)) => dir.to_string(),
+        None => String::new(),
+    };
+    join_repo(&parent, include_rel)
+}
+
+fn join_repo(base: &str, rel: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if !base.is_empty() {
+        parts.extend(
+            base.split('/')
+                .filter(|p| !p.is_empty() && *p != ".")
+                .map(str::to_string),
+        );
+    }
+    let rel_norm = rel.replace('\\', "/");
+    for p in rel_norm.split('/') {
+        if p.is_empty() || p == "." {
+            continue;
+        }
+        if p == ".." {
+            parts.pop();
+        } else {
+            parts.push(p.to_string());
+        }
+    }
+    parts.join("/")
 }
 
 fn step(cmd: &str) -> VerificationStep {
