@@ -360,6 +360,100 @@ fn graph_export__entity_bounded_walk__depth_limits_and_traverses_bidirectional()
 }
 
 #[test]
+fn graph_export__entity_walk__last_hop_sibling_edge_emitted() {
+    let tmp = git_repo();
+    seed(
+        tmp.path(),
+        vec![
+            node("r", "r", "file", 0.0, json!({})),
+            node("x", "x", "file", 0.0, json!({})),
+            node("y", "y", "file", 0.0, json!({})),
+        ],
+        vec![
+            edge("r", "x", "calls", 1.0, "p-rx"),
+            edge("r", "y", "calls", 1.0, "p-ry"),
+            edge("x", "y", "sibling", 1.0, "p-xy"),
+        ],
+    );
+
+    let (graphml, graphml_err, graphml_code) = run(
+        tmp.path(),
+        &[
+            "graph", "export", "--format", "graphml", "--entity", "r", "--depth", "1",
+        ],
+    );
+    assert_eq!(graphml_code, 0, "{graphml_err}");
+    summary_has(
+        &graphml_err,
+        &[
+            "truncated: no",
+            "emitted_nodes: 3",
+            "emitted_edges: 3",
+            "store_nodes: 3",
+            "store_edges: 3",
+        ],
+    );
+    assert!(!graphml_err.contains("capped"), "{graphml_err}");
+    let graphml_body = stdout_text(&graphml);
+    assert!(graphml_body.contains("<data key=\"node_id\">r</data>"));
+    assert!(graphml_body.contains("<data key=\"node_id\">x</data>"));
+    assert!(graphml_body.contains("<data key=\"node_id\">y</data>"));
+    assert!(graphml_body.contains("<data key=\"relation\">sibling</data>"));
+    assert!(graphml_body.contains("<data key=\"truncated\">no</data>"));
+
+    let (cypher, cypher_err, cypher_code) = run(
+        tmp.path(),
+        &[
+            "graph", "export", "--format", "cypher", "--entity", "r", "--depth", "1",
+        ],
+    );
+    assert_eq!(cypher_code, 0, "{cypher_err}");
+    summary_has(
+        &cypher_err,
+        &[
+            "truncated: no",
+            "emitted_nodes: 3",
+            "emitted_edges: 3",
+            "store_nodes: 3",
+            "store_edges: 3",
+        ],
+    );
+    assert!(!cypher_err.contains("capped"), "{cypher_err}");
+    let cypher_body = stdout_text(&cypher);
+    assert!(cypher_body.contains("id: 'r'"));
+    assert!(cypher_body.contains("id: 'x'"));
+    assert!(cypher_body.contains("id: 'y'"));
+    assert!(cypher_body.contains("MERGE (s)-[r:sibling]->(t)"));
+    assert!(cypher_body.contains("r.relation = 'sibling'"));
+
+    let (prefix, prefix_err, prefix_code) =
+        run(tmp.path(), &["graph", "export", "--format", "graphml"]);
+    assert_eq!(prefix_code, 0, "{prefix_err}");
+    summary_has(
+        &prefix_err,
+        &["truncated: no", "emitted_nodes: 3", "emitted_edges: 3"],
+    );
+    assert!(stdout_text(&prefix).contains("<data key=\"relation\">sibling</data>"));
+}
+
+#[test]
+fn graph_export__depth_without_entity__no_storage_still_errors() {
+    let tmp = git_repo();
+    let (stdout, stderr, code) = run(
+        tmp.path(),
+        &["graph", "export", "--format", "graphml", "--depth", "1"],
+    );
+    assert_ne!(code, 0);
+    assert!(stderr.contains("--depth requires --entity"), "{stderr}");
+    assert!(!stderr.contains("Storage not initialized"), "{stderr}");
+    assert!(
+        !tmp.path().join(".ledgerful").exists(),
+        "depth-without-entity must not create .ledgerful"
+    );
+    assert!(!stdout_text(&stdout).contains("<graphml"));
+}
+
+#[test]
 fn graph_export__depth_without_entity__returns_expected_error() {
     let tmp = git_repo();
     let storage = init_storage(tmp.path());

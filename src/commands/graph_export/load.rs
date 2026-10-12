@@ -172,6 +172,7 @@ where
         });
     }
     let mut frontier = vec![root.to_string()];
+    let mut last_admitted: Vec<String> = Vec::new();
     let mut edge_map: BTreeMap<(String, String, String), IncidentEdge> = BTreeMap::new();
     let mut truncated = false;
     for _hop in 0..depth {
@@ -193,10 +194,22 @@ where
             kept.push(id.clone());
         }
         truncated = hop.truncated;
+        last_admitted = hop.admitted.clone();
         if truncated {
             break;
         }
         frontier = hop.admitted;
+    }
+    if !last_admitted.is_empty() {
+        let extra = incident_of(&last_admitted)?;
+        for edge in extra {
+            let key = (
+                edge.source.clone(),
+                edge.target.clone(),
+                edge.relation.clone(),
+            );
+            edge_map.entry(key).or_insert(edge);
+        }
     }
     let edges = edge_map
         .into_values()
@@ -576,5 +589,65 @@ mod tests {
         assert!(capped.truncated);
         assert_eq!(capped.edges.len(), 1);
         assert_eq!(capped.edges[0].relation, "calls");
+    }
+
+    #[test]
+    fn select_walk__last_hop_sibling_edge__emitted() {
+        let incident = [
+            edge("r", "x", "calls"),
+            edge("r", "y", "calls"),
+            edge("x", "y", "sibling"),
+        ];
+        let mut calls = 0u32;
+        let mut filter = |frontier: &[String]| {
+            calls += 1;
+            Ok(incident
+                .iter()
+                .filter(|item| {
+                    frontier
+                        .iter()
+                        .any(|id| id == &item.source || id == &item.target)
+                })
+                .cloned()
+                .collect())
+        };
+        let walk = select_walk("r", 1, 10, &mut filter).unwrap();
+        assert_eq!(walk.ids, vec!["r", "x", "y"]);
+        assert!(!walk.truncated);
+        assert_eq!(calls, 2);
+        assert!(walk.edges.iter().any(|item| {
+            item.source == "x" && item.target == "y" && item.relation == "sibling"
+        }));
+    }
+
+    #[test]
+    fn select_walk__truncated_last_hop_sibling_edge__emitted() {
+        let incident = [
+            edge("r", "x", "calls"),
+            edge("r", "y", "calls"),
+            edge("r", "z", "calls"),
+            edge("x", "y", "sibling"),
+        ];
+        let mut calls = 0u32;
+        let mut filter = |frontier: &[String]| {
+            calls += 1;
+            Ok(incident
+                .iter()
+                .filter(|item| {
+                    frontier
+                        .iter()
+                        .any(|id| id == &item.source || id == &item.target)
+                })
+                .cloned()
+                .collect())
+        };
+        let walk = select_walk("r", 1, 3, &mut filter).unwrap();
+        assert_eq!(walk.ids, vec!["r", "x", "y"]);
+        assert!(walk.truncated);
+        assert!(!walk.ids.iter().any(|id| id == "z"));
+        assert_eq!(calls, 2);
+        assert!(walk.edges.iter().any(|item| {
+            item.source == "x" && item.target == "y" && item.relation == "sibling"
+        }));
     }
 }

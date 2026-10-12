@@ -1267,7 +1267,7 @@ impl Commands {
                     if args.depth.is_some() {
                         f.push("depth");
                     }
-                    if args.limit != 1000 {
+                    if args.limit != crate::commands::graph_export::DEFAULT_LIMIT {
                         f.push("limit");
                     }
                 }
