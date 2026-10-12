@@ -60,6 +60,8 @@ fn execute_run(args: &BenchCliArgs, fixture: &Path) -> Result<()> {
         ));
     }
 
+    // Legitimate: re-exec this sha-gated binary as the fixture child.
+    // nosemgrep: rust.lang.security.current-exe.current-exe
     let exe = std::env::current_exe().into_diagnostic()?;
     let fixture_id = fixture_id_for(&fixture_canon)?;
     let mut samples_ms: Vec<i64> = Vec::with_capacity(args.runs as usize);
