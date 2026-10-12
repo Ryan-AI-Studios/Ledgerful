@@ -25,7 +25,13 @@ macOS or Linux:
 curl -fsSL https://raw.githubusercontent.com/Ryan-AI-Studios/Ledgerful/main/install/install.sh | sh
 ```
 
-The installer tries to download a prebuilt GitHub release binary first. If no release asset exists for the platform, it falls back to `cargo install --git`.
+The installer tries to download a prebuilt GitHub release binary first. If no release asset exists for the platform, it falls back to a source build. That source build does not embed the dashboard:
+
+```bash
+cargo install --git https://github.com/Ryan-AI-Studios/Ledgerful --branch main --locked --bin ledgerful
+```
+
+GitHub release binaries are built with `--all-features`, which includes `embed-spa`. A checkout that already ran `npm run build` in `ledgerful-frontend` can embed the dashboard with `cargo install --path . --locked --features embed-spa`.
 
 ## Package managers
 
@@ -37,7 +43,7 @@ Ledgerful ships `[package.metadata.binstall]` in `Cargo.toml` mapping to the sam
 cargo binstall --git https://github.com/Ryan-AI-Studios/Ledgerful
 ```
 
-Requires [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall) on the machine. If no matching prebuilt asset exists, binstall can fall back to compiling from source (quick-install mirrors are disabled in metadata).
+Requires [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall) on the machine. If no matching prebuilt asset exists, binstall can fall back to compiling from source (quick-install mirrors are disabled in metadata). That compile uses default features and does not embed the dashboard.
 
 ### Homebrew
 

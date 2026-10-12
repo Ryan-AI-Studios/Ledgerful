@@ -129,3 +129,90 @@ fn readme_has_daily_5_front_door() {
         missing.join("\n  ")
     );
 }
+
+const SOURCE_INSTALL_COMMAND: &str = "cargo install --git https://github.com/Ryan-AI-Studios/Ledgerful --branch main --locked --bin ledgerful";
+const CARGO_PATH_SENTENCE: &str = "Source build does not embed the dashboard. ledgerful web needs --spa-dir, or use a GitHub release asset.";
+
+#[test]
+fn installation_md_locks_source_install_and_embed_spa() {
+    let source = include_str!("../../docs/installation.md");
+    assert!(
+        source.contains(SOURCE_INSTALL_COMMAND),
+        "docs/installation.md must contain the locked git install command"
+    );
+    assert!(
+        source.contains("does not embed the dashboard"),
+        "docs/installation.md must say the source build does not embed the dashboard"
+    );
+    assert!(
+        source.contains("--all-features") && source.contains("embed-spa"),
+        "docs/installation.md must say release binaries use --all-features, which includes embed-spa"
+    );
+    assert!(
+        source.contains("cargo install --path . --locked --features embed-spa"),
+        "docs/installation.md must lock the checkout embed command"
+    );
+    let floor_start = source
+        .find("<!-- lf-floor:I-57 -->")
+        .expect("winget floor open marker");
+    let floor_end = source
+        .find("<!-- /lf-floor:I-57 -->")
+        .expect("winget floor close marker");
+    assert!(floor_end > floor_start);
+}
+
+#[test]
+fn readme_points_default_path_install_at_installation_md() {
+    let source = include_str!("../../README.md");
+    assert!(source.contains("does not embed the dashboard"));
+    assert!(source.contains("docs/installation.md"));
+}
+
+#[test]
+fn installers_warn_on_cargo_path_and_do_not_pass_embed_spa() {
+    for (path, source) in [
+        (
+            "install/install.sh",
+            include_str!("../../install/install.sh"),
+        ),
+        (
+            "install/install.ps1",
+            include_str!("../../install/install.ps1"),
+        ),
+    ] {
+        assert!(
+            source.contains(CARGO_PATH_SENTENCE),
+            "{path} must print the locked cargo-path sentence"
+        );
+        assert!(
+            !source.contains("embed-spa"),
+            "{path} must not pass embed-spa"
+        );
+    }
+}
+
+#[test]
+fn release_yml_keeps_all_features_and_names_embed_spa() {
+    let source = include_str!("../../.github/workflows/release.yml");
+    assert!(source.contains("--all-features"));
+    assert!(source.contains("embed-spa"));
+}
+
+#[test]
+fn build_rs_keeps_git_sha_and_names_embed_spa_panic_literals() {
+    let source = include_str!("../../build.rs");
+    assert!(source.contains("LEDGERFUL_GIT_SHA"));
+    assert!(source.contains("LEDGERFUL_VERSION_LONG"));
+    for literal in [
+        "embed-spa",
+        "ledgerful-frontend",
+        "index.html",
+        "--spa-dir",
+        SOURCE_INSTALL_COMMAND,
+    ] {
+        assert!(
+            source.contains(literal),
+            "build.rs is missing panic literal {literal}"
+        );
+    }
+}
