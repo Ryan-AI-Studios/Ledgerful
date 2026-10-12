@@ -4,6 +4,7 @@
 //! repo. Do not `run_cli(fixture, …)` as the parent — that fails the sha gate.
 
 use crate::common::{git_add_and_commit, setup_git_repo};
+use rstest::rstest;
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
@@ -222,5 +223,98 @@ fn bench_refuses_engine_as_fixture() {
     assert!(
         !stdout.contains("workloadBench"),
         "must not emit JSON when fixture is engine: {stdout}"
+    );
+}
+
+fn write_workload_bench(path: &Path, os: &str, triple: &str, omit: Option<&str>) {
+    let mut keys = vec![
+        ("schemaVersion", "1"),
+        ("kind", "workloadBench"),
+        ("workload", "index-cold"),
+        ("buildSha", "abc"),
+        ("p50Ms", "10"),
+        ("p95Ms", "20"),
+        ("fixtureId", "1:abc"),
+        ("os", os),
+        ("targetTriple", triple),
+    ];
+    if let Some(drop) = omit {
+        keys.retain(|(name, _)| *name != drop);
+    }
+    let body = keys
+        .into_iter()
+        .map(|(name, value)| {
+            if name == "schemaVersion" || name == "p50Ms" || name == "p95Ms" {
+                format!("\"{name}\":{value}")
+            } else {
+                format!("\"{name}\":\"{value}\"")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    fs::write(path, format!("{{{body}}}\n")).expect("write bench json");
+}
+
+#[test]
+fn bench_compare_refuses_os_or_target_triple_mismatch() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let a = tmp.path().join("a.json");
+    let b_os = tmp.path().join("b-os.json");
+    let b_triple = tmp.path().join("b-triple.json");
+    write_workload_bench(&a, "windows", "x86_64-pc-windows-msvc", None);
+    write_workload_bench(&b_os, "linux", "x86_64-pc-windows-msvc", None);
+    write_workload_bench(&b_triple, "windows", "aarch64-unknown-linux-gnu", None);
+    let a_s = a.to_string_lossy().into_owned();
+    let b_os_s = b_os.to_string_lossy().into_owned();
+    let b_triple_s = b_triple.to_string_lossy().into_owned();
+
+    let (stdout, stderr, code) = run_bench_parent(&["bench", "--compare", &a_s, &b_os_s, "--json"]);
+    assert_eq!(code, 1, "os mismatch must exit 1: stderr={stderr}");
+    assert!(
+        stdout.trim().is_empty(),
+        "os mismatch must write no JSON on stdout: {stdout}"
+    );
+    assert!(
+        stderr.contains("refused (os)"),
+        "stderr must name the os refusal: {stderr}"
+    );
+
+    let (stdout, stderr, code) =
+        run_bench_parent(&["bench", "--compare", &a_s, &b_triple_s, "--json"]);
+    assert_eq!(
+        code, 1,
+        "targetTriple mismatch must exit 1: stderr={stderr}"
+    );
+    assert!(
+        stdout.trim().is_empty(),
+        "targetTriple mismatch must write no JSON on stdout: {stdout}"
+    );
+    assert!(
+        stderr.contains("refused (targetTriple)"),
+        "stderr must name the targetTriple refusal: {stderr}"
+    );
+}
+
+#[rstest]
+#[case("os")]
+#[case("targetTriple")]
+fn bench_compare_refuses_missing_required_field(#[case] omit: &str) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let full = tmp.path().join("full.json");
+    let missing = tmp.path().join("missing.json");
+    write_workload_bench(&full, "windows", "x86_64-pc-windows-msvc", None);
+    write_workload_bench(&missing, "windows", "x86_64-pc-windows-msvc", Some(omit));
+    let full_s = full.to_string_lossy().into_owned();
+    let missing_s = missing.to_string_lossy().into_owned();
+    let (stdout, stderr, code) =
+        run_bench_parent(&["bench", "--compare", &full_s, &missing_s, "--json"]);
+    assert_eq!(code, 1, "missing {omit} must exit 1: stderr={stderr}");
+    assert!(
+        stdout.trim().is_empty(),
+        "missing {omit} must write no JSON on stdout: {stdout}"
+    );
+    assert!(
+        stderr.contains("failed to parse"),
+        "stderr must name the parse failure for {omit}: {stderr}"
     );
 }

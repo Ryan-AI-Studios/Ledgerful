@@ -133,6 +133,11 @@ impl Layout {
         // that migrate outside that seam must invoke
         // `crate::git::ignore::add_to_gitignore` themselves.
         let _renamed = self.migrate_legacy_state_dir()?;
+        self.ensure_state_tree()
+    }
+
+    /// Create the empty state tree. Does not rename a legacy sibling.
+    pub(crate) fn ensure_state_tree(&self) -> Result<()> {
         self.ensure_dir(&self.state_dir)?;
         self.ensure_dir(&self.logs_dir())?;
         self.ensure_dir(&self.tmp_dir())?;

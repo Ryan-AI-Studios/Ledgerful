@@ -227,10 +227,10 @@ fn prepare_cold_fixture(fixture_canon: &Path, engine_canon: &Path) -> Result<()>
         fs::remove_dir_all(&state).into_diagnostic()?;
     }
     // Empty dirs only — sqlite cannot create `ledger.db` without `state/`.
-    // This is still cold: no index rows survive the wipe.
+    // Do not migrate: a legacy sibling stays on disk so the next sample is cold.
     let root = Utf8Path::from_path(fixture_canon)
         .ok_or_else(|| miette!("fixture path is not UTF-8: {}", fixture_canon.display()))?;
-    Layout::new(root).ensure_state_dir()?;
+    Layout::new(root).ensure_state_tree()?;
     Ok(())
 }
 
@@ -272,7 +272,7 @@ fn collect_relative_paths(root: &Path, dir: &Path, out: &mut Vec<String>) -> Res
     entries.sort_by_key(|e| e.file_name());
     for entry in entries {
         let name = entry.file_name();
-        if name == ".git" || name == ".ledgerful" {
+        if name == ".git" || name == ".ledgerful" || name == "target" || name == "node_modules" {
             continue;
         }
         let path = entry.path();
@@ -361,6 +361,12 @@ pub(crate) fn compare_mismatch_reason(a: &StoredBench, b: &StoredBench) -> Optio
     if a.fixture_id != b.fixture_id {
         return Some("fixtureId");
     }
+    if a.os != b.os {
+        return Some("os");
+    }
+    if a.target_triple != b.target_triple {
+        return Some("targetTriple");
+    }
     None
 }
 
@@ -407,6 +413,8 @@ pub(crate) struct StoredBench {
     p50_ms: i64,
     p95_ms: i64,
     fixture_id: String,
+    os: String,
+    target_triple: String,
 }
 
 #[cfg(test)]
@@ -447,6 +455,8 @@ mod tests {
             p50_ms: 10,
             p95_ms: 20,
             fixture_id: "1:abc".into(),
+            os: "windows".into(),
+            target_triple: "x86_64-pc-windows-msvc".into(),
         };
         let mut b = a.clone();
         b.build_sha = "bbb".into();
@@ -466,6 +476,14 @@ mod tests {
         b.kind = KIND_WORKLOAD_BENCH.to_string();
         b.schema_version = 2;
         assert_eq!(compare_mismatch_reason(&a, &b), Some("schemaVersion"));
+        b.schema_version = a.schema_version;
+        b.os = "linux".into();
+        assert_eq!(compare_mismatch_reason(&a, &b), Some("os"));
+        b.os = a.os.clone();
+        b.target_triple = "aarch64-unknown-linux-gnu".into();
+        assert_eq!(compare_mismatch_reason(&a, &b), Some("targetTriple"));
+        b.target_triple = a.target_triple.clone();
+        assert_eq!(compare_mismatch_reason(&a, &b), None);
     }
 
     #[test]
@@ -496,6 +514,71 @@ mod tests {
             err.is_err(),
             "scanning a file as a directory must fail, got {err:?}"
         );
+    }
+
+    #[test]
+    fn prepare_cold_fixture_keeps_legacy_marker_and_empty_tree() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let fixture = tmp.path().join("fixture");
+        let engine = tmp.path().join("engine");
+        fs::create_dir_all(fixture.join(".git")).expect("git dir");
+        fs::create_dir_all(&engine).expect("engine dir");
+        fs::create_dir_all(fixture.join(".ledgerful")).expect("old state");
+        fs::write(fixture.join(".ledgerful").join("warm.txt"), "rows").expect("warm file");
+        let legacy = fixture.join(crate::state::layout::LEGACY_STATE_DIR);
+        fs::create_dir_all(&legacy).expect("legacy dir");
+        fs::write(legacy.join("marker.txt"), "keep").expect("marker");
+
+        prepare_cold_fixture(&fixture, &engine).expect("prepare");
+
+        assert!(
+            legacy.join("marker.txt").is_file(),
+            "legacy marker must stay in the sibling directory"
+        );
+        assert!(
+            !fixture.join(".ledgerful").join("marker.txt").exists(),
+            "legacy marker must not be renamed into .ledgerful"
+        );
+        assert!(
+            !fixture.join(".ledgerful").join("warm.txt").exists(),
+            "the wiped .ledgerful file must be gone"
+        );
+        for child in ["logs", "tmp", "reports", "state", "search_index", "docs"] {
+            assert!(
+                fixture.join(".ledgerful").join(child).is_dir(),
+                ".ledgerful/{child} must exist after cold prep"
+            );
+        }
+        let root = Utf8Path::from_path(&fixture).expect("fixture utf-8");
+        Layout::new(root)
+            .ensure_state_dir()
+            .expect("ensure_state_dir");
+        assert!(
+            legacy.join("marker.txt").is_file(),
+            "a later ensure_state_dir must not rename the legacy directory"
+        );
+        assert!(!fixture.join(".ledgerful").join("marker.txt").exists());
+    }
+
+    #[test]
+    fn collect_relative_paths_skips_build_trees_and_state_dirs() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        fs::create_dir_all(root.join("src")).expect("src");
+        fs::write(root.join("src").join("lib.rs"), "fn x() {}\n").expect("lib");
+        fs::create_dir_all(root.join(".git")).expect("git");
+        fs::write(root.join(".git").join("HEAD"), "ref: refs/heads/main\n").expect("head");
+        fs::create_dir_all(root.join(".ledgerful")).expect("state");
+        fs::write(root.join(".ledgerful").join("state.db"), "db").expect("db");
+        fs::create_dir_all(root.join("target").join("debug")).expect("target");
+        fs::write(root.join("target").join("debug").join("foo"), "bin").expect("foo");
+        fs::create_dir_all(root.join("pkg").join("node_modules")).expect("nm");
+        fs::write(root.join("pkg").join("node_modules").join("a.js"), "js").expect("js");
+
+        let mut paths = Vec::new();
+        collect_relative_paths(root, root, &mut paths).expect("collect");
+        paths.sort();
+        assert_eq!(paths, vec!["src/lib.rs".to_string()]);
     }
 
     #[test]
