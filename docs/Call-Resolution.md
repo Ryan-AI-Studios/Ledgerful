@@ -318,6 +318,12 @@ unique local function nor a same-file Method named `loads` can absorb
 `json.loads`. The same rule applies to Rust `use std::fs` + `fs::write` even
 when a local `mod fs` exists elsewhere in the crate.
 
+Java resolves only unique same-file bare/`this` method names and unique
+single-constructor `new Type` (callee QN ending in `<init>`); receiver calls,
+overloads, extra/implicit constructors, and `this`/`super` chaining stay
+`UNRESOLVED` via dotted `callee_name` encodings (`obj.save`, `{name}.overload`,
+`new.{type}`, `ctor.this` / `ctor.super`).
+
 ## Downstream impact
 
 `AMBIGUOUS` and `UNRESOLVED` edges write `callee_symbol_id = NULL`. Centrality,

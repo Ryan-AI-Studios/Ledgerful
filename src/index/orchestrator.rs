@@ -14,7 +14,7 @@ pub const BINARY_EXTENSIONS: &[&str] = &[
 ];
 
 pub const SUPPORTED_EXTENSIONS: &[&str] = &[
-    "rs", "ts", "tsx", "js", "jsx", "py", "go", //
+    "rs", "ts", "tsx", "js", "jsx", "py", "go", "java", //
     "c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "h++",
 ];
 

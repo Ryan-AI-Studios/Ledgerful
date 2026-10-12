@@ -123,14 +123,19 @@ Compiler-grade search and conceptual discovery.
     probe, not PATH alone). Empty probe → `scip.status = unavailable` (not failed). See
     `docs/Call-Resolution.md`.
 *   **Native language matrix**: tree-sitter structural indexing for **Rust**, **TypeScript/JavaScript**,
-    **Python**, **Go**, and **C/C++** (single `Language::Cpp` via `tree-sitter-cpp` for `.c`/`.h`/
-    `.cpp`/`.cc`/`.cxx`/`.hpp`/`.hh`/`.hxx`/`.h++`). C/C++ floor: symbols (declarator-aware names),
-    `#include` with stripped delimiters, same-file call edges (callee unwrap for templates /
-    members; unique same-file name → resolved, overloads stay unresolved), complexity/hotspots.
-    **Not** stack-graph / clangd fidelity; scip-clang is manual `--scip` only (not auto-generate).
-    **Auto-on (no separate CLI flag):** registering those D2 extensions on `Language::from_extension`
-    also admits C/C++ into daemon complexity diagnostics (`daemon/handlers.rs`) and the federated
-    scanner language gate (`federated/scanner.rs`) — the same extension map, not an opt-in toggle.
+    **Python**, **Go**, **C/C++** (single `Language::Cpp` via `tree-sitter-cpp` for `.c`/`.h`/
+    `.cpp`/`.cc`/`.cxx`/`.hpp`/`.hh`/`.hxx`/`.h++`), and **Java** (`.java` only via
+    `tree-sitter-java`). C/C++ floor: symbols (declarator-aware names), `#include` with stripped
+    delimiters, same-file call edges (callee unwrap for templates / members; unique same-file name
+    → resolved, overloads stay unresolved), complexity/hotspots. **Not** stack-graph / clangd
+    fidelity; scip-clang is manual `--scip` only (not auto-generate). Java floor: types / methods /
+    constructors named `<init>` / fields / enum constants, imports (including `static` and `.*`),
+    same-file calls, and complexity. Java does **not** extract routes, models, or observability
+    patterns, does not SCIP (`scip-java` is not wired), and does not resolve cross-file or
+    cross-language calls. **Auto-on (no separate CLI flag):** registering those extensions on
+    `Language::from_extension` also admits C/C++ and Java into daemon complexity diagnostics
+    (`daemon/handlers.rs`) and the federated scanner language gate (`federated/scanner.rs`) — the
+    same extension map, not an opt-in toggle.
 *   **Semantic Discovery**: AST-based chunking and local vector embeddings for conceptual/natural-language code search.
 
 ## 4. Predictable Verification

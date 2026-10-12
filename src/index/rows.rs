@@ -263,3 +263,78 @@ pub fn delete_file_symbols(storage: &mut StorageManager, file_path: &str) -> Res
     .into_diagnostic()?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::storage::StorageManager;
+
+    fn sample_method(qn: &str, name: &str, line: i32) -> ProjectSymbol {
+        ProjectSymbol {
+            id: None,
+            file_id: 0,
+            qualified_name: qn.to_string(),
+            symbol_name: name.to_string(),
+            symbol_kind: "Method".to_string(),
+            visibility: Some("public".to_string()),
+            entrypoint_kind: "INTERNAL".to_string(),
+            is_public: true,
+            cognitive_complexity: None,
+            cyclomatic_complexity: None,
+            line_start: Some(line),
+            line_end: Some(line),
+            byte_start: Some(line * 10),
+            byte_end: Some(line * 10 + 5),
+            signature_hash: None,
+            metadata: None,
+            confidence: 1.0,
+            evidence: None,
+            last_indexed_at: "now".to_string(),
+        }
+    }
+
+    #[test]
+    fn insert_symbol_row_collapses_overload_to_later_span() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db = tmp.path().join("ledger.db");
+        let storage = StorageManager::init(&db).expect("init");
+        let conn = storage.get_connection();
+        insert_file_row(
+            conn,
+            &ProjectFile {
+                id: None,
+                file_path: "Store.java".to_string(),
+                language: Some("Java".to_string()),
+                content_hash: None,
+                git_blob_oid: None,
+                file_size: None,
+                mtime_ns: None,
+                parser_version: "1".to_string(),
+                parse_status: "OK".to_string(),
+                last_indexed_at: "now".to_string(),
+            },
+        )
+        .expect("file row");
+        let file_id = conn.last_insert_rowid();
+        let first = sample_method("com.example.Store.save", "save", 3);
+        let second = sample_method("com.example.Store.save", "save", 4);
+        insert_symbol_row(conn, &first, file_id).expect("first save");
+        insert_symbol_row(conn, &second, file_id).expect("second save");
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM project_symbols WHERE qualified_name = ?1 AND symbol_kind = ?2",
+                rusqlite::params!["com.example.Store.save", "Method"],
+                |row| row.get(0),
+            )
+            .expect("count");
+        assert_eq!(count, 1);
+        let line: i32 = conn
+            .query_row(
+                "SELECT line_start FROM project_symbols WHERE qualified_name = ?1 AND symbol_kind = ?2",
+                rusqlite::params!["com.example.Store.save", "Method"],
+                |row| row.get(0),
+            )
+            .expect("line");
+        assert_eq!(line, 4);
+    }
+}

@@ -27,6 +27,7 @@ pub fn extract_import_export(path: &Path, content: &str) -> Result<Option<Import
         "ts" | "tsx" | "js" | "jsx" => extract_typescript_import_export(content)?,
         "py" => extract_python_import_export(content)?,
         "go" => extract_go_import_export(content)?,
+        "java" => extract_java_import_export(content)?,
         "c" | "h" | "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" | "h++" => {
             extract_cpp_import_export(content)?
         }
@@ -220,6 +221,60 @@ fn extract_cpp_import_export(content: &str) -> Result<ImportExport> {
     Ok(ImportExport {
         imported_from,
         exported_symbols: Vec::new(),
+    })
+}
+
+/// Java imports walk the inlined `_name` child (`identifier` / `scoped_identifier`),
+/// not a `name:` field. A following `asterisk` is recorded as `{name}.*`.
+fn extract_java_import_export(content: &str) -> Result<ImportExport> {
+    use crate::index::languages::java::common::{dotted_name, field_text, has_literal_public};
+
+    let mut parser = Parser::new();
+    let language = tree_sitter_java::LANGUAGE;
+    parser.set_language(&language.into()).into_diagnostic()?;
+    let tree = parser
+        .parse(content, None)
+        .ok_or_else(|| miette::miette!("Failed to parse Java content"))?;
+
+    let root = tree.root_node();
+    let mut imported_from = Vec::new();
+    let mut exported_symbols = Vec::new();
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        match child.kind() {
+            "import_declaration" => {
+                let name = dotted_name(child, content);
+                if name.is_empty() {
+                    continue;
+                }
+                let mut inner = child.walk();
+                let star = child.children(&mut inner).any(|n| n.kind() == "asterisk");
+                if star {
+                    imported_from.push(format!("{name}.*"));
+                } else {
+                    imported_from.push(name);
+                }
+            }
+            "class_declaration"
+            | "record_declaration"
+            | "interface_declaration"
+            | "enum_declaration"
+            | "annotation_type_declaration" => {
+                if !has_literal_public(child) {
+                    continue;
+                }
+                let name = field_text(child, "name", content);
+                if !name.is_empty() {
+                    exported_symbols.push(name);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(ImportExport {
+        imported_from,
+        exported_symbols,
     })
 }
 
@@ -886,6 +941,50 @@ var Debug = true
         assert!(result.exported_symbols.contains(&"User".to_string()));
         assert!(result.exported_symbols.contains(&"Max".to_string()));
         assert!(result.exported_symbols.contains(&"Debug".to_string()));
+    }
+
+    #[test]
+    fn test_extract_java_import_export_name_child_and_star() {
+        let content = r#"
+package com.example;
+import java.util.List;
+import java.util.*;
+import static java.lang.Math.max;
+import static java.lang.Math.*;
+public class User {}
+class Hidden {}
+public interface Worker {}
+"#;
+        let result = extract_import_export(Path::new("src/User.java"), content)
+            .unwrap()
+            .unwrap();
+        assert!(
+            result.imported_from.contains(&"java.util.List".to_string()),
+            "got {:?}",
+            result.imported_from
+        );
+        assert!(
+            result.imported_from.contains(&"java.util.*".to_string()),
+            "star import; got {:?}",
+            result.imported_from
+        );
+        assert!(
+            result
+                .imported_from
+                .contains(&"java.lang.Math.max".to_string()),
+            "static import uses inlined _name; got {:?}",
+            result.imported_from
+        );
+        assert!(
+            result
+                .imported_from
+                .contains(&"java.lang.Math.*".to_string()),
+            "static star import; got {:?}",
+            result.imported_from
+        );
+        assert!(result.exported_symbols.contains(&"User".to_string()));
+        assert!(result.exported_symbols.contains(&"Worker".to_string()));
+        assert!(!result.exported_symbols.contains(&"Hidden".to_string()));
     }
 
     #[test]
