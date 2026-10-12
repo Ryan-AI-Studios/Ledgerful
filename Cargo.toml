@@ -159,7 +159,10 @@ default = ["viz-server", "mcp", "web", "export", "self-timing", "sync"]
 export = ["dep:zip"]
 daemon = ["dep:tower-lsp-server", "dep:tokio"]
 viz-server = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util", "dep:webbrowser"]
-web = ["dep:axum", "dep:tower", "dep:tower-http", "dep:rust-embed", "dep:mime_guess", "dep:webbrowser", "dep:serde_urlencoded", "dep:zip", "dep:tokio", "dep:utoipa", "dep:futures-util", "export"]
+web = ["dep:axum", "dep:tower", "dep:tower-http", "dep:webbrowser", "dep:serde_urlencoded", "dep:zip", "dep:tokio", "dep:utoipa", "dep:futures-util", "export"]
+# Off by default so a source install does not need ../ledgerful-frontend/out.
+# Release CI turns it on with --all-features.
+embed-spa = ["web", "dep:rust-embed", "dep:mime_guess"]
 openapi = ["web"]
 sync = ["dep:chacha20poly1305", "dep:argon2", "dep:zeroize", "dep:rpassword", "dep:zip", "dep:tempfile"]
 mcp = []

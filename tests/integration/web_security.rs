@@ -540,13 +540,13 @@ async fn spa_dir_missing_next_asset_returns_404_not_index() {
 
 #[tokio::test]
 async fn embedded_fallback_response_has_security_headers_and_no_hsts() {
-    // Debug builds serve a stub for embedded SPA (no --spa-dir). Middleware
-    // still wraps that fallback — prove headers + hash CSP + no HSTS on the
-    // SPA route itself (not only /health).
+    // Builds without the embedded SPA serve a 404 stub when --spa-dir is
+    // absent. Middleware still wraps that fallback — prove headers + hash
+    // CSP + no HSTS on the SPA route itself (not only /health).
     let guard = temp_layout();
     let (url, _token, handle) = spawn_server(guard.layout()).await;
     let resp = client().get(format!("{}/", url)).send().await.unwrap();
-    // Debug: 404 stub; release: 200 SPA. Either way headers must apply.
+    let status = resp.status();
     assert_security_headers(resp.headers());
     let csp = resp
         .headers()
@@ -568,6 +568,19 @@ async fn embedded_fallback_response_has_security_headers_and_no_hsts() {
         script_part.contains("sha256-"),
         "embedded path must ship vendored hashes: {script_part}"
     );
+    #[cfg(not(all(not(debug_assertions), feature = "embed-spa")))]
+    {
+        assert_eq!(status.as_u16(), 404);
+        let body = resp.text().await.unwrap();
+        assert_eq!(
+            body,
+            "No embedded dashboard in this build. Pass --spa-dir pointing at a ledgerful-frontend out/ directory, or install a GitHub release binary."
+        );
+    }
+    #[cfg(all(not(debug_assertions), feature = "embed-spa"))]
+    {
+        assert_eq!(status.as_u16(), 200);
+    }
     handle.abort();
 }
 

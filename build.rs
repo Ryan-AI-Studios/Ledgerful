@@ -24,6 +24,38 @@ fn main() {
         pkg_version
     };
     println!("cargo:rustc-env=LEDGERFUL_VERSION_LONG={version_long}");
+
+    check_embedded_spa();
+}
+
+/// Panic only for a release build with `embed-spa` and no sibling SPA bundle.
+/// Returns inside this helper must not skip the 0137 env prints in `main`.
+fn check_embedded_spa() {
+    if std::env::var("CARGO_FEATURE_EMBED_SPA").is_err() {
+        return;
+    }
+    if std::env::var("CARGO_CFG_DEBUG_ASSERTIONS").is_ok() {
+        return;
+    }
+
+    let manifest_dir = match std::env::var("CARGO_MANIFEST_DIR") {
+        Ok(dir) => dir,
+        Err(err) => {
+            panic!(
+                "embed-spa: CARGO_MANIFEST_DIR is unset ({err}). Expected ledgerful-frontend out/index.html. Pass --spa-dir, or cargo install --git https://github.com/Ryan-AI-Studios/Ledgerful --branch main --locked --bin ledgerful"
+            );
+        }
+    };
+    let index = std::path::Path::new(&manifest_dir).join("../ledgerful-frontend/out/index.html");
+    if index.is_file() {
+        println!("cargo:rerun-if-changed=../ledgerful-frontend/out/index.html");
+        return;
+    }
+
+    panic!(
+        "embed-spa: ledgerful-frontend out/index.html is not a file (checked {}). Pass --spa-dir pointing at a ledgerful-frontend out/ directory, or cargo install --git https://github.com/Ryan-AI-Studios/Ledgerful --branch main --locked --bin ledgerful",
+        index.display()
+    );
 }
 
 /// Prefer 12-hex short SHA via `git rev-parse --short=12 HEAD`.

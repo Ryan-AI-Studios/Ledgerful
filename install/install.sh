@@ -64,6 +64,7 @@ install_from_release() {
 }
 
 install_from_cargo() {
+  echo "Source build does not embed the dashboard. ledgerful web needs --spa-dir, or use a GitHub release asset."
   if ! has_cmd cargo; then
     echo "Rust cargo was not found. Install Rust from https://rustup.rs or publish a Ledgerful release asset, then rerun this installer." >&2
     exit 1

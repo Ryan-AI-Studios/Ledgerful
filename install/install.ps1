@@ -59,6 +59,7 @@ function Install-FromRelease {
 }
 
 function Install-FromCargo {
+    Write-Output "Source build does not embed the dashboard. ledgerful web needs --spa-dir, or use a GitHub release asset."
     if (-not (Test-Command "cargo")) {
         throw "Rust cargo was not found. Install Rust from https://rustup.rs or publish a Ledgerful release asset, then rerun this installer."
     }

@@ -195,6 +195,7 @@ jobs:
           cargo install cargo-audit --locked
       - shell: bash
         run: |
+          # embed-spa is off by default. --all-features is what includes it, after the SPA artifact is downloaded.
           if [ -n "${{ matrix.target }}" ]; then
             cargo auditable build --release --locked --all-features --target ${{ matrix.target }}
           else

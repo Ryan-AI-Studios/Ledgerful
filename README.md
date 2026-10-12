@@ -105,6 +105,8 @@ Manual install from a checkout (compiles from source):
 cargo install --path .
 ```
 
+This default install does not embed the dashboard. See [docs/installation.md](docs/installation.md).
+
 The LSP `daemon` command and `usage` are optional Cargo features (not on default `--help`):
 
 ```powershell
