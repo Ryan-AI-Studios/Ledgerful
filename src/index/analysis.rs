@@ -49,6 +49,7 @@ pub fn analyze_file(relative_path: &Path, base_dir: &Path) -> AnalysisOutcome {
             | "jsx"
             | "py"
             | "go"
+            | "java"
             | "md"
             | "c"
             | "h"
@@ -255,6 +256,74 @@ int caller() { return helper(0); }
         assert!(
             names.contains(&"helper") && names.contains(&"caller"),
             "expected helper/caller; names={names:?}"
+        );
+    }
+
+    #[test]
+    fn test_analyze_file_java_symbols_via_production_path() {
+        use crate::index::orchestrator::SUPPORTED_EXTENSIONS;
+        use crate::index::symbols::SymbolKind;
+
+        assert!(
+            SUPPORTED_EXTENSIONS.contains(&"java"),
+            "walker must admit .java; got {SUPPORTED_EXTENSIONS:?}"
+        );
+
+        let tmp = tempdir().unwrap();
+        let rel = Path::new("User.java");
+        let full = tmp.path().join(rel);
+        std::fs::write(
+            &full,
+            r#"
+package com.example;
+public class User {
+  public User() {
+    if (true) {}
+  }
+  public void create(boolean a, boolean b) {
+    if (a && b) {
+      save();
+    }
+  }
+  private void save() {}
+}
+"#,
+        )
+        .unwrap();
+
+        let outcome = analyze_file(rel, tmp.path());
+        assert_eq!(
+            outcome.analysis_status.symbols,
+            AnalysisStatus::Ok,
+            "java must not be unsupported/failed; warnings={:?}",
+            outcome.analysis_warnings
+        );
+        let symbols = outcome.symbols.expect("symbols present when status is Ok");
+        let class = symbols
+            .iter()
+            .find(|s| s.name == "User" && s.kind == SymbolKind::Class)
+            .expect("User class");
+        assert!(
+            class.cyclomatic_complexity.is_none(),
+            "constructor complexity must not sit on the Class row; class={class:?}"
+        );
+        let init = symbols
+            .iter()
+            .find(|s| s.name == "<init>" && s.kind == SymbolKind::Method)
+            .expect("<init>");
+        assert!(
+            init.cyclomatic_complexity.unwrap_or(0) >= 2,
+            "constructor if scores on <init>; init={init:?}"
+        );
+        let create = symbols
+            .iter()
+            .find(|s| s.name == "create" && s.kind == SymbolKind::Method)
+            .expect("create");
+        assert_eq!(create.cyclomatic_complexity, Some(3));
+        assert_eq!(create.cognitive_complexity, Some(2));
+        assert_eq!(
+            create.qualified_name.as_deref(),
+            Some("com.example.User.create")
         );
     }
 }

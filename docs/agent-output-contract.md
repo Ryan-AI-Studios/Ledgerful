@@ -828,7 +828,7 @@ Identity for consumers (e.g. AI-Brains T233): **`(path, name, kind)`** (+
 |---|---|
 | `--path` | **Prefix** (`file_path == prefix` OR starts with `prefix/`); not endpoints substring. Trailing `/` trimmed; empty-after-trim → error |
 | `--changed` | WT change set ∩ indexed paths; empty change set → empty inventory exit 0; **includes Deleted** and rename **old_path** still in index until re-index; membership **case-insensitive on Windows only** |
-| `--kind` | Single kind; aliases (`fn`→`Function`, `mod`/`module`→`Module`, …); Class populated (C++/TS); Interface populated (TS/Go; an index may have 0 rows). Rust inherent impl methods are Function + `Type.method`; trait methods are Method |
+| `--kind` | Single kind; aliases (`fn`→`Function`, `mod`/`module`→`Module`, …); Class populated (C++/TS/Java); Interface populated (TS/Go/Java; an index may have 0 rows); Enum populated (Java). Rust inherent impl methods are Function + `Type.method`; trait methods are Method |
 | `--pub` | `is_public = 1` |
 | `-l/--limit` | default 200; range `1..=5000` |
 | `--auto-index` | bootstrap missing DB + `try_auto_index`; fatal under `--json` emits no partial machine stdout |

@@ -1,5 +1,6 @@
 pub mod cpp;
 pub mod go;
+pub mod java;
 pub mod python;
 pub mod rust;
 pub mod types;
@@ -29,6 +30,7 @@ pub fn parse_symbols(path: &Path, content: &str) -> Result<Option<Vec<Symbol>>> 
         "ts" | "tsx" | "js" | "jsx" => typescript::extract_symbols(content, Some(path)),
         "py" => python::extract_symbols(content),
         "go" => go::extract_symbols(content),
+        "java" => java::extract_symbols(content),
         ext if is_cpp_ext(ext) => cpp::extract_symbols(content),
         _ => Ok(None),
     }
@@ -40,6 +42,7 @@ pub fn extract_calls(path: &Path, content: &str, symbols: &[Symbol]) -> Result<V
         Some("ts") | Some("tsx") => typescript::extract_calls(path, content, symbols),
         Some("py") => python::extract_calls(path, content, symbols),
         Some("go") => go::extract_calls(path, content, symbols),
+        Some("java") => java::extract_calls(path, content, symbols),
         Some(ext) if is_cpp_ext(ext) => cpp::extract_calls(path, content, symbols),
         _ => Ok(Vec::new()),
     }

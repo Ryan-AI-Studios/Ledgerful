@@ -105,6 +105,7 @@ mod hook_post_commit;
 mod hotspot_ranking;
 mod impact_verify_pipeline;
 mod incremental_graph_consistency;
+mod java_index;
 mod latest_impact_freshness;
 mod ledger_adopt;
 mod ledger_adr;
