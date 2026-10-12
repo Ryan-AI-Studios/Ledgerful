@@ -1,7 +1,8 @@
 use crate::index::content_cache::load_source_content;
 use crate::index::languages;
 use crate::index::resolve::{
-    ResolveCandidate, ResolveInput, build_resolve_maps, resolve_callee, resolve_candidate_from_row,
+    ResolveCandidate, ResolveInput, build_resolve_maps, is_callable_kind, resolve_callee,
+    resolve_candidate_from_row,
 };
 use crate::index::symbols::{Symbol, SymbolKind};
 use crate::state::storage::StorageManager;
@@ -13,6 +14,38 @@ use tracing::{info, warn};
 
 use super::persist::{EdgeRow, clear_native_structural_edges, insert_edge_batch};
 use super::types::{CallGraphStats, ResolutionStatus};
+
+/// One `project_symbols` row used to attach a caller. Query order is preserved
+/// so an undotted name still last-wins.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CallerLookupRow {
+    pub id: i64,
+    pub symbol_name: String,
+    pub qualified_name: String,
+    pub symbol_kind: String,
+}
+
+/// Dotted names match `qualified_name` on a callable kind only.
+/// Undotted names match `symbol_name` with no kind filter. Last row wins.
+pub(crate) fn lookup_caller_id(caller_name: &str, symbols: &[CallerLookupRow]) -> Option<i64> {
+    if caller_name.contains('.') {
+        let mut found = None;
+        for row in symbols {
+            if row.qualified_name == caller_name && is_callable_kind(&row.symbol_kind) {
+                found = Some(row.id);
+            }
+        }
+        found
+    } else {
+        let mut found = None;
+        for row in symbols {
+            if row.symbol_name == caller_name {
+                found = Some(row.id);
+            }
+        }
+        found
+    }
+}
 
 pub struct CallGraphBuilder<'a> {
     storage: &'a StorageManager,
@@ -214,22 +247,28 @@ impl<'a> CallGraphBuilder<'a> {
 
             files_processed += 1;
 
-            // Build a name -> (symbol_id, is_public) lookup for callers in this file
-            let caller_by_name: HashMap<&str, (i64, bool)> = file_symbols
+            let lookup_rows: Vec<CallerLookupRow> = file_symbols
                 .iter()
-                .map(|row| (row.name.as_str(), (row.id, row.is_public)))
+                .map(|row| CallerLookupRow {
+                    id: row.id,
+                    symbol_name: row.name.clone(),
+                    qualified_name: row.qualified_name.clone(),
+                    symbol_kind: row.kind.clone(),
+                })
                 .collect();
 
             // Collect edges with their public-ness for sorting/capping
             let mut file_edges: Vec<EdgeRow> = Vec::new();
 
             for call_edge in &calls {
-                // Find caller symbol in this file
-                let (caller_symbol_id, caller_is_public) =
-                    match caller_by_name.get(call_edge.caller_name.as_str()) {
-                        Some(&(id, pub_flag)) => (id, pub_flag),
-                        None => continue, // skip if caller not found in this file's symbols
-                    };
+                let Some(caller_symbol_id) = lookup_caller_id(&call_edge.caller_name, &lookup_rows)
+                else {
+                    continue;
+                };
+                let caller_is_public = symbol_id_to_public
+                    .get(&caller_symbol_id)
+                    .copied()
+                    .unwrap_or(false);
 
                 let empty_bindings = std::collections::HashMap::new();
                 let caller_bindings = bindings_by_file.get(file_id).unwrap_or(&empty_bindings);
@@ -349,5 +388,59 @@ pub(crate) fn parse_symbol_kind(kind: &str) -> SymbolKind {
         "Constant" => SymbolKind::Constant,
         "Module" => SymbolKind::Module,
         _ => SymbolKind::Function,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(id: i64, name: &str, qualified: &str, kind: &str) -> CallerLookupRow {
+        CallerLookupRow {
+            id,
+            symbol_name: name.to_string(),
+            qualified_name: qualified.to_string(),
+            symbol_kind: kind.to_string(),
+        }
+    }
+
+    #[test]
+    fn lookup_caller_id_dotted_inits_do_not_last_win() {
+        let symbols = vec![
+            row(1, "<init>", "com.example.A.<init>", "Method"),
+            row(2, "<init>", "com.example.B.<init>", "Method"),
+        ];
+        assert_eq!(lookup_caller_id("com.example.A.<init>", &symbols), Some(1));
+        assert_eq!(lookup_caller_id("com.example.B.<init>", &symbols), Some(2));
+        assert_eq!(
+            lookup_caller_id("com.example.Missing.<init>", &symbols),
+            None
+        );
+    }
+
+    #[test]
+    fn lookup_caller_id_dotted_requires_callable_kind() {
+        let class_only = vec![row(7, "Inner", "com.example.User.Inner", "Class")];
+        assert_eq!(
+            lookup_caller_id("com.example.User.Inner", &class_only),
+            None
+        );
+        let both = vec![
+            row(7, "Inner", "com.example.User.Inner", "Class"),
+            row(8, "Inner", "com.example.User.Inner", "Method"),
+        ];
+        assert_eq!(lookup_caller_id("com.example.User.Inner", &both), Some(8));
+    }
+
+    #[test]
+    fn lookup_caller_id_undotted_last_wins_without_kind_filter() {
+        let symbols = vec![
+            row(3, "save", "com.example.A.save", "Class"),
+            row(4, "save", "com.example.B.save", "Method"),
+            row(5, "only", "com.example.Only", "Method"),
+        ];
+        assert_eq!(lookup_caller_id("save", &symbols), Some(4));
+        assert_eq!(lookup_caller_id("only", &symbols), Some(5));
+        assert_eq!(lookup_caller_id("missing", &symbols), None);
     }
 }

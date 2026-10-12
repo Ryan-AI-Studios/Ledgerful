@@ -318,11 +318,19 @@ unique local function nor a same-file Method named `loads` can absorb
 `json.loads`. The same rule applies to Rust `use std::fs` + `fs::write` even
 when a local `mod fs` exists elsewhere in the crate.
 
-Java resolves only unique same-file bare/`this` method names and unique
-single-constructor `new Type` (callee QN ending in `<init>`); receiver calls,
-overloads, extra/implicit constructors, and `this`/`super` chaining stay
-`UNRESOLVED` via dotted `callee_name` encodings (`obj.save`, `{name}.overload`,
-`new.{type}`, `ctor.this` / `ctor.super`).
+Java same-file bare and `this` calls use the file-level `method_declaration`
+count. One definition keeps the bare name and `RESOLVED`. Zero definitions use
+`{name}.external` and `UNRESOLVED`. More than one uses `{name}.overload` and
+`UNRESOLVED`. `{name}.external` records that this file has no
+`method_declaration` of that simple name. It does not prove the target lives
+outside the project: a superclass or same-package method can still exist. A
+scoped `new` binds a single one-constructor type only when the type segments
+are a suffix of that type's qualified name (`new Other.Inner()` can bind
+`….Other.Inner.<init>` and does not bind `….NotOther.Inner`). Java caller names
+are the symbol qualified name (`com.example.User.create`,
+`com.example.A.<init>`). A dotted caller matches `qualified_name` on a callable
+kind only and does not fall through to the simple name. Receiver calls, extra
+constructors, and `ctor.this` / `ctor.super` stay `UNRESOLVED`.
 
 ## Downstream impact
 
