@@ -353,6 +353,88 @@ public interface Worker {
     }
 
     #[test]
+    fn interface_private_method_is_not_public() {
+        let content = r#"
+package com.example;
+public interface Service {
+  private void helper() {}
+  void execute();
+}
+"#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        let helper = symbols
+            .iter()
+            .find(|s| s.name == "helper" && s.kind == SymbolKind::Method)
+            .expect("helper");
+        assert!(
+            !helper.is_public,
+            "Java 9+ private interface methods are not public; helper={helper:?}"
+        );
+        let execute = symbols
+            .iter()
+            .find(|s| s.name == "execute" && s.kind == SymbolKind::Method)
+            .expect("execute");
+        assert!(execute.is_public);
+    }
+
+    #[test]
+    fn anonymous_class_body_members_are_omitted() {
+        let content = r#"
+package com.example;
+public class Host {
+  void start() {
+    Runnable r = new Runnable() {
+      public void run() {}
+    };
+  }
+}
+"#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        assert!(
+            symbols
+                .iter()
+                .all(|s| s.name != "run" && s.name != "Runnable"),
+            "anonymous body members stay out of the inventory; symbols={symbols:?}"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Host" && s.kind == SymbolKind::Class)
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "start" && s.kind == SymbolKind::Method)
+        );
+    }
+
+    #[test]
+    fn annotation_type_elements_are_omitted() {
+        let content = r#"
+package com.example;
+public @interface Marker {
+  String value();
+  int TIMEOUT = 10;
+}
+"#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Marker" && s.kind == SymbolKind::Interface)
+        );
+        assert!(
+            symbols.iter().all(|s| s.name != "value"),
+            "annotation type elements are omitted in v1; symbols={symbols:?}"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "TIMEOUT" && s.kind == SymbolKind::Constant)
+        );
+    }
+
+    #[test]
     fn one_symbol_per_declarator_and_enum_constant_body_skipped() {
         let content = r#"
 package com.example;

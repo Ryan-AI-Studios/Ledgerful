@@ -54,6 +54,14 @@ pub fn dotted_name(node: Node, content: &str) -> String {
 }
 
 pub fn has_literal_public(node: Node) -> bool {
+    has_literal_modifier(node, "public")
+}
+
+pub fn has_literal_private(node: Node) -> bool {
+    has_literal_modifier(node, "private")
+}
+
+fn has_literal_modifier(node: Node, kind: &str) -> bool {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() != "modifiers" {
@@ -61,7 +69,7 @@ pub fn has_literal_public(node: Node) -> bool {
         }
         let mut inner = child.walk();
         for modifier in child.children(&mut inner) {
-            if modifier.kind() == "public" {
+            if modifier.kind() == kind {
                 return true;
             }
         }
@@ -87,6 +95,9 @@ pub fn nearest_enclosing_type_kind(node: Node) -> Option<&'static str> {
 pub fn is_public_declaration(node: Node, kind: &str) -> bool {
     if kind == "enum_constant" {
         return true;
+    }
+    if has_literal_private(node) {
+        return false;
     }
     if has_literal_public(node) {
         return true;

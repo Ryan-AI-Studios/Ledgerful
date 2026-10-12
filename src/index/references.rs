@@ -950,6 +950,7 @@ package com.example;
 import java.util.List;
 import java.util.*;
 import static java.lang.Math.max;
+import static java.lang.Math.*;
 public class User {}
 class Hidden {}
 public interface Worker {}
@@ -972,6 +973,13 @@ public interface Worker {}
                 .imported_from
                 .contains(&"java.lang.Math.max".to_string()),
             "static import uses inlined _name; got {:?}",
+            result.imported_from
+        );
+        assert!(
+            result
+                .imported_from
+                .contains(&"java.lang.Math.*".to_string()),
+            "static star import; got {:?}",
             result.imported_from
         );
         assert!(result.exported_symbols.contains(&"User".to_string()));

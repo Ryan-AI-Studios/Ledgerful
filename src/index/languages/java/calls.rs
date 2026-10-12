@@ -224,17 +224,7 @@ fn creation_type_node(node: Node) -> Option<Node> {
 
 fn creation_has_class_body(node: Node) -> bool {
     let mut cursor = node.walk();
-    if node.children(&mut cursor).any(|c| c.kind() == "class_body") {
-        return true;
-    }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        let mut inner = child.walk();
-        if child.children(&mut inner).any(|c| c.kind() == "class_body") {
-            return true;
-        }
-    }
-    false
+    node.children(&mut cursor).any(|c| c.kind() == "class_body")
 }
 
 fn object_creation_edge(
@@ -457,6 +447,64 @@ enum Color {
                     && e.resolution_status == ResolutionStatus::Unresolved
             }),
             "anonymous new still records unresolved new.Runnable; edges={edges:?}"
+        );
+    }
+
+    #[test]
+    fn nested_anonymous_argument_does_not_demote_outer_new() {
+        let content = r#"
+package com.example;
+class Listener { Listener() {} }
+class Button { Button() {} }
+class Uses {
+  void m() {
+    new Button(new Listener() { });
+  }
+}
+"#;
+        let edges = extract_calls(Path::new("T.java"), content, &[]).unwrap();
+        assert!(
+            edges.iter().any(|e| {
+                e.callee_name == "com.example.Button.<init>"
+                    && e.resolution_status == ResolutionStatus::Resolved
+            }),
+            "unique Button must still resolve when an argument is anonymous; edges={edges:?}"
+        );
+        assert!(
+            edges.iter().any(|e| {
+                e.callee_name == "new.Listener"
+                    && e.resolution_status == ResolutionStatus::Unresolved
+            }),
+            "anonymous Listener stays unresolved; edges={edges:?}"
+        );
+    }
+
+    #[test]
+    fn qualifying_anonymous_outer_does_not_demote_inner_new() {
+        let content = r#"
+package com.example;
+class Outer {
+  class Inner { Inner() {} }
+}
+class Uses {
+  void m() {
+    new Outer() { }.new Inner();
+  }
+}
+"#;
+        let edges = extract_calls(Path::new("T.java"), content, &[]).unwrap();
+        assert!(
+            edges.iter().any(|e| {
+                e.callee_name == "com.example.Outer.Inner.<init>"
+                    && e.resolution_status == ResolutionStatus::Resolved
+            }),
+            "unique Inner must resolve after qualifying anonymous Outer; edges={edges:?}"
+        );
+        assert!(
+            edges.iter().any(|e| {
+                e.callee_name == "new.Outer" && e.resolution_status == ResolutionStatus::Unresolved
+            }),
+            "anonymous Outer stays unresolved; edges={edges:?}"
         );
     }
 

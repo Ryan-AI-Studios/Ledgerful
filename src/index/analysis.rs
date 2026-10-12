@@ -326,4 +326,60 @@ public class User {
             Some("com.example.User.create")
         );
     }
+
+    #[test]
+    fn companion_class_constructors_share_first_init_complexity() {
+        use crate::index::symbols::SymbolKind;
+
+        let tmp = tempdir().unwrap();
+        let rel = Path::new("Widget.java");
+        let full = tmp.path().join(rel);
+        std::fs::write(
+            &full,
+            r#"
+package com.example;
+public class Widget {
+  Widget() {
+    if (true) {}
+  }
+}
+class Dual {
+  Dual() {
+    if (true) {
+      if (true) {}
+    }
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let outcome = analyze_file(rel, tmp.path());
+        let symbols = outcome.symbols.expect("symbols present when status is Ok");
+        let widget_init = symbols
+            .iter()
+            .find(|s| {
+                s.name == "<init>"
+                    && s.kind == SymbolKind::Method
+                    && s.qualified_name.as_deref() == Some("com.example.Widget.<init>")
+            })
+            .expect("Widget.<init>");
+        let dual_init = symbols
+            .iter()
+            .find(|s| {
+                s.name == "<init>"
+                    && s.kind == SymbolKind::Method
+                    && s.qualified_name.as_deref() == Some("com.example.Dual.<init>")
+            })
+            .expect("Dual.<init>");
+        let first = widget_init.cyclomatic_complexity;
+        assert!(
+            first.unwrap_or(0) >= 2,
+            "Widget constructor if must score; widget={widget_init:?}"
+        );
+        assert_eq!(
+            dual_init.cyclomatic_complexity, first,
+            "companion Dual.<init> shares the first <init> score; widget={widget_init:?} dual={dual_init:?}"
+        );
+    }
 }

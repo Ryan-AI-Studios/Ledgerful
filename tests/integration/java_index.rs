@@ -119,11 +119,11 @@ fn java_index_user_and_store_fixture() {
 
     let mut symbols = conn
         .prepare(
-            "SELECT qualified_name, symbol_name, symbol_kind, is_public, line_start \
-             FROM project_symbols ORDER BY qualified_name, symbol_kind, line_start",
+            "SELECT file_id, qualified_name, symbol_name, symbol_kind, is_public, line_start, byte_start \
+             FROM project_symbols ORDER BY id",
         )
         .unwrap();
-    let symbol_rows: Vec<(String, String, String, i32, i32)> = symbols
+    let symbol_rows: Vec<(i64, String, String, String, i32, i32, i32)> = symbols
         .query_map([], |row| {
             Ok((
                 row.get(0)?,
@@ -131,6 +131,8 @@ fn java_index_user_and_store_fixture() {
                 row.get(2)?,
                 row.get(3)?,
                 row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
             ))
         })
         .unwrap()
@@ -138,23 +140,42 @@ fn java_index_user_and_store_fixture() {
         .unwrap();
     drop(symbols);
 
+    let mut by_file: std::collections::BTreeMap<i64, Vec<_>> = std::collections::BTreeMap::new();
+    for row in &symbol_rows {
+        by_file.entry(row.0).or_default().push(row.clone());
+    }
+    for (file_id, rows) in &by_file {
+        let mut expected = rows.clone();
+        expected.sort_by(|a, b| {
+            a.2.cmp(&b.2)
+                .then(a.3.cmp(&b.3))
+                .then(a.1.cmp(&b.1))
+                .then(a.5.cmp(&b.5))
+                .then(a.6.cmp(&b.6))
+        });
+        assert_eq!(
+            rows, &expected,
+            "file_id {file_id} insertion order must match §5.1 sort (name, kind, QN, line, byte); got {rows:?}"
+        );
+    }
+
     assert!(
         symbol_rows
             .iter()
-            .any(|(qn, _, kind, pub_, _)| qn == "com.example.User"
+            .any(|(_, qn, _, kind, pub_, _, _)| qn == "com.example.User"
                 && kind == "Class"
                 && *pub_ != 0)
     );
-    assert!(symbol_rows.iter().any(|(qn, name, kind, pub_, _)| {
+    assert!(symbol_rows.iter().any(|(_, qn, name, kind, pub_, _, _)| {
         qn == "com.example.User.create" && name == "create" && kind == "Method" && *pub_ != 0
     }));
-    assert!(symbol_rows.iter().any(|(qn, name, kind, pub_, _)| {
+    assert!(symbol_rows.iter().any(|(_, qn, name, kind, pub_, _, _)| {
         qn == "com.example.User.save" && name == "save" && kind == "Method" && *pub_ == 0
     }));
 
     let store_saves: Vec<_> = symbol_rows
         .iter()
-        .filter(|(qn, name, kind, _, _)| {
+        .filter(|(_, qn, name, kind, _, _, _)| {
             qn == "com.example.Store.save" && name == "save" && kind == "Method"
         })
         .collect();
@@ -164,7 +185,7 @@ fn java_index_user_and_store_fixture() {
         "overload collapse to one Store.save row; got {symbol_rows:?}"
     );
     assert_eq!(
-        store_saves[0].4, 4,
+        store_saves[0].5, 4,
         "later save(int) span wins the upsert; row={:?}",
         store_saves[0]
     );
