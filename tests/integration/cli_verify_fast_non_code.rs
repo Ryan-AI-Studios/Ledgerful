@@ -62,7 +62,7 @@ fn test_fast_dry_run_dirty_changelog_docs_no_snapshot_is_cheap() {
     init_committed_rust_repo(root);
     fs::write(root.join("CHANGELOG.md"), "## Unreleased\n").unwrap();
     fs::create_dir_all(root.join("docs")).unwrap();
-    fs::write(root.join("docs").join("installation.md"), "install\n").unwrap();
+    fs::write(root.join("docs").join("architecture.md"), "architecture\n").unwrap();
 
     let out = spawn_verify(root, &["verify", "--scope", "fast", "--dry-run"]);
     let stdout = stdout_text(&out);
@@ -78,7 +78,7 @@ fn test_fast_dry_run_dirty_changelog_docs_no_snapshot_is_cheap() {
     );
     assert!(
         !stdout.contains("nextest") && !stdout.to_ascii_lowercase().contains("cargo test"),
-        "must not schedule nextest/cargo test: {stdout:?}"
+        "unreferenced docs/CHANGELOG must not schedule nextest/cargo test: {stdout:?}"
     );
     assert!(
         stdout.contains("cargo fmt") && stdout.contains("clippy"),
@@ -88,6 +88,51 @@ fn test_fast_dry_run_dirty_changelog_docs_no_snapshot_is_cheap() {
         !stdout.contains("no impact packet"),
         "P2: None-packet dirty docs must not refuse: {stdout:?} {stderr:?}"
     );
+}
+
+#[test]
+fn test_fast_dry_run_dirty_include_str_doc_injects_nextest() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    init_committed_rust_repo(root);
+    fs::create_dir_all(root.join("docs")).unwrap();
+    fs::write(root.join("docs").join("installation.md"), "install\n").unwrap();
+
+    let out = spawn_verify(root, &["verify", "--scope", "fast", "--json", "--dry-run"]);
+    let stdout = stdout_text(&out);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "include_str docs cheap dry-run must exit 0; stdout={stdout:?} stderr={stderr:?}"
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("include_str dry-run JSON");
+    assert_eq!(v["schemaVersion"], 1);
+    assert_eq!(v["scopeExecuted"], "fast");
+    assert!(v.get("fallbackReason").is_none(), "{v}");
+    assert_eq!(v["refused"], false);
+    let steps = v["steps"].as_array().expect("steps");
+    let nextest = steps.iter().find(|step| {
+        step["command"]
+            .as_str()
+            .unwrap_or("")
+            .contains("cargo nextest")
+    });
+    let nextest = nextest.unwrap_or_else(|| panic!("nextest step missing: {v}"));
+    let cmd = nextest["command"].as_str().unwrap_or("");
+    assert!(
+        cmd.contains("test(installation_md_has_live_brew_and_scoop_commands)"),
+        "{cmd}"
+    );
+    assert!(
+        cmd.contains("test(no_stale_package_manager_availability_language)"),
+        "{cmd}"
+    );
+    assert!(
+        !cmd.contains("test(install_docs_truth)"),
+        "vacuous stem forbidden: {cmd}"
+    );
+    assert!(!cmd.contains("test(binary("), "{cmd}");
 }
 
 #[test]

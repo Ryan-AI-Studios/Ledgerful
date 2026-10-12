@@ -6,6 +6,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`--scope fast` injects nextest for `include_str!` cheap docs (0480):** NonCodeCheap still skips freshness, but a docs-only edit to a file compiled into a test via `include_str!` now injects those nextest stems instead of running zero tests.
+
 ### Added
 
 - **`ledgerful bench` (0477):** run one pinned CLI child (`index-cold` default) N times against `--fixture`, print p50/p95 via `percentile_sorted`, sha-gate the 12-hex embed, write `kind` `workloadBench` under `/output/`. `--compare` emits `workloadBenchCompare` (`delta = b - a`). Not `timings`, not a `criterion` crate.
