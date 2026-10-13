@@ -90,11 +90,21 @@ fn load_walk(
     let root = load_root(cozo, entity)?;
     let root_id = root.id.clone();
     let mut by_id = BTreeMap::from([(root_id.clone(), root)]);
-    let walk = select_walk(&root_id, depth, limit, |frontier| {
-        let script = incident_script(frontier)
-            .ok_or_else(|| miette!("graph export: walk frontier was empty"))?;
-        parse_incident(&cozo.run_script(&script)?.rows)
-    })?;
+    let walk = select_walk(
+        &root_id,
+        depth,
+        limit,
+        |frontier| {
+            let script = incident_script(frontier)
+                .ok_or_else(|| miette!("graph export: walk frontier was empty"))?;
+            parse_incident(&cozo.run_script(&script)?.rows)
+        },
+        |ids| {
+            let script = both_ends_script(ids)
+                .ok_or_else(|| miette!("graph export: last-hop id set was empty"))?;
+            parse_incident(&cozo.run_script(&script)?.rows)
+        },
+    )?;
     let missing: Vec<String> = walk
         .ids
         .iter()
@@ -153,14 +163,16 @@ pub fn select_id_prefix(mut nodes: Vec<ExportNode>, limit: u64) -> (Vec<ExportNo
     }
 }
 
-pub fn select_walk<F>(
+pub fn select_walk<F, G>(
     root: &str,
     depth: u32,
     limit: u64,
     mut incident_of: F,
+    mut edges_among: G,
 ) -> Result<WalkSelection>
 where
     F: FnMut(&[String]) -> Result<Vec<IncidentEdge>>,
+    G: FnMut(&[String]) -> Result<Vec<IncidentEdge>>,
 {
     let mut kept = vec![root.to_string()];
     let mut kept_set = HashSet::from([root.to_string()]);
@@ -201,7 +213,7 @@ where
         frontier = hop.admitted;
     }
     if !last_admitted.is_empty() {
-        let extra = incident_of(&last_admitted)?;
+        let extra = edges_among(&last_admitted)?;
         for edge in extra {
             let key = (
                 edge.source.clone(),
@@ -482,13 +494,49 @@ mod tests {
 
     #[test]
     fn select_walk__depth_zero_is_root() {
-        let mut called = false;
-        let walk = select_walk("root", 0, 10, |_| {
-            called = true;
-            Ok(vec![edge("root", "other", "calls")])
-        })
+        let mut incident_called = false;
+        let mut among_called = false;
+        let walk = select_walk(
+            "root",
+            0,
+            10,
+            |_| {
+                incident_called = true;
+                Ok(vec![edge("root", "other", "calls")])
+            },
+            |_| {
+                among_called = true;
+                Ok(vec![edge("root", "other", "calls")])
+            },
+        )
         .unwrap();
-        assert!(!called);
+        assert!(!incident_called);
+        assert!(!among_called);
+        assert_eq!(walk.ids, vec!["root".to_string()]);
+        assert!(walk.edges.is_empty());
+        assert!(!walk.truncated);
+    }
+
+    #[test]
+    fn select_walk__no_incident__skips_edges_among() {
+        let mut incident_calls = 0u32;
+        let mut among_calls = 0u32;
+        let walk = select_walk(
+            "root",
+            1,
+            10,
+            |_| {
+                incident_calls += 1;
+                Ok(vec![])
+            },
+            |_| {
+                among_calls += 1;
+                Ok(vec![])
+            },
+        )
+        .unwrap();
+        assert_eq!(incident_calls, 1);
+        assert_eq!(among_calls, 0);
         assert_eq!(walk.ids, vec!["root".to_string()]);
         assert!(walk.edges.is_empty());
         assert!(!walk.truncated);
@@ -501,10 +549,12 @@ mod tests {
             edge("root", "z", "a_rel"),
             edge("root", "a", "a_rel"),
         ];
-        let walk = select_walk("root", 1, 10, |_| Ok(incident.clone())).unwrap();
+        let walk =
+            select_walk("root", 1, 10, |_| Ok(incident.clone()), |_| Ok(Vec::new())).unwrap();
         assert_eq!(walk.ids, vec!["root", "a", "z", "m"]);
         assert!(!walk.truncated);
-        let capped = select_walk("root", 1, 2, |_| Ok(incident.clone())).unwrap();
+        let capped =
+            select_walk("root", 1, 2, |_| Ok(incident.clone()), |_| Ok(Vec::new())).unwrap();
         assert_eq!(capped.ids, vec!["root", "a"]);
         assert!(capped.truncated);
         assert!(capped.edges.iter().all(|item| item.target == "a"));
@@ -516,6 +566,22 @@ mod tests {
         let script = both_ends_script(&["o'hare\\x".into()]).unwrap();
         assert!(script.contains("['o\\'hare\\\\x']"));
         assert!(!script.contains("allowed[id] <- []"));
+        assert!(script.contains("allowed[source], allowed[target]"));
+        assert!(!script.contains("incident["));
+    }
+
+    #[test]
+    fn load_walk__second_closure_calls_both_ends_script() {
+        let src = include_str!("load.rs");
+        let start = src.find("fn load_walk(").expect("fn load_walk");
+        let rest = &src[start..];
+        let end = rest[1..]
+            .find("\nfn ")
+            .map(|index| index + 1)
+            .unwrap_or(rest.len());
+        let body = &rest[..end];
+        assert_eq!(body.matches("incident_script(").count(), 1);
+        assert!(body.contains("both_ends_script("));
     }
 
     #[test]
@@ -566,7 +632,7 @@ mod tests {
             edge("a", "b", "calls"),
             edge("b", "c", "next"),
         ];
-        let mut filter = |frontier: &[String]| {
+        let mut incident_of = |frontier: &[String]| {
             Ok(incident
                 .iter()
                 .filter(|item| {
@@ -577,14 +643,21 @@ mod tests {
                 .cloned()
                 .collect())
         };
-        let depth_one = select_walk("a", 1, 10, &mut filter).unwrap();
+        let mut edges_among = |ids: &[String]| {
+            Ok(incident
+                .iter()
+                .filter(|item| ids.contains(&item.source) && ids.contains(&item.target))
+                .cloned()
+                .collect())
+        };
+        let depth_one = select_walk("a", 1, 10, &mut incident_of, &mut edges_among).unwrap();
         assert_eq!(depth_one.ids, vec!["a", "b", "in"]);
         assert!(!depth_one.truncated);
         assert!(depth_one.edges.iter().any(|item| item.relation == "links"));
         assert!(depth_one.edges.iter().any(|item| item.relation == "calls"));
         assert!(depth_one.edges.iter().all(|item| item.relation != "next"));
 
-        let capped = select_walk("a", 2, 2, &mut filter).unwrap();
+        let capped = select_walk("a", 2, 2, &mut incident_of, &mut edges_among).unwrap();
         assert_eq!(capped.ids, vec!["a", "b"]);
         assert!(capped.truncated);
         assert_eq!(capped.edges.len(), 1);
@@ -597,24 +670,39 @@ mod tests {
             edge("r", "x", "calls"),
             edge("r", "y", "calls"),
             edge("x", "y", "sibling"),
+            edge("x", "outside", "fan"),
         ];
-        let mut calls = 0u32;
-        let mut filter = |frontier: &[String]| {
-            calls += 1;
-            Ok(incident
-                .iter()
-                .filter(|item| {
-                    frontier
-                        .iter()
-                        .any(|id| id == &item.source || id == &item.target)
-                })
-                .cloned()
-                .collect())
-        };
-        let walk = select_walk("r", 1, 10, &mut filter).unwrap();
-        assert_eq!(walk.ids, vec!["r", "x", "y"]);
+        let mut incident_calls = 0u32;
+        let mut among_calls = 0u32;
+        let walk = select_walk(
+            "r",
+            1,
+            10,
+            |frontier| {
+                incident_calls += 1;
+                assert_eq!(frontier, ["r".to_string()].as_slice());
+                Ok(edges_touching(&incident, frontier))
+            },
+            |ids| {
+                among_calls += 1;
+                assert_eq!(ids, ["x".to_string(), "y".to_string()].as_slice());
+                Ok(edges_among_ids(&incident, ids))
+            },
+        )
+        .unwrap();
+        assert_eq!(incident_calls, 1);
+        assert_eq!(among_calls, 1);
+        assert_eq!(
+            walk.ids,
+            vec!["r".to_string(), "x".to_string(), "y".to_string()]
+        );
         assert!(!walk.truncated);
-        assert_eq!(calls, 2);
+        assert!(!walk.ids.iter().any(|id| id == "outside"));
+        assert!(
+            walk.edges
+                .iter()
+                .all(|item| item.source != "outside" && item.target != "outside")
+        );
         assert!(walk.edges.iter().any(|item| {
             item.source == "x" && item.target == "y" && item.relation == "sibling"
         }));
@@ -628,26 +716,86 @@ mod tests {
             edge("r", "z", "calls"),
             edge("x", "y", "sibling"),
         ];
-        let mut calls = 0u32;
-        let mut filter = |frontier: &[String]| {
-            calls += 1;
-            Ok(incident
-                .iter()
-                .filter(|item| {
-                    frontier
-                        .iter()
-                        .any(|id| id == &item.source || id == &item.target)
-                })
-                .cloned()
-                .collect())
-        };
-        let walk = select_walk("r", 1, 3, &mut filter).unwrap();
-        assert_eq!(walk.ids, vec!["r", "x", "y"]);
+        let mut incident_calls = 0u32;
+        let mut among_calls = 0u32;
+        let walk = select_walk(
+            "r",
+            1,
+            3,
+            |frontier| {
+                incident_calls += 1;
+                assert_eq!(frontier, ["r".to_string()].as_slice());
+                Ok(edges_touching(&incident, frontier))
+            },
+            |ids| {
+                among_calls += 1;
+                assert_eq!(ids, ["x".to_string(), "y".to_string()].as_slice());
+                Ok(edges_among_ids(&incident, ids))
+            },
+        )
+        .unwrap();
+        assert_eq!(incident_calls, 1);
+        assert_eq!(among_calls, 1);
+        assert_eq!(
+            walk.ids,
+            vec!["r".to_string(), "x".to_string(), "y".to_string()]
+        );
         assert!(walk.truncated);
         assert!(!walk.ids.iter().any(|id| id == "z"));
-        assert_eq!(calls, 2);
         assert!(walk.edges.iter().any(|item| {
             item.source == "x" && item.target == "y" && item.relation == "sibling"
         }));
+    }
+
+    #[test]
+    fn select_walk__edges_among_unkept_end__dropped() {
+        let mut incident_calls = 0u32;
+        let mut among_calls = 0u32;
+        let walk = select_walk(
+            "r",
+            1,
+            10,
+            |frontier| {
+                incident_calls += 1;
+                assert_eq!(frontier, ["r".to_string()].as_slice());
+                Ok(vec![edge("r", "x", "calls")])
+            },
+            |ids| {
+                among_calls += 1;
+                assert_eq!(ids, ["x".to_string()].as_slice());
+                Ok(vec![edge("x", "ghost", "fan")])
+            },
+        )
+        .unwrap();
+        assert_eq!(incident_calls, 1);
+        assert_eq!(among_calls, 1);
+        assert_eq!(walk.ids, vec!["r".to_string(), "x".to_string()]);
+        assert!(!walk.ids.iter().any(|id| id == "ghost"));
+        assert!(
+            walk.edges
+                .iter()
+                .all(|item| item.source != "ghost" && item.target != "ghost")
+        );
+        assert!(!walk.truncated);
+    }
+
+    fn edges_touching(incident: &[IncidentEdge], frontier: &[String]) -> Vec<IncidentEdge> {
+        incident
+            .iter()
+            .filter(|item| {
+                frontier
+                    .iter()
+                    .any(|id| id == &item.source || id == &item.target)
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn edges_among_ids(incident: &[IncidentEdge], ids: &[String]) -> Vec<IncidentEdge> {
+        incident
+            .iter()
+            .filter(|item| ids.contains(&item.source) && ids.contains(&item.target))
+            .cloned()
+            .collect()
     }
 }
