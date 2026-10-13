@@ -325,8 +325,12 @@ count. One definition keeps the bare name and `RESOLVED`. Zero definitions use
 `method_declaration` of that simple name. It does not prove the target lives
 outside the project: a superclass or same-package method can still exist. A
 scoped `new` binds a single one-constructor type only when the type segments
-are a suffix of that type's qualified name (`new Other.Inner()` can bind
-`….Other.Inner.<init>` and does not bind `….NotOther.Inner`). Java caller names
+equal that type's qualified name, or are a segment suffix of the type path
+after the file package (`new Other.Inner()` can bind
+`….Other.Inner.<init>` and does not bind `….NotOther.Inner`). A suffix that includes a package
+segment does not bind (`new example.Box()` does not bind `com.example.Box`).
+An unresolved `new.{type}` records that this file had no single
+one-constructor match. Another file can still declare that type. Java caller names
 are the symbol qualified name (`com.example.User.create`,
 `com.example.A.<init>`). A dotted caller matches `qualified_name` on a callable
 kind only and does not fall through to the simple name. Receiver calls, extra

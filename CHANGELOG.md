@@ -16,13 +16,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Java scoped `new` package suffix (0489):** `new example.Box()` stays unresolved against same-file `com.example.Box`. A scoped `new` resolves when the segments equal the type qualified name, or when they are a segment suffix of the type path after the file package.
+
 - **Graph export last hop (0488):** the extra query after a walk asks only for edges whose both ends are in the last admitted set. Kept nodes, kept edges, and the truncation sentence stay the same.
 
 - **Source install no longer needs the sibling SPA bundle (0484):** `embed-spa` is off by default, so a default release build does not compile the dashboard embed. Release builds still pass `--all-features`, which embeds the SPA.
 
 - **Bench cold wipe and compare honesty (0482):** cold prep creates the empty state tree and does not migrate the legacy sibling. `--compare` refuses a mismatched `os` or `targetTriple`. `fixtureId` skips `target` and `node_modules`.
 
-- **Java extractor residuals (0481):** complexity discovery skips anonymous-class and enum-constant bodies. Callers use the symbol qualified name, so two `<init>` symbols in one file keep their own edges. A bare call with no same-file method is `{name}.external`. A scoped `new` matches a segment suffix of the type qualified name.
+- **Java extractor residuals (0481):** complexity discovery skips anonymous-class and enum-constant bodies. Callers use the symbol qualified name, so two `<init>` symbols in one file keep their own edges. A bare call with no same-file method is `{name}.external`. A scoped `new` matches the full qualified name, or a segment suffix of the type path after the file package.
 
 - **`graph path` walks only node ids; header from/to stay one physical line (0479):** `ShortestPathBFS` uses edges whose both ends exist as `node` rows. A dangling intermediate is `path: none`. Stderr `from:` / `to:` run through `escape_tsv_field`.
 
