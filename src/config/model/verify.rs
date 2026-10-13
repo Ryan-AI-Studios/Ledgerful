@@ -39,8 +39,9 @@ pub struct VerifyConfig {
     #[serde(default = "default_verify_timeout")]
     pub default_timeout_secs: u64,
     /// Planned seconds for auto-plan test steps (`cargo nextest` / `cargo test`).
-    /// `None` keeps the built-in test budget (400 unless a measurement changes it).
-    /// Does not apply to fmt, clippy, manual `-c`, or explicit steps.
+    /// `None` keeps `DEFAULT_TEST_SUITE_TIMEOUT_SECS`. An explicit value replaces
+    /// that built-in in either direction. Does not apply to fmt, clippy, manual
+    /// `-c`, or explicit steps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suite_timeout_secs: Option<u64>,
     /// Weight of semantic prediction in score blending [0.0, 1.0]. 0.0 disables.

@@ -16,6 +16,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Test-class verify budget (0494):** auto-plan `cargo nextest` / `cargo test` steps take `DEFAULT_TEST_SUITE_TIMEOUT_SECS` when `[verify] suite_timeout_secs` is absent. The 0494 measurement did not produce a `Set` value (ci and slow exited 100 and were not formula inputs; doctest was 11 seconds, `Keep`), so the constant stays 400. Fmt, clippy, and auto `--timeout 0` stay 400. An explicit `suite_timeout_secs` still replaces the built-in in either direction. `schemaVersion` stays 1.
+
 - **Bench fixture Maven and sbt target directories (0493):** `fixtureId` skips a `target` directory whose parent contains `pom.xml` or `build.sbt`, and an sbt meta-build `target` under a `project` directory chain whose parent contains `build.sbt`. The meta walk stops at the fixture root. It still keeps `src/target/mod.rs` and a file named `target`. An sbt subproject `target/` with no sibling `build.sbt` stays in the id.
 
 - **Install smoke no longer builds an unused SPA (0492):** `install-smoke` runs `cargo install --path . --features mcp,web --locked --force` and does not check out or download `ledgerful-frontend`. `release.yml` still builds the frontend it embeds with `--all-features`. `ci.yml` still runs its Ubuntu `web-build` at pin `4a1df7e2` (0241). This track does not change that job graph. That pin stays.
