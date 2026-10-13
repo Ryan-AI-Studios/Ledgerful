@@ -69,7 +69,7 @@ Gate B is scheduled, not a PR gate — a short red window between a merged relea
 - On a **public** repo, scheduled workflows **auto-disable after ~60 days of repository inactivity**. Re-enable with a `workflow_dispatch` run or any push.
 - Parser unit matrix: `bash scripts/test-release-changelog.sh` (also run as the first step of `release-state.yml`).
 
-`ci.yml` / `smoke.yml` frontend `ref:` drift is **reported only** by Gate B (warnings do not fail the job). Do not refresh those pins without resolving the Node 24 + Linux CSP gap (see track 0098 / `deferred.md`).
+`ci.yml` frontend `ref:` drift is **reported only** by Gate B (warnings do not fail the job). Do not refresh that pin without resolving the Node 24 + Linux CSP gap (see track 0098 / `deferred.md`). `smoke.yml` does not check out the frontend.
 
 ### Ops recovery — re-run a release without retagging
 

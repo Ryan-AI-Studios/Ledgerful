@@ -199,6 +199,123 @@ fn release_yml_keeps_all_features_and_names_embed_spa() {
 }
 
 #[test]
+fn smoke_yml_installs_without_building_the_spa() {
+    let smoke = include_str!("../../.github/workflows/smoke.yml");
+    let ci = include_str!("../../.github/workflows/ci.yml");
+    let release = include_str!("../../.github/workflows/release.yml");
+    let gate = include_str!("../../scripts/check-release-state.sh");
+    let docs = include_str!("../../docs/package-distribution.md");
+
+    let required = [
+        "cargo install --path . --features mcp,web --locked --force",
+        "ledgerful --version",
+        "./scripts/smoke_mcp.sh",
+        "./scripts/smoke_mcp.ps1",
+        "ubuntu-latest",
+        "macos-14",
+        "macos-15",
+        "windows-latest",
+        "CARGO_HTTP_MULTIPLEXING",
+        "CARGO_NET_RETRY",
+        "3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "e2a55d2ffb04f378e9626c28d38b36d230d1e12f",
+        "6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
+        "toolchain: stable",
+    ];
+    let missing: Vec<&str> = required
+        .into_iter()
+        .filter(|literal| !smoke.contains(literal))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "smoke.yml is missing install-smoke literals:\n  {}",
+        missing.join("\n  ")
+    );
+
+    let forbidden = [
+        "web-build",
+        "ledgerful-web-spa",
+        "ledgerful-frontend",
+        "needs:",
+        "npm run build",
+        "npm ci",
+        "embed-spa",
+        "4a1df7e2",
+        "actions/setup-node",
+        "actions/upload-artifact",
+        "actions/download-artifact",
+    ];
+    let present: Vec<&str> = forbidden
+        .into_iter()
+        .filter(|literal| smoke.contains(literal))
+        .collect();
+    assert!(
+        present.is_empty(),
+        "smoke.yml still contains forbidden literals:\n  {}",
+        present.join("\n  ")
+    );
+
+    let ci_required = [
+        "4a1df7e2be68bb1136a18c52f1ba420801858c89",
+        "ledgerful-web-spa",
+        "node-version: 22",
+        "Windows-only (0087). smoke.yml does not build this frontend (0492); this pin stays on ci.yml.",
+    ];
+    let ci_missing: Vec<&str> = ci_required
+        .into_iter()
+        .filter(|literal| !ci.contains(literal))
+        .collect();
+    assert!(
+        ci_missing.is_empty(),
+        "ci.yml is missing smoke-boundary literals:\n  {}",
+        ci_missing.join("\n  ")
+    );
+    assert!(
+        !ci.contains("Keep identical to smoke.yml"),
+        "ci.yml must not keep the old smoke.yml identity clause"
+    );
+    assert_eq!(ci.matches("needs: web-build").count(), 2);
+    assert_eq!(ci.matches("needs: [clippy, web-build]").count(), 1);
+    // Line-bounded so this does not also match `needs: [clippy, web-build]`.
+    assert_eq!(ci.matches("needs: [clippy]\n").count(), 1);
+
+    let release_required = ["ledgerful-web-spa", "--all-features", "node-version: 24"];
+    let release_missing: Vec<&str> = release_required
+        .into_iter()
+        .filter(|literal| !release.contains(literal))
+        .collect();
+    assert!(
+        release_missing.is_empty(),
+        "release.yml is missing embed literals:\n  {}",
+        release_missing.join("\n  ")
+    );
+
+    assert!(gate.contains("for wf in .github/workflows/ci.yml; do"));
+    assert_eq!(
+        gate.matches("smoke.yml does not check out the frontend")
+            .count(),
+        2
+    );
+    let gate_forbidden = [
+        ".github/workflows/smoke.yml",
+        "ci.yml / smoke.yml",
+        "smoke.yml frontend",
+    ];
+    let gate_present: Vec<&str> = gate_forbidden
+        .into_iter()
+        .filter(|literal| gate.contains(literal))
+        .collect();
+    assert!(
+        gate_present.is_empty(),
+        "check-release-state.sh still scans smoke:\n  {}",
+        gate_present.join("\n  ")
+    );
+
+    assert!(docs.contains("`smoke.yml` does not check out the frontend."));
+    assert!(!docs.contains("`ci.yml` / `smoke.yml` frontend"));
+}
+
+#[test]
 fn build_rs_keeps_git_sha_and_names_embed_spa_panic_literals() {
     let source = include_str!("../../build.rs");
     let remedy = format!(

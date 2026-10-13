@@ -25,7 +25,7 @@ jobs:
       # Tried frontend main 71d2d2db + Node 24: npm ci passed (not EBADENGINE); npm run
       # build failed in ~36s (not timeout) — Linux CSP/build class. release.yml still
       # embeds frontend main dynamically on windows-latest. Frontend gating `build` is
-      # Windows-only (0087). Keep identical to smoke.yml.
+      # Windows-only (0087). smoke.yml does not build this frontend (0492); this pin stays on ci.yml.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Ryan-AI-Studios/ledgerful-frontend
