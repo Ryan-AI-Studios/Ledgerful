@@ -16,6 +16,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Graph export last hop (0488):** the extra query after a walk asks only for edges whose both ends are in the last admitted set. Kept nodes, kept edges, and the truncation sentence stay the same.
+
 - **Source install no longer needs the sibling SPA bundle (0484):** `embed-spa` is off by default, so a default release build does not compile the dashboard embed. Release builds still pass `--all-features`, which embeds the SPA.
 
 - **Bench cold wipe and compare honesty (0482):** cold prep creates the empty state tree and does not migrate the legacy sibling. `--compare` refuses a mismatched `os` or `targetTriple`. `fixtureId` skips `target` and `node_modules`.
