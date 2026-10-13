@@ -9,9 +9,10 @@
 # Exit 0 when (1) is still under ## [Unreleased] (normal in-dev) and (2) matches
 # (or the registry is unreachable — warn-not-fail, see below).
 #
-# Report-only (non-failing) warnings when ci.yml / smoke.yml frontend ref:
-# pins are behind ledgerful-frontend main. Do NOT refresh those pins here
+# Report-only (non-failing) warning when the ci.yml frontend ref
+# pin is behind ledgerful-frontend main. Do NOT refresh that pin here
 # (0098 §4.7 — blocked on Node 24 + frontend-owned Linux CSP gap).
+# smoke.yml does not check out the frontend (0492).
 #
 # Optional env for deterministic red-path tests (DoD-4):
 #   LEDGERFUL_GATE_B_NPM_EXPECTED=v0.0.0  — force expected pin (compare against
@@ -38,9 +39,10 @@ _workflow_frontend_ref() {
     | sed -E 's/.*ref: ([0-9a-f]{40}).*/\1/' || true
 }
 
-# Report-only: name when ci.yml / smoke.yml frontend pins lag frontend main.
+# Report-only: name when the ci.yml frontend pin lags frontend main.
+# smoke.yml does not check out the frontend (0492).
 # Offline / ls-remote failure → skip with a warning (does not fail the gate).
-# Reason this is non-failing: refreshing those pins is blocked on Node 24 +
+# Reason this is non-failing: refreshing the ci.yml pin is blocked on Node 24 +
 # the frontend-owned Linux CSP-manifest gap (0098 §4.7 / deferred.md). A gate
 # that cannot be satisfied would get disabled; detection without enforcement
 # keeps the drift visible.
@@ -58,7 +60,7 @@ warn_stale_frontend_pins() {
   fi
 
   local wf pin
-  for wf in .github/workflows/ci.yml .github/workflows/smoke.yml; do
+  for wf in .github/workflows/ci.yml; do
     pin="$(_workflow_frontend_ref "$wf" || true)"
     if [ -z "$pin" ]; then
       echo "warn: no frontend ref pin found in ${wf}" >&2

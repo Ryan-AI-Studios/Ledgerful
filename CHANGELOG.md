@@ -16,6 +16,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Install smoke no longer builds an unused SPA (0492):** `install-smoke` runs `cargo install --path . --features mcp,web --locked --force` and does not check out or download `ledgerful-frontend`. `release.yml` still builds the frontend it embeds with `--all-features`. `ci.yml` still runs its Ubuntu `web-build` at pin `4a1df7e2` (0241). This track does not change that job graph. That pin stays.
+
 - **Embed-spa build panic names a build step (0491):** a release build with `embed-spa` and no sibling `out/index.html` tells the builder to run `npm run build` in `ledgerful-frontend`, or to drop `embed-spa` and use default features. It no longer says to pass `--spa-dir`.
 
 - **Verify include_str stems stay on the engine tree (0483):** `verify --scope fast` injects `INCLUDE_STR_MATERIAL` only when the work root is the tree this binary was compiled from. A third-party `README.md` stays cheap and does not run those tests. The drift walker accepts comments, raw strings, char literals, and `include_str! { ... }`.

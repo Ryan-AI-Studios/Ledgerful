@@ -123,7 +123,10 @@ pub(crate) const INCLUDE_STR_MATERIAL: &[(&str, &[&str])] = &[
     ),
     (
         "docs/package-distribution.md",
-        &["no_stale_package_manager_availability_language"],
+        &[
+            "no_stale_package_manager_availability_language",
+            "smoke_yml_installs_without_building_the_spa",
+        ],
     ),
 ];
 
