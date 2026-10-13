@@ -272,20 +272,29 @@ fn collect_relative_paths(root: &Path, dir: &Path, out: &mut Vec<String>) -> Res
     entries.sort_by_key(|e| e.file_name());
     for entry in entries {
         let name = entry.file_name();
-        if name == ".git" || name == ".ledgerful" || name == "target" || name == "node_modules" {
+        if name == ".git" || name == ".ledgerful" {
             continue;
         }
         let path = entry.path();
         let meta = fs::symlink_metadata(&path)
             .map_err(|e| miette!("fixture scan failed for {}: {e}", path.display()))?;
         // Do not follow directory symlinks / reparse points (cycles or
-        // paths outside the fixture). Record the link itself as a leaf.
+        // paths outside the fixture). Record the link itself as a leaf,
+        // including a link named `target` or `node_modules`.
         if is_fixture_leaf(&meta) {
             let rel = path.strip_prefix(root).into_diagnostic()?;
             out.push(rel.to_string_lossy().replace('\\', "/"));
             continue;
         }
         if meta.is_dir() {
+            if name == "node_modules" {
+                continue;
+            }
+            // Build tree only when this directory's parent has a manifest.
+            // `src/target/` has no sibling Cargo.toml, so it is source.
+            if name == "target" && dir.join("Cargo.toml").is_file() {
+                continue;
+            }
             collect_relative_paths(root, &path, out)?;
         }
     }
@@ -560,10 +569,107 @@ mod tests {
         assert!(!fixture.join(".ledgerful").join("marker.txt").exists());
     }
 
+    fn write_rel(root: &Path, rel: &str, body: &str) {
+        let path = root.join(rel);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("parent");
+        }
+        fs::write(&path, body).expect(rel);
+    }
+
+    fn assert_fixture_id_count_hex(id: &str, count: usize) {
+        let (count_text, hex) = id.split_once(':').expect("id splits once on colon");
+        assert_eq!(count_text, count.to_string(), "count prefix of {id}");
+        assert_eq!(hex.len(), 12, "hex length of {id}");
+        assert!(
+            hex.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "hex must be ASCII hex, got {hex}"
+        );
+    }
+
+    #[test]
+    fn fixture_walk_keeps_source_target_and_target_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        write_rel(root, "Cargo.toml", "");
+        write_rel(root, "src/lib.rs", "fn x() {}\n");
+        write_rel(root, "src/target/mod.rs", "fn source() {}\n");
+        write_rel(root, "crates/bar/Cargo.toml", "");
+        write_rel(root, "crates/bar/target", "not a build tree\n");
+        write_rel(root, "crates/foo/Cargo.toml", "");
+        write_rel(root, "crates/foo/src/lib.rs", "fn y() {}\n");
+        write_rel(root, "crates/foo/src/target/mod.rs", "fn nested() {}\n");
+        write_rel(root, "extra/target", "file\n");
+        write_rel(root, "extra/node_modules", "file\n");
+        write_rel(root, "target/debug/foo", "bin");
+        write_rel(root, "crates/foo/target/debug/foo", "bin");
+        write_rel(root, "pkg/node_modules/a.js", "js");
+        write_rel(root, ".git/HEAD", "ref: refs/heads/main\n");
+        write_rel(root, ".ledgerful/state.db", "db");
+
+        let mut paths = Vec::new();
+        collect_relative_paths(root, root, &mut paths).expect("collect");
+        paths.sort();
+        assert_eq!(
+            paths,
+            vec![
+                "Cargo.toml".to_string(),
+                "crates/bar/Cargo.toml".to_string(),
+                "crates/bar/target".to_string(),
+                "crates/foo/Cargo.toml".to_string(),
+                "crates/foo/src/lib.rs".to_string(),
+                "crates/foo/src/target/mod.rs".to_string(),
+                "extra/node_modules".to_string(),
+                "extra/target".to_string(),
+                "src/lib.rs".to_string(),
+                "src/target/mod.rs".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn fixture_id_changes_when_source_target_path_appears() {
+        let first = tempfile::tempdir().expect("tempdir");
+        let second = tempfile::tempdir().expect("tempdir");
+        write_rel(first.path(), "Cargo.toml", "");
+        write_rel(first.path(), "src/lib.rs", "fn x() {}\n");
+        write_rel(first.path(), "target/debug/foo", "bin");
+        write_rel(second.path(), "Cargo.toml", "");
+        write_rel(second.path(), "src/lib.rs", "fn x() {}\n");
+        write_rel(second.path(), "target/debug/foo", "bin");
+        write_rel(second.path(), "src/target/mod.rs", "fn source() {}\n");
+
+        let mut first_paths = Vec::new();
+        collect_relative_paths(first.path(), first.path(), &mut first_paths).expect("collect");
+        first_paths.sort();
+        let mut second_paths = Vec::new();
+        collect_relative_paths(second.path(), second.path(), &mut second_paths).expect("collect");
+        second_paths.sort();
+        assert_eq!(
+            first_paths,
+            vec!["Cargo.toml".to_string(), "src/lib.rs".to_string()]
+        );
+        assert_eq!(
+            second_paths,
+            vec![
+                "Cargo.toml".to_string(),
+                "src/lib.rs".to_string(),
+                "src/target/mod.rs".to_string(),
+            ]
+        );
+
+        let first_id = fixture_id_for(first.path()).expect("first id");
+        let second_id = fixture_id_for(second.path()).expect("second id");
+        assert_ne!(first_id, second_id);
+        assert_fixture_id_count_hex(&first_id, 2);
+        assert_fixture_id_count_hex(&second_id, 3);
+    }
+
     #[test]
     fn collect_relative_paths_skips_build_trees_and_state_dirs() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path();
+        fs::write(root.join("Cargo.toml"), "").expect("manifest");
         fs::create_dir_all(root.join("src")).expect("src");
         fs::write(root.join("src").join("lib.rs"), "fn x() {}\n").expect("lib");
         fs::create_dir_all(root.join(".git")).expect("git");
@@ -578,7 +684,10 @@ mod tests {
         let mut paths = Vec::new();
         collect_relative_paths(root, root, &mut paths).expect("collect");
         paths.sort();
-        assert_eq!(paths, vec!["src/lib.rs".to_string()]);
+        assert_eq!(
+            paths,
+            vec!["Cargo.toml".to_string(), "src/lib.rs".to_string()]
+        );
     }
 
     #[test]
