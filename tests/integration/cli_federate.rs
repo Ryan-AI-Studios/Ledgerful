@@ -1,4 +1,4 @@
-use crate::common::{DirGuard, git_add_and_commit, git_cmd, setup_git_repo};
+use crate::common::{DirGuard, git_add_and_commit, git_cmd, nested_repo_root, setup_git_repo};
 use ledgerful::commands::federate::execute_federate_scan;
 use ledgerful::commands::init::execute_init;
 use std::fs;
@@ -43,7 +43,8 @@ fn test_federate_scan_no_remotes__slow() {
 #[allow(non_snake_case)]
 fn test_federate_scan_warns_on_stale_cached_impact_packet__slow() {
     let tmp = tempdir().unwrap();
-    let root = tmp.path();
+    let root_owned = nested_repo_root(tmp.path());
+    let root = root_owned.as_path();
     setup_git_repo(root);
 
     fs::write(root.join("a.rs"), "fn a() {}").unwrap();
@@ -346,7 +347,8 @@ fn write_dirty_pub_fn(root: &std::path::Path) {
 #[allow(non_snake_case)]
 fn federate_export_json_preview_is_bounded_envelope__slow() {
     let tmp = tempdir().unwrap();
-    let root = tmp.path();
+    let root_owned = nested_repo_root(tmp.path());
+    let root = root_owned.as_path();
     init_git_repo_ready_for_dirty_pub_fn(root);
     write_dirty_pub_fn(root);
 
@@ -518,7 +520,8 @@ fn federate_export_json_init_only_is_empty_envelope__slow() {
 #[allow(non_snake_case)]
 fn federate_export_next_scan_impact_repopulates_preview__slow() {
     let tmp = tempdir().unwrap();
-    let root = tmp.path();
+    let root_owned = nested_repo_root(tmp.path());
+    let root = root_owned.as_path();
     init_git_repo_ready_for_dirty_pub_fn(root);
 
     let before = Command::new(federate_bin())
