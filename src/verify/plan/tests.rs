@@ -1887,13 +1887,14 @@ fn assert_scoped_filterset_not_workspace_ci(command: &str) {
     }
 }
 
-fn plan_fast(
+fn plan_at(
+    root: &camino::Utf8Path,
     packet: &ImpactPacket,
     conn: Option<&rusqlite::Connection>,
     profile: &crate::platform::repository::RepositoryProfile,
 ) -> VerificationPlan {
     let rules = Rules::default();
-    let layout = crate::state::layout::Layout::new(".");
+    let layout = crate::state::layout::Layout::new(root);
     build_plan_scoped_with_options(
         packet,
         &rules,
@@ -1906,6 +1907,14 @@ fn plan_fast(
         false,
         false,
     )
+}
+
+fn plan_fast(
+    packet: &ImpactPacket,
+    conn: Option<&rusqlite::Connection>,
+    profile: &crate::platform::repository::RepositoryProfile,
+) -> VerificationPlan {
+    plan_at(camino::Utf8Path::new("."), packet, conn, profile)
 }
 
 #[test]
@@ -2050,6 +2059,143 @@ fn test_include_str_docs_inject_readme_and_keep_envelope() {
     assert!(
         !nextest.description.contains("packaging"),
         "docs-only must not claim packaging, got {}",
+        nextest.description
+    );
+}
+
+#[test]
+fn test_foreign_root_readme_skips_include_str_nextest() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8 temp");
+    let packet = packet_with_paths(&["README.md"]);
+    let plan = plan_at(&root, &packet, None, &rust_profile());
+    assert!(!plan.refused);
+    assert!(plan.fallback_reason.is_none());
+    assert!(
+        plan.steps.iter().any(|s| s.command.contains("fmt")),
+        "fmt must be present, got {:?}",
+        plan.steps
+    );
+    assert!(
+        plan.steps.iter().any(|s| s.command.contains("clippy")),
+        "clippy must be present, got {:?}",
+        plan.steps
+    );
+    assert!(
+        nextest_step(&plan).is_none(),
+        "foreign README must not schedule nextest, got {:?}",
+        plan.steps
+    );
+}
+
+#[test]
+fn test_foreign_root_packaging_keeps_bump_manifests_without_doc_stems() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8 temp");
+    let packet = packet_with_paths(&["packaging/winget/Ledgerful.yaml", "README.md"]);
+    let plan = plan_at(&root, &packet, None, &rust_profile());
+    assert!(!plan.refused);
+    assert!(plan.fallback_reason.is_none());
+    let nextest = nextest_step(&plan).expect("foreign packaging still injects bump_manifests");
+    assert!(
+        nextest.command.contains("test(bump_manifests)"),
+        "expected bump_manifests, got {}",
+        nextest.command
+    );
+    assert!(
+        !nextest
+            .command
+            .contains("test(readme_has_daily_5_front_door)"),
+        "foreign README stem must stay out, got {}",
+        nextest.command
+    );
+}
+
+#[test]
+fn test_foreign_root_scoped_ok_keeps_mapping_stem_only() {
+    let packet = ImpactPacket {
+        head_hash: Some("matched-head".to_string()),
+        changes: vec![
+            ChangedFile {
+                path: PathBuf::from("src/commands/hotspots.rs"),
+                ..Default::default()
+            },
+            ChangedFile {
+                path: PathBuf::from("README.md"),
+                ..Default::default()
+            },
+        ],
+        ..ImpactPacket::default()
+    };
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute(
+        "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
+             tested_symbol_id INTEGER, tested_file_id INTEGER)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE project_files (id INTEGER PRIMARY KEY, file_path TEXT)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE index_metadata (key TEXT PRIMARY KEY, value TEXT)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO index_metadata (key, value) VALUES ('head_hash', 'matched-head')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path) VALUES (1, 'src/commands/hotspots.rs')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path) VALUES (2, 'tests/integration/cli_hotspots.rs')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id) \
+             VALUES (10, 2, 20, 1)",
+        [],
+    )
+    .unwrap();
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8 temp");
+    let plan = plan_at(&root, &packet, Some(&conn), &rust_profile());
+    assert!(
+        !plan.refused,
+        "foreign mapped src + README must stay ScopedOk; reason={:?}",
+        plan.fallback_reason
+    );
+    assert!(plan.fallback_reason.is_none());
+    let nextest = nextest_step(&plan).expect("ScopedOk nextest");
+    assert!(
+        nextest.command.contains("test(cli_hotspots)"),
+        "mapping stem must remain, got {}",
+        nextest.command
+    );
+    assert!(
+        !nextest
+            .command
+            .contains("test(readme_has_daily_5_front_door)"),
+        "foreign README stem must stay out, got {}",
+        nextest.command
+    );
+    assert!(
+        nextest.description.contains("via test_mapping"),
+        "description must stay on test_mapping, got {}",
+        nextest.description
+    );
+    assert!(
+        !nextest.description.contains("include_str"),
+        "description must not name include_str, got {}",
         nextest.description
     );
 }
@@ -2539,6 +2685,141 @@ fn test_openapi_json_is_not_non_code_cheap() {
     );
 }
 
+fn include_str_literals(src: &str) -> Vec<String> {
+    parse_include_str_args("foo.rs", src)
+        .unwrap_or_else(|err| panic!("{err}"))
+        .into_iter()
+        .map(|arg| match arg {
+            IncludeStrArg::Literal(path) | IncludeStrArg::CargoManifestConcat(path) => path,
+        })
+        .collect()
+}
+
+#[test]
+fn test_include_str_comment_paren_resolves_installation() {
+    let got = include_str_literals("include_str!(\n // )\n \"docs/installation.md\"\n)");
+    assert_eq!(got, vec!["docs/installation.md".to_string()]);
+}
+
+#[test]
+fn test_include_str_nested_block_comment_resolves_installation() {
+    let got = include_str_literals("include_str!( /* ) /* */ */ \"docs/installation.md\" )");
+    assert_eq!(got, vec!["docs/installation.md".to_string()]);
+}
+
+#[test]
+fn test_include_str_line_comment_ignores_first_call() {
+    let got = include_str_literals(
+        "// include_str!(\"docs/installation.md\")\ninclude_str!(\"docs/golden-path.md\")",
+    );
+    assert_eq!(got, vec!["docs/golden-path.md".to_string()]);
+}
+
+#[test]
+fn test_include_str_raw_string_resolves_installation() {
+    let got = include_str_literals("include_str!(r\"docs/installation.md\")");
+    assert_eq!(got, vec!["docs/installation.md".to_string()]);
+}
+
+#[test]
+fn test_include_str_raw_string_hashes_resolves_installation() {
+    let got = include_str_literals("include_str!(r#\"docs/installation.md\"#)");
+    assert_eq!(got, vec!["docs/installation.md".to_string()]);
+}
+
+#[test]
+fn test_include_str_char_quote_does_not_hide_call() {
+    let got = include_str_literals("let c = '\"'; include_str!(\"docs/installation.md\");");
+    assert_eq!(got, vec!["docs/installation.md".to_string()]);
+}
+
+#[test]
+fn test_include_str_lifetime_static_does_not_hide_call() {
+    let got =
+        include_str_literals("let _: &'static str = \"\"; include_str!(\"docs/installation.md\");");
+    assert_eq!(got, vec!["docs/installation.md".to_string()]);
+}
+
+#[test]
+fn test_include_str_byte_string_is_not_a_call() {
+    let got = include_str_literals("let _ = b\"include_str!(\\\"docs/installation.md\\\")\";");
+    assert!(got.is_empty(), "{got:?}");
+}
+
+#[test]
+fn test_include_str_raw_byte_string_is_not_a_call() {
+    let got = include_str_literals(
+        "let _ = br#\"include_str!(\\\"docs/installation.md\\\")\"#; include_str!(\"docs/golden-path.md\");",
+    );
+    assert_eq!(got, vec!["docs/golden-path.md".to_string()]);
+}
+
+#[test]
+fn test_include_str_byte_char_quote_does_not_hide_call() {
+    let got = include_str_literals("let _ = b'\"'; include_str!(\"docs/installation.md\");");
+    assert_eq!(got, vec!["docs/installation.md".to_string()]);
+}
+
+#[test]
+fn test_include_str_brace_form_resolves_installation() {
+    let got = include_str_literals("include_str! { \"docs/installation.md\" }");
+    assert_eq!(got, vec!["docs/installation.md".to_string()]);
+}
+
+#[test]
+fn test_include_str_bracket_form_is_unresolved() {
+    let err = parse_include_str_args("foo.rs", "include_str![\"docs/installation.md\"]")
+        .expect_err("bracket form is unresolved");
+    assert!(err.contains("unresolved"), "{err}");
+    assert!(err.contains("foo.rs"), "{err}");
+}
+
+#[test]
+fn test_include_str_concat_manifest_dir_resolves_installation() {
+    let src = "include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/docs/installation.md\"))";
+    let args = parse_include_str_args("src/foo.rs", src).expect("concat form");
+    match args.as_slice() {
+        [IncludeStrArg::CargoManifestConcat(rel)] => assert_eq!(rel, "docs/installation.md"),
+        other => panic!("expected concat path, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_include_str_material_stems_name_live_fns() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut stems: Vec<&str> = INCLUDE_STR_MATERIAL
+        .iter()
+        .flat_map(|(_, names)| names.iter().copied())
+        .collect();
+    stems.sort_unstable();
+    stems.dedup();
+    assert_eq!(stems.len(), 9, "distinct stem count");
+    let mut found = std::collections::BTreeSet::new();
+    let mut failures = Vec::new();
+    for dir in ["src", "tests", "crates"] {
+        walk_rs_files(
+            &crate_root.join(dir),
+            &crate_root,
+            &mut |rel, src| {
+                for stem in &stems {
+                    if code_has_fn_stem(src, stem, rel)? {
+                        found.insert(*stem);
+                    }
+                }
+                Ok(())
+            },
+            &mut failures,
+        );
+    }
+    assert!(
+        failures.is_empty(),
+        "stem scan failures:\n  {}",
+        failures.join("\n  ")
+    );
+    let missing: Vec<&&str> = stems.iter().filter(|stem| !found.contains(*stem)).collect();
+    assert!(missing.is_empty(), "missing fn stems: {missing:?}");
+}
+
 #[test]
 fn test_include_str_material_table_matches_live_cheap_sites() {
     let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -2669,6 +2950,7 @@ fn collect_cheap_include_str_paths(source_rel: &str, src: &str) -> Result<Vec<St
     Ok(out)
 }
 
+#[derive(Debug)]
 enum IncludeStrArg {
     Literal(String),
     CargoManifestConcat(String),
@@ -2677,114 +2959,94 @@ enum IncludeStrArg {
 fn parse_include_str_args(source_rel: &str, src: &str) -> Result<Vec<IncludeStrArg>, String> {
     let mut args = Vec::new();
     let mut i = 0;
-    while let Some(start) = find_code_include_str(src, i) {
+    while let Some(start) = find_code_include_str(src, i, source_rel)? {
         let after_bang = start + "include_str!".len();
-        let j = skip_ws(src, after_bang);
-        if j >= src.len() || src.as_bytes()[j] != b'(' {
-            i = after_bang;
-            continue;
+        let j = skip_trivia(src, after_bang, source_rel)?;
+        if j >= src.len() {
+            return Err(format!("{source_rel}: unresolved include_str! form"));
         }
-        let inner_start = j + 1;
-        let inner_end = match find_matching_paren(src, j) {
-            Some(end) => end,
-            None => {
-                return Err(format!("{source_rel}: unbalanced include_str invocation"));
-            }
-        };
-        let inner = src[inner_start..inner_end].trim();
+        let opener = src.as_bytes()[j];
+        if opener == b'[' || (opener != b'(' && opener != b'{') {
+            return Err(format!("{source_rel}: unresolved include_str! form"));
+        }
+        let inner_end = find_matching_delimiter(src, j, source_rel)?
+            .ok_or_else(|| format!("{source_rel}: unbalanced include_str invocation"))?;
+        let inner = &src[j + 1..inner_end];
         args.push(parse_include_str_inner(source_rel, inner)?);
         i = inner_end + 1;
     }
     Ok(args)
 }
 
-/// Byte offset of the next `include_str!` that is not inside a comment or string.
-fn find_code_include_str(src: &str, from: usize) -> Option<usize> {
+/// Byte offset of the next `include_str!` that is not inside a comment or literal.
+fn find_code_include_str(
+    src: &str,
+    from: usize,
+    source_rel: &str,
+) -> Result<Option<usize>, String> {
     let b = src.as_bytes();
     let mut i = from;
-    let mut in_line_comment = false;
-    let mut in_block_comment = false;
-    let mut in_string = false;
-    let mut escaped = false;
     while i < b.len() {
-        let c = b[i];
-        if in_line_comment {
-            if c == b'\n' {
-                in_line_comment = false;
+        if let Some(next) = consume_skipped(src, i, source_rel)? {
+            if next <= i {
+                return Err(format!("{source_rel}: scanner did not advance"));
             }
-            i += 1;
+            i = next;
             continue;
         }
-        if in_block_comment {
-            if c == b'*' && i + 1 < b.len() && b[i + 1] == b'/' {
-                in_block_comment = false;
-                i += 2;
-                continue;
-            }
-            i += 1;
-            continue;
-        }
-        if in_string {
-            if escaped {
-                escaped = false;
-                i += 1;
-                continue;
-            }
-            if c == b'\\' {
-                escaped = true;
-                i += 1;
-                continue;
-            }
-            if c == b'"' {
-                in_string = false;
-            }
-            i += 1;
-            continue;
-        }
-        if c == b'/' && i + 1 < b.len() {
-            if b[i + 1] == b'/' {
-                in_line_comment = true;
-                i += 2;
-                continue;
-            }
-            if b[i + 1] == b'*' {
-                in_block_comment = true;
-                i += 2;
-                continue;
-            }
-        }
-        if c == b'"' {
-            in_string = true;
-            i += 1;
-            continue;
-        }
-        if c == b'i' && src.get(i..).is_some_and(|s| s.starts_with("include_str!")) {
-            let prev_ok = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
+        if src[i..].starts_with("include_str!") {
+            let prev_ok = i == 0 || !is_ident_byte(b[i - 1]);
             if prev_ok {
-                return Some(i);
+                return Ok(Some(i));
             }
         }
-        i += 1;
+        let step = src[i..].chars().next().map(char::len_utf8).unwrap_or(1);
+        i += step;
     }
-    None
+    Ok(None)
 }
 
 fn parse_include_str_inner(source_rel: &str, inner: &str) -> Result<IncludeStrArg, String> {
-    let t = inner.trim();
-    if let Some(lit) = parse_rust_string_literal(t) {
+    let start = skip_trivia(inner, 0, source_rel)?;
+    if start >= inner.len() {
+        return Err(format!(
+            "{source_rel}: unresolved include_str! form: {}",
+            inner.trim()
+        ));
+    }
+    if let Some((lit, end)) = take_string_literal(inner, start, source_rel)? {
+        let after = skip_trivia(inner, end, source_rel)?;
+        if after != inner.len() {
+            return Err(format!(
+                "{source_rel}: unresolved include_str! form: {}",
+                inner.trim()
+            ));
+        }
         return Ok(IncludeStrArg::Literal(lit));
     }
-    if let Some(rest) = t.strip_prefix("concat!") {
-        let rest = rest.trim_start();
-        if !rest.starts_with('(') {
+    if inner[start..].starts_with("concat!") {
+        let after_bang = start + "concat!".len();
+        let j = skip_trivia(inner, after_bang, source_rel)?;
+        if j >= inner.len() || inner.as_bytes()[j] != b'(' {
             return Err(format!("{source_rel}: concat! missing '('"));
         }
-        let inner_end = find_matching_paren(rest, 0)
+        let inner_end = find_matching_delimiter(inner, j, source_rel)?
             .ok_or_else(|| format!("{source_rel}: unbalanced concat!("))?;
-        let concat_inner = rest[1..inner_end].trim();
-        return parse_cargo_manifest_concat(source_rel, concat_inner);
+        let concat_inner = inner[j + 1..inner_end].trim();
+        let arg = parse_cargo_manifest_concat(source_rel, concat_inner)?;
+        let after = skip_trivia(inner, inner_end + 1, source_rel)?;
+        if after != inner.len() {
+            return Err(format!(
+                "{source_rel}: unresolved include_str! form: {}",
+                inner.trim()
+            ));
+        }
+        return Ok(arg);
     }
-    Err(format!("{source_rel}: unresolved include_str! form: {t}"))
+    Err(format!(
+        "{source_rel}: unresolved include_str! form: {}",
+        inner.trim()
+    ))
 }
 
 fn parse_cargo_manifest_concat(source_rel: &str, inner: &str) -> Result<IncludeStrArg, String> {
@@ -2835,50 +3097,372 @@ fn parse_rust_string_literal(s: &str) -> Option<String> {
     Some(out)
 }
 
-fn skip_ws(src: &str, mut i: usize) -> usize {
-    let b = src.as_bytes();
-    while i < b.len() && b[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    i
+fn is_ident_byte(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'_'
 }
 
-fn find_matching_paren(src: &str, open_idx: usize) -> Option<usize> {
+fn is_ident_start(c: char) -> bool {
+    c.is_ascii_alphabetic() || c == '_'
+}
+
+fn is_ident_continue(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+fn is_hex(c: u8) -> bool {
+    c.is_ascii_hexdigit()
+}
+
+/// Skip whitespace and comments. Strings and char literals stay in place.
+fn skip_trivia(src: &str, mut i: usize, source_rel: &str) -> Result<usize, String> {
     let b = src.as_bytes();
-    if open_idx >= b.len() || b[open_idx] != b'(' {
-        return None;
+    loop {
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if src[i..].starts_with("//") {
+            i = end_of_line_comment(src, i);
+            continue;
+        }
+        if src[i..].starts_with("/*") {
+            i = end_of_block_comment(src, i, source_rel)?;
+            continue;
+        }
+        return Ok(i);
     }
-    let mut depth = 0;
-    let mut in_string = false;
-    let mut escaped = false;
-    for (i, &c) in b.iter().enumerate().skip(open_idx) {
-        if in_string {
-            if escaped {
-                escaped = false;
-                continue;
-            }
-            if c == b'\\' {
-                escaped = true;
-                continue;
-            }
-            if c == b'"' {
-                in_string = false;
+}
+
+fn end_of_line_comment(src: &str, i: usize) -> usize {
+    src[i..]
+        .find('\n')
+        .map(|rel| i + rel + 1)
+        .unwrap_or(src.len())
+}
+
+fn end_of_block_comment(src: &str, i: usize, source_rel: &str) -> Result<usize, String> {
+    let b = src.as_bytes();
+    let mut k = i + 2;
+    let mut depth = 1i32;
+    while k + 1 < b.len() {
+        if b[k] == b'/' && b[k + 1] == b'*' {
+            depth += 1;
+            k += 2;
+            continue;
+        }
+        if b[k] == b'*' && b[k + 1] == b'/' {
+            depth -= 1;
+            k += 2;
+            if depth == 0 {
+                return Ok(k);
             }
             continue;
         }
-        match c {
-            b'"' => in_string = true,
-            b'(' => depth += 1,
-            b')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i);
-                }
+        k += 1;
+    }
+    Err(format!("{source_rel}: unterminated block comment"))
+}
+
+enum RawString {
+    NotRaw,
+    End(usize),
+    Unterminated,
+    TooManyHashes,
+}
+
+fn classify_raw_string(src: &str, r_idx: usize) -> RawString {
+    let b = src.as_bytes();
+    if r_idx >= b.len() || b[r_idx] != b'r' {
+        return RawString::NotRaw;
+    }
+    let mut k = r_idx + 1;
+    let mut hashes = 0usize;
+    while k < b.len() && b[k] == b'#' {
+        hashes += 1;
+        if hashes >= 256 {
+            return RawString::TooManyHashes;
+        }
+        k += 1;
+    }
+    if k >= b.len() || b[k] != b'"' {
+        return RawString::NotRaw;
+    }
+    k += 1;
+    while k < b.len() {
+        if b[k] == b'"' {
+            let mut seen = 0usize;
+            let mut t = k + 1;
+            while seen < hashes && t < b.len() && b[t] == b'#' {
+                seen += 1;
+                t += 1;
             }
-            _ => {}
+            if seen == hashes {
+                return RawString::End(t);
+            }
+        }
+        k += 1;
+    }
+    RawString::Unterminated
+}
+
+fn raw_string_body(src: &str, r_idx: usize, end: usize) -> String {
+    let b = src.as_bytes();
+    let mut k = r_idx + 1;
+    let mut hashes = 0usize;
+    while k < b.len() && b[k] == b'#' {
+        hashes += 1;
+        k += 1;
+    }
+    let body_start = k + 1;
+    let body_end = end - hashes - 1;
+    src[body_start..body_end].to_string()
+}
+
+fn end_of_ordinary_string(src: &str, i: usize, source_rel: &str) -> Result<usize, String> {
+    let b = src.as_bytes();
+    let mut k = i + 1;
+    while k < b.len() {
+        if b[k] == b'\\' {
+            if k + 1 >= b.len() {
+                return Err(format!("{source_rel}: unterminated string"));
+            }
+            k += 2;
+            continue;
+        }
+        if b[k] == b'"' {
+            return Ok(k + 1);
+        }
+        k += 1;
+    }
+    Err(format!("{source_rel}: unterminated string"))
+}
+
+fn end_of_escaped_char(src: &str, i: usize, source_rel: &str) -> Result<usize, String> {
+    let b = src.as_bytes();
+    let mut k = i + 2;
+    if k >= b.len() {
+        return Err(format!("{source_rel}: unterminated char literal"));
+    }
+    match b[k] {
+        b'n' | b'r' | b't' | b'0' | b'\\' | b'\'' | b'"' => k += 1,
+        b'x' => {
+            if k + 3 > b.len() || !is_hex(b[k + 1]) || !is_hex(b[k + 2]) {
+                return Err(format!("{source_rel}: unterminated char literal"));
+            }
+            k += 3;
+        }
+        b'u' => {
+            k += 1;
+            if b.get(k) != Some(&b'{') {
+                return Err(format!("{source_rel}: unterminated char literal"));
+            }
+            k += 1;
+            let start = k;
+            while k < b.len() && b[k] != b'}' {
+                if !is_hex(b[k]) {
+                    return Err(format!("{source_rel}: unterminated char literal"));
+                }
+                k += 1;
+            }
+            if k >= b.len() || k == start {
+                return Err(format!("{source_rel}: unterminated char literal"));
+            }
+            k += 1;
+        }
+        _ => return Err(format!("{source_rel}: unterminated char literal")),
+    }
+    if b.get(k) != Some(&b'\'') {
+        return Err(format!("{source_rel}: unterminated char literal"));
+    }
+    Ok(k + 1)
+}
+
+fn end_of_char_or_lifetime(src: &str, i: usize, source_rel: &str) -> Result<usize, String> {
+    let b = src.as_bytes();
+    if i + 1 >= b.len() {
+        return Err(format!("{source_rel}: unterminated char literal"));
+    }
+    if b[i + 1] == b'\\' {
+        return end_of_escaped_char(src, i, source_rel);
+    }
+    let Some(first) = src[i + 1..].chars().next() else {
+        return Err(format!("{source_rel}: unterminated char literal"));
+    };
+    let after = i + 1 + first.len_utf8();
+    if b.get(after) == Some(&b'\'') {
+        return Ok(after + 1);
+    }
+    if is_ident_start(first) {
+        let mut k = after;
+        while k < src.len() {
+            let Some(c) = src[k..].chars().next() else {
+                break;
+            };
+            if !is_ident_continue(c) {
+                break;
+            }
+            k += c.len_utf8();
+        }
+        return Ok(k);
+    }
+    Err(format!("{source_rel}: unterminated char literal"))
+}
+
+/// When `i` starts a comment or literal, return the index after it.
+fn consume_skipped(src: &str, i: usize, source_rel: &str) -> Result<Option<usize>, String> {
+    let b = src.as_bytes();
+    if i >= b.len() || !src.is_char_boundary(i) {
+        return Ok(None);
+    }
+    if src[i..].starts_with("//") {
+        return Ok(Some(end_of_line_comment(src, i)));
+    }
+    if src[i..].starts_with("/*") {
+        return Ok(Some(end_of_block_comment(src, i, source_rel)?));
+    }
+    if b[i] == b'"' {
+        return Ok(Some(end_of_ordinary_string(src, i, source_rel)?));
+    }
+    if b[i] == b'\'' {
+        return Ok(Some(end_of_char_or_lifetime(src, i, source_rel)?));
+    }
+    if b[i] == b'b' {
+        match b.get(i + 1).copied() {
+            Some(b'\'') => return Ok(Some(end_of_char_or_lifetime(src, i + 1, source_rel)?)),
+            Some(b'"') => return Ok(Some(end_of_ordinary_string(src, i + 1, source_rel)?)),
+            Some(b'r') => match classify_raw_string(src, i + 1) {
+                RawString::NotRaw => return Ok(None),
+                RawString::End(end) => return Ok(Some(end)),
+                RawString::Unterminated => {
+                    return Err(format!("{source_rel}: unterminated raw byte string"));
+                }
+                RawString::TooManyHashes => {
+                    return Err(format!("{source_rel}: raw string has 256 or more hashes"));
+                }
+            },
+            _ => return Ok(None),
         }
     }
-    None
+    if b[i] == b'r' {
+        match classify_raw_string(src, i) {
+            RawString::NotRaw => return Ok(None),
+            RawString::End(end) => return Ok(Some(end)),
+            RawString::Unterminated => {
+                return Err(format!("{source_rel}: unterminated raw string"));
+            }
+            RawString::TooManyHashes => {
+                return Err(format!("{source_rel}: raw string has 256 or more hashes"));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn take_string_literal(
+    src: &str,
+    i: usize,
+    source_rel: &str,
+) -> Result<Option<(String, usize)>, String> {
+    let b = src.as_bytes();
+    if i >= b.len() {
+        return Ok(None);
+    }
+    if b[i] == b'r' {
+        match classify_raw_string(src, i) {
+            RawString::NotRaw => return Ok(None),
+            RawString::End(end) => return Ok(Some((raw_string_body(src, i, end), end))),
+            RawString::Unterminated => {
+                return Err(format!("{source_rel}: unterminated raw string"));
+            }
+            RawString::TooManyHashes => {
+                return Err(format!("{source_rel}: raw string has 256 or more hashes"));
+            }
+        }
+    }
+    if b[i] == b'"' {
+        let end = end_of_ordinary_string(src, i, source_rel)?;
+        let lit = parse_rust_string_literal(&src[i..end]).ok_or_else(|| {
+            format!(
+                "{source_rel}: unresolved include_str! form: {}",
+                src[i..end].trim()
+            )
+        })?;
+        return Ok(Some((lit, end)));
+    }
+    Ok(None)
+}
+
+/// Pair `(` with `)` and `{` with `}`. `[` is not a delimiter here.
+fn find_matching_delimiter(
+    src: &str,
+    open_idx: usize,
+    source_rel: &str,
+) -> Result<Option<usize>, String> {
+    let b = src.as_bytes();
+    if open_idx >= b.len() {
+        return Ok(None);
+    }
+    let (open, close) = match b[open_idx] {
+        b'(' => (b'(', b')'),
+        b'{' => (b'{', b'}'),
+        _ => return Ok(None),
+    };
+    let mut depth = 0i32;
+    let mut i = open_idx;
+    while i < b.len() {
+        if i != open_idx
+            && let Some(next) = consume_skipped(src, i, source_rel)?
+        {
+            if next <= i {
+                return Err(format!("{source_rel}: scanner did not advance"));
+            }
+            i = next;
+            continue;
+        }
+        if b[i] == open {
+            depth += 1;
+        } else if b[i] == close {
+            depth -= 1;
+            if depth == 0 {
+                return Ok(Some(i));
+            }
+        }
+        i += 1;
+    }
+    Ok(None)
+}
+
+fn code_has_fn_stem(src: &str, stem: &str, source_rel: &str) -> Result<bool, String> {
+    let b = src.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if let Some(next) = consume_skipped(src, i, source_rel)? {
+            if next <= i {
+                return Err(format!("{source_rel}: scanner did not advance"));
+            }
+            i = next;
+            continue;
+        }
+        if src[i..].starts_with("fn") {
+            let prev_ok = i == 0 || !is_ident_byte(b[i - 1]);
+            let after = i + 2;
+            if prev_ok && after < b.len() && b[after].is_ascii_whitespace() {
+                let mut k = after;
+                while k < b.len() && b[k].is_ascii_whitespace() {
+                    k += 1;
+                }
+                if src[k..].starts_with(stem) {
+                    let end = k + stem.len();
+                    match b.get(end).copied() {
+                        Some(b'(') | Some(b'<') => return Ok(true),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        let step = src[i..].chars().next().map(char::len_utf8).unwrap_or(1);
+        i += step;
+    }
+    Ok(false)
 }
 
 fn cargo_manifest_prefix(source_rel: &str) -> String {

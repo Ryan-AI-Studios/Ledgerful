@@ -16,6 +16,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Verify include_str stems stay on the engine tree (0483):** `verify --scope fast` injects `INCLUDE_STR_MATERIAL` only when the work root is the tree this binary was compiled from. A third-party `README.md` stays cheap and does not run those tests. The drift walker accepts comments, raw strings, char literals, and `include_str! { ... }`.
+
 - **Bench fixture source directory named target (0490):** `fixtureId` keeps `src/target/mod.rs` and a file named `target`. It still skips a `target` directory whose parent contains `Cargo.toml`, and it still skips a `node_modules` directory.
 
 - **Java scoped `new` package suffix (0489):** `new example.Box()` stays unresolved against same-file `com.example.Box`. A scoped `new` resolves when the segments equal the type qualified name, or when they are a segment suffix of the type path after the file package.

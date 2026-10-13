@@ -91,7 +91,7 @@ fn test_fast_dry_run_dirty_changelog_docs_no_snapshot_is_cheap() {
 }
 
 #[test]
-fn test_fast_dry_run_dirty_include_str_doc_injects_nextest() {
+fn test_fast_dry_run_dirty_include_str_doc_stays_cheap_without_nextest() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     init_committed_rust_repo(root);
@@ -112,27 +112,24 @@ fn test_fast_dry_run_dirty_include_str_doc_injects_nextest() {
     assert!(v.get("fallbackReason").is_none(), "{v}");
     assert_eq!(v["refused"], false);
     let steps = v["steps"].as_array().expect("steps");
-    let nextest = steps.iter().find(|step| {
-        step["command"]
-            .as_str()
-            .unwrap_or("")
-            .contains("cargo nextest")
-    });
-    let nextest = nextest.unwrap_or_else(|| panic!("nextest step missing: {v}"));
-    let cmd = nextest["command"].as_str().unwrap_or("");
     assert!(
-        cmd.contains("test(installation_md_has_live_brew_and_scoop_commands)"),
-        "{cmd}"
+        steps
+            .iter()
+            .any(|step| step["command"].as_str().unwrap_or("").contains("cargo fmt")),
+        "fmt must be present: {v}"
     );
     assert!(
-        cmd.contains("test(no_stale_package_manager_availability_language)"),
-        "{cmd}"
+        steps
+            .iter()
+            .any(|step| step["command"].as_str().unwrap_or("").contains("clippy")),
+        "clippy must be present: {v}"
     );
     assert!(
-        !cmd.contains("test(install_docs_truth)"),
-        "vacuous stem forbidden: {cmd}"
+        steps
+            .iter()
+            .all(|step| !step["command"].as_str().unwrap_or("").contains("nextest")),
+        "third-party installation.md must not schedule nextest: {v}"
     );
-    assert!(!cmd.contains("test(binary("), "{cmd}");
 }
 
 #[test]
