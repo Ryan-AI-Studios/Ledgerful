@@ -216,3 +216,45 @@ fn build_rs_keeps_git_sha_and_names_embed_spa_panic_literals() {
         );
     }
 }
+
+const WINGET_USES_PREFIX: &str = "vedantmgoyal9/winget-releaser@";
+const OLD_WINGET_SHA: &str = "4ffc7888bffd451b357355dc214d43bb9f23917e";
+
+fn sha_after_winget_uses(source: &str) -> &str {
+    let Some(at) = source.find(WINGET_USES_PREFIX) else {
+        return "";
+    };
+    let rest = &source[at + WINGET_USES_PREFIX.len()..];
+    let end = rest
+        .find(|c: char| !c.is_ascii_hexdigit())
+        .unwrap_or(rest.len());
+    &rest[..end]
+}
+
+#[test]
+fn package_distribution_winget_sha_matches_release_yml() {
+    let docs = include_str!("../../docs/package-distribution.md");
+    let release = include_str!("../../.github/workflows/release.yml");
+    let doc_sha = sha_after_winget_uses(docs);
+    let release_sha = sha_after_winget_uses(release);
+    assert_eq!(doc_sha.len(), 40, "doc winget sha length");
+    assert_eq!(release_sha.len(), 40, "release.yml winget sha length");
+    assert!(
+        doc_sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "doc winget sha is not ASCII hex"
+    );
+    assert!(
+        release_sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "release.yml winget sha is not ASCII hex"
+    );
+    assert_eq!(doc_sha, release_sha);
+    assert_ne!(doc_sha, OLD_WINGET_SHA);
+    assert!(
+        !docs.contains(OLD_WINGET_SHA),
+        "old winget sha remains in package-distribution.md"
+    );
+    assert!(
+        !release.contains(OLD_WINGET_SHA),
+        "old winget sha remains in release.yml"
+    );
+}

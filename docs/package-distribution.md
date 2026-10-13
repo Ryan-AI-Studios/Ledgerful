@@ -231,9 +231,9 @@ bash scripts/test-refresh-distribution-floors.sh
 - Identifier: `Ledgerful.Ledgerful` (accepted 2026-07-30; <!-- lf-floor:P-215 -->live on winget at **0.2.15**, manifests 2026-10-02<!-- /lf-floor:P-215 -->)
 - Install: `winget install Ledgerful.Ledgerful`
 - Note: <!-- lf-floor:P-217 -->community index **0.2.15**. GitHub Release **v0.2.16** published 2026-10-02; do not claim 0.2.16 live until that directory exists.<!-- /lf-floor:P-217 --> History: 0.2.12 was [#430322](https://github.com/microsoft/winget-pkgs/pull/430322) **merged** 2026-09-06; 0.2.11 was [#423248](https://github.com/microsoft/winget-pkgs/pull/423248) merged 2026-08-26; leftover [#415913](https://github.com/microsoft/winget-pkgs/pull/415913) (0.2.8) **merged**; [#416853](https://github.com/microsoft/winget-pkgs/pull/416853) (0.2.9) **closed-superseded**. The community index can lag a merge by minutes–hours; do not invent a `winget search` result.
-- Action: `vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e` (tag v2, SHA-pinned)
+- Action: `vedantmgoyal9/winget-releaser@b7370d4d152efdce803a26cc6ca9eee58cb2ad54` (tag v2, SHA-pinned)
 - Installer regex: portable `ledgerful-x86_64-pc-windows-msvc.zip`
-- Secret: `WINGET_TOKEN` (PAT that can open PRs against `microsoft/winget-pkgs` via fork) — **is set**
+- Secret: `WINGET_TOKEN` (PAT that can open PRs against `microsoft/winget-pkgs` via fork) — **is set**. Upstream README at the pinned SHA says a classic PAT needs `public_repo` and `workflow` for fork sync of workflow files. Without `workflow`, sync can fail with `UpdateRef`, and the fork is synced by hand. This sentence does not claim the live secret's scopes.
 - **Version bumps:** subsequent tags use this job; `WINGET_TOKEN` is set. If unset, the job notices and skips (failure mode).
 
 ## Secrets checklist
@@ -242,7 +242,7 @@ bash scripts/test-refresh-distribution-floors.sh
 |---|---|---|
 | `RELEASE_CUT_TOKEN` | `release-cut.yml` (prepare + tag) | Fine-grained PAT: open release PR + push tag that starts `release.yml`. No expiry; revoke at github.com/settings/personal-access-tokens if retired |
 | `MANIFEST_PUSH_TOKEN` | `bump-manifests` | Push formula/manifest to homebrew-tap + scoop-bucket |
-| `WINGET_TOKEN` | `winget-release` | Submit winget-pkgs update PR |
+| `WINGET_TOKEN` | `winget-release` | Submit winget-pkgs update PR. Classic PAT: `public_repo` and `workflow` for fork sync, or sync the fork by hand on `UpdateRef` |
 | `GITHUB_TOKEN` | release download of checksums | Default; contents read on public releases |
 
 ## cargo-binstall metadata
