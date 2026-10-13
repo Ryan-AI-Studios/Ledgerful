@@ -8,6 +8,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Argon2 0.6.0 (0487):** optional `argon2` moves from 0.5.3 to stable 0.6.0. The lock also takes `blake2` 0.11.0 and `password-hash` 0.6.1 (`phc` 0.6.1). Bundle KDF stays Argon2id v1.3 (64 MiB, t=3, p=1, 32-byte output). The 0.5.3 integration vector still matches. Package version stays 0.2.16.
+
 - **Cargo minor-and-patch group (0486):** `thiserror` 2.0.21 and `thiserror-impl` 2.0.21, `encoding_rs` 0.8.42, and `libc` 0.2.190. With `std` off, `encoding_rs` drops `multiversion`. Yanked `spin` 0.9.8 moves to 0.9.9. Package version stays 0.2.16. `libc_unstable_time64` stays off. The rand advisory was already patched on 0.10.2.
 
 - **GitHub Actions pins (0485):** `taiki-e/install-action` is v2.87.25 (`183e4297`). `dtolnay/rust-toolchain` is `e2a55d2f`, which passes `components` through an environment variable (upstream #179; no published GHSA). `vedantmgoyal9/winget-releaser` stays on the v2 line at `b7370d4d`, and the package-distribution SHA matches the workflow.

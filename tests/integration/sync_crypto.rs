@@ -13,6 +13,22 @@ fn test_team_secret_to_bundle_key_is_deterministic() {
 }
 
 #[test]
+fn test_bundle_key_matches_argon2_0_5_3_vector() {
+    let secret = b"twelve words team secret here please";
+    let salt = b"bundle-salt-1234";
+    let key = crypto::derive_bundle_key(secret, salt).unwrap();
+    // Captured on argon2 0.5.3 before the 0.6.0 bump. Same secret and salt as
+    // `test_team_secret_to_bundle_key_is_deterministic`.
+    assert_eq!(
+        *key,
+        [
+            23, 111, 167, 230, 70, 211, 58, 90, 144, 176, 193, 92, 110, 46, 1, 77, 208, 90, 38,
+            216, 233, 61, 145, 119, 159, 22, 70, 134, 5, 107, 241, 246,
+        ]
+    );
+}
+
+#[test]
 fn test_bundle_key_varies_with_salt() {
     let secret = b"twelve words team secret here please";
     let salt1 = b"salt-long-1";
