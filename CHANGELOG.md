@@ -6,6 +6,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **GitHub Actions pins (0485):** `taiki-e/install-action` is v2.87.25 (`183e4297`). `dtolnay/rust-toolchain` is `e2a55d2f`, which passes `components` through an environment variable (upstream #179; no published GHSA). `vedantmgoyal9/winget-releaser` stays on the v2 line at `b7370d4d`, and the package-distribution SHA matches the workflow.
+
 ### Fixed
 
 - **Source install no longer needs the sibling SPA bundle (0484):** `embed-spa` is off by default, so a default release build does not compile the dashboard embed. Release builds still pass `--all-features`, which embeds the SPA.
