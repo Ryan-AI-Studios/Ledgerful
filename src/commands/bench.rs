@@ -264,6 +264,35 @@ fn is_fixture_leaf(meta: &fs::Metadata) -> bool {
     false
 }
 
+fn target_parent_is_build_root(root: &Path, dir: &Path) -> bool {
+    dir.join("Cargo.toml").is_file()
+        || dir.join("pom.xml").is_file()
+        || dir.join("build.sbt").is_file()
+        || sbt_meta_project_dir(root, dir)
+}
+
+fn sbt_meta_project_dir(root: &Path, dir: &Path) -> bool {
+    let mut cursor = dir;
+    loop {
+        // Stop before `parent()` so a fixture root named `project` does
+        // not consult a `build.sbt` outside the fixture.
+        if cursor == root {
+            return false;
+        }
+        match cursor.file_name() {
+            Some(name) if name == "project" => {}
+            _ => return false,
+        }
+        let Some(parent) = cursor.parent() else {
+            return false;
+        };
+        if parent.join("build.sbt").is_file() {
+            return true;
+        }
+        cursor = parent;
+    }
+}
+
 fn collect_relative_paths(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<()> {
     let mut entries: Vec<_> = fs::read_dir(dir)
         .into_diagnostic()?
@@ -290,9 +319,11 @@ fn collect_relative_paths(root: &Path, dir: &Path, out: &mut Vec<String>) -> Res
             if name == "node_modules" {
                 continue;
             }
-            // Build tree only when this directory's parent has a manifest.
-            // `src/target/` has no sibling Cargo.toml, so it is source.
-            if name == "target" && dir.join("Cargo.toml").is_file() {
+            // Skip a build `target/` when this directory has `Cargo.toml`,
+            // `pom.xml`, or `build.sbt`, or when it is an sbt `project`
+            // chain whose parent has `build.sbt`. That chain walk stops
+            // at the fixture root. `src/target/` stays source.
+            if name == "target" && target_parent_is_build_root(root, dir) {
                 continue;
             }
             collect_relative_paths(root, &path, out)?;
@@ -687,6 +718,199 @@ mod tests {
         assert_eq!(
             paths,
             vec!["Cargo.toml".to_string(), "src/lib.rs".to_string()]
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)] // project test naming: feature__condition__expected
+    fn collect_relative_paths__maven_and_sbt_targets__skips_build_trees_and_keeps_source() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        write_rel(root, "pom.xml", "<project/>");
+        write_rel(root, "src/main/java/App.java", "class App {}");
+        write_rel(root, "src/target/mod.rs", "fn source() {}");
+        write_rel(root, "target/classes/App.class", "class");
+        write_rel(root, "module/pom.xml", "<project/>");
+        write_rel(root, "module/src/main/java/A.java", "class A {}");
+        write_rel(root, "module/target/classes/A.class", "class");
+        write_rel(root, "build.sbt", "");
+        write_rel(root, "project/build.properties", "sbt.version=1.10.0");
+        write_rel(root, "project/plugins.sbt", "");
+        write_rel(root, "project/target/streams/out", "out");
+        write_rel(root, "project/project/Plugins.scala", "object Plugins");
+        write_rel(root, "project/project/target/cache/x", "x");
+        write_rel(root, "sub/build.sbt", "");
+        write_rel(root, "sub/src/main/scala/B.scala", "object B");
+        write_rel(root, "sub/target/scala/classes/B.class", "class");
+        write_rel(root, "plain/readme.txt", "plain");
+        write_rel(root, "plain/target/keep.txt", "keep");
+        write_rel(root, "notes/project/target/keep.txt", "keep");
+        write_rel(root, "cased/Project/target/keep.txt", "keep");
+        write_rel(root, "mavenfile/pom.xml", "<project/>");
+        write_rel(root, "mavenfile/target", "file");
+        write_rel(root, "extra/target", "file");
+        write_rel(root, "core/src/main/scala/C.scala", "object C");
+        write_rel(root, "core/target/classes/C.class", "class");
+
+        let mut paths = Vec::new();
+        collect_relative_paths(root, root, &mut paths).expect("collect");
+        paths.sort();
+        assert_eq!(
+            paths,
+            vec![
+                "build.sbt".to_string(),
+                "cased/Project/target/keep.txt".to_string(),
+                "core/src/main/scala/C.scala".to_string(),
+                "core/target/classes/C.class".to_string(),
+                "extra/target".to_string(),
+                "mavenfile/pom.xml".to_string(),
+                "mavenfile/target".to_string(),
+                "module/pom.xml".to_string(),
+                "module/src/main/java/A.java".to_string(),
+                "notes/project/target/keep.txt".to_string(),
+                "plain/readme.txt".to_string(),
+                "plain/target/keep.txt".to_string(),
+                "pom.xml".to_string(),
+                "project/build.properties".to_string(),
+                "project/plugins.sbt".to_string(),
+                "project/project/Plugins.scala".to_string(),
+                "src/main/java/App.java".to_string(),
+                "src/target/mod.rs".to_string(),
+                "sub/build.sbt".to_string(),
+                "sub/src/main/scala/B.scala".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)] // project test naming: feature__condition__expected
+    fn fixture_id_for__maven_target_and_bytes__id_follows_paths_only() {
+        let clean = tempfile::tempdir().expect("tempdir");
+        let built = tempfile::tempdir().expect("tempdir");
+        let edited = tempfile::tempdir().expect("tempdir");
+        let source_target = tempfile::tempdir().expect("tempdir");
+
+        write_rel(clean.path(), "pom.xml", "<project/>");
+        write_rel(clean.path(), "src/main/java/App.java", "class App {}");
+
+        write_rel(built.path(), "pom.xml", "<project/>");
+        write_rel(built.path(), "src/main/java/App.java", "class App {}");
+        write_rel(built.path(), "target/classes/App.class", "class");
+
+        write_rel(edited.path(), "pom.xml", "<project/>");
+        write_rel(
+            edited.path(),
+            "src/main/java/App.java",
+            "class App { int x; }",
+        );
+
+        write_rel(source_target.path(), "pom.xml", "<project/>");
+        write_rel(
+            source_target.path(),
+            "src/main/java/App.java",
+            "class App {}",
+        );
+        write_rel(source_target.path(), "src/target/mod.rs", "fn source() {}");
+
+        let mut clean_paths = Vec::new();
+        collect_relative_paths(clean.path(), clean.path(), &mut clean_paths).expect("collect");
+        clean_paths.sort();
+        let mut built_paths = Vec::new();
+        collect_relative_paths(built.path(), built.path(), &mut built_paths).expect("collect");
+        built_paths.sort();
+        let mut edited_paths = Vec::new();
+        collect_relative_paths(edited.path(), edited.path(), &mut edited_paths).expect("collect");
+        edited_paths.sort();
+        let mut source_paths = Vec::new();
+        collect_relative_paths(
+            source_target.path(),
+            source_target.path(),
+            &mut source_paths,
+        )
+        .expect("collect");
+        source_paths.sort();
+
+        let two = vec!["pom.xml".to_string(), "src/main/java/App.java".to_string()];
+        assert_eq!(clean_paths, two);
+        assert_eq!(built_paths, two);
+        assert_eq!(edited_paths, two);
+        assert_eq!(
+            source_paths,
+            vec![
+                "pom.xml".to_string(),
+                "src/main/java/App.java".to_string(),
+                "src/target/mod.rs".to_string(),
+            ]
+        );
+
+        let clean_id = fixture_id_for(clean.path()).expect("clean id");
+        let built_id = fixture_id_for(built.path()).expect("built id");
+        let edited_id = fixture_id_for(edited.path()).expect("edited id");
+        let source_id = fixture_id_for(source_target.path()).expect("source id");
+        assert_eq!(clean_id, built_id);
+        assert_eq!(clean_id, edited_id);
+        assert_ne!(clean_id, source_id);
+        assert_fixture_id_count_hex(&clean_id, 2);
+        assert_fixture_id_count_hex(&built_id, 2);
+        assert_fixture_id_count_hex(&edited_id, 2);
+        assert_fixture_id_count_hex(&source_id, 3);
+    }
+
+    #[test]
+    #[allow(non_snake_case)] // project test naming: feature__condition__expected
+    fn fixture_id_for__sbt_project_target__unbuilt_equals_built() {
+        let unbuilt = tempfile::tempdir().expect("tempdir");
+        let built = tempfile::tempdir().expect("tempdir");
+
+        write_rel(unbuilt.path(), "build.sbt", "");
+        write_rel(unbuilt.path(), "project/plugins.sbt", "");
+        write_rel(unbuilt.path(), "src/main/scala/A.scala", "object A");
+
+        write_rel(built.path(), "build.sbt", "");
+        write_rel(built.path(), "project/plugins.sbt", "");
+        write_rel(built.path(), "src/main/scala/A.scala", "object A");
+        write_rel(built.path(), "target/scala/classes/A.class", "class");
+        write_rel(built.path(), "project/target/streams/out", "out");
+
+        let mut unbuilt_paths = Vec::new();
+        collect_relative_paths(unbuilt.path(), unbuilt.path(), &mut unbuilt_paths)
+            .expect("collect");
+        unbuilt_paths.sort();
+        let mut built_paths = Vec::new();
+        collect_relative_paths(built.path(), built.path(), &mut built_paths).expect("collect");
+        built_paths.sort();
+
+        let three = vec![
+            "build.sbt".to_string(),
+            "project/plugins.sbt".to_string(),
+            "src/main/scala/A.scala".to_string(),
+        ];
+        assert_eq!(unbuilt_paths, three);
+        assert_eq!(built_paths, three);
+
+        let unbuilt_id = fixture_id_for(unbuilt.path()).expect("unbuilt id");
+        let built_id = fixture_id_for(built.path()).expect("built id");
+        assert_eq!(unbuilt_id, built_id);
+        assert_fixture_id_count_hex(&unbuilt_id, 3);
+        assert_fixture_id_count_hex(&built_id, 3);
+    }
+
+    #[test]
+    #[allow(non_snake_case)] // project test naming: feature__condition__expected
+    fn collect_relative_paths__root_named_project_and_outside_build_sbt__records_target() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let outside = tmp.path();
+        write_rel(outside, "build.sbt", "");
+        let root = outside.join("project");
+        write_rel(&root, "target/keep.txt", "keep");
+        write_rel(&root, "src/App.scala", "object App");
+
+        let mut paths = Vec::new();
+        collect_relative_paths(&root, &root, &mut paths).expect("collect");
+        paths.sort();
+        assert_eq!(
+            paths,
+            vec!["src/App.scala".to_string(), "target/keep.txt".to_string(),]
         );
     }
 
