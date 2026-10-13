@@ -449,3 +449,42 @@ fn suite_budget_survives_omitted_timeout_and_explicit_cap_still_mins() {
         .expect("suite step");
     assert_eq!(capped_test["timeoutSecs"], 25, "{capped_v}");
 }
+
+#[test]
+fn unconfigured_full_dry_run_stamps_test_class_with_library_constant() {
+    use ledgerful::verify::runner::{StepClass, classify_step_command};
+    use ledgerful::verify::timeouts::DEFAULT_TEST_SUITE_TIMEOUT_SECS;
+
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    init_committed_rust_repo(root);
+
+    let open = spawn_verify(root, &["verify", "--scope", "full", "--json", "--dry-run"]);
+    let open_stdout = stdout_text(&open);
+    let open_stderr = String::from_utf8_lossy(&open.stderr);
+    assert!(
+        open.status.success(),
+        "unconfigured full dry-run must exit 0; stdout={open_stdout:?} stderr={open_stderr:?}"
+    );
+    let open_v: serde_json::Value =
+        serde_json::from_str(open_stdout.trim()).expect("unconfigured dry-run JSON");
+    assert_eq!(open_v["schemaVersion"], 1);
+    let steps = open_v["steps"].as_array().expect("steps");
+    let mut test_steps = 0usize;
+    for step in steps {
+        let command = step["command"].as_str().unwrap_or("");
+        if command.contains("cargo fmt") {
+            assert_eq!(step["timeoutSecs"], 400, "{open_v}");
+            assert_eq!(step["budgetSource"], "format", "{open_v}");
+        }
+        if classify_step_command(command) == StepClass::Test {
+            test_steps += 1;
+            assert_eq!(
+                step["timeoutSecs"], DEFAULT_TEST_SUITE_TIMEOUT_SECS,
+                "{open_v}"
+            );
+            assert_eq!(step["budgetSource"], "suite", "{open_v}");
+        }
+    }
+    assert!(test_steps >= 1, "expected a test-class step: {open_v}");
+}

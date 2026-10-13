@@ -330,7 +330,8 @@ after the CLI `--timeout` cap. schemaVersion stays 1. Still no `ok`, no
 Auto `--timeout 0` stays the 400 ceiling. Omitted `--timeout` leaves the
 planned budget: fast empty-changes stays fmt 60 / clippy 400; auto-plan
 `cargo test` / `cargo nextest` use `[verify] suite_timeout_secs` or the
-built-in 400. An explicit flag is `min(planned, flag)`. Executed
+test-class built-in `DEFAULT_TEST_SUITE_TIMEOUT_SECS` (400). An explicit
+flag is `min(planned, flag)`. Executed
 `VerifyCliJson` steps do not grow `timeoutSecs` or `budgetSource`.
 
 `verifySignatures.checkpoint` (only with `--against-export`): `match` and
