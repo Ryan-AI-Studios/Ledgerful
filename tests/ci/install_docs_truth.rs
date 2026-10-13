@@ -201,20 +201,55 @@ fn release_yml_keeps_all_features_and_names_embed_spa() {
 #[test]
 fn build_rs_keeps_git_sha_and_names_embed_spa_panic_literals() {
     let source = include_str!("../../build.rs");
-    assert!(source.contains("LEDGERFUL_GIT_SHA"));
-    assert!(source.contains("LEDGERFUL_VERSION_LONG"));
-    for literal in [
+    let remedy = format!(
+        "Build ledgerful-frontend so out/index.html exists (npm run build) first, or drop embed-spa and use default features. Or {SOURCE_INSTALL_COMMAND}"
+    );
+    let required = [
+        "LEDGERFUL_GIT_SHA",
+        "LEDGERFUL_VERSION_LONG",
         "embed-spa",
         "ledgerful-frontend",
         "index.html",
-        "--spa-dir",
         SOURCE_INSTALL_COMMAND,
-    ] {
-        assert!(
-            source.contains(literal),
-            "build.rs is missing panic literal {literal}"
-        );
-    }
+        "CARGO_MANIFEST_DIR is unset ({err})",
+        "Expected ../ledgerful-frontend/out/index.html",
+        "is not a file (checked {})",
+    ];
+    let missing: Vec<&str> = required
+        .into_iter()
+        .filter(|literal| !source.contains(literal))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "build.rs is missing panic literals:\n  {}",
+        missing.join("\n  ")
+    );
+    assert_eq!(
+        source.matches(remedy.as_str()).count(),
+        2,
+        "shared embed-spa remedy must occur twice in build.rs"
+    );
+    assert_eq!(
+        source
+            .matches("CARGO_MANIFEST_DIR is unset ({err})")
+            .count(),
+        1
+    );
+    assert_eq!(
+        source
+            .matches("Expected ../ledgerful-frontend/out/index.html")
+            .count(),
+        1
+    );
+    assert_eq!(source.matches("is not a file (checked {})").count(), 1);
+    assert!(
+        !source.contains("--spa-dir"),
+        "build.rs must not name --spa-dir"
+    );
+    assert!(
+        !source.contains("Expected ledgerful-frontend out/index.html."),
+        "build.rs must not keep the old unset prefix"
+    );
 }
 
 const WINGET_USES_PREFIX: &str = "vedantmgoyal9/winget-releaser@";

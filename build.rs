@@ -42,7 +42,7 @@ fn check_embedded_spa() {
         Ok(dir) => dir,
         Err(err) => {
             panic!(
-                "embed-spa: CARGO_MANIFEST_DIR is unset ({err}). Expected ledgerful-frontend out/index.html. Pass --spa-dir, or cargo install --git https://github.com/Ryan-AI-Studios/Ledgerful --branch main --locked --bin ledgerful"
+                "embed-spa: CARGO_MANIFEST_DIR is unset ({err}). Expected ../ledgerful-frontend/out/index.html. Build ledgerful-frontend so out/index.html exists (npm run build) first, or drop embed-spa and use default features. Or cargo install --git https://github.com/Ryan-AI-Studios/Ledgerful --branch main --locked --bin ledgerful"
             );
         }
     };
@@ -53,7 +53,7 @@ fn check_embedded_spa() {
     }
 
     panic!(
-        "embed-spa: ledgerful-frontend out/index.html is not a file (checked {}). Pass --spa-dir pointing at a ledgerful-frontend out/ directory, or cargo install --git https://github.com/Ryan-AI-Studios/Ledgerful --branch main --locked --bin ledgerful",
+        "embed-spa: ledgerful-frontend out/index.html is not a file (checked {}). Build ledgerful-frontend so out/index.html exists (npm run build) first, or drop embed-spa and use default features. Or cargo install --git https://github.com/Ryan-AI-Studios/Ledgerful --branch main --locked --bin ledgerful",
         index.display()
     );
 }
