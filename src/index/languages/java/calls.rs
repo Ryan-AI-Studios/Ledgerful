@@ -303,19 +303,29 @@ fn collect_type_segments(node: Node, content: &str, out: &mut Vec<String>) {
     }
 }
 
-fn type_qn_has_segment_suffix(type_qn: &str, key: &[String]) -> bool {
+fn type_qn_has_segment_suffix(type_qn: &str, package: &str, key: &[String]) -> bool {
     if key.is_empty() {
         return false;
     }
     let qn_segs: Vec<&str> = type_qn.split('.').filter(|seg| !seg.is_empty()).collect();
-    if key.len() > qn_segs.len() {
+    if key.iter().map(String::as_str).eq(qn_segs.iter().copied()) {
+        return true;
+    }
+    let pkg_segs: Vec<&str> = package.split('.').filter(|seg| !seg.is_empty()).collect();
+    let type_path: &[&str] = if pkg_segs.is_empty() {
+        qn_segs.as_slice()
+    } else if qn_segs.len() >= pkg_segs.len() && qn_segs[..pkg_segs.len()] == pkg_segs[..] {
+        &qn_segs[pkg_segs.len()..]
+    } else {
+        return false;
+    };
+    if key.len() > type_path.len() {
         return false;
     }
-    let start = qn_segs.len() - key.len();
-    qn_segs[start..]
-        .iter()
-        .zip(key.iter())
-        .all(|(qn_seg, key_seg)| *qn_seg == key_seg.as_str())
+    let start = type_path.len() - key.len();
+    key.iter()
+        .map(String::as_str)
+        .eq(type_path[start..].iter().copied())
 }
 
 fn creation_last_segment(key: &CreationTypeKey) -> String {
@@ -343,7 +353,7 @@ fn object_creation_edge(
         CreationTypeKey::Simple(name) => types.iter().filter(|t| t.simple_name == *name).collect(),
         CreationTypeKey::Scoped(segments) => types
             .iter()
-            .filter(|t| type_qn_has_segment_suffix(&t.type_qn, segments))
+            .filter(|t| type_qn_has_segment_suffix(&t.type_qn, package, segments))
             .collect(),
     };
     let (callee_name, status) = if !has_body && matches.len() == 1 && matches[0].ctor_count == 1 {
@@ -753,6 +763,7 @@ class Uses {
         );
     }
 
+    // 0481 lock name. The package rule is scoped_new_package_segment_is_not_a_type_suffix.
     #[test]
     fn scoped_new_matches_type_qn_segment_suffix() {
         let path = Path::new("T.java");
@@ -851,6 +862,204 @@ class Uses { void m() { new Outer<String>.Inner(); } }
         assert!(
             edges.iter().all(|e| e.callee_name != "new.String"),
             "String is not a segment; edges={edges:?}"
+        );
+    }
+
+    #[test]
+    fn scoped_new_package_segment_is_not_a_type_suffix() {
+        let path = Path::new("T.java");
+
+        let package_tail = r#"
+package com.example;
+class Box { Box() {} }
+class Uses { void m() { new example.Box(); } }
+"#;
+        let edges = extract_calls(path, package_tail, &[]).unwrap();
+        assert!(
+            edges.iter().any(|e| {
+                e.callee_name == "new.Box" && e.resolution_status == ResolutionStatus::Unresolved
+            }),
+            "package tail new example.Box() stays unresolved; edges={edges:?}"
+        );
+        assert!(
+            edges
+                .iter()
+                .all(|e| e.callee_name != "com.example.Box.<init>"),
+            "package tail must not bind com.example.Box; edges={edges:?}"
+        );
+
+        let nested_and_full = r#"
+package com.example;
+class example { class Box { Box() {} } }
+class Uses { void m() { new example.Box(); new com.example.example.Box(); } }
+"#;
+        let edges = extract_calls(path, nested_and_full, &[]).unwrap();
+        let nested_hits = edges
+            .iter()
+            .filter(|e| {
+                e.callee_name == "com.example.example.Box.<init>"
+                    && e.resolution_status == ResolutionStatus::Resolved
+            })
+            .count();
+        assert_eq!(
+            nested_hits, 2,
+            "nested example.Box and its full name both resolve; edges={edges:?}"
+        );
+
+        let both_boxes = r#"
+package com.example;
+class Box { Box() {} }
+class example { class Box { Box() {} } }
+class Uses { void m() { new example.Box(); } }
+"#;
+        let edges = extract_calls(path, both_boxes, &[]).unwrap();
+        assert!(
+            edges.iter().any(|e| {
+                e.callee_name == "com.example.example.Box.<init>"
+                    && e.resolution_status == ResolutionStatus::Resolved
+            }),
+            "both types: nested example.Box resolves; edges={edges:?}"
+        );
+        assert!(
+            edges
+                .iter()
+                .all(|e| e.callee_name != "com.example.Box.<init>"),
+            "both types: top-level Box must not bind; edges={edges:?}"
+        );
+
+        let middle_under_outer = r#"
+package com.example;
+class Outer { class Middle { class Inner { Inner() {} } } }
+class Uses { void m() { new Middle.Inner(); } }
+"#;
+        let edges = extract_calls(path, middle_under_outer, &[]).unwrap();
+        assert!(
+            edges.iter().any(|e| {
+                e.callee_name == "com.example.Outer.Middle.Inner.<init>"
+                    && e.resolution_status == ResolutionStatus::Resolved
+            }),
+            "Middle.Inner binds Outer.Middle.Inner; edges={edges:?}"
+        );
+
+        let package_middle = r#"
+package com.example;
+class Middle { class Inner { Inner() {} } }
+class Uses { void m() { new example.Middle.Inner(); } }
+"#;
+        let edges = extract_calls(path, package_middle, &[]).unwrap();
+        assert!(
+            edges.iter().any(|e| {
+                e.callee_name == "new.Inner" && e.resolution_status == ResolutionStatus::Unresolved
+            }),
+            "example.Middle.Inner stays unresolved; edges={edges:?}"
+        );
+        assert!(
+            edges
+                .iter()
+                .all(|e| e.callee_name != "com.example.Middle.Inner.<init>"),
+            "example.Middle.Inner must not bind through the package; edges={edges:?}"
+        );
+
+        let two_middles = r#"
+package com.example;
+class Outer { class Middle { class Inner { Inner() {} } } }
+class Middle { class Inner { Inner() {} } }
+class Uses { void m() { new Middle.Inner(); } }
+"#;
+        let edges = extract_calls(path, two_middles, &[]).unwrap();
+        assert!(
+            edges.iter().any(|e| {
+                e.callee_name == "new.Inner" && e.resolution_status == ResolutionStatus::Unresolved
+            }),
+            "two Middle.Inner paths stay unresolved; edges={edges:?}"
+        );
+        assert!(
+            edges.iter().all(|e| {
+                e.callee_name != "com.example.Outer.Middle.Inner.<init>"
+                    && e.callee_name != "com.example.Middle.Inner.<init>"
+            }),
+            "two Middle.Inner paths bind neither init; edges={edges:?}"
+        );
+
+        let unpackaged_box = r#"
+class Box { Box() {} }
+class Uses { void m() { new example.Box(); } }
+"#;
+        let edges = extract_calls(path, unpackaged_box, &[]).unwrap();
+        assert!(
+            edges.iter().any(|e| {
+                e.callee_name == "new.Box" && e.resolution_status == ResolutionStatus::Unresolved
+            }),
+            "unpackaged example.Box stays unresolved; edges={edges:?}"
+        );
+        assert!(
+            edges.iter().all(|e| e.callee_name != "Box.<init>"),
+            "unpackaged example.Box must not bind Box; edges={edges:?}"
+        );
+
+        let unpackaged_nested = r#"
+class example { class Box { Box() {} } }
+class Uses { void m() { new example.Box(); } }
+"#;
+        let edges = extract_calls(path, unpackaged_nested, &[]).unwrap();
+        assert!(
+            edges.iter().any(|e| {
+                e.callee_name == "example.Box.<init>"
+                    && e.resolution_status == ResolutionStatus::Resolved
+            }),
+            "unpackaged nested example.Box resolves; edges={edges:?}"
+        );
+
+        let plain_full_name = r#"
+package com.example;
+class Box { Box() {} }
+class Uses { void m() { new com.example.Box(); } }
+"#;
+        let edges = extract_calls(path, plain_full_name, &[]).unwrap();
+        assert!(
+            edges.iter().any(|e| {
+                e.callee_name == "com.example.Box.<init>"
+                    && e.resolution_status == ResolutionStatus::Resolved
+            }),
+            "plain new com.example.Box() resolves; edges={edges:?}"
+        );
+
+        let member_example = r#"
+package com.example;
+class Box { Box() {} }
+class Outer { class example { class Box { Box() {} } } }
+class Uses { void m() { new example.Box(); } }
+"#;
+        let edges = extract_calls(path, member_example, &[]).unwrap();
+        assert!(
+            edges.iter().any(|e| {
+                e.callee_name == "com.example.Outer.example.Box.<init>"
+                    && e.resolution_status == ResolutionStatus::Resolved
+            }),
+            "Outer.example.Box is the type-path match; edges={edges:?}"
+        );
+        assert!(
+            edges
+                .iter()
+                .all(|e| e.callee_name != "com.example.Box.<init>"),
+            "Outer.example.Box must not bind top-level Box; edges={edges:?}"
+        );
+    }
+
+    #[test]
+    fn java_scoped_new_doc_locks_the_package_rule() {
+        let doc = include_str!("../../../../docs/Call-Resolution.md");
+        assert!(
+            doc.contains("new example.Box()"),
+            "doc must name the package-segment example"
+        );
+        assert!(
+            doc.contains("after the file package"),
+            "doc must state the type path after the file package"
+        );
+        assert!(
+            !doc.contains("suffix of that type's qualified name"),
+            "doc must not keep the old qualified-name suffix sentence"
         );
     }
 }
