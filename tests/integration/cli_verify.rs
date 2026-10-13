@@ -1,4 +1,4 @@
-use crate::common::{DirGuard, setup_git_repo};
+use crate::common::{DirGuard, git_add_and_commit_no_verify, nested_repo_root, setup_git_repo};
 use camino::Utf8Path;
 use ledgerful::commands::verify::{ExecuteVerifyOpts, execute_verify};
 use ledgerful::verify::plan::VerifyScope;
@@ -586,7 +586,8 @@ fn test_verify_health_check_env_prefix_command() {
 #[allow(non_snake_case)]
 fn test_verify_warns_on_stale_cached_impact_packet__slow() {
     let tmp = tempdir().unwrap();
-    let root = tmp.path();
+    let root_owned = nested_repo_root(tmp.path());
+    let root = root_owned.as_path();
     setup_git_repo(root);
 
     std::fs::write(root.join("a.txt"), "v1").unwrap();
@@ -622,16 +623,10 @@ fn test_verify_warns_on_stale_cached_impact_packet__slow() {
         String::from_utf8_lossy(&scan_out.stderr)
     );
 
-    Command::new("git")
-        .args(["add", "-A"])
-        .current_dir(root)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["commit", "-m", "advance head past the cached packet"])
-        .current_dir(root)
-        .output()
-        .unwrap();
+    // Assert the advance. `scan --impact` can leave a pending ledger
+    // transaction, and a bare `git commit` does not check status, so a
+    // hook failure used to leave HEAD on the cached report.
+    git_add_and_commit_no_verify(root, "advance head past the cached packet");
 
     let output = Command::new(ledgerful_bin)
         .arg("verify")
