@@ -52,21 +52,28 @@ pub fn spawn_wait_grouped(
 
     let mut child = wrapped.spawn().map_err(GroupedProcessError::Spawn)?;
 
-    let status = match wait_timeout::ChildExt::wait_timeout(
-        // SAFETY: `inner_child_mut()` returns a reference to the always-valid
-        // inner `std::process::Child` held by the `process-wrap` wrapper. The
-        // child was just spawned and not yet moved or consumed, so the inner
-        // reference is valid for the duration of this `wait_timeout` call.
+    let waited = {
+        // SAFETY: `try_inner_child_mut()` returns the native `std::process::Child`
+        // held by the `process-wrap` wrapper. The child was just spawned and not
+        // yet moved or consumed, so the inner reference is valid for this
+        // `wait_timeout` call. The borrow ends with this block, before the
+        // timeout arm uses `child` again.
         // NOTE: `wait_timeout` only reaps the IMMEDIATE child. The wrapper's
         // own `wait()` is what reaps the whole process group (Unix:
         // `waitpid(-pgid)`) or Job Object (Windows: `wait_on_job`).
         // Legitimate: process-wrap API requires unsafe to access inner Child.
         // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-        unsafe { child.inner_child_mut() },
-        timeout,
-    )
-    .map_err(GroupedProcessError::Wait)?
-    {
+        let native = match unsafe { child.try_inner_child_mut() } {
+            Some(native) => native,
+            None => {
+                return Err(GroupedProcessError::Wait(io::Error::other(
+                    "process-wrap wrapper chain has no native Child",
+                )));
+            }
+        };
+        wait_timeout::ChildExt::wait_timeout(native, timeout)
+    };
+    let status = match waited.map_err(GroupedProcessError::Wait)? {
         Some(status) => {
             // The immediate child exited. Grandchildren may still be running.
             // Use a BOUNDED non-blocking reap loop (`try_wait`) for a short
@@ -129,31 +136,36 @@ pub fn spawn_wait_grouped_captured(
 
     let mut child = wrapped.spawn().map_err(GroupedProcessError::Spawn)?;
 
-    // Take pipes from the inner child so concurrent readers can drain them
-    // without deadlocking on a full pipe buffer.
-    // Legitimate: process-wrap API requires unsafe to access inner Child.
-    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-    let (stdout_handle, stderr_handle) = unsafe {
-        let inner = child.inner_child_mut();
-        let stdout = inner
-            .stdout
-            .take()
-            .map(|stdout| thread::spawn(move || read_capped(stdout, max_output_bytes)));
-        let stderr = inner
-            .stderr
-            .take()
-            .map(|stderr| thread::spawn(move || read_capped(stderr, max_output_bytes)));
-        (stdout, stderr)
-    };
+    // `stdout()` / `stderr()` pass through to the native child. No `unsafe`.
+    let stdout_handle = child
+        .stdout()
+        .take()
+        .map(|stdout| thread::spawn(move || read_capped(stdout, max_output_bytes)));
+    let stderr_handle = child
+        .stderr()
+        .take()
+        .map(|stderr| thread::spawn(move || read_capped(stderr, max_output_bytes)));
 
-    let status = match wait_timeout::ChildExt::wait_timeout(
+    let waited = {
+        // SAFETY: `try_inner_child_mut()` returns the native `std::process::Child`
+        // held by the `process-wrap` wrapper. The borrow ends with this block,
+        // before the timeout arm uses `child` again.
+        // NOTE: `wait_timeout` only reaps the IMMEDIATE child. The wrapper's
+        // own `wait()` is what reaps the whole process group (Unix:
+        // `waitpid(-pgid)`) or Job Object (Windows: `wait_on_job`).
         // Legitimate: process-wrap API requires unsafe to access inner Child.
         // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-        unsafe { child.inner_child_mut() },
-        timeout,
-    )
-    .map_err(GroupedProcessError::Wait)?
-    {
+        let native = match unsafe { child.try_inner_child_mut() } {
+            Some(native) => native,
+            None => {
+                return Err(GroupedProcessError::Wait(io::Error::other(
+                    "process-wrap wrapper chain has no native Child",
+                )));
+            }
+        };
+        wait_timeout::ChildExt::wait_timeout(native, timeout)
+    };
+    let status = match waited.map_err(GroupedProcessError::Wait)? {
         Some(status) => {
             let reap_start = Instant::now();
             while reap_start.elapsed() < REAP_GRACE {

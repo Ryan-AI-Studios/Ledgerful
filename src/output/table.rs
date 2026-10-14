@@ -1,6 +1,5 @@
 use std::io::IsTerminal;
 
-use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::{ASCII_FULL, UTF8_FULL};
 use comfy_table::{Cell, Color};
 
@@ -253,14 +252,12 @@ pub fn truncate_chars(s: &str, max_len: usize, style: TableStyleKind) -> String 
 pub fn apply_table_style(table: &mut Table, style: TableStyleKind) {
     match style {
         TableStyleKind::Ascii => {
-            table.load_preset(ASCII_FULL);
+            table.load_style(ASCII_FULL);
             // Explicit ASCII dots — never U+2026 under Ascii (0181-I).
             table.set_truncation_indicator("...");
         }
         TableStyleKind::Utf8 => {
-            table
-                .load_preset(UTF8_FULL)
-                .apply_modifier(UTF8_ROUND_CORNERS);
+            table.load_style(UTF8_FULL.with_rounded_corners());
             table.set_truncation_indicator("…");
         }
     }
