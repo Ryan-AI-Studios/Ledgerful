@@ -16,6 +16,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **Dependabot queue (0501):** lock-only `uuid` 1.27.0, `tokio` 1.53.2, `rand` 0.10.3, and `zeroize` 1.9.1. `dirs` 7.0.0. `comfy-table` 8.0.1 loads presets with `load_style` and keeps the ASCII `...` and UTF-8 `…` indicators. `process-wrap` 10.0.1 uses `try_inner_child_mut` inside `grouped.rs`. This supersedes the **GitHub Actions pins (0485)** pin for `taiki-e/install-action`: the five workflow uses are now v2.87.26 (`f7e5d7c9`). Package version stays 0.2.16.
 
+- **Toolchain file and job env map (0499):** `install_docs_truth` accepts release/smoke `RUSTUP_TOOLCHAIN: stable` only in the job-level `env:` block (contiguous six-space lines before `steps:`), not under `strategy:` or inside `steps:`, with fixture tests for those false positives and for blank lines/comments that still belong to job `env`. Adds `rust_toolchain_toml_pins_the_pr_path_channel`, which locks `rust-toolchain.toml` to `channel = "1.98.1"` + `profile = "minimal"`, forbids components/targets/path, requires no bare `rust-toolchain` file, and asserts per-workflow `toolchain: 1.98.1` vs `toolchain: stable` counts across ci, security, windows-path-tests, release and smoke. Package version stays 0.2.16.
+
 - **Local rustup pin (0496):** `rust-toolchain.toml` selects the PR-path compiler (`1.98.1`, profile minimal) for checkouts of this repo. `release.yml` jobs `build`, `mcp-package`, and `sbom`, and `smoke.yml` `install-smoke`, set job-level `RUSTUP_TOOLCHAIN=stable` so those jobs stay on floating stable. Release binaries are not claimed to build with `1.98.1`. Package version stays 0.2.16.
 
 - **Argon2 0.6.0 (0487):** optional `argon2` moves from 0.5.3 to stable 0.6.0. The lock also takes `blake2` 0.11.0 and `password-hash` 0.6.1 (`phc` 0.6.1). Bundle KDF stays Argon2id v1.3 (64 MiB, t=3, p=1, 32-byte output). The 0.5.3 integration vector still matches. Package version stays 0.2.16.
@@ -25,6 +27,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **GitHub Actions pins (0485):** `taiki-e/install-action` is v2.87.25 (`183e4297`). `dtolnay/rust-toolchain` is `e2a55d2f`, which passes `components` through an environment variable (upstream #179; no published GHSA). `vedantmgoyal9/winget-releaser` stays on the v2 line at `b7370d4d`, and the package-distribution SHA matches the workflow.
 
 ### Fixed
+
+- **Negative stale-verify fixtures (0497):** the two CG-F35 `verify` integration tests that assert *no* staleness warning can no longer pass unless the cached impact report is genuinely stale relative to `HEAD`; both now use a nested repo root and shared `git_add_and_commit` helpers plus a new `assert_cached_impact_report_is_stale` guard. Test-only — no production verify or freshness behavior changes. Package version stays 0.2.16.
+
+- **Stale-impact fixtures off the operator temp root (0495):** five stale-impact fixtures nest one directory deeper under the tempdir so `scan --impact` no longer walks the operator temp directory, exceeds the 25 s overall budget and skips writing `latest-impact.json`; the ask and verify HEAD commits now advance with `--no-verify` so a pending ledger transaction cannot leave that report current. Product behavior, schemaVersion, timeouts and the 0496 toolchain pin are unchanged. Package version stays 0.2.16.
 
 - **Test-class verify budget (0494):** auto-plan `cargo nextest` / `cargo test` steps take `DEFAULT_TEST_SUITE_TIMEOUT_SECS` when `[verify] suite_timeout_secs` is absent. The 0494 measurement did not produce a `Set` value (ci and slow exited 100 and were not formula inputs; doctest was 11 seconds, `Keep`), so the constant stays 400. Fmt, clippy, and auto `--timeout 0` stay 400. An explicit `suite_timeout_secs` still replaces the built-in in either direction. `schemaVersion` stays 1.
 
