@@ -212,6 +212,7 @@ fn emit_overall_skip_open(
                 0.0,
                 None,
                 Vec::new(),
+                Vec::new(),
                 Some("temporal couplings untrusted: overall budget".to_string()),
                 Some(&completeness),
                 &[],

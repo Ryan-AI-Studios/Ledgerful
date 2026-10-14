@@ -1805,6 +1805,7 @@ fn hotspots_explain_json_envelope_kind() {
         0.0,
         None,
         Vec::new(),
+        Vec::new(),
         Some("temporal couplings untrusted: overall budget".into()),
         Some(&c),
         &[],

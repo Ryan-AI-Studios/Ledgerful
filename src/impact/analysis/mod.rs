@@ -59,13 +59,17 @@ impl AnalysisRegistry {
             packet.apply_risk_impact(impact, &mut total_weight);
         }
 
-        // Honesty: recompute demoted temporal count from couplings + path_mode (0173).
-        // Matches TemporalImpactProvider demotion so weight and count stay aligned.
-        packet.demoted_temporal_count = crate::impact::path_class::count_demoted_temporal(
-            &packet.temporal_couplings,
-            &packet.path_mode,
-            temporal::TEMPORAL_RISK_THRESHOLD,
-        );
+        // Honesty: exclusions from the default list (0173 + 0502).
+        // Provider weight still follows should_demote_pair on temporal_couplings.
+        // pathMode=all counts tree-side audit pairs even though that helper returns false.
+        packet.demoted_temporal_count =
+            crate::impact::path_class::count_presented_temporal_exclusions(
+                &packet.temporal_couplings,
+                &packet.temporal_couplings_audit,
+                &packet.discarded_tree_paths,
+                &packet.path_mode,
+                temporal::TEMPORAL_RISK_THRESHOLD,
+            );
 
         packet.finalize_risk_level(total_weight, has_prior_risk_signal);
 

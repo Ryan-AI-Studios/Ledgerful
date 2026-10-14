@@ -18,6 +18,14 @@ pub struct ImpactPacket {
     pub risk_reasons: Vec<String>,
     pub changes: Vec<super::ChangedFile>,
     pub temporal_couplings: Vec<super::TemporalCoupling>,
+    /// Change-filtered audit pairs (leaves, governance files, and tree partners).
+    /// Omitted when empty. Honesty list; not the default risk list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub temporal_couplings_audit: Vec<super::TemporalCoupling>,
+    /// Tree paths that appear on a change-filtered audit pair before truncation.
+    /// Omitted when empty. Not truncated with the coupling lists.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub discarded_tree_paths: Vec<std::path::PathBuf>,
     pub structural_couplings: Vec<super::StructuralCoupling>,
     /// Structural call-graph blast radius (≠ deploy `highBlastResources`).
     /// Omitted from JSON when empty.
@@ -194,6 +202,8 @@ impl ImpactPacket {
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty()
             && self.temporal_couplings.is_empty()
+            && self.temporal_couplings_audit.is_empty()
+            && self.discarded_tree_paths.is_empty()
             && self.structural_couplings.is_empty()
             && self.blast_radius.is_none()
             && self.centrality_risks.is_empty()
@@ -244,6 +254,8 @@ impl Default for ImpactPacket {
             risk_reasons: Vec::new(),
             changes: Vec::new(),
             temporal_couplings: Vec::new(),
+            temporal_couplings_audit: Vec::new(),
+            discarded_tree_paths: Vec::new(),
             structural_couplings: Vec::new(),
             blast_radius: None,
             centrality_risks: Vec::new(),
@@ -408,6 +420,9 @@ impl ImpactPacket {
         }
         self.changes.sort_unstable();
         self.temporal_couplings.sort_unstable();
+        self.temporal_couplings_audit.sort_unstable();
+        self.discarded_tree_paths.sort_unstable();
+        self.discarded_tree_paths.dedup();
         self.structural_couplings.sort_unstable();
         if let Some(ref mut blast) = self.blast_radius {
             blast.edges.sort_unstable();
@@ -608,6 +623,8 @@ impl ImpactPacket {
 
         // Phase 3: Strip temporal and structural couplings
         let phase3_touched = !self.temporal_couplings.is_empty()
+            || !self.temporal_couplings_audit.is_empty()
+            || !self.discarded_tree_paths.is_empty()
             || !self.structural_couplings.is_empty()
             || self.blast_radius.is_some()
             || !self.centrality_risks.is_empty()
@@ -638,6 +655,8 @@ impl ImpactPacket {
         if phase3_touched {
             stripped = true;
             debit_clear_vec(&mut running, &mut self.temporal_couplings);
+            debit_clear_vec(&mut running, &mut self.temporal_couplings_audit);
+            debit_clear_vec(&mut running, &mut self.discarded_tree_paths);
             debit_clear_vec(&mut running, &mut self.structural_couplings);
             debit_take_opt(&mut running, &mut self.blast_radius);
             debit_clear_vec(&mut running, &mut self.centrality_risks);
