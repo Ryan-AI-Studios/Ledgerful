@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.17] - 2026-10-14
+
 ### Security
 
 - **Advisory gate parity (0498):** lockfile `quinn-proto` moves from 0.11.15 to 0.11.19 (`quinn` 0.11.12). Same-line patches: `event-listener` 5.4.2, `faster-hex` 0.10.1, `lru` 0.18.5, and `chacha20` 0.10.2. The required `deny` job runs `cargo audit`. This checkout does not build `quinn-proto`. Package version stays 0.2.16.
