@@ -216,6 +216,47 @@ fn job_lines<'a>(source: &'a str, job: &str) -> Vec<&'a str> {
     body
 }
 
+const JOB_RUSTUP_TOOLCHAIN_LINE: &str = "      RUSTUP_TOOLCHAIN: stable";
+
+fn contiguous_job_env_lines<'a>(source: &'a str, job: &str) -> Vec<&'a str> {
+    let body = job_lines(source, job);
+    if body.is_empty() {
+        return Vec::new();
+    }
+    let Some(steps_at) = body.iter().position(|line| *line == "    steps:") else {
+        return Vec::new();
+    };
+    let prefix = &body[..steps_at];
+    let Some(env_at) = prefix.iter().position(|line| *line == "    env:") else {
+        return Vec::new();
+    };
+    let mut kept = Vec::new();
+    for line in &prefix[env_at + 1..] {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if line.starts_with("      ") {
+            kept.push(*line);
+            continue;
+        }
+        break;
+    }
+    kept
+}
+
+fn job_env_map_has_rustup_toolchain(source: &str, job: &str) -> bool {
+    contiguous_job_env_lines(source, job).contains(&JOB_RUSTUP_TOOLCHAIN_LINE)
+}
+
+fn quoted_channel_token(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix("channel = \"")?;
+    rest.strip_suffix('"').filter(|token| !token.is_empty())
+}
+
+fn trimmed_line_count(source: &str, needle: &str) -> usize {
+    source.lines().filter(|line| line.trim() == needle).count()
+}
+
 fn assert_job_level_rustup_toolchain(source: &str, file_label: &str, job: &str) {
     let body = job_lines(source, job);
     assert!(!body.is_empty(), "{file_label} is missing job {job}");
@@ -231,8 +272,7 @@ fn assert_job_level_rustup_toolchain(source: &str, file_label: &str, job: &str) 
         env_at.is_some(),
         "{file_label} job {job} is missing a job-level env map before steps"
     );
-    let env_at = env_at.unwrap_or(prefix.len().saturating_sub(1));
-    let has_key = prefix[env_at + 1..].contains(&"      RUSTUP_TOOLCHAIN: stable");
+    let has_key = job_env_map_has_rustup_toolchain(source, job);
     assert!(
         has_key,
         "{file_label} job {job} is missing job-level RUSTUP_TOOLCHAIN: stable before steps"
@@ -247,6 +287,212 @@ fn release_and_smoke_jobs_set_rustup_toolchain_before_steps() {
         assert_job_level_rustup_toolchain(release, "release.yml", job);
     }
     assert_job_level_rustup_toolchain(smoke, "smoke.yml", "install-smoke");
+}
+
+#[test]
+fn strategy_nested_rustup_toolchain_is_outside_the_job_env_map() {
+    let source = [
+        "  install-smoke:",
+        "    env:",
+        "      CARGO_NET_RETRY: 10",
+        "    strategy:",
+        "      RUSTUP_TOOLCHAIN: stable",
+        "    steps:",
+    ]
+    .join("\n");
+    let body = job_lines(&source, "install-smoke");
+    assert!(
+        !body.is_empty(),
+        "strategy fixture is missing the job header"
+    );
+    assert!(
+        source.contains(JOB_RUSTUP_TOOLCHAIN_LINE),
+        "strategy fixture is missing the six-space rustup line"
+    );
+    let steps_at = body.iter().position(|line| *line == "    steps:");
+    assert!(steps_at.is_some(), "strategy fixture is missing steps");
+    let steps_at = steps_at.unwrap_or(body.len());
+    let prefix = &body[..steps_at];
+    let env_at = prefix.iter().position(|line| *line == "    env:");
+    assert!(env_at.is_some(), "strategy fixture is missing job env");
+    let env_at = env_at.unwrap_or(prefix.len().saturating_sub(1));
+    assert!(
+        prefix[env_at + 1..].contains(&JOB_RUSTUP_TOOLCHAIN_LINE),
+        "pre-change scan must still see the strategy-nested rustup line"
+    );
+    let contiguous = contiguous_job_env_lines(&source, "install-smoke");
+    assert!(
+        contiguous.contains(&"      CARGO_NET_RETRY: 10"),
+        "contiguous env slice dropped the job env key"
+    );
+    assert!(
+        !contiguous.contains(&JOB_RUSTUP_TOOLCHAIN_LINE),
+        "contiguous env slice kept the strategy-nested rustup line"
+    );
+    assert!(!job_env_map_has_rustup_toolchain(&source, "install-smoke"));
+    assert!(!job_env_map_has_rustup_toolchain(
+        "jobs:\n",
+        "install-smoke"
+    ));
+    assert!(!job_env_map_has_rustup_toolchain(
+        "  build:\n    env:\n      RUSTUP_TOOLCHAIN: stable\n",
+        "build"
+    ));
+    assert!(!job_env_map_has_rustup_toolchain(
+        "  build:\n    steps:\n",
+        "build"
+    ));
+}
+
+#[test]
+fn step_nested_rustup_toolchain_is_outside_the_job_env_map() {
+    let source = [
+        "  build:",
+        "    env:",
+        "      CARGO_NET_RETRY: 10",
+        "    steps:",
+        "      RUSTUP_TOOLCHAIN: stable",
+    ]
+    .join("\n");
+    let body = job_lines(&source, "build");
+    assert!(!body.is_empty(), "step fixture is missing the job header");
+    assert!(
+        source.contains(JOB_RUSTUP_TOOLCHAIN_LINE),
+        "step fixture is missing the six-space rustup line"
+    );
+    let contiguous = contiguous_job_env_lines(&source, "build");
+    assert!(
+        contiguous.contains(&"      CARGO_NET_RETRY: 10"),
+        "contiguous env slice dropped the job env key"
+    );
+    assert!(
+        !contiguous.contains(&JOB_RUSTUP_TOOLCHAIN_LINE),
+        "contiguous env slice kept the step-nested rustup line"
+    );
+    assert!(!job_env_map_has_rustup_toolchain(&source, "build"));
+}
+
+#[test]
+fn blank_line_inside_job_env_keeps_rustup_toolchain() {
+    let source = [
+        "  build:",
+        "    env:",
+        "      CARGO_NET_RETRY: 10",
+        "",
+        "      # comment",
+        "      RUSTUP_TOOLCHAIN: stable",
+        "    steps:",
+    ]
+    .join("\n");
+    let body = job_lines(&source, "build");
+    assert!(
+        !body.is_empty(),
+        "blank-line fixture is missing the job header"
+    );
+    assert!(
+        source.contains(JOB_RUSTUP_TOOLCHAIN_LINE),
+        "blank-line fixture is missing the six-space rustup line"
+    );
+    let contiguous = contiguous_job_env_lines(&source, "build");
+    assert!(contiguous.contains(&"      CARGO_NET_RETRY: 10"));
+    assert!(contiguous.contains(&"      # comment"));
+    assert!(contiguous.contains(&JOB_RUSTUP_TOOLCHAIN_LINE));
+    assert!(job_env_map_has_rustup_toolchain(&source, "build"));
+}
+
+#[test]
+fn rust_toolchain_toml_pins_the_pr_path_channel() {
+    let source = include_str!("../../rust-toolchain.toml");
+    let lines: Vec<&str> = source.lines().collect();
+    assert!(
+        lines.contains(&"[toolchain]"),
+        "rust-toolchain.toml is missing [toolchain]"
+    );
+    assert!(
+        lines.contains(&"profile = \"minimal\""),
+        "rust-toolchain.toml is missing profile = \"minimal\""
+    );
+    let channel_line = "channel = \"1.98.1\"";
+    assert!(
+        lines.contains(&channel_line),
+        "rust-toolchain.toml is missing {channel_line}"
+    );
+    assert!(
+        lines.iter().all(|line| !line.contains("components")),
+        "rust-toolchain.toml must not list components"
+    );
+    assert!(
+        lines.iter().all(|line| !line.contains("targets")),
+        "rust-toolchain.toml must not list targets"
+    );
+    assert!(
+        lines.iter().all(|line| !line.trim().starts_with("path")),
+        "rust-toolchain.toml must not set path"
+    );
+    let bare = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("rust-toolchain");
+    assert!(!bare.exists(), "bare rust-toolchain must stay absent");
+    let token = lines.iter().find_map(|line| {
+        if *line == channel_line {
+            quoted_channel_token(line)
+        } else {
+            None
+        }
+    });
+    assert!(token.is_some(), "channel line has no quoted token");
+    let token = token.unwrap_or("");
+    let needle = format!("toolchain: {token}");
+    let stable = "toolchain: stable";
+    let ci = include_str!("../../.github/workflows/ci.yml");
+    let security = include_str!("../../.github/workflows/security.yml");
+    let windows = include_str!("../../.github/workflows/windows-path-tests.yml");
+    let release = include_str!("../../.github/workflows/release.yml");
+    let smoke = include_str!("../../.github/workflows/smoke.yml");
+    assert_eq!(trimmed_line_count(ci, &needle), 8, "{needle} in ci.yml");
+    assert_eq!(
+        trimmed_line_count(security, &needle),
+        2,
+        "{needle} in security.yml"
+    );
+    assert_eq!(
+        trimmed_line_count(windows, &needle),
+        1,
+        "{needle} in windows-path-tests.yml"
+    );
+    assert_eq!(
+        trimmed_line_count(ci, stable),
+        0,
+        "ci.yml toolchain: stable"
+    );
+    assert_eq!(
+        trimmed_line_count(security, stable),
+        0,
+        "security.yml toolchain: stable"
+    );
+    assert_eq!(
+        trimmed_line_count(windows, stable),
+        0,
+        "windows-path-tests.yml toolchain: stable"
+    );
+    assert_eq!(
+        trimmed_line_count(release, &needle),
+        0,
+        "{needle} in release.yml"
+    );
+    assert_eq!(
+        trimmed_line_count(release, stable),
+        3,
+        "release.yml toolchain: stable"
+    );
+    assert_eq!(
+        trimmed_line_count(smoke, &needle),
+        0,
+        "{needle} in smoke.yml"
+    );
+    assert_eq!(
+        trimmed_line_count(smoke, stable),
+        1,
+        "smoke.yml toolchain: stable"
+    );
 }
 
 #[test]
