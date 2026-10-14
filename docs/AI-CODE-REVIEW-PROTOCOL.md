@@ -88,8 +88,8 @@ schedule. **`Semgrep SAST` is a required merge check** (added 2026-09-07 after t
 `Secret scan` still runs and does **not** gate merge. Display names `Cargo audit` /
 `Cargo deny` are Security workflow jobs.
 
-Context `deny` in the live list is the CI workflow job (`cargo deny check`), not the
-Security workflow display name.
+Context `deny` in the live list is the CI workflow job. That job runs `cargo deny check`
+and `cargo audit`. It is not the Security workflow display name `Cargo deny`.
 
 HITL name if protection is updated further: `Secret scan`.
 

@@ -250,6 +250,54 @@ fn release_and_smoke_jobs_set_rustup_toolchain_before_steps() {
 }
 
 #[test]
+fn deny_job_runs_cargo_audit_without_a_job_name() {
+    let ci = include_str!("../../.github/workflows/ci.yml");
+    let security = include_str!("../../.github/workflows/security.yml");
+    let body = job_lines(ci, "deny");
+    assert!(
+        body.first().is_some_and(|line| *line == "  deny:"),
+        "ci.yml is missing the deny job header"
+    );
+    let steps_at = body.iter().position(|line| *line == "    steps:");
+    assert!(steps_at.is_some(), "deny job is missing a steps key");
+    let steps_at = steps_at.unwrap_or(body.len());
+    let job_name = body[..steps_at]
+        .iter()
+        .any(|line| *line == "    name:" || line.starts_with("    name:"));
+    assert!(!job_name, "deny job has a job-level name before steps");
+    let required = [
+        "- run: cargo install cargo-deny --locked",
+        "- run: cargo deny check",
+        "- run: cargo install cargo-audit --locked",
+        "- run: cargo audit",
+    ];
+    let missing: Vec<&str> = required
+        .into_iter()
+        .filter(|literal| !body.iter().any(|line| line.trim() == *literal))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "deny job is missing run lines:\n  {}",
+        missing.join("\n  ")
+    );
+    let deny_at = body
+        .iter()
+        .position(|line| line.trim() == "- run: cargo deny check");
+    let audit_at = body
+        .iter()
+        .position(|line| line.trim() == "- run: cargo audit");
+    let deny_before_audit = deny_at.is_some_and(|deny| audit_at.is_some_and(|audit| deny < audit));
+    assert!(
+        deny_before_audit,
+        "cargo deny check must appear before cargo audit"
+    );
+    assert!(
+        security.contains("run: cargo audit"),
+        "security.yml must keep run: cargo audit"
+    );
+}
+
+#[test]
 fn release_yml_keeps_all_features_and_names_embed_spa() {
     let source = include_str!("../../.github/workflows/release.yml");
     assert!(source.contains("--all-features"));
