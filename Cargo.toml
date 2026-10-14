@@ -1,6 +1,6 @@
 [package]
 name = "ledgerful"
-version = "0.2.16"
+version = "0.2.17"
 edition = "2024"
 license-file = "LICENSE"
 description.workspace = true
@@ -14,7 +14,7 @@ exclude = ["vendor/sqlite3-sys", "vendor/sqlite3-src"]
 resolver = "3"
 
 [workspace.package]
-version = "0.2.16"
+version = "0.2.17"
 edition = "2024"
 license-file = "LICENSE"
 description = "Local-first change intelligence CLI for deterministic impact analysis and verification"
