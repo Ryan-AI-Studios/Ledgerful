@@ -762,3 +762,168 @@ fn package_distribution_winget_sha_matches_release_yml() {
         "old winget sha remains in release.yml"
     );
 }
+
+const AUDIT_IGNORE_IDS: &[&str] = &[
+    "RUSTSEC-2023-0089",
+    "RUSTSEC-2025-0057",
+    "RUSTSEC-2025-0052",
+    "RUSTSEC-2025-0141",
+    "RUSTSEC-2026-0249",
+    "RUSTSEC-2024-0449",
+];
+
+const FORBIDDEN_AUDIT_IGNORE_IDS: &[&str] = &["RUSTSEC-2026-0253", "RUSTSEC-2026-0186"];
+
+fn trimmed_source_lines(source: &str) -> Vec<&str> {
+    source
+        .lines()
+        .map(|line| line.trim().trim_end_matches('\r'))
+        .collect()
+}
+
+/// An ignore entry is only `"RUSTSEC-YYYY-NNNN",` with nothing else on the line.
+fn quoted_rustsec_ignore_line(line: &str) -> Option<String> {
+    let rest = line.strip_prefix("\"RUSTSEC-")?;
+    let (year, rest) = rest.split_once('-')?;
+    if year.len() != 4 || !year.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let (number, suffix) = rest.split_once('"')?;
+    if number.len() != 4 || !number.bytes().all(|byte| byte.is_ascii_digit()) || suffix != "," {
+        return None;
+    }
+    Some(format!("RUSTSEC-{year}-{number}"))
+}
+
+fn advisory_ignore_ids(source: &str) -> Result<Vec<String>, String> {
+    let lines = trimmed_source_lines(source);
+    let advisories: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| **line == "[advisories]")
+        .map(|(index, _)| index)
+        .collect();
+    let [start] = advisories[..] else {
+        return Err(format!(
+            "expected exactly one [advisories], found {}",
+            advisories.len()
+        ));
+    };
+    let table_end = match lines
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find(|(_, line)| line.starts_with('['))
+    {
+        Some((index, _)) => index,
+        None => lines.len(),
+    };
+    let mut open_indexes = Vec::new();
+    for (index, line) in lines.iter().enumerate().take(table_end).skip(start + 1) {
+        if *line == "ignore = [" {
+            open_indexes.push(index);
+        }
+    }
+    let [open] = open_indexes[..] else {
+        return Err(format!(
+            "expected exactly one ignore = [ before the next table, found {}",
+            open_indexes.len()
+        ));
+    };
+    let mut ids = Vec::new();
+    let mut closed = false;
+    for line in lines.iter().skip(open + 1) {
+        if *line == "]" {
+            closed = true;
+            break;
+        }
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        match quoted_rustsec_ignore_line(line) {
+            Some(id) => ids.push(id),
+            None => {
+                return Err(format!(
+                    "ignore entry is not an exact quoted advisory ID: {line}"
+                ));
+            }
+        }
+    }
+    if !closed {
+        return Err("ignore array is missing its closing bracket".to_string());
+    }
+    Ok(ids)
+}
+
+fn audit_toml_allowlist(source: &str) -> Result<(), String> {
+    let mut advisories = 0_usize;
+    let mut ignore_open = 0_usize;
+    let mut close = 0_usize;
+    for line in trimmed_source_lines(source) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line == "[advisories]" {
+            advisories += 1;
+            continue;
+        }
+        if line == "ignore = [" {
+            ignore_open += 1;
+            continue;
+        }
+        if line == "]" {
+            close += 1;
+            continue;
+        }
+        if quoted_rustsec_ignore_line(line).is_none() {
+            return Err(format!("disallowed line: {line}"));
+        }
+    }
+    if advisories != 1 || ignore_open != 1 || close != 1 {
+        return Err(format!(
+            "expected one [advisories], one ignore = [, and one ], found {advisories}, {ignore_open}, {close}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn audit_toml_ignore_matches_deny_advisories() {
+    let deny = include_str!("../../deny.toml");
+    let audit = include_str!("../../.cargo/audit.toml");
+    let mut violations = Vec::new();
+    let deny_ids = match advisory_ignore_ids(deny) {
+        Ok(ids) => ids,
+        Err(err) => {
+            violations.push(format!("deny.toml: {err}"));
+            Vec::new()
+        }
+    };
+    let audit_ids = match advisory_ignore_ids(audit) {
+        Ok(ids) => ids,
+        Err(err) => {
+            violations.push(format!(".cargo/audit.toml: {err}"));
+            Vec::new()
+        }
+    };
+    if let Err(err) = audit_toml_allowlist(audit) {
+        violations.push(format!(".cargo/audit.toml allowlist: {err}"));
+    }
+    assert!(
+        violations.is_empty(),
+        "audit ignore parity:\n  {}",
+        violations.join("\n  ")
+    );
+    assert_eq!(deny_ids.as_slice(), AUDIT_IGNORE_IDS);
+    assert_eq!(audit_ids.as_slice(), AUDIT_IGNORE_IDS);
+    for id in FORBIDDEN_AUDIT_IGNORE_IDS {
+        assert!(
+            !deny_ids.iter().any(|got| got == *id),
+            "deny.toml ignores {id}"
+        );
+        assert!(
+            !audit_ids.iter().any(|got| got == *id),
+            ".cargo/audit.toml ignores {id}"
+        );
+    }
+}

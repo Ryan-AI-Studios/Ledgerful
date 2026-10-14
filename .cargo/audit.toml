@@ -1,0 +1,20 @@
+# Reviewed ignore list for cargo audit. cargo-audit 0.22.2 reads
+# ./.cargo/audit.toml from the process cwd and does not merge the home file.
+# The quoted IDs match deny.toml [advisories] ignore, in that order.
+# Do not add an output deny list, informational_warnings, or a severity threshold.
+
+[advisories]
+ignore = [
+    # Cozo 0.7.6 transitively pins these Sled/graph dependencies and no
+    # compatible safe upgrade exists without replacing Cozo storage.
+    "RUSTSEC-2023-0089",
+    "RUSTSEC-2025-0057",
+    "RUSTSEC-2025-0052",
+    "RUSTSEC-2025-0141",
+    # cozo 0.8.1 → smartstring 1.0.1 unmaintained (RUSTSEC-2026-0249). No safe
+    # upgrade without replacing Cozo; tracked with dep hygiene 0169–0172.
+    "RUSTSEC-2026-0249",
+    # serde_yaml 0.9.34+deprecated → unsafe-libyaml 0.2.11 unmaintained
+    # (RUSTSEC-2024-0449). No safe upgrade without replacing serde_yaml.
+    "RUSTSEC-2024-0449",
+]
