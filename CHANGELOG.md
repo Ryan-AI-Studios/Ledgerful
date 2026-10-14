@@ -6,6 +6,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- **Advisory gate parity (0498):** lockfile `quinn-proto` moves from 0.11.15 to 0.11.19 (`quinn` 0.11.12). Same-line patches: `event-listener` 5.4.2, `faster-hex` 0.10.1, `lru` 0.18.5, and `chacha20` 0.10.2. The required `deny` job runs `cargo audit`. This checkout does not build `quinn-proto`. Package version stays 0.2.16.
+
 ### Changed
 
 - **Local rustup pin (0496):** `rust-toolchain.toml` selects the PR-path compiler (`1.98.1`, profile minimal) for checkouts of this repo. `release.yml` jobs `build`, `mcp-package`, and `sbom`, and `smoke.yml` `install-smoke`, set job-level `RUSTUP_TOOLCHAIN=stable` so those jobs stay on floating stable. Release binaries are not claimed to build with `1.98.1`. Package version stays 0.2.16.
