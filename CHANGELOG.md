@@ -8,6 +8,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Local rustup pin (0496):** `rust-toolchain.toml` selects the PR-path compiler (`1.98.1`, profile minimal) for checkouts of this repo. `release.yml` jobs `build`, `mcp-package`, and `sbom`, and `smoke.yml` `install-smoke`, set job-level `RUSTUP_TOOLCHAIN=stable` so those jobs stay on floating stable. Release binaries are not claimed to build with `1.98.1`. Package version stays 0.2.16.
+
 - **Argon2 0.6.0 (0487):** optional `argon2` moves from 0.5.3 to stable 0.6.0. The lock also takes `blake2` 0.11.0 and `password-hash` 0.6.1 (`phc` 0.6.1). Bundle KDF stays Argon2id v1.3 (64 MiB, t=3, p=1, 32-byte output). The 0.5.3 integration vector still matches. Package version stays 0.2.16.
 
 - **Cargo minor-and-patch group (0486):** `thiserror` 2.0.21 and `thiserror-impl` 2.0.21, `encoding_rs` 0.8.42, and `libc` 0.2.190. With `std` off, `encoding_rs` drops `multiversion`. Yanked `spin` 0.9.8 moves to 0.9.9. Package version stays 0.2.16. `libc_unstable_time64` stays off. The rand advisory was already patched on 0.10.2.

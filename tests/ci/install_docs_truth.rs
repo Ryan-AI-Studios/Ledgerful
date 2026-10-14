@@ -191,6 +191,64 @@ fn installers_warn_on_cargo_path_and_do_not_pass_embed_spa() {
     }
 }
 
+fn job_lines<'a>(source: &'a str, job: &str) -> Vec<&'a str> {
+    let header = format!("  {job}:");
+    let mut body = Vec::new();
+    let mut in_job = false;
+    for line in source.lines() {
+        if !in_job {
+            if line == header {
+                in_job = true;
+                body.push(line);
+            }
+            continue;
+        }
+        let next_job = line.starts_with("  ")
+            && !line.starts_with("   ")
+            && line.ends_with(':')
+            && line.len() > 2
+            && !line[2..].contains(' ');
+        if next_job {
+            break;
+        }
+        body.push(line);
+    }
+    body
+}
+
+fn assert_job_level_rustup_toolchain(source: &str, file_label: &str, job: &str) {
+    let body = job_lines(source, job);
+    assert!(!body.is_empty(), "{file_label} is missing job {job}");
+    let steps_at = body.iter().position(|line| *line == "    steps:");
+    assert!(
+        steps_at.is_some(),
+        "{file_label} job {job} is missing a steps key"
+    );
+    let steps_at = steps_at.unwrap_or(body.len());
+    let prefix = &body[..steps_at];
+    let env_at = prefix.iter().position(|line| *line == "    env:");
+    assert!(
+        env_at.is_some(),
+        "{file_label} job {job} is missing a job-level env map before steps"
+    );
+    let env_at = env_at.unwrap_or(prefix.len().saturating_sub(1));
+    let has_key = prefix[env_at + 1..].contains(&"      RUSTUP_TOOLCHAIN: stable");
+    assert!(
+        has_key,
+        "{file_label} job {job} is missing job-level RUSTUP_TOOLCHAIN: stable before steps"
+    );
+}
+
+#[test]
+fn release_and_smoke_jobs_set_rustup_toolchain_before_steps() {
+    let release = include_str!("../../.github/workflows/release.yml");
+    let smoke = include_str!("../../.github/workflows/smoke.yml");
+    for job in ["build", "mcp-package", "sbom"] {
+        assert_job_level_rustup_toolchain(release, "release.yml", job);
+    }
+    assert_job_level_rustup_toolchain(smoke, "smoke.yml", "install-smoke");
+}
+
 #[test]
 fn release_yml_keeps_all_features_and_names_embed_spa() {
     let source = include_str!("../../.github/workflows/release.yml");

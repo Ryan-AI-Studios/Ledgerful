@@ -16,6 +16,7 @@ jobs:
     env:
       CARGO_HTTP_MULTIPLEXING: false
       CARGO_NET_RETRY: 10
+      RUSTUP_TOOLCHAIN: stable
     strategy:
       fail-fast: false
       matrix:
