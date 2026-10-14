@@ -14,6 +14,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Dependabot queue (0501):** lock-only `uuid` 1.27.0, `tokio` 1.53.2, `rand` 0.10.3, and `zeroize` 1.9.1. `dirs` 7.0.0. `comfy-table` 8.0.1 loads presets with `load_style` and keeps the ASCII `...` and UTF-8 `…` indicators. `process-wrap` 10.0.1 uses `try_inner_child_mut` inside `grouped.rs`. This supersedes the **GitHub Actions pins (0485)** pin for `taiki-e/install-action`: the five workflow uses are now v2.87.26 (`f7e5d7c9`). Package version stays 0.2.16.
+
 - **Local rustup pin (0496):** `rust-toolchain.toml` selects the PR-path compiler (`1.98.1`, profile minimal) for checkouts of this repo. `release.yml` jobs `build`, `mcp-package`, and `sbom`, and `smoke.yml` `install-smoke`, set job-level `RUSTUP_TOOLCHAIN=stable` so those jobs stay on floating stable. Release binaries are not claimed to build with `1.98.1`. Package version stays 0.2.16.
 
 - **Argon2 0.6.0 (0487):** optional `argon2` moves from 0.5.3 to stable 0.6.0. The lock also takes `blake2` 0.11.0 and `password-hash` 0.6.1 (`phc` 0.6.1). Bundle KDF stays Argon2id v1.3 (64 MiB, t=3, p=1, 32-byte output). The 0.5.3 integration vector still matches. Package version stays 0.2.16.
