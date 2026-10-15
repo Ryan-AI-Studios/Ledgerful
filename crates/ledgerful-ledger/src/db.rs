@@ -343,6 +343,13 @@ impl<'a> LedgerDb<'a> {
         provenance::find_ledger_entries_by_changed_file(self.conn, file_path)
     }
 
+    pub fn find_ledger_entries_by_exact_entity_path(
+        &self,
+        entity_path: &str,
+    ) -> Result<Vec<LedgerEntry>, LedgerError> {
+        provenance::find_ledger_entries_by_exact_entity_path(self.conn, entity_path)
+    }
+
     pub fn get_related_ledger_entries(
         &self,
         directory: &str,

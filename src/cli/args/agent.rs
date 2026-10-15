@@ -172,6 +172,9 @@ pub struct ReviewArgs {
     /// Overall review emit budget in seconds (not the history-walk budget). `0` disables the clock (Ctrl-C still works).
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
+    /// Append stem-only ledger rows after exact path hits. They cannot displace a path hit.
+    #[arg(long)]
+    pub include_mentions: bool,
 }
 
 /// Clap bag for `search` (query tokens + flags). Not
