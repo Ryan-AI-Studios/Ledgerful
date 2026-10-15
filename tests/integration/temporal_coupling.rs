@@ -37,6 +37,7 @@ fn test_temporal_coupling_logic() {
         files.insert(Utf8PathBuf::from("src/b.rs"));
         history.push(CommitFileSet {
             files,
+            tree_paths: std::collections::HashSet::new(),
             is_merge: false,
             id: None,
         });
@@ -78,6 +79,7 @@ fn test_temporal_coupling_threshold() {
         }
         history.push(CommitFileSet {
             files,
+            tree_paths: std::collections::HashSet::new(),
             is_merge: false,
             id: None,
         });
@@ -110,6 +112,7 @@ fn test_insufficient_history_error() {
     for _ in 0..5 {
         history.push(CommitFileSet {
             files: HashSet::new(),
+            tree_paths: std::collections::HashSet::new(),
             is_merge: false,
             id: None,
         });

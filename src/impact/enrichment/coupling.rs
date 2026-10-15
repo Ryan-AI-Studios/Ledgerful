@@ -3,7 +3,8 @@ use crate::impact::enrichment::affected_flows::{
     AffectedFlowsOpts, AffectedFlowsReport, compute_affected_flows,
 };
 use crate::impact::enrichment::blast::{
-    BlastCaps, compute_blast, derive_structural_couplings, resolve_seeds,
+    BlastAugment, BlastCaps, compute_blast, derive_structural_couplings, resolve_seeds,
+    unwired_honesty_notes,
 };
 use crate::impact::enrichment::test_gaps::{TestGapsOpts, populate_test_coverage_and_gaps};
 use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
@@ -35,6 +36,16 @@ impl CouplingProvider {
         &self,
         context: &EnrichmentContext,
         packet: &mut ImpactPacket,
+    ) -> Result<()> {
+        let augment = BlastAugment::live(context.config.verify.effective_process_policy());
+        self.enrich_structural_with(context, packet, &augment)
+    }
+
+    fn enrich_structural_with(
+        &self,
+        context: &EnrichmentContext,
+        packet: &mut ImpactPacket,
+        augment: &BlastAugment,
     ) -> Result<()> {
         let conn = context.storage.get_connection();
         let seeds = resolve_seeds(packet, conn)?;
@@ -99,8 +110,15 @@ impl CouplingProvider {
         // (DoD-7: unbound seeds must not be silent when structural_edges exists).
         // On Err: warn and continue — do not early-return before attach_affected_flows
         // (kinds 1–3 still run without blast edges).
-        match compute_blast(conn, &seeds, depth_requested, depth_max, caps) {
+        match compute_blast(conn, &seeds, depth_requested, depth_max, caps, augment) {
             Ok(mut blast) => {
+                if blast.edges.is_empty() {
+                    blast
+                        .honesty_notes
+                        .extend(unwired_honesty_notes(&packet.changes));
+                    blast.honesty_notes.sort_unstable();
+                    blast.honesty_notes.dedup();
+                }
                 blast.test_hints = test_hints;
 
                 // Derive structural_couplings from hop-1 (single writer — DoD-10)
@@ -157,30 +175,19 @@ impl CouplingProvider {
         let temporal_engine =
             TemporalEngine::new(history_provider, context.config.temporal.clone());
 
-        match temporal_engine.calculate_couplings_budgeted(context.history_budget.as_ref()) {
-            Ok(mut couplings) => {
-                // Filter: at least one file must be in packet.changes
-                let change_paths: std::collections::HashSet<_> =
-                    packet.changes.iter().map(|c| &c.path).collect();
-
-                couplings.retain(|c| {
-                    change_paths.contains(&c.file_a) || change_paths.contains(&c.file_b)
-                });
-
-                // Sort by score descending
-                couplings.sort_by(|a, b| {
-                    b.score
-                        .partial_cmp(&a.score)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-
-                // Cap
-                let limit = context.config.coverage.max_coupling_pairs;
-                if couplings.len() > limit {
-                    couplings.truncate(limit);
-                }
-
-                packet.set_temporal_couplings(couplings);
+        match temporal_engine.calculate_coupling_report_budgeted(context.history_budget.as_ref()) {
+            Ok(report) => {
+                let (file_couplings, audit_couplings, discarded) = apply_temporal_presentation(
+                    report.file_couplings,
+                    report.audit_couplings,
+                    &report.discarded_tree_paths,
+                    &packet.changes,
+                    packet.path_mode.as_str(),
+                    context.config.coverage.max_coupling_pairs,
+                );
+                packet.set_temporal_couplings(file_couplings);
+                packet.temporal_couplings_audit = audit_couplings;
+                packet.discarded_tree_paths = discarded;
             }
             Err(e) => {
                 warn!("Temporal analysis failed: {e}");
@@ -190,6 +197,67 @@ impl CouplingProvider {
 
         Ok(())
     }
+}
+
+/// Change-filter both lists, derive tree paths from the filtered audit pairs,
+/// drop code-mode demotions from the file list, then cap each coupling list.
+/// `discarded` is not truncated and is not re-filtered after the cap.
+pub(crate) fn apply_temporal_presentation(
+    mut file_couplings: Vec<crate::impact::packet::TemporalCoupling>,
+    mut audit_couplings: Vec<crate::impact::packet::TemporalCoupling>,
+    engine_tree_paths: &[camino::Utf8PathBuf],
+    changes: &[crate::impact::packet::ChangedFile],
+    path_mode: &str,
+    limit: usize,
+) -> (
+    Vec<crate::impact::packet::TemporalCoupling>,
+    Vec<crate::impact::packet::TemporalCoupling>,
+    Vec<std::path::PathBuf>,
+) {
+    let change_paths: std::collections::HashSet<_> = changes.iter().map(|c| &c.path).collect();
+    let hits_change = |c: &crate::impact::packet::TemporalCoupling| {
+        change_paths.contains(&c.file_a) || change_paths.contains(&c.file_b)
+    };
+    file_couplings.retain(&hits_change);
+    audit_couplings.retain(&hits_change);
+
+    let engine_trees: std::collections::HashSet<String> = engine_tree_paths
+        .iter()
+        .map(|path| path.as_str().replace('\\', "/"))
+        .collect();
+    let mut discarded: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for pair in &audit_couplings {
+        for side in [&pair.file_a, &pair.file_b] {
+            let key = side.to_string_lossy().replace('\\', "/");
+            if engine_trees.contains(&key) {
+                discarded.insert(key);
+            }
+        }
+    }
+
+    file_couplings.retain(|coupling| {
+        !crate::impact::path_class::should_demote_pair(
+            &coupling.file_a.to_string_lossy(),
+            &coupling.file_b.to_string_lossy(),
+            path_mode,
+        )
+    });
+
+    if file_couplings.len() > limit {
+        file_couplings.truncate(limit);
+    }
+    if audit_couplings.len() > limit {
+        audit_couplings.truncate(limit);
+    }
+
+    (
+        file_couplings,
+        audit_couplings,
+        discarded
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .collect(),
+    )
 }
 
 #[cfg(test)]
@@ -437,6 +505,233 @@ mod tests {
         assert!(packet.structural_couplings.is_empty());
     }
 
+    fn storage_with_edge(with_edge: bool) -> StorageManager {
+        let mut conn = Connection::open_in_memory().unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        if with_edge {
+            conn.execute(
+                "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+                 VALUES ('src/other.rs', 'Rust', 'h', 1, '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+            let fid = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at)
+                 VALUES (?1, 'crate::other', 'other', 'Function', '2026-01-01T00:00:00Z')",
+                [fid],
+            )
+            .unwrap();
+            let sid = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO structural_edges (caller_symbol_id, caller_file_id, callee_symbol_id, callee_file_id, call_kind, resolution_status, confidence)
+                 VALUES (?1, ?2, ?1, ?2, 'DIRECT', 'RESOLVED', 1.0)",
+                [sid, fid],
+            )
+            .unwrap();
+        }
+        StorageManager::init_from_conn(conn)
+    }
+
+    fn context_for<'a>(
+        storage: &'a StorageManager,
+        config: &'a crate::config::model::Config,
+    ) -> EnrichmentContext<'a> {
+        EnrichmentContext {
+            storage,
+            config,
+            file_id_map: HashMap::new(),
+            project_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            warnings: Arc::new(Mutex::new(Vec::new())),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            skip_git_history_enrichment: true,
+            history_budget: None,
+            overall_deadline: None,
+        }
+    }
+
+    fn changed_symbol(
+        path: &str,
+        name: &str,
+        qn: Option<&str>,
+        old_path: Option<&str>,
+    ) -> ChangedFile {
+        ChangedFile {
+            path: PathBuf::from(path),
+            status: "Modified".to_string(),
+            old_path: old_path.map(PathBuf::from),
+            symbols: Some(vec![Symbol {
+                name: name.into(),
+                kind: SymbolKind::Function,
+                is_public: true,
+                cognitive_complexity: None,
+                cyclomatic_complexity: None,
+                line_start: None,
+                line_end: None,
+                qualified_name: qn.map(|s| s.to_string()),
+                byte_start: None,
+                byte_end: None,
+                entrypoint_kind: None,
+                metadata: std::collections::BTreeMap::new(),
+            }]),
+            ..ChangedFile::default()
+        }
+    }
+
+    #[test]
+    fn blast_honesty_coupling_empty_seeds_add_unwired_sentences() {
+        let storage = storage_with_edge(true);
+        let config = crate::config::model::Config::default();
+        let context = context_for(&storage, &config);
+        let mut packet = ImpactPacket {
+            changes: vec![
+                changed_symbol("cmd/main.go", "main", Some("main.main"), None),
+                changed_symbol("src/App.java", "App", Some("App.main"), None),
+            ],
+            ..Default::default()
+        };
+        CouplingProvider
+            .enrich_structural_with(&context, &mut packet, &BlastAugment::silent())
+            .unwrap();
+        let notes = &packet.blast_radius.as_ref().expect("blast").honesty_notes;
+        assert!(notes.iter().any(|n| n.contains("No seed")), "{notes:?}");
+        assert!(
+            notes
+                .iter()
+                .any(|n| n == "SCIP indexer is not wired for Go."),
+            "{notes:?}"
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|n| n == "SCIP indexer is not wired for Java."),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn blast_honesty_coupling_rust_seed_and_php_keep_both_sentences() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES ('src/other.rs', 'Rust', 'h', 1, '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let other_file = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at)
+             VALUES (?1, 'crate::other', 'other', 'Function', '2026-01-01T00:00:00Z')",
+            [other_file],
+        )
+        .unwrap();
+        let other_sym = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO structural_edges (caller_symbol_id, caller_file_id, callee_symbol_id, callee_file_id, call_kind, resolution_status, confidence)
+             VALUES (?1, ?2, ?1, ?2, 'DIRECT', 'RESOLVED', 1.0)",
+            [other_sym, other_file],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES ('src/lib.rs', 'Rust', 'h2', 1, '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let seed_file = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at)
+             VALUES (?1, 'crate::seed_fn', 'seed_fn', 'Function', '2026-01-01T00:00:00Z')",
+            [seed_file],
+        )
+        .unwrap();
+        let storage = StorageManager::init_from_conn(conn);
+        let config = crate::config::model::Config::default();
+        let context = context_for(&storage, &config);
+        let mut packet = ImpactPacket {
+            changes: vec![
+                changed_symbol("src/lib.rs", "seed_fn", Some("crate::seed_fn"), None),
+                changed_symbol("web/index.php", "index", None, Some("legacy/App.swift")),
+            ],
+            ..Default::default()
+        };
+        let augment = BlastAugment::fixed(&[("rust-analyzer", false, true)]);
+        CouplingProvider
+            .enrich_structural_with(&context, &mut packet, &augment)
+            .unwrap();
+        let blast = packet.blast_radius.as_ref().expect("blast");
+        assert!(blast.edges.is_empty(), "{:?}", blast.edges);
+        let notes = &blast.honesty_notes;
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.contains("native resolution included")),
+            "{notes:?}"
+        );
+        assert!(
+            notes.iter().any(|n| n.contains("unavailable for Rust")),
+            "{notes:?}"
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|n| n == "SCIP indexer is not wired for PHP."),
+            "{notes:?}"
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|n| n == "SCIP indexer is not wired for Swift."),
+            "{notes:?}"
+        );
+        assert!(!notes.iter().any(|n| n.contains("thin neighborhood")));
+    }
+
+    #[test]
+    fn blast_honesty_coupling_missing_table_keeps_one_sentence() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES ('cmd/main.go', 'Go', 'h', 1, '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let fid = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at)
+             VALUES (?1, 'main.main', 'main', 'Function', '2026-01-01T00:00:00Z')",
+            [fid],
+        )
+        .unwrap();
+        let storage = StorageManager::init_from_conn(conn);
+        let config = crate::config::model::Config::default();
+        let context = context_for(&storage, &config);
+        let mut packet = ImpactPacket {
+            changes: vec![changed_symbol(
+                "cmd/main.go",
+                "main",
+                Some("main.main"),
+                None,
+            )],
+            ..Default::default()
+        };
+        CouplingProvider
+            .enrich_structural_with(&context, &mut packet, &BlastAugment::silent())
+            .unwrap();
+        let notes = &packet
+            .blast_radius
+            .as_ref()
+            .expect("missing-table blast")
+            .honesty_notes;
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(
+            notes[0],
+            "structural_edges table empty or missing; blast edges unavailable (index with call-graph analysis)"
+        );
+    }
+
     #[test]
     fn enrich_temporal_couplings_filter_and_cap() {
         let storage = StorageManager::init_from_conn(Connection::open_in_memory().unwrap());
@@ -466,6 +761,111 @@ mod tests {
 
         // Temporal engine needs a real git repo; filter/cap logic is covered
         // when git history is available. Structural path is the DoD surface.
+    }
+
+    #[test]
+    fn path_mode_all_restores_changelog_and_keeps_tree_partner_on_audit() {
+        use crate::impact::packet::TemporalCoupling;
+        use camino::Utf8PathBuf;
+
+        let file_pairs = vec![
+            TemporalCoupling {
+                file_a: PathBuf::from("src/a.rs"),
+                file_b: PathBuf::from("CHANGELOG.md"),
+                score: 0.95,
+            },
+            TemporalCoupling {
+                file_a: PathBuf::from("src/a.rs"),
+                file_b: PathBuf::from("src/b.rs"),
+                score: 0.9,
+            },
+        ];
+        let audit = vec![
+            file_pairs[0].clone(),
+            file_pairs[1].clone(),
+            TemporalCoupling {
+                file_a: PathBuf::from("src/a.rs"),
+                file_b: PathBuf::from("a"),
+                score: 0.91,
+            },
+        ];
+        let changes = vec![ChangedFile {
+            path: PathBuf::from("src/a.rs"),
+            status: "Modified".to_string(),
+            ..ChangedFile::default()
+        }];
+        let trees = vec![Utf8PathBuf::from("a"), Utf8PathBuf::from("unused")];
+
+        let (files, audit_out, discarded) = apply_temporal_presentation(
+            file_pairs.clone(),
+            audit.clone(),
+            &trees,
+            &changes,
+            "all",
+            50,
+        );
+        assert!(
+            files
+                .iter()
+                .any(|c| c.file_a.ends_with("CHANGELOG.md") || c.file_b.ends_with("CHANGELOG.md")),
+            "pathMode=all restores the changelog file pair: {files:?}"
+        );
+        assert!(
+            files.iter().all(|c| c.file_a != *"a" && c.file_b != *"a"),
+            "tree partner stays off the default list: {files:?}"
+        );
+        assert!(
+            audit_out
+                .iter()
+                .any(|c| c.file_a == *"a" || c.file_b == *"a"),
+            "tree partner stays on the audit list: {audit_out:?}"
+        );
+        assert_eq!(discarded, vec![PathBuf::from("a")]);
+
+        let count = crate::impact::path_class::count_presented_temporal_exclusions(
+            &files, &audit_out, &discarded, "all", 0.7,
+        );
+        assert_eq!(count, 1, "pathMode=all counts the tree pair once");
+
+        let (capped_files, capped_audit, capped_discarded) = apply_temporal_presentation(
+            file_pairs.clone(),
+            audit.clone(),
+            &trees,
+            &changes,
+            "all",
+            1,
+        );
+        assert_eq!(capped_files.len(), 1);
+        assert_eq!(capped_audit.len(), 1);
+        assert_eq!(
+            capped_discarded,
+            vec![PathBuf::from("a")],
+            "tree path outlives the truncated audit pair"
+        );
+
+        let (code_files, code_audit, code_discarded) =
+            apply_temporal_presentation(file_pairs, audit, &trees, &changes, "code", 50);
+        let code_count = crate::impact::path_class::count_presented_temporal_exclusions(
+            &code_files,
+            &code_audit,
+            &code_discarded,
+            "code",
+            0.7,
+        );
+        assert_eq!(
+            code_count, 2,
+            "code mode counts the changelog pair and the tree pair"
+        );
+        assert!(
+            code_files
+                .iter()
+                .all(|c| { c.file_a != *"CHANGELOG.md" && c.file_b != *"CHANGELOG.md" }),
+            "code mode demotes the changelog pair: {code_files:?}"
+        );
+        assert!(
+            code_files.iter().any(|c| c.file_b == *"src/b.rs"),
+            "code pair stays: {code_files:?}"
+        );
     }
 
     /// Production wiring (0118): after blast success, CouplingProvider sets

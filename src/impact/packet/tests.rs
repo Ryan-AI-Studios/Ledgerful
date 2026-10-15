@@ -126,6 +126,9 @@ fn test_schema_stability_golden() {
             file_b: PathBuf::from("b.rs"),
             score: 0.8,
         }],
+        // Empty → omitted. Exact key set stays 39.
+        temporal_couplings_audit: Vec::new(),
+        discarded_tree_paths: Vec::new(),
         structural_couplings: vec![StructuralCoupling {
             caller_symbol_name: "x".to_string(),
             callee_symbol_name: "y".to_string(),
@@ -346,6 +349,8 @@ fn test_schema_stability_golden() {
         prospective_paths: Vec::new(),
         actionable_lead: Vec::new(),
         glossary: None,
+        hotspot_provenance: None,
+        scope_note: None,
     };
 
     let json = serde_json::to_string_pretty(&packet).unwrap();

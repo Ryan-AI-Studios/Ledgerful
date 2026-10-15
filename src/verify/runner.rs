@@ -303,12 +303,12 @@ pub fn classify_step_command(command: &str) -> StepClass {
     }
 }
 
-/// Test-class steps take `suite` or the built-in 400. Other classes keep
-/// the timeout already stored on the step.
+/// Test-class steps take `suite` or `DEFAULT_TEST_SUITE_TIMEOUT_SECS`.
+/// Other classes keep the timeout already stored on the step.
 pub fn stamp_auto_budget(step: &mut crate::verify::plan::VerificationStep, suite: Option<u64>) {
-    use crate::verify::timeouts::DEFAULT_AUTO_TIMEOUT_SECS;
+    use crate::verify::timeouts::DEFAULT_TEST_SUITE_TIMEOUT_SECS;
     let (seconds, source) = match classify_step_command(&step.command) {
-        StepClass::Test => (suite.unwrap_or(DEFAULT_AUTO_TIMEOUT_SECS), "suite"),
+        StepClass::Test => (suite.unwrap_or(DEFAULT_TEST_SUITE_TIMEOUT_SECS), "suite"),
         StepClass::Format => (step.timeout_secs, "format"),
         StepClass::Lint => (step.timeout_secs, "lint"),
         StepClass::Other => (step.timeout_secs, "auto"),
@@ -486,6 +486,26 @@ mod tests {
         stamp_auto_budget(&mut fmt, Some(900));
         assert_eq!(fmt.timeout_secs, 60);
         assert_eq!(fmt.budget_source.as_deref(), Some("format"));
+    }
+
+    #[test]
+    fn stamp_auto_budget_suite_none_keeps_echo_and_fmt_and_stamps_nextest() {
+        use crate::verify::timeouts::DEFAULT_TEST_SUITE_TIMEOUT_SECS;
+
+        let mut echo = base_step("echo cargo nextest run", 400);
+        stamp_auto_budget(&mut echo, None);
+        assert_eq!(echo.timeout_secs, 400);
+        assert_eq!(echo.budget_source.as_deref(), Some("auto"));
+
+        let mut fmt = base_step("cargo fmt --all -- --check", 60);
+        stamp_auto_budget(&mut fmt, None);
+        assert_eq!(fmt.timeout_secs, 60);
+        assert_eq!(fmt.budget_source.as_deref(), Some("format"));
+
+        let mut nextest = base_step("cargo nextest run --workspace", 400);
+        stamp_auto_budget(&mut nextest, None);
+        assert_eq!(nextest.timeout_secs, DEFAULT_TEST_SUITE_TIMEOUT_SECS);
+        assert_eq!(nextest.budget_source.as_deref(), Some("suite"));
     }
 
     #[test]

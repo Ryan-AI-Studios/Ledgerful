@@ -65,4 +65,5 @@ pub mod orchestrator;
 pub mod packet;
 pub mod path_class;
 pub mod redact;
+pub mod scope;
 pub mod temporal;

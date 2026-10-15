@@ -113,6 +113,40 @@ fn read_set_demotes_governance_temporal_under_code_mode() {
 }
 
 #[test]
+fn read_set_ignores_tree_path_that_is_only_on_the_audit_list() {
+    let mut impact = base_packet(vec![make_changed("src/a.rs")]);
+    impact.temporal_couplings = vec![TemporalCoupling {
+        file_a: PathBuf::from("src/a.rs"),
+        file_b: PathBuf::from("src/b.rs"),
+        score: 0.9,
+    }];
+    impact.temporal_couplings_audit = vec![
+        TemporalCoupling {
+            file_a: PathBuf::from("src/a.rs"),
+            file_b: PathBuf::from("src/b.rs"),
+            score: 0.9,
+        },
+        TemporalCoupling {
+            file_a: PathBuf::from("src/a.rs"),
+            file_b: PathBuf::from("a"),
+            score: 0.95,
+        },
+    ];
+    impact.discarded_tree_paths = vec![PathBuf::from("a")];
+    let (set, _, _) = build_read_set(&impact, 20, 0.7, "all");
+    let paths: Vec<&str> = set.iter().map(|e| e.path.as_str()).collect();
+    assert!(
+        paths.contains(&"src/b.rs"),
+        "file partner stays priority 3: {paths:?}"
+    );
+    assert!(
+        !paths.contains(&"a"),
+        "audit-only tree path is not a readSet entry: {paths:?}"
+    );
+    assert!(set.iter().all(|e| e.priority != 3 || e.path != "a"));
+}
+
+#[test]
 fn read_set_max_files_sets_capped_flags() {
     let impact = base_packet(vec![
         make_changed("src/a.rs"),
@@ -1186,6 +1220,7 @@ fn change_context_blast_confidence_summary_counts_only_no_edges() {
             expandable: 7,
             total: 8,
         },
+        honesty_notes: Vec::new(),
     };
     let v = serde_json::to_value(&summary).unwrap();
     assert!(
@@ -1196,6 +1231,42 @@ fn change_context_blast_confidence_summary_counts_only_no_edges() {
     assert_eq!(v["confidenceSummary"]["resolved"], 5);
     assert_eq!(v["confidenceSummary"]["total"], 8);
     assert_eq!(v["depth"], 1);
+    assert!(
+        v.get("honestyNotes").is_none(),
+        "empty notes omit the key: {v}"
+    );
+
+    let mut with_notes = summary.clone();
+    with_notes.honesty_notes = vec!["native resolution included".into()];
+    let noted = serde_json::to_value(&with_notes).unwrap();
+    assert_eq!(noted["honestyNotes"][0], "native resolution included");
+    assert!(noted.get("edges").is_none());
+
+    let raw = r#"{"depth":1,"mustTouchFileCount":0,"mustTouchSymbolCount":0,"confidenceSummary":{"scipBound":0,"resolved":0,"ambiguous":0,"unresolved":0,"capped":0,"unknown":0,"expandable":0,"total":0}}"#;
+    let parsed: BlastSummary = serde_json::from_str(raw).unwrap();
+    assert!(parsed.honesty_notes.is_empty());
+
+    let not_ready = not_ready_packet(
+        "test".into(),
+        None,
+        DoctorSection {
+            status: "missing".into(),
+            ready_for_publish: false,
+            block: 0,
+            warn: 0,
+            info: 0,
+            top_findings: Vec::new(),
+        },
+        LedgerSection {
+            pending_count: 0,
+            active_tx: Vec::new(),
+        },
+        NotReadyErrorClass::Other,
+    );
+    assert!(not_ready.blast.is_none());
+    let packet_json = serde_json::to_value(&not_ready).unwrap();
+    assert!(packet_json.get("blast").is_none());
+    assert_eq!(not_ready.schema_version, 1);
 
     // Both detail levels use the same BlastSummary shape (no detail gate on counts).
     for detail in [ChangeContextDetail::Minimal, ChangeContextDetail::Standard] {
@@ -1386,6 +1457,7 @@ fn change_context_schema_version_stays_one_with_affected_flows_key() {
         next_actions: vec![],
         impact_schema_version: Some("v1".into()),
         completeness: None,
+        scope_note: None,
     };
     let v = serde_json::to_value(&packet).unwrap();
     assert_eq!(v["schemaVersion"], 1);
@@ -1585,6 +1657,7 @@ fn change_context_json_emits_freshness_rows() {
         next_actions: vec![],
         impact_schema_version: Some("v1".into()),
         completeness: None,
+        scope_note: None,
     };
     let v = serde_json::to_value(&packet).unwrap();
     assert_eq!(v["schemaVersion"], 1);
@@ -1614,6 +1687,7 @@ fn change_context_json_emits_freshness_rows() {
         .expect("older packet deserializes");
     assert!(missing.freshness.is_empty());
     assert!(missing.completeness.is_none());
+    assert!(missing.scope_note.is_none());
     let v = serde_json::to_value(&packet).unwrap();
     assert!(
         v.get("completeness").is_none(),
@@ -1658,12 +1732,32 @@ fn change_context_packet__additive_completeness_omit_when_complete() {
         next_actions: vec![],
         impact_schema_version: None,
         completeness: None,
+        scope_note: None,
     };
     let v = serde_json::to_value(&packet).unwrap();
     assert!(
         v.get("completeness").is_none(),
         "complete packet omits completeness: {v}"
     );
+    assert!(v.get("scopeNote").is_none());
+    assert!(v.get("treeClean").is_none());
+    assert!(v.get("hotspots").is_none());
+    assert!(v.get("serviceMapDelta").is_none());
+    assert_eq!(v["schemaVersion"], 1);
+
+    let noted = ChangeContextPacket {
+        scope_note: Some(crate::index::surface_freshness::PROSPECTIVE_SCOPE_NOTE.to_string()),
+        ..packet
+    };
+    let noted_v = serde_json::to_value(&noted).unwrap();
+    assert_eq!(
+        noted_v["scopeNote"],
+        crate::index::surface_freshness::PROSPECTIVE_SCOPE_NOTE
+    );
+    assert!(noted_v.get("treeClean").is_none());
+    assert!(noted_v.get("hotspots").is_none());
+    assert!(noted_v.get("serviceMapDelta").is_none());
+    assert_eq!(noted_v["schemaVersion"], 1);
 }
 
 #[test]
@@ -1702,6 +1796,7 @@ fn change_context_human_prints_freshness_block() {
         next_actions: vec![],
         impact_schema_version: None,
         completeness: None,
+        scope_note: None,
     };
     let lines = super::emit::freshness_block_lines(&packet);
     assert!(lines.iter().any(|l| l.contains("freshness:")));

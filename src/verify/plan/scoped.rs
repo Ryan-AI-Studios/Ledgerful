@@ -8,8 +8,12 @@ use crate::impact::packet::ImpactPacket;
 use crate::policy::rules::Rules;
 use crate::verify::predict::PredictedFile;
 use crate::verify::timeouts::DEFAULT_AUTO_TIMEOUT_SECS;
+use std::path::Path;
 
-use super::non_code::{all_non_code_cheap, any_packaging_or_bump_script};
+use super::non_code::{
+    all_non_code_cheap, any_include_str_material, any_packaging_or_bump_script,
+    union_include_str_material_stems,
+};
 use super::shared_infra::touches_shared_infra;
 
 /// nextest `test()` stem injected when packaging templates or bump scripts change.
@@ -224,7 +228,7 @@ pub fn build_plan_scoped_with_options(
     // CHANGELOG / packaging / bump scripts). Skip freshness and mapping.
     // `fallback_reason` stays None so JSON `scopeExecuted` remains `"fast"`.
     if all_non_code_cheap(packet) {
-        return build_non_code_cheap_plan(packet, profile, config.suite_timeout_secs);
+        return build_non_code_cheap_plan(packet, profile, repo_root, config.suite_timeout_secs);
     }
 
     // 3. EmptyChanges — before stem query (query_scoped returns None for both
@@ -315,10 +319,11 @@ pub fn build_plan_scoped_with_options(
     // 5. ScopedOk — stems only after non-stale gate passed.
     // P7: union `bump_manifests` when any packaging / bump-script path is in
     // the classified set (mixed src+packaging that already ScopedOk on src).
+    // 0480: union `include_str!` cheap-doc stems the same way.
     let scoped_stems = conn.and_then(|c| query_scoped_test_files(c, packet));
     if let Some(mut test_stems) = scoped_stems {
-        let unioned = union_bump_manifests_if_needed(packet, &mut test_stems);
-        return build_fast_scoped_plan(packet, &test_stems, unioned, config.suite_timeout_secs);
+        let inject = union_cheap_inject_stems(packet, profile, repo_root, &mut test_stems);
+        return build_fast_scoped_plan(packet, &test_stems, inject, config.suite_timeout_secs);
     }
 
     // 6. MappingRefuse — fresh mapping but no coverage for changed files.
@@ -360,9 +365,22 @@ pub(crate) fn mapping_cannot_scope_outcome(
     }
 }
 
+/// True when `root` is the package tree this binary was compiled from.
+/// A failed canonicalize does not inject and does not refuse.
+fn work_root_is_engine_tree(root: &Path) -> bool {
+    let Ok(work) = dunce::canonicalize(root) else {
+        return false;
+    };
+    let Ok(engine) = dunce::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR"))) else {
+        return false;
+    };
+    work == engine
+}
+
 fn build_non_code_cheap_plan(
     packet: &ImpactPacket,
     profile: &crate::platform::repository::RepositoryProfile,
+    repo_root: &Path,
     suite: Option<u64>,
 ) -> VerificationPlan {
     let rust_steps: Vec<VerificationStep> = if profile.rust.is_some() {
@@ -385,17 +403,33 @@ fn build_non_code_cheap_plan(
     } else {
         Vec::new()
     };
-    let packaging_step = any_packaging_or_bump_script(packet).then(|| {
-        let stems = vec![BUMP_MANIFESTS_STEM.to_string()];
-        VerificationStep {
-            command: build_scoped_nextest_command(&stems),
-            timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
-            description: "Non-code changes: packaging/scripts tests (bump_manifests)".to_string(),
-            shell: false,
-            budget_source: None,
-        }
+    let mut stems: Vec<String> = Vec::new();
+    let packaging = any_packaging_or_bump_script(packet);
+    if packaging {
+        stems.push(BUMP_MANIFESTS_STEM.to_string());
+    }
+    // Doc inject is engine-dogfood nextest stems. Rust must be detected and
+    // the work root must be this binary's compile tree. The compare runs
+    // before the mutating union. Packaging A2 still injects `bump_manifests`
+    // without a rust profile and without the engine-tree check.
+    let include_str = profile.rust.is_some()
+        && work_root_is_engine_tree(repo_root)
+        && any_include_str_material(packet);
+    if include_str {
+        union_include_str_material_stems(packet, &mut stems);
+    }
+    if packaging || include_str {
+        stems.sort();
+        stems.dedup();
+    }
+    let nextest_step = (!stems.is_empty()).then(|| VerificationStep {
+        command: build_scoped_nextest_command(&stems),
+        timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
+        description: non_code_nextest_description(packaging, include_str),
+        shell: false,
+        budget_source: None,
     });
-    let mut steps: Vec<VerificationStep> = rust_steps.into_iter().chain(packaging_step).collect();
+    let mut steps: Vec<VerificationStep> = rust_steps.into_iter().chain(nextest_step).collect();
     for step in &mut steps {
         crate::verify::runner::stamp_auto_budget(step, suite);
     }
@@ -404,6 +438,29 @@ fn build_non_code_cheap_plan(
         steps,
         fallback_reason: None,
         refused: false,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct CheapInject {
+    packaging: bool,
+    include_str: bool,
+}
+
+/// Union packaging + `include_str!` cheap-doc stems into `stems`.
+/// Doc stems require a Rust profile (engine-dogfood nextest). Packaging A2
+/// still injects `bump_manifests` when `profile.rust` is None.
+fn union_cheap_inject_stems(
+    packet: &ImpactPacket,
+    profile: &crate::platform::repository::RepositoryProfile,
+    repo_root: &Path,
+    stems: &mut Vec<String>,
+) -> CheapInject {
+    CheapInject {
+        packaging: union_bump_manifests_if_needed(packet, stems),
+        include_str: profile.rust.is_some()
+            && work_root_is_engine_tree(repo_root)
+            && union_include_str_material_stems(packet, stems),
     }
 }
 
@@ -422,24 +479,45 @@ fn union_bump_manifests_if_needed(packet: &ImpactPacket, stems: &mut Vec<String>
     true
 }
 
-fn scoped_nextest_description(packet: &ImpactPacket, injected: bool) -> String {
-    if injected {
-        format!(
+fn non_code_nextest_description(packaging: bool, include_str: bool) -> String {
+    match (packaging, include_str) {
+        (true, true) => {
+            "Non-code changes: packaging/scripts tests (bump_manifests) plus include_str embedded docs"
+                .to_string()
+        }
+        (true, false) => {
+            "Non-code changes: packaging/scripts tests (bump_manifests)".to_string()
+        }
+        (false, true) => "Non-code changes: include_str embedded docs tests".to_string(),
+        (false, false) => "Non-code changes: scoped tests".to_string(),
+    }
+}
+
+fn scoped_nextest_description(packet: &ImpactPacket, inject: CheapInject) -> String {
+    match (inject.packaging, inject.include_str) {
+        (true, true) => format!(
+            "Scoped: tests covering {} changed file(s) plus packaging/scripts (bump_manifests) plus include_str embedded docs",
+            packet.changes.len()
+        ),
+        (true, false) => format!(
             "Scoped: tests covering {} changed file(s) plus packaging/scripts (bump_manifests)",
             packet.changes.len()
-        )
-    } else {
-        format!(
+        ),
+        (false, true) => format!(
+            "Scoped: tests covering {} changed file(s) plus include_str embedded docs",
+            packet.changes.len()
+        ),
+        (false, false) => format!(
             "Scoped: tests covering {} changed file(s) via test_mapping",
             packet.changes.len()
-        )
+        ),
     }
 }
 
 fn build_fast_scoped_plan(
     packet: &ImpactPacket,
     test_stems: &[String],
-    injected: bool,
+    inject: CheapInject,
     suite: Option<u64>,
 ) -> VerificationPlan {
     let scoped_cmd = build_scoped_nextest_command(test_stems);
@@ -468,7 +546,7 @@ fn build_fast_scoped_plan(
         VerificationStep {
             command: scoped_cmd,
             timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
-            description: scoped_nextest_description(packet, injected),
+            description: scoped_nextest_description(packet, inject),
             shell: false,
             budget_source: None,
         },

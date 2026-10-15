@@ -888,6 +888,7 @@ mod tests {
                 files.insert(Utf8PathBuf::from("hist.rs"));
                 Ok(vec![CommitFileSet {
                     files,
+                    tree_paths: std::collections::HashSet::new(),
                     is_merge: false,
                     id: None,
                 }])
@@ -973,6 +974,7 @@ mod tests {
             files.insert(Utf8PathBuf::from("hist.rs"));
             Ok(vec![crate::impact::temporal::CommitFileSet {
                 files,
+                tree_paths: std::collections::HashSet::new(),
                 is_merge: false,
                 id: None,
             }])

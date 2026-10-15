@@ -25,7 +25,13 @@ macOS or Linux:
 curl -fsSL https://raw.githubusercontent.com/Ryan-AI-Studios/Ledgerful/main/install/install.sh | sh
 ```
 
-The installer tries to download a prebuilt GitHub release binary first. If no release asset exists for the platform, it falls back to `cargo install --git`.
+The installer tries to download a prebuilt GitHub release binary first. If no release asset exists for the platform, it falls back to a source build. That source build does not embed the dashboard:
+
+```bash
+cargo install --git https://github.com/Ryan-AI-Studios/Ledgerful --branch main --locked --bin ledgerful
+```
+
+GitHub release binaries are built with `--all-features`, which includes `embed-spa`. A checkout that already ran `npm run build` in `ledgerful-frontend` can embed the dashboard with `cargo install --path . --locked --features embed-spa`.
 
 ## Package managers
 
@@ -37,7 +43,7 @@ Ledgerful ships `[package.metadata.binstall]` in `Cargo.toml` mapping to the sam
 cargo binstall --git https://github.com/Ryan-AI-Studios/Ledgerful
 ```
 
-Requires [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall) on the machine. If no matching prebuilt asset exists, binstall can fall back to compiling from source (quick-install mirrors are disabled in metadata).
+Requires [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall) on the machine. If no matching prebuilt asset exists, binstall can fall back to compiling from source (quick-install mirrors are disabled in metadata). That compile uses default features and does not embed the dashboard.
 
 ### Homebrew
 
@@ -54,7 +60,7 @@ scoop install ledgerful
 
 ### winget
 
-Package accepted on winget (2026-07-30); <!-- lf-floor:I-57 -->community index is live at **0.2.15** (`microsoft/winget-pkgs` `manifests/l/Ledgerful/Ledgerful`, 2026-10-02). GitHub Release **v0.2.16** is published; do not claim winget 0.2.16 until that directory exists.<!-- /lf-floor:I-57 --> History: 0.2.12 was [#430322](https://github.com/microsoft/winget-pkgs/pull/430322) merged 2026-09-06.
+Package accepted on winget (2026-07-30); <!-- lf-floor:I-57 -->community index is live at **0.2.16** (`microsoft/winget-pkgs` `manifests/l/Ledgerful/Ledgerful`, 2026-10-14). GitHub Release **v0.2.17** is published; do not claim winget 0.2.17 until that directory exists.<!-- /lf-floor:I-57 --> History: 0.2.12 was [#430322](https://github.com/microsoft/winget-pkgs/pull/430322) merged 2026-09-06.
 
 ```powershell
 winget install Ledgerful.Ledgerful

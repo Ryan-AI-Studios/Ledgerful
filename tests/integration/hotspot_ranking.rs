@@ -520,6 +520,7 @@ fn insert_snapshot(storage: &StorageManager) {
 fn commit(paths: &[&str]) -> CommitFileSet {
     CommitFileSet {
         files: paths.iter().map(Utf8PathBuf::from).collect::<HashSet<_>>(),
+        tree_paths: std::collections::HashSet::new(),
         is_merge: false,
         id: None,
     }

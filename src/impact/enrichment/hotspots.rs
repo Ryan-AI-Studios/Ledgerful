@@ -1,8 +1,11 @@
 use crate::git::repo::open_repo;
-use crate::impact::budget::{CompletenessFilter, completeness_for_walk};
+use crate::impact::budget::{
+    CompletenessFilter, HotspotProvenance, HotspotProvenanceSource, completeness_for_walk,
+};
 use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
 use crate::impact::hotspots::calculate_hotspots_detailed;
 use crate::impact::packet::ImpactPacket;
+use crate::impact::scope::retain_scoped_hotspots;
 use crate::impact::temporal::GixHistoryProvider;
 use miette::Result;
 use tracing::{debug, warn};
@@ -26,9 +29,13 @@ impl EnrichmentProvider for HotspotProvider {
 
         let history_provider = GixHistoryProvider::new(&repo);
 
+        // The shared scorer truncates to `query.limit`. The packet query asks
+        // for the full scored list so a seed outside the global top-N survives,
+        // then `retain_scoped_hotspots` applies the configured cap.
+        let configured_limit = context.config.hotspots.limit;
         let query = crate::impact::hotspots::HotspotQuery {
             commits: context.config.hotspots.max_commits,
-            limit: context.config.hotspots.limit,
+            limit: usize::MAX,
             all_parents: context.config.temporal.all_parents,
             decay_half_life: context.config.hotspots.decay_half_life,
             budget: context.history_budget.clone(),
@@ -65,7 +72,17 @@ impl EnrichmentProvider for HotspotProvider {
                     context.add_warning(msg);
                     packet.completeness = Some(c);
                 }
-                packet.set_hotspots(calc.hotspots);
+                let scoped = retain_scoped_hotspots(calc.hotspots, packet, configured_limit);
+                packet.set_hotspots(scoped);
+                packet.hotspot_provenance = Some(HotspotProvenance {
+                    source: HotspotProvenanceSource::Live,
+                    commits_requested: Some(query.commits as u64),
+                    days_requested: query.days,
+                    limit: Some(configured_limit as u64),
+                    filter: Some(CompletenessFilter::Unfiltered),
+                    head: calc.head.clone(),
+                    ..HotspotProvenance::default()
+                });
             }
             Err(e) => {
                 warn!("Hotspot analysis failed: {e}");
@@ -84,11 +101,75 @@ mod tests {
     use crate::state::storage::StorageManager;
     use rusqlite::Connection;
     use std::collections::HashMap;
-    use std::path::PathBuf;
+    use std::path::Path;
+    use std::process::Command;
     use std::sync::{Arc, Mutex};
+    use tempfile::tempdir;
+
+    fn setup_git_repo(dir: &Path) {
+        git_cmd(dir, &["init"]);
+        git_cmd(dir, &["config", "user.email", "test@test.com"]);
+        git_cmd(dir, &["config", "user.name", "Test User"]);
+    }
+
+    fn git_add_and_commit(dir: &Path, msg: &str) {
+        git_cmd(dir, &["add", "-A"]);
+        git_cmd(dir, &["commit", "-m", msg]);
+    }
+
+    fn git_cmd(dir: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("Failed to execute git command");
+        if !output.status.success() {
+            panic!(
+                "git command failed: {:?}\nstderr: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    /// Creates a temporary git repo with 12+ commits of history,
+    /// sufficient to clear the 10-commit floor required by
+    /// TemporalEngine::calculate_couplings (GitError::InsufficientHistory).
+    fn setup_temp_repo_with_history() -> tempfile::TempDir {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+
+        setup_git_repo(root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "pub fn hotspot_fn(x: i32) -> i32 {\n    if x > 0 { x + 1 } else { x - 1 }\n}\n",
+        )
+        .unwrap();
+        git_add_and_commit(root, "initial");
+
+        // TemporalEngine::calculate_couplings requires at least 10 commits of
+        // history (see GitError::InsufficientHistory in src/git/mod.rs).
+        // Touch the file across enough additional commits to clear that floor with margin.
+        for i in 1..=12 {
+            std::fs::write(
+                root.join("src/lib.rs"),
+                format!(
+                    "pub fn hotspot_fn(x: i32) -> i32 {{\n    if x > {i} {{ x + 1 }} else {{ x - 1 }}\n}}\n"
+                ),
+            )
+            .unwrap();
+            git_add_and_commit(root, &format!("touch {i}"));
+        }
+
+        tmp
+    }
 
     #[test]
     fn enrich_calculates_hotspots() {
+        let _temp_repo = setup_temp_repo_with_history();
+        let temp_root = _temp_repo.path().to_path_buf();
+
         let mut conn = Connection::open_in_memory().unwrap();
         get_migrations().to_latest(&mut conn).unwrap();
         let storage = StorageManager::init_from_conn(conn);
@@ -97,8 +178,7 @@ mod tests {
             storage: &storage,
             config: &config,
             file_id_map: HashMap::new(),
-            project_root: std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from(r"C:\dev\ledgerful")),
+            project_root: temp_root,
             warnings: Arc::new(Mutex::new(Vec::new())),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
             skip_git_history_enrichment: false,
@@ -109,6 +189,21 @@ mod tests {
 
         HotspotProvider.enrich(&context, &mut packet).unwrap();
 
-        assert!(packet.hotspots.len() <= config.hotspots.limit);
+        assert!(
+            packet.hotspots.is_empty(),
+            "an empty change list keeps no hotspot row"
+        );
+        let provenance = packet
+            .hotspot_provenance
+            .as_ref()
+            .expect("a finished calculation still labels the window");
+        assert_eq!(provenance.source, HotspotProvenanceSource::Live);
+        assert_eq!(
+            provenance.commits_requested,
+            Some(config.hotspots.max_commits as u64)
+        );
+        assert_eq!(provenance.limit, Some(config.hotspots.limit as u64));
+        assert_eq!(provenance.filter, Some(CompletenessFilter::Unfiltered));
+        assert_ne!(provenance.limit, Some(u64::MAX));
     }
 }

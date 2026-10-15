@@ -18,16 +18,26 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
+/// One source commit on an explanation. Optional fields are omitted from JSON
+/// when the object cannot be read. No author, email, or committer name.
+pub struct ExplainedCommit {
+    pub id: String,
+    pub subject: Option<String>,
+    pub committed_at: Option<String>,
+}
+
 /// CLI presentation so the resolution logic is directly testable.
 pub struct HotspotExplanation {
     pub normalized_entity: String,
     pub complexity: i32,
     pub frequency: f64,
     pub couplings: Vec<crate::impact::packet::TemporalCoupling>,
+    /// Entity audit pairs, including governance and tree partners.
+    pub couplings_audit: Vec<crate::impact::packet::TemporalCoupling>,
     /// Greppable reason the couplings list is omitted/untrusted. `None` means trusted.
     pub couplings_warning: Option<String>,
     pub score_breakdown: Option<crate::impact::hotspots::HotspotScoreBreakdown>,
-    pub contributing_commits: Vec<String>,
+    pub contributing_commits: Vec<ExplainedCommit>,
     pub empty_reason: Option<String>,
     pub not_in_window_copy: Option<String>,
 }
@@ -78,6 +88,7 @@ pub(crate) fn compute_hotspot_explanation_in(
                 complexity: indexed,
                 frequency: 0.0,
                 couplings: Vec::new(),
+                couplings_audit: Vec::new(),
                 couplings_warning: Some("temporal couplings untrusted: overall budget".to_string()),
                 score_breakdown: None,
                 contributing_commits: Vec::new(),
@@ -140,7 +151,7 @@ pub(crate) fn compute_hotspot_explanation_in(
 
     let skip_stop = poll_overall_stop(overall_deadline, &cancel);
     let skip_couplings = skip_stop.is_some() || completeness.as_ref().is_some_and(is_overall_stop);
-    let (entity_couplings, couplings_warning) = if skip_couplings {
+    let (entity_couplings, entity_audit, couplings_warning) = if skip_couplings {
         if let Some(stop) = skip_stop
             && completeness.as_ref().is_none_or(|c| c.scope.is_none())
         {
@@ -152,16 +163,26 @@ pub(crate) fn compute_hotspot_explanation_in(
         }
         (
             Vec::new(),
+            Vec::new(),
             Some("temporal couplings untrusted: overall budget".to_string()),
         )
     } else {
         let engine = TemporalEngine::new(history_provider, config.temporal.clone());
-        let (couplings, mut warning) =
-            annotate_couplings(engine.calculate_couplings_budgeted(Some(&AnalysisBudget {
-                deadline: overall_deadline,
-                cancel: cancel.clone(),
-                budget_secs: Some(overall_secs).filter(|s| *s > 0),
-            })));
+        let report = engine.calculate_coupling_report_budgeted(Some(&AnalysisBudget {
+            deadline: overall_deadline,
+            cancel: cancel.clone(),
+            budget_secs: Some(overall_secs).filter(|s| *s > 0),
+        }));
+        let (file_couplings, audit_couplings, mut warning) = match report {
+            Ok(report) => {
+                let (files, warning) = annotate_couplings(Ok(report.file_couplings));
+                (files, report.audit_couplings, warning)
+            }
+            Err(err) => {
+                let (files, warning) = annotate_couplings(Err(err));
+                (files, Vec::new(), warning)
+            }
+        };
         if let Some(stop) = poll_overall_stop(overall_deadline, &cancel) {
             if completeness.as_ref().is_none_or(|c| c.scope.is_none()) {
                 completeness = Some(completeness_for_overall(
@@ -174,14 +195,26 @@ pub(crate) fn compute_hotspot_explanation_in(
                 warning = Some("temporal couplings untrusted: overall budget".to_string());
             }
         }
-        let entity_couplings: Vec<_> = couplings
+        let touches_entity = |c: &crate::impact::packet::TemporalCoupling| {
+            c.file_a.to_string_lossy() == normalized_entity
+                || c.file_b.to_string_lossy() == normalized_entity
+        };
+        let entity_couplings: Vec<_> = file_couplings
             .into_iter()
+            .filter(&touches_entity)
             .filter(|c| {
-                c.file_a.to_string_lossy() == normalized_entity
-                    || c.file_b.to_string_lossy() == normalized_entity
+                !crate::impact::path_class::should_demote_pair(
+                    &c.file_a.to_string_lossy(),
+                    &c.file_b.to_string_lossy(),
+                    "code",
+                )
             })
             .collect();
-        (entity_couplings, warning)
+        let entity_audit: Vec<_> = audit_couplings
+            .into_iter()
+            .filter(&touches_entity)
+            .collect();
+        (entity_couplings, entity_audit, warning)
     };
 
     let mut scored = hotspots.clone();
@@ -192,8 +225,12 @@ pub(crate) fn compute_hotspot_explanation_in(
         entity_couplings.len(),
     );
 
-    let mut contributing_commits = calculated.contributing_commits;
-    contributing_commits.truncate(5);
+    let mut contributing_ids = calculated.contributing_commits;
+    contributing_ids.truncate(5);
+    let contributing_commits: Vec<ExplainedCommit> = contributing_ids
+        .into_iter()
+        .map(|id| explained_commit(repo, id))
+        .collect();
     let empty_reason = if calculated.walk_stop == HistoryWalkStop::Complete
         && frequency == 0.0
         && contributing_commits.is_empty()
@@ -212,6 +249,7 @@ pub(crate) fn compute_hotspot_explanation_in(
             complexity,
             frequency,
             couplings: entity_couplings,
+            couplings_audit: entity_audit,
             couplings_warning,
             score_breakdown,
             contributing_commits,
@@ -249,6 +287,32 @@ pub(super) fn not_in_window_human(days: Option<u64>, commits: usize) -> String {
 
 pub(super) fn short_commit_id(id: &str) -> &str {
     &id[..id.len().min(8)]
+}
+
+fn explained_commit(repo: &gix::Repository, id: String) -> ExplainedCommit {
+    let commit = gix::ObjectId::from_hex(id.as_bytes())
+        .ok()
+        .and_then(|oid| repo.find_commit(oid).ok());
+    let subject = commit.as_ref().and_then(|commit| {
+        let message = commit.message().ok()?;
+        let text = String::from_utf8_lossy(message.title);
+        let first_line = text.lines().next().unwrap_or("");
+        let trimmed = first_line.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.chars().take(120).collect())
+        }
+    });
+    let committed_at = commit.as_ref().and_then(|commit| {
+        let time = commit.time().ok()?;
+        chrono::DateTime::from_timestamp(time.seconds, 0).map(|dt| dt.to_rfc3339())
+    });
+    ExplainedCommit {
+        id,
+        subject,
+        committed_at,
+    }
 }
 
 pub(super) fn annotate_couplings(
@@ -336,6 +400,8 @@ struct HotspotExplanationEnvelope {
     #[serde(skip_serializing_if = "Option::is_none")]
     display_score: Option<f64>,
     couplings: Vec<TemporalCoupling>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    couplings_audit: Vec<TemporalCoupling>,
     #[serde(skip_serializing_if = "Option::is_none")]
     couplings_warning: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -346,9 +412,14 @@ struct HotspotExplanationEnvelope {
     completeness: Option<AnalysisCompleteness>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ContributingCommitJson {
     id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subject: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    committed_at: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -358,9 +429,10 @@ pub(super) fn explanation_json_envelope(
     frequency: f64,
     breakdown: Option<&crate::impact::hotspots::HotspotScoreBreakdown>,
     couplings: Vec<TemporalCoupling>,
+    couplings_audit: Vec<TemporalCoupling>,
     couplings_warning: Option<String>,
     completeness: Option<&AnalysisCompleteness>,
-    contributing_commits: &[String],
+    contributing_commits: &[ExplainedCommit],
     empty_reason: Option<&str>,
 ) -> serde_json::Value {
     let envelope = HotspotExplanationEnvelope {
@@ -372,10 +444,15 @@ pub(super) fn explanation_json_envelope(
         score: breakdown.map(|b| b.base_score),
         display_score: breakdown.map(|b| b.final_score),
         couplings,
+        couplings_audit,
         couplings_warning,
         contributing_commits: contributing_commits
             .iter()
-            .map(|id| ContributingCommitJson { id: id.clone() })
+            .map(|commit| ContributingCommitJson {
+                id: commit.id.clone(),
+                subject: commit.subject.clone(),
+                committed_at: commit.committed_at.clone(),
+            })
             .collect(),
         empty_reason: empty_reason.map(str::to_string),
         completeness: completeness.cloned(),
@@ -416,6 +493,7 @@ pub(super) fn execute_hotspots_explain(
             run.explanation.frequency,
             run.explanation.score_breakdown.as_ref(),
             run.explanation.couplings.clone(),
+            run.explanation.couplings_audit.clone(),
             run.explanation.couplings_warning.clone(),
             run.completeness.as_ref(),
             &run.explanation.contributing_commits,
@@ -447,8 +525,8 @@ pub(super) fn execute_hotspots_explain(
     }
     if !explanation.contributing_commits.is_empty() {
         println!("\nSource commits:");
-        for id in &explanation.contributing_commits {
-            println!("  {}", short_commit_id(id));
+        for commit in &explanation.contributing_commits {
+            println!("  {}", short_commit_id(&commit.id));
         }
     }
 
@@ -517,6 +595,209 @@ mod tests {
             warning.contains('3') && warning.contains("10"),
             "warning should include found/required: {warning}"
         );
+    }
+
+    fn assert_no_author_key(value: &serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                assert!(map.get("author").is_none(), "author key in {value}");
+                for child in map.values() {
+                    assert_no_author_key(child);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    assert_no_author_key(item);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn explain_json_omits_tree_and_governance_partners_and_stamps_committer_time() {
+        use crate::config::model::Config;
+        use crate::impact::packet::TemporalCoupling;
+        use crate::state::migrations::get_migrations;
+        use crate::state::storage::StorageManager;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = gix::init(dir.path()).expect("init");
+        let mode_blob = gix::objs::tree::EntryMode::from(gix::objs::tree::EntryKind::Blob);
+        let mode_tree = gix::objs::tree::EntryMode::from(gix::objs::tree::EntryKind::Tree);
+
+        let mut parent: Option<gix::ObjectId> = None;
+        for i in 0..12u32 {
+            let blob = |bytes: &[u8]| repo.write_blob(bytes).expect("blob").detach();
+            let a = blob(format!("a{i}").as_bytes());
+            let b = blob(format!("b{i}").as_bytes());
+            let spec = blob(format!("spec{i}").as_bytes());
+            let src_tree = gix::objs::Tree {
+                entries: vec![
+                    gix::objs::tree::Entry {
+                        mode: mode_blob,
+                        filename: "a.rs".into(),
+                        oid: a,
+                    },
+                    gix::objs::tree::Entry {
+                        mode: mode_blob,
+                        filename: "b.rs".into(),
+                        oid: b,
+                    },
+                ],
+            };
+            let src_id = repo.write_object(&src_tree).expect("src").detach();
+            let conductor_tree = gix::objs::Tree {
+                entries: vec![gix::objs::tree::Entry {
+                    mode: mode_blob,
+                    filename: "spec.md".into(),
+                    oid: spec,
+                }],
+            };
+            let conductor_id = repo
+                .write_object(&conductor_tree)
+                .expect("conductor")
+                .detach();
+            let mut root_entries = vec![
+                gix::objs::tree::Entry {
+                    mode: mode_tree,
+                    filename: "conductor".into(),
+                    oid: conductor_id,
+                },
+                gix::objs::tree::Entry {
+                    mode: mode_tree,
+                    filename: "src".into(),
+                    oid: src_id,
+                },
+            ];
+            root_entries.sort();
+            let root = gix::objs::Tree {
+                entries: root_entries,
+            };
+            let root_id = repo.write_object(&root).expect("root").detach();
+            let sig_buf = format!("Tester <t@example.com> {} +0000", 1_700_000_000 + i);
+            let sig = gix::actor::SignatureRef::from_bytes(sig_buf.as_bytes()).expect("sig");
+            let parents: Vec<gix::ObjectId> = parent.iter().copied().collect();
+            let message = if i == 11 {
+                "line one\nline two\n\nbody\n".to_string()
+            } else {
+                format!("touch leaves {i}\n")
+            };
+            let id = repo
+                .commit_as(sig, sig, "HEAD", message, root_id, parents)
+                .expect("commit")
+                .detach();
+            parent = Some(id);
+        }
+
+        let mut conn = rusqlite::Connection::open_in_memory().expect("db");
+        get_migrations().to_latest(&mut conn).expect("migrate");
+        let storage = StorageManager::init_from_conn(conn);
+        let mut config = Config::default();
+        config.temporal.min_revisions = 1;
+        config.temporal.min_shared_commits = 1;
+        config.temporal.coupling_threshold = 0.1;
+        config.temporal.decay_half_life = 0;
+        config.temporal.max_commits = 50;
+        config.hotspots.max_commits = 50;
+
+        let run = super::compute_hotspot_explanation_in(
+            &storage, "src/a.rs", &repo, &config, None, None, None, None, 0,
+        )
+        .expect("explain");
+        let explanation = run.explanation;
+        let partner = |c: &TemporalCoupling| -> String {
+            if c.file_a == *"src/a.rs" {
+                c.file_b.to_string_lossy().into_owned()
+            } else {
+                c.file_a.to_string_lossy().into_owned()
+            }
+        };
+        let coupling_partners: Vec<String> = explanation.couplings.iter().map(partner).collect();
+        let audit_partners: Vec<String> = explanation.couplings_audit.iter().map(partner).collect();
+        assert!(
+            coupling_partners.iter().any(|p| p == "src/b.rs"),
+            "code partner stays on the default list: {coupling_partners:?}"
+        );
+        assert!(
+            !coupling_partners.iter().any(|p| p == "conductor/spec.md"),
+            "governance partner omitted from couplings: {coupling_partners:?}"
+        );
+        assert!(
+            coupling_partners
+                .iter()
+                .all(|p| p != "src" && p != "conductor"),
+            "tree partner omitted from couplings: {coupling_partners:?}"
+        );
+        assert!(
+            audit_partners.iter().any(|p| p == "conductor/spec.md"),
+            "governance partner is on couplingsAudit: {audit_partners:?}"
+        );
+        assert!(
+            audit_partners
+                .iter()
+                .any(|p| p == "src" || p == "conductor"),
+            "tree partner is on couplingsAudit: {audit_partners:?}"
+        );
+
+        assert!(!explanation.contributing_commits.is_empty());
+        assert!(explanation.contributing_commits.len() <= 5);
+        let stamped = explanation
+            .contributing_commits
+            .iter()
+            .find(|c| c.subject.is_some() && c.committed_at.is_some())
+            .expect("a readable commit");
+        let subject = stamped.subject.as_deref().expect("subject");
+        assert!(
+            !subject.contains('\n') && !subject.contains('\r'),
+            "subject is one line: {subject:?}"
+        );
+        assert!(
+            explanation
+                .contributing_commits
+                .iter()
+                .any(|c| c.subject.as_deref() == Some("line one")),
+            "newest subject is the first line only: {:?}",
+            explanation
+                .contributing_commits
+                .iter()
+                .map(|commit| commit.subject.clone())
+                .collect::<Vec<_>>()
+        );
+        let committed_at = stamped.committed_at.as_deref().expect("time");
+        assert!(
+            committed_at.contains("+00:00"),
+            "committer time uses +00:00: {committed_at}"
+        );
+        assert!(
+            !committed_at.ends_with('Z'),
+            "committer time does not use a Z suffix: {committed_at}"
+        );
+
+        let encode = || {
+            let value = super::explanation_json_envelope(
+                &explanation.normalized_entity,
+                explanation.complexity,
+                explanation.frequency,
+                explanation.score_breakdown.as_ref(),
+                explanation.couplings.clone(),
+                explanation.couplings_audit.clone(),
+                explanation.couplings_warning.clone(),
+                None,
+                &explanation.contributing_commits,
+                explanation.empty_reason.as_deref(),
+            );
+            serde_json::to_vec(&value).expect("json")
+        };
+        let first = encode();
+        let second = encode();
+        assert_eq!(
+            first, second,
+            "two encodes of the same explain object differ"
+        );
+        let value: serde_json::Value = serde_json::from_slice(&first).expect("parse");
+        assert_no_author_key(&value);
+        assert_eq!(value["schemaVersion"], 1);
     }
 
     #[test]

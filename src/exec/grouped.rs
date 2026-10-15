@@ -26,6 +26,9 @@ pub enum GroupedProcessError {
         timeout: Duration,
         /// Kill/reap diagnostics when the group kill path partially fails.
         detail: String,
+        /// Captured stderr from `spawn_wait_grouped_captured`; empty for
+        /// `spawn_wait_grouped` (no pipes).
+        stderr: String,
     },
 }
 
@@ -49,21 +52,28 @@ pub fn spawn_wait_grouped(
 
     let mut child = wrapped.spawn().map_err(GroupedProcessError::Spawn)?;
 
-    let status = match wait_timeout::ChildExt::wait_timeout(
-        // SAFETY: `inner_child_mut()` returns a reference to the always-valid
-        // inner `std::process::Child` held by the `process-wrap` wrapper. The
-        // child was just spawned and not yet moved or consumed, so the inner
-        // reference is valid for the duration of this `wait_timeout` call.
+    let waited = {
+        // SAFETY: `try_inner_child_mut()` returns the native `std::process::Child`
+        // held by the `process-wrap` wrapper. The child was just spawned and not
+        // yet moved or consumed, so the inner reference is valid for this
+        // `wait_timeout` call. The borrow ends with this block, before the
+        // timeout arm uses `child` again.
         // NOTE: `wait_timeout` only reaps the IMMEDIATE child. The wrapper's
         // own `wait()` is what reaps the whole process group (Unix:
         // `waitpid(-pgid)`) or Job Object (Windows: `wait_on_job`).
         // Legitimate: process-wrap API requires unsafe to access inner Child.
         // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-        unsafe { child.inner_child_mut() },
-        timeout,
-    )
-    .map_err(GroupedProcessError::Wait)?
-    {
+        let native = match unsafe { child.try_inner_child_mut() } {
+            Some(native) => native,
+            None => {
+                return Err(GroupedProcessError::Wait(io::Error::other(
+                    "process-wrap wrapper chain has no native Child",
+                )));
+            }
+        };
+        wait_timeout::ChildExt::wait_timeout(native, timeout)
+    };
+    let status = match waited.map_err(GroupedProcessError::Wait)? {
         Some(status) => {
             // The immediate child exited. Grandchildren may still be running.
             // Use a BOUNDED non-blocking reap loop (`try_wait`) for a short
@@ -90,7 +100,11 @@ pub fn spawn_wait_grouped(
             if let Some(e) = reap_err {
                 detail.push_str(&format!("process reap failed ({e:?})"));
             }
-            return Err(GroupedProcessError::Timeout { timeout, detail });
+            return Err(GroupedProcessError::Timeout {
+                timeout,
+                detail,
+                stderr: String::new(),
+            });
         }
     };
 
@@ -122,31 +136,36 @@ pub fn spawn_wait_grouped_captured(
 
     let mut child = wrapped.spawn().map_err(GroupedProcessError::Spawn)?;
 
-    // Take pipes from the inner child so concurrent readers can drain them
-    // without deadlocking on a full pipe buffer.
-    // Legitimate: process-wrap API requires unsafe to access inner Child.
-    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-    let (stdout_handle, stderr_handle) = unsafe {
-        let inner = child.inner_child_mut();
-        let stdout = inner
-            .stdout
-            .take()
-            .map(|stdout| thread::spawn(move || read_capped(stdout, max_output_bytes)));
-        let stderr = inner
-            .stderr
-            .take()
-            .map(|stderr| thread::spawn(move || read_capped(stderr, max_output_bytes)));
-        (stdout, stderr)
-    };
+    // `stdout()` / `stderr()` pass through to the native child. No `unsafe`.
+    let stdout_handle = child
+        .stdout()
+        .take()
+        .map(|stdout| thread::spawn(move || read_capped(stdout, max_output_bytes)));
+    let stderr_handle = child
+        .stderr()
+        .take()
+        .map(|stderr| thread::spawn(move || read_capped(stderr, max_output_bytes)));
 
-    let status = match wait_timeout::ChildExt::wait_timeout(
+    let waited = {
+        // SAFETY: `try_inner_child_mut()` returns the native `std::process::Child`
+        // held by the `process-wrap` wrapper. The borrow ends with this block,
+        // before the timeout arm uses `child` again.
+        // NOTE: `wait_timeout` only reaps the IMMEDIATE child. The wrapper's
+        // own `wait()` is what reaps the whole process group (Unix:
+        // `waitpid(-pgid)`) or Job Object (Windows: `wait_on_job`).
         // Legitimate: process-wrap API requires unsafe to access inner Child.
         // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-        unsafe { child.inner_child_mut() },
-        timeout,
-    )
-    .map_err(GroupedProcessError::Wait)?
-    {
+        let native = match unsafe { child.try_inner_child_mut() } {
+            Some(native) => native,
+            None => {
+                return Err(GroupedProcessError::Wait(io::Error::other(
+                    "process-wrap wrapper chain has no native Child",
+                )));
+            }
+        };
+        wait_timeout::ChildExt::wait_timeout(native, timeout)
+    };
+    let status = match waited.map_err(GroupedProcessError::Wait)? {
         Some(status) => {
             let reap_start = Instant::now();
             while reap_start.elapsed() < REAP_GRACE {
@@ -162,7 +181,7 @@ pub fn spawn_wait_grouped_captured(
             let kill_err = child.start_kill().err();
             let reap_err = child.wait().err();
             let _ = join_reader(stdout_handle);
-            let _ = join_reader(stderr_handle);
+            let captured_stderr = join_reader(stderr_handle);
             let mut detail = String::new();
             if let Some(e) = kill_err {
                 detail.push_str(&format!("process-group kill failed ({e:?}); "));
@@ -170,7 +189,11 @@ pub fn spawn_wait_grouped_captured(
             if let Some(e) = reap_err {
                 detail.push_str(&format!("process reap failed ({e:?})"));
             }
-            return Err(GroupedProcessError::Timeout { timeout, detail });
+            return Err(GroupedProcessError::Timeout {
+                timeout,
+                detail,
+                stderr: captured_stderr.output,
+            });
         }
     };
 
@@ -266,8 +289,14 @@ mod tests {
         let start = Instant::now();
         let err = spawn_wait_grouped(cmd, Duration::from_millis(400)).unwrap_err();
         assert!(
-            matches!(err, GroupedProcessError::Timeout { .. }),
-            "expected timeout, got {err:?}"
+            matches!(
+                err,
+                GroupedProcessError::Timeout {
+                    stderr: ref s,
+                    ..
+                } if s.is_empty()
+            ),
+            "expected timeout with empty stderr, got {err:?}"
         );
         // Timeout is the invariant. The wall only catches a hung reap and
         // must stay well below ping -n 30 (~29s) / sleep 30.
@@ -295,6 +324,33 @@ mod tests {
         };
         let err = spawn_wait_grouped(cmd, Duration::from_millis(500)).unwrap_err();
         assert!(matches!(err, GroupedProcessError::Timeout { .. }));
+    }
+
+    #[test]
+    fn grouped_captured_timeout_includes_stderr() {
+        let cmd = if cfg!(windows) {
+            let mut c = Command::new("cmd");
+            c.args([
+                "/C",
+                "echo bench-timeout-stderr 1>&2 & ping -n 30 127.0.0.1",
+            ]);
+            c
+        } else {
+            let mut c = Command::new("sh");
+            c.args(["-c", "echo bench-timeout-stderr >&2; sleep 30"]);
+            c
+        };
+        let err =
+            spawn_wait_grouped_captured(cmd, Duration::from_millis(800), 1024 * 1024).unwrap_err();
+        match err {
+            GroupedProcessError::Timeout { stderr, .. } => {
+                assert!(
+                    stderr.contains("bench-timeout-stderr"),
+                    "timeout must carry child stderr, got {stderr:?}"
+                );
+            }
+            other => panic!("expected Timeout, got {other:?}"),
+        }
     }
 
     fn marker_len(path: &std::path::Path) -> u64 {

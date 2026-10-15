@@ -139,6 +139,10 @@ pub struct ChangeContextPacket {
     /// fire and any history walk completed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completeness: Option<crate::impact::budget::AnalysisCompleteness>,
+    /// Prospective scope sentence copied from the impact analysis (0503).
+    /// Omitted unless that analysis was prospective with `treeClean` false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_note: Option<String>,
 }
 
 /// Structured agent scannable header (0173). Coexists with freeform `summary`.
@@ -185,6 +189,9 @@ pub struct BlastSummary {
     /// Class counts only (0117). Same shape as `blastRadius.confidenceSummary`.
     /// Present at both `minimal` and `standard` detail. **No** edges array.
     pub confidence_summary: crate::impact::enrichment::edge_confidence::EdgeConfidenceSummary,
+    /// Impact blast honesty notes. Omitted when empty. Still no edges array.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub honesty_notes: Vec<String>,
 }
 
 /// Deepened test-coverage / gap summary (0115). Re-exports the shared library

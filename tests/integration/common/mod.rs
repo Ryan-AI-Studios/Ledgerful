@@ -69,6 +69,19 @@ pub fn git_add_and_commit_no_verify(dir: &Path, msg: &str) {
     git_cmd(dir, &["commit", "--no-verify", "-m", msg]);
 }
 
+/// Repo root one directory under `tmp`, so sibling discovery does not walk `%TEMP%`.
+///
+/// A fixture whose git root is the tempdir itself makes `scan --impact`'s federated
+/// stage scan every sibling under the operator temp directory. On this host that
+/// walk exceeds the 25s overall budget, the scan exits 0, and `should_skip_persist`
+/// leaves `latest-impact.json` unwritten.
+#[allow(dead_code)]
+pub fn nested_repo_root(tmp: &Path) -> PathBuf {
+    let root = tmp.join("repo");
+    std::fs::create_dir_all(&root).expect("create nested repo root");
+    root
+}
+
 pub fn git_cmd(dir: &Path, args: &[&str]) {
     let output = Command::new("git")
         .args(args)

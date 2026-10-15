@@ -6,7 +6,76 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Policy evaluation status (0507):** `policy check --format json` always includes `status` (`pass`, `fail`, or `idle`). `fail` means a rule produced a violation. `idle` means a required rule did not run and nothing failed. `pass` means every applicable rule was checked and held. An all-inapplicable policy is `pass` because it required nothing. `passed` stays no-violations. Exit codes stay observe-always-zero and enforce-nonzero-only-on-violations. `schemaVersion` stays 1.
+- **Review decisions (0506):** `review --json` ranks `priorDecisions` and `implementationClaims` by exact path overlap. Both arrays are the same short rows. Changelog-only overlaps follow a substantive path hit. `--include-mentions` appends stem-only rows after those hits and cannot displace them. A failed lookup sets omit-empty `partial` and keeps the hits that succeeded. `schemaVersion` stays 1.
+- **Service identity (0505):** Impact `serviceMapDelta` uses the `services list` identity and omits directory-only names.
+- **Blast availability (0504):** Review and change-context copy omit-empty blast honesty notes. Zero edges with bound seeds name native resolution instead of always suggesting `--auto-scip`. A missing indexer is a capability note and does not erase a native edge. `reason` stays the completeness or compose-failure string.
+- **Temporal file evidence (0502):** Directory entries from git diffs stay out of the default temporal list and no longer count toward the leaf cap. `--include-governance` restores governance and changelog file pairs. Directory partners stay on the omit-empty audit list. `hotspots explain` adds commit subject and committer time (`+00:00`) and does not emit author names.
+- **Change packet scope (0503):** Impact hotspots and service-map rows follow the change and its explained consequences. Prospective `treeClean: false` keeps the empty-tree bypass and gains a scope note. Embedded hotspot scores carry `hotspotProvenance`.
+
+## [0.2.17] - 2026-10-14
+
+### Security
+
+- **Advisory gate parity (0498):** lockfile `quinn-proto` moves from 0.11.15 to 0.11.19 (`quinn` 0.11.12). Same-line patches: `event-listener` 5.4.2, `faster-hex` 0.10.1, `lru` 0.18.5, and `chacha20` 0.10.2. The required `deny` job runs `cargo audit`. This checkout does not build `quinn-proto`. Package version stays 0.2.16.
+
+- **Audit ignore parity (0500):** `.cargo/audit.toml` ignores the same six unmaintained advisory IDs as `deny.toml`. The required `deny` job and `security.yml` stay on `cargo audit` with no extra flags. `RUSTSEC-2026-0253` and `RUSTSEC-2026-0186` stay unignored. Package version stays 0.2.16.
+
+### Changed
+
+- **Dependabot queue (0501):** lock-only `uuid` 1.27.0, `tokio` 1.53.2, `rand` 0.10.3, and `zeroize` 1.9.1. `dirs` 7.0.0. `comfy-table` 8.0.1 loads presets with `load_style` and keeps the ASCII `...` and UTF-8 `…` indicators. `process-wrap` 10.0.1 uses `try_inner_child_mut` inside `grouped.rs`. This supersedes the **GitHub Actions pins (0485)** pin for `taiki-e/install-action`: the five workflow uses are now v2.87.26 (`f7e5d7c9`). Package version stays 0.2.16.
+
+- **Toolchain file and job env map (0499):** `install_docs_truth` accepts release/smoke `RUSTUP_TOOLCHAIN: stable` only in the job-level `env:` block (contiguous six-space lines before `steps:`), not under `strategy:` or inside `steps:`, with fixture tests for those false positives and for blank lines/comments that still belong to job `env`. Adds `rust_toolchain_toml_pins_the_pr_path_channel`, which locks `rust-toolchain.toml` to `channel = "1.98.1"` + `profile = "minimal"`, forbids components/targets/path, requires no bare `rust-toolchain` file, and asserts per-workflow `toolchain: 1.98.1` vs `toolchain: stable` counts across ci, security, windows-path-tests, release and smoke. Package version stays 0.2.16.
+
+- **Local rustup pin (0496):** `rust-toolchain.toml` selects the PR-path compiler (`1.98.1`, profile minimal) for checkouts of this repo. `release.yml` jobs `build`, `mcp-package`, and `sbom`, and `smoke.yml` `install-smoke`, set job-level `RUSTUP_TOOLCHAIN=stable` so those jobs stay on floating stable. Release binaries are not claimed to build with `1.98.1`. Package version stays 0.2.16.
+
+- **Argon2 0.6.0 (0487):** optional `argon2` moves from 0.5.3 to stable 0.6.0. The lock also takes `blake2` 0.11.0 and `password-hash` 0.6.1 (`phc` 0.6.1). Bundle KDF stays Argon2id v1.3 (64 MiB, t=3, p=1, 32-byte output). The 0.5.3 integration vector still matches. Package version stays 0.2.16.
+
+- **Cargo minor-and-patch group (0486):** `thiserror` 2.0.21 and `thiserror-impl` 2.0.21, `encoding_rs` 0.8.42, and `libc` 0.2.190. With `std` off, `encoding_rs` drops `multiversion`. Yanked `spin` 0.9.8 moves to 0.9.9. Package version stays 0.2.16. `libc_unstable_time64` stays off. The rand advisory was already patched on 0.10.2.
+
+- **GitHub Actions pins (0485):** `taiki-e/install-action` is v2.87.25 (`183e4297`). `dtolnay/rust-toolchain` is `e2a55d2f`, which passes `components` through an environment variable (upstream #179; no published GHSA). `vedantmgoyal9/winget-releaser` stays on the v2 line at `b7370d4d`, and the package-distribution SHA matches the workflow.
+
+### Fixed
+
+- **Negative stale-verify fixtures (0497):** the two CG-F35 `verify` integration tests that assert *no* staleness warning can no longer pass unless the cached impact report is genuinely stale relative to `HEAD`; both now use a nested repo root and shared `git_add_and_commit` helpers plus a new `assert_cached_impact_report_is_stale` guard. Test-only — no production verify or freshness behavior changes. Package version stays 0.2.16.
+
+- **Stale-impact fixtures off the operator temp root (0495):** five stale-impact fixtures nest one directory deeper under the tempdir so `scan --impact` no longer walks the operator temp directory, exceeds the 25 s overall budget and skips writing `latest-impact.json`; the ask and verify HEAD commits now advance with `--no-verify` so a pending ledger transaction cannot leave that report current. Product behavior, schemaVersion, timeouts and the 0496 toolchain pin are unchanged. Package version stays 0.2.16.
+
+- **Test-class verify budget (0494):** auto-plan `cargo nextest` / `cargo test` steps take `DEFAULT_TEST_SUITE_TIMEOUT_SECS` when `[verify] suite_timeout_secs` is absent. The 0494 measurement did not produce a `Set` value (ci and slow exited 100 and were not formula inputs; doctest was 11 seconds, `Keep`), so the constant stays 400. Fmt, clippy, and auto `--timeout 0` stay 400. An explicit `suite_timeout_secs` still replaces the built-in in either direction. `schemaVersion` stays 1.
+
+- **Bench fixture Maven and sbt target directories (0493):** `fixtureId` skips a `target` directory whose parent contains `pom.xml` or `build.sbt`, and an sbt meta-build `target` under a `project` directory chain whose parent contains `build.sbt`. The meta walk stops at the fixture root. It still keeps `src/target/mod.rs` and a file named `target`. An sbt subproject `target/` with no sibling `build.sbt` stays in the id.
+
+- **Install smoke no longer builds an unused SPA (0492):** `install-smoke` runs `cargo install --path . --features mcp,web --locked --force` and does not check out or download `ledgerful-frontend`. `release.yml` still builds the frontend it embeds with `--all-features`. `ci.yml` still runs its Ubuntu `web-build` at pin `4a1df7e2` (0241). This track does not change that job graph. That pin stays.
+
+- **Embed-spa build panic names a build step (0491):** a release build with `embed-spa` and no sibling `out/index.html` tells the builder to run `npm run build` in `ledgerful-frontend`, or to drop `embed-spa` and use default features. It no longer says to pass `--spa-dir`.
+
+- **Verify include_str stems stay on the engine tree (0483):** `verify --scope fast` injects `INCLUDE_STR_MATERIAL` only when the work root is the tree this binary was compiled from. A third-party `README.md` stays cheap and does not run those tests. The drift walker accepts comments, raw strings, char literals, and `include_str! { ... }`.
+
+- **Bench fixture source directory named target (0490):** `fixtureId` keeps `src/target/mod.rs` and a file named `target`. It still skips a `target` directory whose parent contains `Cargo.toml`, and it still skips a `node_modules` directory.
+
+- **Java scoped `new` package suffix (0489):** `new example.Box()` stays unresolved against same-file `com.example.Box`. A scoped `new` resolves when the segments equal the type qualified name, or when they are a segment suffix of the type path after the file package.
+
+- **Graph export last hop (0488):** the extra query after a walk asks only for edges whose both ends are in the last admitted set. Kept nodes, kept edges, and the truncation sentence stay the same.
+
+- **Source install no longer needs the sibling SPA bundle (0484):** `embed-spa` is off by default, so a default release build does not compile the dashboard embed. Release builds still pass `--all-features`, which embeds the SPA.
+
+- **Bench cold wipe and compare honesty (0482):** cold prep creates the empty state tree and does not migrate the legacy sibling. `--compare` refuses a mismatched `os` or `targetTriple`. `fixtureId` skips `.git`, `.ledgerful`, a `node_modules` directory, and a `target` directory next to `Cargo.toml`.
+
+- **Java extractor residuals (0481):** complexity discovery skips anonymous-class and enum-constant bodies. Callers use the symbol qualified name, so two `<init>` symbols in one file keep their own edges. A bare call with no same-file method is `{name}.external`. A scoped `new` matches the full qualified name, or a segment suffix of the type path after the file package.
+
+- **`graph path` walks only node ids; header from/to stay one physical line (0479):** `ShortestPathBFS` uses edges whose both ends exist as `node` rows. A dangling intermediate is `path: none`. Stderr `from:` / `to:` run through `escape_tsv_field`.
+
+- **`graph export --entity` emits last-hop edges among kept nodes (0478):** a walk whose last hop admits two neighbors now includes the stored edge between those neighbors. `--depth` without `--entity` is rejected before storage opens.
+
+- **`--scope fast` injects nextest for `include_str!` cheap docs (0480):** NonCodeCheap still skips freshness, but a docs-only edit to a file compiled into a test via `include_str!` now injects those nextest stems instead of running zero tests.
+
 ### Added
+
+- **`ledgerful bench` (0477):** run one pinned CLI child (`index-cold` default) N times against `--fixture`, print p50/p95 via `percentile_sorted`, sha-gate the 12-hex embed, write `kind` `workloadBench` under `/output/`. `--compare` emits `workloadBenchCompare` (`delta = b - a`). Not `timings`, not a `criterion` crate.
+
+- **Java structural index (0476):** `.java` files get native symbols, same-file calls, imports, and complexity. Constructor symbols are named `<init>`. Receiver calls, overloads, and extra constructors stay unresolved via dotted `callee_name` (`obj.save`, `{name}.overload`, `new.{type}`). No routes, models, observability, SCIP, or cross-file resolution.
 
 - **`graph export` writes the Cozo knowledge graph as GraphML or Cypher (0474):** `ledgerful graph export --format graphml|cypher` reads the node and edge store read-only. It is not `ledger graph`. Stdout is the document, or `wrote:` when `--output` is set. A selection cut by `--limit` says `truncated: yes` on stderr.
 - **`graph path` reports the directed fewest-hop chain (0475):** `ledgerful graph path --from ID --to ID [--relation REL]` reads the Cozo `edge` store. A missing path is exit 0 with `path: none`. A missing node is exit 1. No `--json`. Not `ledger graph`.

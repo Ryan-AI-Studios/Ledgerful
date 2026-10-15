@@ -25,7 +25,7 @@ jobs:
       # Tried frontend main 71d2d2db + Node 24: npm ci passed (not EBADENGINE); npm run
       # build failed in ~36s (not timeout) — Linux CSP/build class. release.yml still
       # embeds frontend main dynamically on windows-latest. Frontend gating `build` is
-      # Windows-only (0087). Keep identical to smoke.yml.
+      # Windows-only (0087). smoke.yml does not build this frontend (0492); this pin stays on ci.yml.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Ryan-AI-Studios/ledgerful-frontend
@@ -51,7 +51,7 @@ jobs:
         os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
           # Pin exact 1.98.1 (not floating `stable`). Bump = manual PR when we
           # want a new compiler; not Dependabot (it bumps action SHAs, not rustc).
@@ -74,7 +74,7 @@ jobs:
         with:
           name: ledgerful-web-spa
           path: ../ledgerful-frontend/out
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
           toolchain: 1.98.1
           components: clippy
@@ -95,7 +95,7 @@ jobs:
         with:
           name: ledgerful-web-spa
           path: ../ledgerful-frontend/out
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -103,7 +103,7 @@ jobs:
         # Pin mainline v2 release SHA (not per-tool tags). Dependabot shallow-
         # clones cannot resolve diverged nextest/cargo-llvm-cov/cargo-mutants
         # convenience commits (error: no such commit).
-        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
           tool: nextest
 
@@ -143,12 +143,12 @@ jobs:
         with:
           name: ledgerful-web-spa
           path: ../ledgerful-frontend/out
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
           tool: nextest
 
@@ -175,7 +175,7 @@ jobs:
         with:
           name: ledgerful-web-spa
           path: ../ledgerful-frontend/out
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         timeout-minutes: 15
         with:
           toolchain: 1.98.1
@@ -210,12 +210,14 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo install cargo-deny --locked
       - run: cargo deny check
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit
 
   no-network-public-export:
     runs-on: ubuntu-latest
@@ -259,11 +261,11 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
           toolchain: 1.98.1
           components: llvm-tools-preview
-      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
           tool: cargo-llvm-cov,nextest
       - run: cargo llvm-cov nextest --workspace --all-features --html --output-dir coverage/
@@ -279,11 +281,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 15
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         timeout-minutes: 15
         with:
           toolchain: 1.98.1
-      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         timeout-minutes: 15
         with:
           tool: cargo-mutants,nextest

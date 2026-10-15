@@ -21,7 +21,7 @@ const ADJACENT_PER_PREFIX: usize = 3;
 
 /// Source-like extensions used for mostly-added math.
 const SOURCE_EXTS: &[&str] = &[
-    "rs", "ts", "tsx", "js", "jsx", "py", "go", //
+    "rs", "ts", "tsx", "js", "jsx", "py", "go", "java", //
     "c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "h++",
 ];
 

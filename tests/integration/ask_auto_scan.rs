@@ -13,7 +13,9 @@ use ledgerful::state::storage::StorageManager;
 use std::fs;
 use tempfile::tempdir;
 
-use crate::common::{DirGuard, git_add_and_commit, setup_git_repo};
+use crate::common::{
+    DirGuard, git_add_and_commit, git_add_and_commit_no_verify, nested_repo_root, setup_git_repo,
+};
 
 /// `compute_impact_in_memory` must detect a dirty working tree, surface the
 /// modified file in the packet, and leave the stored snapshot table empty
@@ -137,7 +139,8 @@ fn test_ask_auto_scan_suppresses_stale_warning_with_fresh_packet() {
     use std::process::Command;
 
     let tmp = tempdir().unwrap();
-    let root = tmp.path();
+    let root_owned = nested_repo_root(tmp.path());
+    let root = root_owned.as_path();
     setup_git_repo(root);
 
     fs::write(root.join("a.txt"), "v1").unwrap();
@@ -163,7 +166,9 @@ fn test_ask_auto_scan_suppresses_stale_warning_with_fresh_packet() {
         "scan --impact failed: {}",
         String::from_utf8_lossy(&scan_out.stderr)
     );
-    git_add_and_commit(root, "advance head past the cached packet");
+    // `scan --impact` can leave a pending ledger transaction. The pre-commit
+    // hook would block this advance, so HEAD would stay on the cached report.
+    git_add_and_commit_no_verify(root, "advance head past the cached packet");
 
     // Dirty the tree again so `--auto-scan` finds a fresh, non-empty diff.
     fs::write(root.join("a.txt"), "v3").unwrap();

@@ -176,13 +176,15 @@ jobs:
             binary: ledgerful
             target: ""
 
+    env:
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ledgerful-web-spa
           path: ../ledgerful-frontend/out
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
@@ -195,6 +197,7 @@ jobs:
           cargo install cargo-audit --locked
       - shell: bash
         run: |
+          # embed-spa is off by default. --all-features is what includes it, after the SPA artifact is downloaded.
           if [ -n "${{ matrix.target }}" ]; then
             cargo auditable build --release --locked --all-features --target ${{ matrix.target }}
           else
@@ -273,6 +276,8 @@ jobs:
       contents: read
       id-token: write
       attestations: write
+    env:
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -280,7 +285,7 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: mcp-server/package-lock.json
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -340,9 +345,11 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    env:
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -1016,7 +1023,7 @@ jobs:
           fi
       - name: WinGet Releaser
         if: steps.winget_token.outputs.present == 'true'
-        uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e # v2
+        uses: vedantmgoyal9/winget-releaser@b7370d4d152efdce803a26cc6ca9eee58cb2ad54 # v2
         with:
           identifier: Ledgerful.Ledgerful
           # Portable Windows zip from release.yml (not msi/exe installer)

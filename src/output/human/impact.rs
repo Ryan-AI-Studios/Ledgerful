@@ -4,6 +4,24 @@ use crate::output::table::{apply_table_style, resolve_table_style};
 use comfy_table::{Cell, Color, Table};
 use owo_colors::{OwoColorize, Stream, Style};
 
+/// Restore copy for a non-zero demoted count. `pathMode=all` names directory
+/// partners. Any other mode names governance and changelog pairs. Directory
+/// partners do not come back with `--include-governance`.
+pub(crate) fn demoted_temporal_sentence(path_mode: &str, count: u32) -> Option<String> {
+    if count == 0 {
+        return None;
+    }
+    if path_mode == "all" {
+        Some(format!(
+            "{count} directory temporal partner(s) excluded from the default list (--include-governance does not restore them)"
+        ))
+    } else {
+        Some(format!(
+            "{count} temporal coupling(s) excluded from default risk (governance and changelog pairs restore with --include-governance; directory partners do not)"
+        ))
+    }
+}
+
 pub fn print_impact_summary(packet: &ImpactPacket) {
     print_impact_summary_with_full(packet, false);
 }
@@ -34,11 +52,13 @@ pub fn print_impact_summary_with_full(packet: &ImpactPacket, full: bool) {
         "  pathMode={}  demotedTemporal={}  analysisMode={}",
         packet.path_mode, packet.demoted_temporal_count, packet.analysis_mode
     );
-    if packet.demoted_temporal_count > 0 {
-        println!(
-            "  {} process/governance temporal coupling(s) demoted from risk (full list below; --include-governance restores weight)",
-            packet.demoted_temporal_count
-        );
+    if let Some(sentence) =
+        demoted_temporal_sentence(&packet.path_mode, packet.demoted_temporal_count)
+    {
+        println!("  {sentence}");
+    }
+    if let Some(line) = crate::impact::scope::scope_note_line(packet.scope_note.as_deref()) {
+        println!("{line}");
     }
 
     let docs_mode = packet.glossary.is_some();
@@ -155,11 +175,13 @@ pub fn print_impact_brief(packet: &ImpactPacket) {
     } else if packet.analysis_mode != "working_tree" {
         println!("  analysisMode={}", packet.analysis_mode);
     }
-    if packet.demoted_temporal_count > 0 {
-        println!(
-            "  {} process/governance temporal coupling(s) demoted from risk (use --include-governance to restore)",
-            packet.demoted_temporal_count
-        );
+    if let Some(sentence) =
+        demoted_temporal_sentence(&packet.path_mode, packet.demoted_temporal_count)
+    {
+        println!("  {sentence}");
+    }
+    if let Some(line) = crate::impact::scope::scope_note_line(packet.scope_note.as_deref()) {
+        println!("{line}");
     }
     if packet.glossary.is_some() {
         println!("{}", crate::impact::lead::format_actionable_section(packet));
@@ -320,4 +342,24 @@ fn print_observability_signals(signals: &[ObservabilitySignal]) {
         ]);
     }
     println!("{table}");
+}
+
+#[cfg(test)]
+mod sentence_tests {
+    use super::demoted_temporal_sentence;
+
+    #[test]
+    fn path_mode_all_uses_the_directory_sentence() {
+        let sentence = demoted_temporal_sentence("all", 1).expect("count > 0");
+        assert_eq!(
+            sentence,
+            "1 directory temporal partner(s) excluded from the default list (--include-governance does not restore them)"
+        );
+        let code = demoted_temporal_sentence("code", 2).expect("count > 0");
+        assert_eq!(
+            code,
+            "2 temporal coupling(s) excluded from default risk (governance and changelog pairs restore with --include-governance; directory partners do not)"
+        );
+        assert!(demoted_temporal_sentence("all", 0).is_none());
+    }
 }

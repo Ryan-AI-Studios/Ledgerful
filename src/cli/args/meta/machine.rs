@@ -153,6 +153,7 @@ impl Commands {
             Commands::Doctor(DoctorArgs { json, .. }) => *json,
             Commands::Status(StatusArgs { json, .. }) => *json,
             Commands::Timings(TimingsCliArgs { json, .. }) => *json,
+            Commands::Bench(BenchCliArgs { json, .. }) => *json,
             Commands::Config { command } => match command {
                 ConfigCommands::Verify { json, .. } => *json,
                 ConfigCommands::View { json, .. } => *json,

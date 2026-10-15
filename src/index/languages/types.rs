@@ -8,6 +8,8 @@ pub enum Language {
     Go,
     /// C and C++ (single grammar: tree-sitter-cpp parses both).
     Cpp,
+    /// Java (tree-sitter-java; `.java` only).
+    Java,
     Markdown,
 }
 
@@ -18,6 +20,7 @@ impl Language {
             "ts" | "tsx" | "js" | "jsx" => Some(Language::TypeScript),
             "py" => Some(Language::Python),
             "go" => Some(Language::Go),
+            "java" => Some(Language::Java),
             // D2: C/C++ extensions share Language::Cpp (tree-sitter-cpp superset).
             "c" | "h" | "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" | "h++" => Some(Language::Cpp),
             "md" => Some(Language::Markdown),
@@ -44,6 +47,19 @@ mod tests {
                 "extension .{ext}"
             );
         }
+    }
+
+    #[test]
+    fn from_extension_recognizes_java() {
+        assert_eq!(Language::from_extension("java"), Some(Language::Java));
+        assert_eq!(format!("{:?}", Language::Java), "Java");
+    }
+
+    #[test]
+    fn from_extension_rejects_java_binaries_and_kotlin() {
+        assert_eq!(Language::from_extension("class"), None);
+        assert_eq!(Language::from_extension("jar"), None);
+        assert_eq!(Language::from_extension("kt"), None);
     }
 
     #[test]

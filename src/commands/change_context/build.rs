@@ -128,6 +128,7 @@ pub fn build_change_context(
         must_touch_file_count: b.must_touch_files.len(),
         must_touch_symbol_count: b.must_touch_symbols.len(),
         confidence_summary: b.confidence_summary,
+        honesty_notes: b.honesty_notes.clone(),
     });
 
     let test_coverage = Some(summarize_test_coverage(storage, &impact));
@@ -163,6 +164,7 @@ pub fn build_change_context(
         next_actions,
         impact_schema_version: Some(impact.schema_version.clone()),
         completeness: impact.completeness.clone(),
+        scope_note: impact.scope_note.clone(),
     })
 }
 
@@ -303,6 +305,7 @@ pub(crate) fn not_ready_packet(
         next_actions: next_actions_for_class(class),
         impact_schema_version: None,
         completeness: None,
+        scope_note: None,
     }
 }
 

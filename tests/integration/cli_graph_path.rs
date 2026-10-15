@@ -372,3 +372,113 @@ fn graph_path__missing_flags__exit_2() {
     let (_, _, code) = run(tmp.path(), &["graph", "path"]);
     assert_eq!(code, 2);
 }
+
+#[test]
+fn graph_path__dangling_intermediate__path_none() {
+    let tmp = git_repo();
+    seed(
+        tmp.path(),
+        vec![node("a"), node("c")],
+        vec![
+            edge("a", "ghost", "calls", 0.5, "ag"),
+            edge("ghost", "c", "calls", 0.5, "gc"),
+        ],
+    );
+    let (stdout, stderr, code) = run(tmp.path(), &["graph", "path", "--from", "a", "--to", "c"]);
+    let err = text(&stderr);
+    let body = text(&stdout);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.ends_with("path: none\n"), "{err}");
+    assert!(!err.contains("hops:"), "{err}");
+    assert!(stdout.is_empty(), "{body}");
+    assert!(!body.contains("ghost"), "{body}");
+    assert!(!err.contains("ghost"), "{err}");
+}
+
+#[test]
+fn graph_path__dangling_intermediate__prefers_real_chain() {
+    let tmp = git_repo();
+    seed(
+        tmp.path(),
+        vec![node("a"), node("b"), node("d"), node("c")],
+        vec![
+            edge("a", "ghost", "calls", 0.5, "ag"),
+            edge("ghost", "c", "calls", 0.5, "gc"),
+            edge("a", "b", "calls", 0.5, "ab"),
+            edge("b", "d", "calls", 0.5, "bd"),
+            edge("d", "c", "calls", 0.5, "dc"),
+        ],
+    );
+    let (stdout, stderr, code) = run(tmp.path(), &["graph", "path", "--from", "a", "--to", "c"]);
+    let err = text(&stderr);
+    let body = text(&stdout);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.ends_with("hops: 3\n"), "{err}");
+    assert_eq!(
+        body,
+        "1\ta\tcalls\tb\t0.5\tab\n2\tb\tcalls\td\t0.5\tbd\n3\td\tcalls\tc\t0.5\tdc\n"
+    );
+    assert!(!body.contains("ghost"), "{body}");
+    assert!(!err.contains("ghost"), "{err}");
+}
+
+#[test]
+fn graph_path__dangling_intermediate__relation_path_none() {
+    let tmp = git_repo();
+    seed(
+        tmp.path(),
+        vec![node("a"), node("c")],
+        vec![
+            edge("a", "ghost", "calls", 0.5, "ag"),
+            edge("ghost", "c", "calls", 0.5, "gc"),
+        ],
+    );
+    let (stdout, stderr, code) = run(
+        tmp.path(),
+        &[
+            "graph",
+            "path",
+            "--from",
+            "a",
+            "--to",
+            "c",
+            "--relation",
+            "calls",
+        ],
+    );
+    let err = text(&stderr);
+    let body = text(&stdout);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.ends_with("path: none\n"), "{err}");
+    assert!(!err.contains("hops:"), "{err}");
+    assert!(stdout.is_empty(), "{body}");
+    assert!(!body.contains("ghost"), "{body}");
+}
+
+#[test]
+fn graph_path__header_from_and_to_newline__one_physical_line() {
+    let tmp = git_repo();
+    seed(
+        tmp.path(),
+        vec![node("a\nb"), node("z\nw")],
+        vec![edge("a\nb", "z\nw", "calls", 0.5, "p")],
+    );
+    let (stdout, stderr, code) = run(
+        tmp.path(),
+        &["graph", "path", "--from", "a\nb", "--to", "z\nw"],
+    );
+    let err = text(&stderr);
+    let body = text(&stdout);
+    assert_eq!(code, 0, "{err}");
+    let from_lines: Vec<_> = err
+        .lines()
+        .filter(|line| line.starts_with("from:"))
+        .collect();
+    let to_lines: Vec<_> = err.lines().filter(|line| line.starts_with("to:")).collect();
+    assert_eq!(from_lines.len(), 1, "{err}");
+    assert_eq!(to_lines.len(), 1, "{err}");
+    assert_eq!(from_lines[0], "from: a\\nb");
+    assert_eq!(to_lines[0], "to: z\\nw");
+    assert!(err.ends_with("hops: 1\n"), "{err}");
+    assert_eq!(body, "1\ta\\nb\tcalls\tz\\nw\t0.5\tp\n");
+}

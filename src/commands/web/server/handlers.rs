@@ -28,9 +28,9 @@ use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use axum::Json;
 use axum::extract::{ConnectInfo, Path, Query, State};
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), feature = "embed-spa"))]
 use axum::http::HeaderValue;
-#[cfg(any(test, debug_assertions))]
+#[cfg(not(all(not(debug_assertions), feature = "embed-spa")))]
 use axum::http::StatusCode;
 use axum::http::{HeaderMap, header};
 use axum::response::{IntoResponse, Response};
@@ -1038,9 +1038,17 @@ pub(crate) async fn config_handler(
     }))
 }
 
-/// Embedded SPA assets bundled at release time. In debug builds the folder is
-/// not required because the dev loop uses `--spa-dir`.
-#[cfg(not(debug_assertions))]
+/// Locked body for builds that do not embed the dashboard.
+/// Release builds with `embed-spa` do not call the fallback handler, so this
+/// const is unused there. It stays unconditional so every other build and the
+/// unit test name one sentence.
+#[cfg_attr(all(not(debug_assertions), feature = "embed-spa"), allow(dead_code))]
+pub(crate) const EMBEDDED_SPA_FALLBACK_MESSAGE: &str = "No embedded dashboard in this build. Pass --spa-dir pointing at a ledgerful-frontend out/ directory, or install a GitHub release binary.";
+
+/// Embedded SPA assets bundled at release time when `embed-spa` is on.
+/// Debug builds and default release builds do not compile this derive:
+/// the dev loop uses `--spa-dir`, and a source install has no sibling `out/`.
+#[cfg(all(not(debug_assertions), feature = "embed-spa"))]
 #[derive(rust_embed::RustEmbed)]
 #[folder = "../ledgerful-frontend/out"]
 #[exclude = "**/Banner.png"]
@@ -1049,13 +1057,13 @@ struct SpaAssets;
 
 /// Serve a static file from the embedded SPA bundle, falling back to
 /// `index.html` so client-side routing works.
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), feature = "embed-spa"))]
 pub(crate) async fn embedded_spa_handler(uri: axum::http::Uri) -> Result<Response, WebError> {
     let request_path = uri.path();
     serve_embedded_asset(request_path)
 }
 
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), feature = "embed-spa"))]
 fn serve_embedded_asset(request_path: &str) -> Result<Response, WebError> {
     let asset_path = request_path.trim_start_matches('/');
     let (file, path_for_mime) = SpaAssets::get(asset_path)
@@ -1083,15 +1091,11 @@ fn serve_embedded_asset(request_path: &str) -> Result<Response, WebError> {
     Ok(response)
 }
 
-/// Debug build fallback when no `--spa-dir` is provided. Release builds use
-/// the embedded bundle above.
-#[cfg(debug_assertions)]
+/// Fallback when this build does not embed the dashboard. `--spa-dir` is chosen
+/// in the router before this handler runs.
+#[cfg(not(all(not(debug_assertions), feature = "embed-spa")))]
 pub(crate) async fn embedded_spa_handler(_uri: axum::http::Uri) -> Result<Response, WebError> {
-    Ok((
-        StatusCode::NOT_FOUND,
-        "No SPA directory configured; use --spa-dir in development or build a release binary.",
-    )
-        .into_response())
+    Ok((StatusCode::NOT_FOUND, EMBEDDED_SPA_FALLBACK_MESSAGE).into_response())
 }
 
 #[cfg(test)]
@@ -1144,7 +1148,28 @@ mod tests {
         assert!(value.get("time_ago").is_none());
     }
 
-    #[cfg(not(debug_assertions))]
+    #[test]
+    fn embedded_spa_fallback_message_is_the_locked_sentence() {
+        assert_eq!(
+            EMBEDDED_SPA_FALLBACK_MESSAGE,
+            "No embedded dashboard in this build. Pass --spa-dir pointing at a ledgerful-frontend out/ directory, or install a GitHub release binary."
+        );
+    }
+
+    #[cfg(not(all(not(debug_assertions), feature = "embed-spa")))]
+    #[tokio::test]
+    async fn embedded_spa_fallback_handler_returns_not_found_with_locked_sentence() {
+        let response = embedded_spa_handler(axum::http::Uri::from_static("/"))
+            .await
+            .expect("fallback handler returns Ok");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let bytes = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .expect("fallback body");
+        assert_eq!(bytes.as_ref(), EMBEDDED_SPA_FALLBACK_MESSAGE.as_bytes());
+    }
+
+    #[cfg(all(not(debug_assertions), feature = "embed-spa"))]
     #[test]
     fn embedded_bundle_excludes_unused_marketing_assets() {
         assert!(SpaAssets::get("Banner.png").is_none());
@@ -1153,7 +1178,7 @@ mod tests {
         assert!(SpaAssets::get("public/Icon.png").is_none());
     }
 
-    #[cfg(not(debug_assertions))]
+    #[cfg(all(not(debug_assertions), feature = "embed-spa"))]
     #[test]
     fn embedded_bundle_includes_dashboard_assets() {
         assert!(

@@ -34,7 +34,7 @@ impl ImpactProvider for TemporalImpactProvider {
             let a = coupling.file_a.to_string_lossy();
             let b = coupling.file_b.to_string_lossy();
             if should_demote_pair(&a, &b, path_mode) {
-                // Keep full temporal_couplings on packet for audit; skip risk weight/reasons.
+                // Skip risk weight/reasons. The audit list is temporal_couplings_audit.
                 continue;
             }
             reasons.push(format!(

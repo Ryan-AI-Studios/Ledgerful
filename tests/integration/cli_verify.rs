@@ -1,4 +1,6 @@
-use crate::common::{DirGuard, setup_git_repo};
+use crate::common::{
+    DirGuard, git_add_and_commit, git_add_and_commit_no_verify, nested_repo_root, setup_git_repo,
+};
 use camino::Utf8Path;
 use ledgerful::commands::verify::{ExecuteVerifyOpts, execute_verify};
 use ledgerful::verify::plan::VerifyScope;
@@ -586,7 +588,8 @@ fn test_verify_health_check_env_prefix_command() {
 #[allow(non_snake_case)]
 fn test_verify_warns_on_stale_cached_impact_packet__slow() {
     let tmp = tempdir().unwrap();
-    let root = tmp.path();
+    let root_owned = nested_repo_root(tmp.path());
+    let root = root_owned.as_path();
     setup_git_repo(root);
 
     std::fs::write(root.join("a.txt"), "v1").unwrap();
@@ -622,16 +625,10 @@ fn test_verify_warns_on_stale_cached_impact_packet__slow() {
         String::from_utf8_lossy(&scan_out.stderr)
     );
 
-    Command::new("git")
-        .args(["add", "-A"])
-        .current_dir(root)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["commit", "-m", "advance head past the cached packet"])
-        .current_dir(root)
-        .output()
-        .unwrap();
+    // Assert the advance. `scan --impact` can leave a pending ledger
+    // transaction, and a bare `git commit` does not check status, so a
+    // hook failure used to leave HEAD on the cached report.
+    git_add_and_commit_no_verify(root, "advance head past the cached packet");
 
     let output = Command::new(ledgerful_bin)
         .arg("verify")
@@ -659,20 +656,12 @@ fn test_verify_warns_on_stale_cached_impact_packet__slow() {
 #[test]
 fn test_verify_config_plan_does_not_warn_on_stale_cached_impact_packet() {
     let tmp = tempdir().unwrap();
-    let root = tmp.path();
+    let root_owned = nested_repo_root(tmp.path());
+    let root = root_owned.as_path();
     setup_git_repo(root);
 
     std::fs::write(root.join("a.txt"), "v1").unwrap();
-    Command::new("git")
-        .args(["add", "-A"])
-        .current_dir(root)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["commit", "-m", "initial"])
-        .current_dir(root)
-        .output()
-        .unwrap();
+    git_add_and_commit(root, "initial");
 
     let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
     Command::new(ledgerful_bin)
@@ -697,7 +686,9 @@ fn test_verify_config_plan_does_not_warn_on_stale_cached_impact_packet() {
         .unwrap();
     let mut step = toml_edit::Table::new();
     step["description"] = toml_edit::value("fast no-op");
-    step["command"] = toml_edit::value("echo ok");
+    // `echo` is not on the built-in allowlist, and direct mode is refused
+    // before the reporter. `git --version` exits 0 under that allowlist.
+    step["command"] = toml_edit::value("git --version");
     steps.push(step);
     let rendered_config = config_doc.to_string();
     let parsed_config: ledgerful::config::model::Config = toml::from_str(&rendered_config).unwrap();
@@ -706,6 +697,9 @@ fn test_verify_config_plan_does_not_warn_on_stale_cached_impact_packet() {
         1,
         "fixture must contain one verification step:\n{rendered_config}"
     );
+    assert_eq!(parsed_config.verify.steps[0].command, "git --version");
+    assert!(!parsed_config.verify.steps[0].shell);
+    assert!(!parsed_config.verify.allow_shell_steps);
     std::fs::write(&config_path, rendered_config).unwrap();
 
     // Record a packet via `scan --impact`, then advance HEAD past it so the
@@ -722,16 +716,8 @@ fn test_verify_config_plan_does_not_warn_on_stale_cached_impact_packet() {
         String::from_utf8_lossy(&scan_out.stderr)
     );
 
-    Command::new("git")
-        .args(["add", "-A"])
-        .current_dir(root)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["commit", "-m", "advance head past the cached packet"])
-        .current_dir(root)
-        .output()
-        .unwrap();
+    git_add_and_commit_no_verify(root, "advance head past the cached packet");
+    assert_cached_impact_report_is_stale(root);
 
     let output = Command::new(ledgerful_bin)
         .arg("verify")
@@ -739,6 +725,13 @@ fn test_verify_config_plan_does_not_warn_on_stale_cached_impact_packet() {
         .env("LEDGERFUL_NON_INTERACTIVE", "1")
         .output()
         .unwrap();
+
+    assert!(
+        output.status.success(),
+        "verify command failed (exit {:?}): {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -755,20 +748,12 @@ fn test_verify_config_plan_does_not_warn_on_stale_cached_impact_packet() {
 #[test]
 fn test_verify_manual_command_does_not_warn_on_stale_cached_impact_packet() {
     let tmp = tempdir().unwrap();
-    let root = tmp.path();
+    let root_owned = nested_repo_root(tmp.path());
+    let root = root_owned.as_path();
     setup_git_repo(root);
 
     std::fs::write(root.join("a.txt"), "v1").unwrap();
-    Command::new("git")
-        .args(["add", "-A"])
-        .current_dir(root)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["commit", "-m", "initial"])
-        .current_dir(root)
-        .output()
-        .unwrap();
+    git_add_and_commit(root, "initial");
 
     let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
     Command::new(ledgerful_bin)
@@ -791,16 +776,8 @@ fn test_verify_manual_command_does_not_warn_on_stale_cached_impact_packet() {
         String::from_utf8_lossy(&scan_out.stderr)
     );
 
-    Command::new("git")
-        .args(["add", "-A"])
-        .current_dir(root)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["commit", "-m", "advance head past the cached packet"])
-        .current_dir(root)
-        .output()
-        .unwrap();
+    git_add_and_commit_no_verify(root, "advance head past the cached packet");
+    assert_cached_impact_report_is_stale(root);
 
     let output = Command::new(ledgerful_bin)
         .args(["verify", "echo hello"])
@@ -809,12 +786,80 @@ fn test_verify_manual_command_does_not_warn_on_stale_cached_impact_packet() {
         .output()
         .unwrap();
 
+    assert!(
+        output.status.success(),
+        "verify command failed (exit {:?}): {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !stderr.to_lowercase().contains("stale"),
         "manual command path must not claim predictions are based on stale data \
          (no prediction happens in that path), got stderr: {stderr}"
     );
+}
+
+/// Fails unless `root/.ledgerful/reports/latest-impact.json` exists, records a
+/// commit SHA, and live freshness is `Stale`.
+///
+/// A missing file panics before any snapshot, so `Ok(None)` cannot fall
+/// through. `Layout::new` is required: `get_layout()` reads this process cwd,
+/// which is the operator checkout, not the fixture.
+fn assert_cached_impact_report_is_stale(root: &std::path::Path) {
+    let utf8 = Utf8Path::from_path(root)
+        .unwrap_or_else(|| panic!("fixture root is not valid UTF-8: {}", root.display()));
+    let layout = ledgerful::state::layout::Layout::new(utf8);
+    let report = ledgerful::state::reports::read_latest_impact_report(&layout)
+        .unwrap_or_else(|err| panic!("latest-impact.json is unreadable: {err}"));
+    let Some(report) = report else {
+        panic!("latest-impact.json must exist");
+    };
+    let cached_head = match report {
+        ledgerful::state::reports::LatestImpactReport::Packet(packet) => packet.head_hash,
+        ledgerful::state::reports::LatestImpactReport::CleanTree(tombstone) => tombstone.head_hash,
+    };
+    assert!(
+        cached_head.is_some(),
+        "cached impact report must record head_hash"
+    );
+
+    let live = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(root)
+        .output()
+        .unwrap_or_else(|err| panic!("git rev-parse HEAD failed to spawn: {err}"));
+    assert!(
+        live.status.success(),
+        "git rev-parse HEAD failed: {}",
+        String::from_utf8_lossy(&live.stderr)
+    );
+    let live_head = String::from_utf8(live.stdout)
+        .unwrap_or_else(|err| panic!("git rev-parse HEAD was not UTF-8: {err}"));
+    let live_head = live_head.trim();
+    assert_ne!(
+        cached_head.as_deref(),
+        Some(live_head),
+        "cached head_hash must differ from live HEAD"
+    );
+
+    let config = ledgerful::config::load::load_config(&layout)
+        .unwrap_or_else(|err| panic!("config load failed: {err}"));
+    match ledgerful::state::reports::check_live_impact_freshness(
+        &layout,
+        &config.watch.ignore_patterns,
+    ) {
+        Some(ledgerful::state::reports::ImpactFreshness::Stale { .. }) => {}
+        other => panic!("cached impact report must be stale, got {other:?}"),
+    }
+}
+
+#[test]
+#[should_panic(expected = "latest-impact.json must exist")]
+fn cached_report_guard_rejects_missing_report() {
+    let tmp = tempdir().unwrap();
+    assert_cached_impact_report_is_stale(tmp.path());
 }
 
 // CR8: Unit tests for the Cozo Datalog string escaping helper.

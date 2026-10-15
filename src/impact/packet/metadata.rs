@@ -18,6 +18,14 @@ pub struct ImpactPacket {
     pub risk_reasons: Vec<String>,
     pub changes: Vec<super::ChangedFile>,
     pub temporal_couplings: Vec<super::TemporalCoupling>,
+    /// Change-filtered audit pairs (leaves, governance files, and tree partners).
+    /// Omitted when empty. Honesty list; not the default risk list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub temporal_couplings_audit: Vec<super::TemporalCoupling>,
+    /// Tree paths that appear on a change-filtered audit pair before truncation.
+    /// Omitted when empty. Not truncated with the coupling lists.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub discarded_tree_paths: Vec<std::path::PathBuf>,
     pub structural_couplings: Vec<super::StructuralCoupling>,
     /// Structural call-graph blast radius (≠ deploy `highBlastResources`).
     /// Omitted from JSON when empty.
@@ -106,6 +114,14 @@ pub struct ImpactPacket {
     /// Inline explanations for `no_source_seeds` / mapped=0 (0227 docs mode).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub glossary: Option<std::collections::BTreeMap<String, String>>,
+    /// Window label for the embedded hotspot list (0503). Omitted when the
+    /// hotspot provider did not finish a calculation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hotspot_provenance: Option<crate::impact::budget::HotspotProvenance>,
+    /// Prospective scope sentence (0503). Omitted unless `analysis_mode` is
+    /// `prospective` and `tree_clean` is false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_note: Option<String>,
 }
 
 fn default_path_mode() -> String {
@@ -194,6 +210,8 @@ impl ImpactPacket {
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty()
             && self.temporal_couplings.is_empty()
+            && self.temporal_couplings_audit.is_empty()
+            && self.discarded_tree_paths.is_empty()
             && self.structural_couplings.is_empty()
             && self.blast_radius.is_none()
             && self.centrality_risks.is_empty()
@@ -226,6 +244,8 @@ impl ImpactPacket {
             && self.analysis_warnings.is_empty()
             && self.dead_code_findings.is_empty()
             && self.prospective_paths.is_empty()
+            && self.hotspot_provenance.is_none()
+            && self.scope_note.is_none()
         // path_mode / demoted_temporal_count / analysis_mode / actionable_lead /
         // glossary are metadata or presentation overlays — they do not make a
         // clean packet "non-empty" for empty-tree checks.
@@ -244,6 +264,8 @@ impl Default for ImpactPacket {
             risk_reasons: Vec::new(),
             changes: Vec::new(),
             temporal_couplings: Vec::new(),
+            temporal_couplings_audit: Vec::new(),
+            discarded_tree_paths: Vec::new(),
             structural_couplings: Vec::new(),
             blast_radius: None,
             centrality_risks: Vec::new(),
@@ -282,6 +304,8 @@ impl Default for ImpactPacket {
             prospective_paths: Vec::new(),
             actionable_lead: Vec::new(),
             glossary: None,
+            hotspot_provenance: None,
+            scope_note: None,
         }
     }
 }
@@ -408,6 +432,9 @@ impl ImpactPacket {
         }
         self.changes.sort_unstable();
         self.temporal_couplings.sort_unstable();
+        self.temporal_couplings_audit.sort_unstable();
+        self.discarded_tree_paths.sort_unstable();
+        self.discarded_tree_paths.dedup();
         self.structural_couplings.sort_unstable();
         if let Some(ref mut blast) = self.blast_radius {
             blast.edges.sort_unstable();
@@ -608,6 +635,8 @@ impl ImpactPacket {
 
         // Phase 3: Strip temporal and structural couplings
         let phase3_touched = !self.temporal_couplings.is_empty()
+            || !self.temporal_couplings_audit.is_empty()
+            || !self.discarded_tree_paths.is_empty()
             || !self.structural_couplings.is_empty()
             || self.blast_radius.is_some()
             || !self.centrality_risks.is_empty()
@@ -638,6 +667,8 @@ impl ImpactPacket {
         if phase3_touched {
             stripped = true;
             debit_clear_vec(&mut running, &mut self.temporal_couplings);
+            debit_clear_vec(&mut running, &mut self.temporal_couplings_audit);
+            debit_clear_vec(&mut running, &mut self.discarded_tree_paths);
             debit_clear_vec(&mut running, &mut self.structural_couplings);
             debit_take_opt(&mut running, &mut self.blast_radius);
             debit_clear_vec(&mut running, &mut self.centrality_risks);
@@ -671,10 +702,14 @@ impl ImpactPacket {
             return true;
         }
 
-        // Phase 4: Strip hotspots
+        // Phase 4: Strip hotspots and the window label that describes them.
         if !self.hotspots.is_empty() {
             stripped = true;
             debit_clear_vec(&mut running, &mut self.hotspots);
+        }
+        if self.hotspot_provenance.is_some() {
+            stripped = true;
+            debit_take_opt(&mut running, &mut self.hotspot_provenance);
         }
         if stripped && under(running) {
             confirm_compact_len(self);

@@ -145,6 +145,20 @@ impl NativeComplexityScorer {
                         | "||"
                         | "catch_clause"
                 ),
+                Language::Java => matches!(
+                    kind,
+                    "if_statement"
+                        | "for_statement"
+                        | "enhanced_for_statement"
+                        | "while_statement"
+                        | "do_statement"
+                        | "switch_expression"
+                        | "switch_label"
+                        | "catch_clause"
+                        | "ternary_expression"
+                        | "&&"
+                        | "||"
+                ),
                 Language::Markdown => false,
             };
 
@@ -153,7 +167,7 @@ impl NativeComplexityScorer {
             }
 
             for child in current.children(&mut cursor) {
-                if matches!(language, Language::Cpp) && child.kind() == "function_definition" {
+                if skip_nested_complexity_child(child, language) {
                     continue;
                 }
                 stack.push(child);
@@ -221,6 +235,17 @@ impl NativeComplexityScorer {
                     | "try_statement"
                     | "lambda_expression"
             ),
+            Language::Java => matches!(
+                kind,
+                "if_statement"
+                    | "for_statement"
+                    | "enhanced_for_statement"
+                    | "while_statement"
+                    | "do_statement"
+                    | "switch_expression"
+                    | "catch_clause"
+                    | "lambda_expression"
+            ),
             Language::Markdown => false,
         };
 
@@ -254,6 +279,9 @@ impl NativeComplexityScorer {
                         | "||"
                 ),
                 Language::Cpp => matches!(kind, "case_statement" | "&&" | "||" | "catch_clause"),
+                Language::Java => {
+                    matches!(kind, "switch_label" | "ternary_expression" | "&&" | "||")
+                }
                 Language::Markdown => false,
             };
             if is_other_increment {
@@ -263,7 +291,7 @@ impl NativeComplexityScorer {
 
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if matches!(language, Language::Cpp) && child.kind() == "function_definition" {
+            if skip_nested_complexity_child(child, language) {
                 continue;
             }
             let (child_score, _) =
@@ -272,6 +300,26 @@ impl NativeComplexityScorer {
         }
 
         (score, current_nesting)
+    }
+}
+
+fn skip_nested_complexity_child(child: Node, language: Language) -> bool {
+    match language {
+        Language::Cpp => child.kind() == "function_definition",
+        Language::Java => {
+            matches!(
+                child.kind(),
+                "class_declaration"
+                    | "record_declaration"
+                    | "interface_declaration"
+                    | "enum_declaration"
+                    | "annotation_type_declaration"
+                    | "method_declaration"
+                    | "constructor_declaration"
+                    | "compact_constructor_declaration"
+            ) || crate::index::languages::java::common::skip_anonymous_or_enum_constant_body(child)
+        }
+        _ => false,
     }
 }
 
@@ -312,6 +360,7 @@ impl ComplexityScorer for NativeComplexityScorer {
             Language::Python => tree_sitter_python::LANGUAGE.into(),
             Language::Go => tree_sitter_go::LANGUAGE.into(),
             Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
+            Language::Java => tree_sitter_java::LANGUAGE.into(),
             Language::Markdown => unreachable!(), // Handled above
         };
         parser
@@ -343,9 +392,16 @@ impl ComplexityScorer for NativeComplexityScorer {
                     | "func_literal"
                     // C++ lambdas (parity with Go func_literal).
                     | "lambda_expression"
+                    | "constructor_declaration"
+                    | "compact_constructor_declaration"
             ) {
                 let name = if kind == "lambda_expression" {
                     "lambda".to_string()
+                } else if matches!(
+                    kind,
+                    "constructor_declaration" | "compact_constructor_declaration"
+                ) {
+                    "<init>".to_string()
                 } else if kind == "function_definition" && matches!(language, Language::Cpp) {
                     // C++ function_definition has no `name` field — walk declarator.
                     crate::index::languages::cpp::cpp_declarator_name(
@@ -377,6 +433,13 @@ impl ComplexityScorer for NativeComplexityScorer {
             }
 
             for child in node.children(&mut cursor) {
+                if matches!(language, Language::Java)
+                    && crate::index::languages::java::common::skip_anonymous_or_enum_constant_body(
+                        child,
+                    )
+                {
+                    continue;
+                }
                 stack.push(child);
             }
         }
@@ -618,6 +681,229 @@ func Launch() {
             }
             ComplexityResult::NotApplicable { reason } => {
                 panic!("Go should be scored, got NotApplicable: {reason}");
+            }
+        }
+    }
+
+    const JAVA_CREATE: &str = r#"
+package com.example;
+public class User {
+  public void create(boolean a, boolean b) {
+    if (a && b) {
+      save();
+    }
+  }
+  private void save() {}
+}
+"#;
+
+    #[test]
+    fn java_create_locked_cyclomatic_and_cognitive() {
+        let scorer = NativeComplexityScorer::new();
+        let result = scorer
+            .score_file(Utf8Path::new("User.java"), JAVA_CREATE, Language::Java)
+            .expect("score java");
+        let create = result
+            .functions
+            .iter()
+            .find(|f| f.name == "create")
+            .expect("create");
+        assert_eq!(
+            create.cyclomatic, 3,
+            "base + if + &&; got {create:?} functions={:?}",
+            result.functions
+        );
+        assert_eq!(create.cognitive, 2, "if at nest 0 then &&; got {create:?}");
+    }
+
+    #[test]
+    fn java_constructor_score_uses_init_name() {
+        let source = r#"
+package com.example;
+public class User {
+  public User() {
+    if (true) {
+      return;
+    }
+  }
+}
+"#;
+        let scorer = NativeComplexityScorer::new();
+        let result = scorer
+            .score_file(Utf8Path::new("User.java"), source, Language::Java)
+            .expect("score ctor");
+        let init = result
+            .functions
+            .iter()
+            .find(|f| f.name == "<init>")
+            .expect("<init>");
+        assert!(
+            init.cyclomatic >= 2,
+            "constructor if must score on <init>; got {init:?} functions={:?}",
+            result.functions
+        );
+        assert!(
+            result.functions.iter().all(|f| f.name != "User"),
+            "constructor must not score as class identifier; got {:?}",
+            result.functions
+        );
+    }
+
+    #[test]
+    fn java_inner_class_if_does_not_raise_outer() {
+        let source = r#"
+package com.example;
+public class User {
+  public void create(boolean a, boolean b) {
+    if (a && b) {
+      save();
+    }
+    class Inner {
+      void m() {
+        if (true) {}
+      }
+    }
+  }
+  private void save() {}
+}
+"#;
+        let scorer = NativeComplexityScorer::new();
+        let result = scorer
+            .score_file(Utf8Path::new("User.java"), source, Language::Java)
+            .expect("score inner");
+        let create = result
+            .functions
+            .iter()
+            .find(|f| f.name == "create")
+            .expect("create");
+        let inner = result
+            .functions
+            .iter()
+            .find(|f| f.name == "m")
+            .expect("inner m");
+        assert_eq!(
+            create.cyclomatic, 3,
+            "inner if must not raise outer; create={create:?} inner={inner:?}"
+        );
+        assert!(
+            inner.cyclomatic >= 2,
+            "inner keeps its own if; inner={inner:?}"
+        );
+    }
+
+    #[test]
+    fn java_anonymous_class_initializer_if_does_not_raise_outer() {
+        let source = r#"
+package com.example;
+public class User {
+  public void create(boolean a, boolean b) {
+    if (a && b) {
+      save();
+    }
+    Runnable r = new Runnable() {
+      {
+        if (true) {}
+      }
+      public void run() {
+        if (false) {}
+      }
+    };
+  }
+  private void save() {}
+}
+"#;
+        let scorer = NativeComplexityScorer::new();
+        let result = scorer
+            .score_file(Utf8Path::new("User.java"), source, Language::Java)
+            .expect("score anon");
+        let create = result
+            .functions
+            .iter()
+            .find(|f| f.name == "create")
+            .expect("create");
+        assert_eq!(
+            create.cyclomatic, 3,
+            "anonymous class_body if must not raise outer; got {create:?} functions={:?}",
+            result.functions
+        );
+    }
+
+    #[test]
+    fn java_anonymous_and_enum_constant_bodies_are_not_discovered() {
+        let source = r#"
+package com.example;
+public class User {
+  public void create(boolean a, boolean b) {
+    if (a && b) {
+      save();
+    }
+    Runnable r = new Runnable() {
+      public void run() {
+        if (false) {}
+      }
+    };
+    class Inner {
+      void m() {
+        if (true) {}
+      }
+    }
+  }
+  private void save() {}
+}
+enum Color {
+  RED {
+    void run() {
+      if (true) {}
+    }
+  };
+  void run() {}
+}
+"#;
+        let scorer = NativeComplexityScorer::new();
+        let result = scorer
+            .score_file(Utf8Path::new("User.java"), source, Language::Java)
+            .expect("score java discovery");
+        let create = result
+            .functions
+            .iter()
+            .find(|f| f.name == "create")
+            .expect("create");
+        assert_eq!(create.cyclomatic, 3, "anonymous if must not raise create");
+        let runs: Vec<_> = result
+            .functions
+            .iter()
+            .filter(|f| f.name == "run")
+            .collect();
+        assert_eq!(
+            runs.len(),
+            1,
+            "anonymous and enum-constant run bodies must not score; functions={:?}",
+            result.functions
+        );
+        assert_eq!(
+            runs[0].cyclomatic, 1,
+            "the remaining run is the enum method, not the constant body; got {:?}",
+            runs[0]
+        );
+        assert!(
+            result.functions.iter().any(|f| f.name == "m"),
+            "named inner method still scores; functions={:?}",
+            result.functions
+        );
+    }
+
+    #[test]
+    fn java_extension_is_supported_by_score_supported_path() {
+        let scorer = NativeComplexityScorer::new();
+        let result = scorer
+            .score_supported_path(Utf8Path::new("src/User.java"), JAVA_CREATE)
+            .expect("score supported path");
+        match result {
+            ComplexityResult::Scored(fc) => {
+                assert!(fc.functions.iter().any(|f| f.name == "create"));
+            }
+            ComplexityResult::NotApplicable { reason } => {
+                panic!("Java should be scored, got NotApplicable: {reason}");
             }
         }
     }

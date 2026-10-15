@@ -10,7 +10,7 @@ How Ledgerful reaches package managers. Distribution only — no engine runtime,
 | `cargo binstall --git …` | Engine-ready | `[package.metadata.binstall]` in `Cargo.toml`; uses release assets |
 | Homebrew tap | Live | Formula (CLI), not cask; tap-first (not homebrew-core); auto-bumped on each release |
 | Scoop bucket | Live | 64-bit portable `.zip` only; auto-bumped on each release |
-| winget (`Ledgerful.Ledgerful`) | <!-- lf-floor:P-13 -->Live at **0.2.15** (manifests 2026-10-02); GitHub **v0.2.16** published, index may lag.<!-- /lf-floor:P-13 --> | `winget install Ledgerful.Ledgerful`; `WINGET_TOKEN` is set; subsequent tags bump via SHA-pinned `winget-releaser` |
+| winget (`Ledgerful.Ledgerful`) | <!-- lf-floor:P-13 -->Live at **0.2.16** (manifests 2026-10-14); GitHub **v0.2.17** published, index may lag.<!-- /lf-floor:P-13 --> | `winget install Ledgerful.Ledgerful`; `WINGET_TOKEN` is set; subsequent tags bump via SHA-pinned `winget-releaser` |
 | npm (`@ledgerful/mcp-server`) | Live | Independent wrapper version line; engine pin `ledgerfulEngineTag` (downloads release binary on install) |
 | crates.io `cargo install ledgerful` | **Not pursued** for distribution | Heavy native graph; prebuilt path preferred |
 
@@ -69,7 +69,7 @@ Gate B is scheduled, not a PR gate — a short red window between a merged relea
 - On a **public** repo, scheduled workflows **auto-disable after ~60 days of repository inactivity**. Re-enable with a `workflow_dispatch` run or any push.
 - Parser unit matrix: `bash scripts/test-release-changelog.sh` (also run as the first step of `release-state.yml`).
 
-`ci.yml` / `smoke.yml` frontend `ref:` drift is **reported only** by Gate B (warnings do not fail the job). Do not refresh those pins without resolving the Node 24 + Linux CSP gap (see track 0098 / `deferred.md`).
+`ci.yml` frontend `ref:` drift is **reported only** by Gate B (warnings do not fail the job). Do not refresh that pin without resolving the Node 24 + Linux CSP gap (see track 0098 / `deferred.md`). `smoke.yml` does not check out the frontend.
 
 ### Ops recovery — re-run a release without retagging
 
@@ -200,7 +200,7 @@ On each release, job `bump-manifests` (after `publish`):
 
 **Invariant:** the bump script reads hashes **only** from published `.sha256` files. It never recomputes hashes from archives.
 
-`WINGET_TOKEN` **is set**; `winget-releaser` opens version PRs on subsequent tags. If the secret is unset, the job notices (`::notice::` + step summary) and skips — that is a failure mode, not the current ops story. Package `Ledgerful.Ledgerful` is <!-- lf-floor:P-191 -->live on winget at **0.2.15** (`microsoft/winget-pkgs` `manifests/l/Ledgerful/Ledgerful`, 2026-10-02). GitHub Release **v0.2.16** is published; do not claim winget 0.2.16 until that directory exists.<!-- /lf-floor:P-191 -->
+`WINGET_TOKEN` **is set**; `winget-releaser` opens version PRs on subsequent tags. If the secret is unset, the job notices (`::notice::` + step summary) and skips — that is a failure mode, not the current ops story. Package `Ledgerful.Ledgerful` is <!-- lf-floor:P-191 -->live on winget at **0.2.16** (`microsoft/winget-pkgs` `manifests/l/Ledgerful/Ledgerful`, 2026-10-14). GitHub Release **v0.2.17** is published; do not claim winget 0.2.17 until that directory exists.<!-- /lf-floor:P-191 -->
 
 ### Local / CI fixture test
 
@@ -228,12 +228,12 @@ bash scripts/test-refresh-distribution-floors.sh
 
 ## winget
 
-- Identifier: `Ledgerful.Ledgerful` (accepted 2026-07-30; <!-- lf-floor:P-215 -->live on winget at **0.2.15**, manifests 2026-10-02<!-- /lf-floor:P-215 -->)
+- Identifier: `Ledgerful.Ledgerful` (accepted 2026-07-30; <!-- lf-floor:P-215 -->live on winget at **0.2.16**, manifests 2026-10-14<!-- /lf-floor:P-215 -->)
 - Install: `winget install Ledgerful.Ledgerful`
-- Note: <!-- lf-floor:P-217 -->community index **0.2.15**. GitHub Release **v0.2.16** published 2026-10-02; do not claim 0.2.16 live until that directory exists.<!-- /lf-floor:P-217 --> History: 0.2.12 was [#430322](https://github.com/microsoft/winget-pkgs/pull/430322) **merged** 2026-09-06; 0.2.11 was [#423248](https://github.com/microsoft/winget-pkgs/pull/423248) merged 2026-08-26; leftover [#415913](https://github.com/microsoft/winget-pkgs/pull/415913) (0.2.8) **merged**; [#416853](https://github.com/microsoft/winget-pkgs/pull/416853) (0.2.9) **closed-superseded**. The community index can lag a merge by minutes–hours; do not invent a `winget search` result.
-- Action: `vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e` (tag v2, SHA-pinned)
+- Note: <!-- lf-floor:P-217 -->community index **0.2.16**. GitHub Release **v0.2.17** published 2026-10-14; do not claim 0.2.17 live until that directory exists.<!-- /lf-floor:P-217 --> History: 0.2.12 was [#430322](https://github.com/microsoft/winget-pkgs/pull/430322) **merged** 2026-09-06; 0.2.11 was [#423248](https://github.com/microsoft/winget-pkgs/pull/423248) merged 2026-08-26; leftover [#415913](https://github.com/microsoft/winget-pkgs/pull/415913) (0.2.8) **merged**; [#416853](https://github.com/microsoft/winget-pkgs/pull/416853) (0.2.9) **closed-superseded**. The community index can lag a merge by minutes–hours; do not invent a `winget search` result.
+- Action: `vedantmgoyal9/winget-releaser@b7370d4d152efdce803a26cc6ca9eee58cb2ad54` (tag v2, SHA-pinned)
 - Installer regex: portable `ledgerful-x86_64-pc-windows-msvc.zip`
-- Secret: `WINGET_TOKEN` (PAT that can open PRs against `microsoft/winget-pkgs` via fork) — **is set**
+- Secret: `WINGET_TOKEN` (PAT that can open PRs against `microsoft/winget-pkgs` via fork) — **is set**. Upstream README at the pinned SHA says a classic PAT needs `public_repo` and `workflow` for fork sync of workflow files. Without `workflow`, sync can fail with `UpdateRef`, and the fork is synced by hand. This sentence does not claim the live secret's scopes.
 - **Version bumps:** subsequent tags use this job; `WINGET_TOKEN` is set. If unset, the job notices and skips (failure mode).
 
 ## Secrets checklist
@@ -242,7 +242,7 @@ bash scripts/test-refresh-distribution-floors.sh
 |---|---|---|
 | `RELEASE_CUT_TOKEN` | `release-cut.yml` (prepare + tag) | Fine-grained PAT: open release PR + push tag that starts `release.yml`. No expiry; revoke at github.com/settings/personal-access-tokens if retired |
 | `MANIFEST_PUSH_TOKEN` | `bump-manifests` | Push formula/manifest to homebrew-tap + scoop-bucket |
-| `WINGET_TOKEN` | `winget-release` | Submit winget-pkgs update PR |
+| `WINGET_TOKEN` | `winget-release` | Submit winget-pkgs update PR. Classic PAT: `public_repo` and `workflow` for fork sync, or sync the fork by hand on `UpdateRef` |
 | `GITHUB_TOKEN` | release download of checksums | Default; contents read on public releases |
 
 ## cargo-binstall metadata

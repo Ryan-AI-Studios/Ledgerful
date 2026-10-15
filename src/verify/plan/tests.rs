@@ -2,7 +2,8 @@ use super::*;
 use crate::impact::packet::{ChangedFile, FileAnalysisStatus, ImpactPacket};
 use crate::policy::mode::Mode;
 use crate::policy::rules::{GlobalRules, PathRule, Rules};
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 fn empty_packet() -> ImpactPacket {
     ImpactPacket {
@@ -1886,13 +1887,14 @@ fn assert_scoped_filterset_not_workspace_ci(command: &str) {
     }
 }
 
-fn plan_fast(
+fn plan_at(
+    root: &camino::Utf8Path,
     packet: &ImpactPacket,
     conn: Option<&rusqlite::Connection>,
     profile: &crate::platform::repository::RepositoryProfile,
 ) -> VerificationPlan {
     let rules = Rules::default();
-    let layout = crate::state::layout::Layout::new(".");
+    let layout = crate::state::layout::Layout::new(root);
     build_plan_scoped_with_options(
         packet,
         &rules,
@@ -1907,9 +1909,17 @@ fn plan_fast(
     )
 }
 
+fn plan_fast(
+    packet: &ImpactPacket,
+    conn: Option<&rusqlite::Connection>,
+    profile: &crate::platform::repository::RepositoryProfile,
+) -> VerificationPlan {
+    plan_at(camino::Utf8Path::new("."), packet, conn, profile)
+}
+
 #[test]
 fn test_non_code_changelog_docs_cheap_no_nextest() {
-    let packet = packet_with_paths(&["CHANGELOG.md", "docs/installation.md"]);
+    let packet = packet_with_paths(&["CHANGELOG.md", "docs/architecture.md"]);
     let plan = plan_fast(&packet, None, &rust_profile());
     assert!(!plan.refused);
     assert!(plan.fallback_reason.is_none());
@@ -1928,7 +1938,7 @@ fn test_non_code_changelog_docs_cheap_no_nextest() {
             .steps
             .iter()
             .any(|s| s.command.contains("nextest") || s.command.contains("cargo test")),
-        "docs/CHANGELOG cheap path must not schedule tests, got {:?}",
+        "unreferenced docs/CHANGELOG cheap path must not schedule tests, got {:?}",
         plan.steps
     );
     assert!(
@@ -1977,21 +1987,331 @@ fn test_scripts_bump_manifests_ps1_injects_stem() {
 
 #[test]
 fn test_docs_only_does_not_inject_bump_manifests() {
+    let unreferenced = packet_with_paths(&["docs/architecture.md"]);
+    let unreferenced_plan = plan_fast(&unreferenced, None, &rust_profile());
+    assert!(!unreferenced_plan.refused);
+    assert!(
+        nextest_step(&unreferenced_plan).is_none(),
+        "unreferenced docs must not inject nextest, got {:?}",
+        unreferenced_plan.steps
+    );
     let packet = packet_with_paths(&["docs/installation.md"]);
     let plan = plan_fast(&packet, None, &rust_profile());
     assert!(!plan.refused);
+    let nextest = nextest_step(&plan).expect("include_str docs must inject nextest");
     assert!(
-        nextest_step(&plan).is_none(),
-        "docs-only must not inject bump_manifests, got {:?}",
+        !nextest.command.contains("bump_manifests"),
+        "installation.md must not inject bump_manifests, got {}",
+        nextest.command
+    );
+    assert!(
+        !nextest.command.contains("test(install_docs_truth)"),
+        "vacuous install_docs_truth stem is forbidden, got {}",
+        nextest.command
+    );
+    assert!(
+        nextest
+            .command
+            .contains("test(installation_md_has_live_brew_and_scoop_commands)"),
+        "expected installation stem, got {}",
+        nextest.command
+    );
+    assert!(
+        nextest
+            .command
+            .contains("test(no_stale_package_manager_availability_language)"),
+        "expected no_stale stem, got {}",
+        nextest.command
+    );
+}
+
+#[test]
+fn test_include_str_docs_inject_readme_and_keep_envelope() {
+    let packet = packet_with_paths(&["README.md"]);
+    let plan = plan_fast(&packet, None, &rust_profile());
+    assert!(!plan.refused);
+    assert!(plan.fallback_reason.is_none());
+    let nextest = nextest_step(&plan).expect("README include_str must inject nextest");
+    assert!(
+        nextest
+            .command
+            .contains("test(readme_has_daily_5_front_door)"),
+        "expected readme stem, got {}",
+        nextest.command
+    );
+    assert!(
+        nextest
+            .command
+            .contains("test(no_stale_package_manager_availability_language)"),
+        "expected no_stale stem, got {}",
+        nextest.command
+    );
+    assert!(
+        nextest.description.contains("include_str"),
+        "description must name include_str, got {}",
+        nextest.description
+    );
+    assert!(
+        !nextest.description.contains("via test_mapping"),
+        "injected description must not claim test_mapping, got {}",
+        nextest.description
+    );
+    assert!(
+        !nextest.description.contains("packaging"),
+        "docs-only must not claim packaging, got {}",
+        nextest.description
+    );
+}
+
+#[test]
+fn test_foreign_root_readme_skips_include_str_nextest() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8 temp");
+    let packet = packet_with_paths(&["README.md"]);
+    let plan = plan_at(&root, &packet, None, &rust_profile());
+    assert!(!plan.refused);
+    assert!(plan.fallback_reason.is_none());
+    assert!(
+        plan.steps.iter().any(|s| s.command.contains("fmt")),
+        "fmt must be present, got {:?}",
         plan.steps
     );
     assert!(
-        !plan
-            .steps
-            .iter()
-            .any(|s| s.command.contains("bump_manifests")),
-        "docs-only must not mention bump_manifests, got {:?}",
+        plan.steps.iter().any(|s| s.command.contains("clippy")),
+        "clippy must be present, got {:?}",
         plan.steps
+    );
+    assert!(
+        nextest_step(&plan).is_none(),
+        "foreign README must not schedule nextest, got {:?}",
+        plan.steps
+    );
+}
+
+#[test]
+fn test_foreign_root_packaging_keeps_bump_manifests_without_doc_stems() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8 temp");
+    let packet = packet_with_paths(&["packaging/winget/Ledgerful.yaml", "README.md"]);
+    let plan = plan_at(&root, &packet, None, &rust_profile());
+    assert!(!plan.refused);
+    assert!(plan.fallback_reason.is_none());
+    let nextest = nextest_step(&plan).expect("foreign packaging still injects bump_manifests");
+    assert!(
+        nextest.command.contains("test(bump_manifests)"),
+        "expected bump_manifests, got {}",
+        nextest.command
+    );
+    assert!(
+        !nextest
+            .command
+            .contains("test(readme_has_daily_5_front_door)"),
+        "foreign README stem must stay out, got {}",
+        nextest.command
+    );
+}
+
+#[test]
+fn test_foreign_root_scoped_ok_keeps_mapping_stem_only() {
+    let packet = ImpactPacket {
+        head_hash: Some("matched-head".to_string()),
+        changes: vec![
+            ChangedFile {
+                path: PathBuf::from("src/commands/hotspots.rs"),
+                ..Default::default()
+            },
+            ChangedFile {
+                path: PathBuf::from("README.md"),
+                ..Default::default()
+            },
+        ],
+        ..ImpactPacket::default()
+    };
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute(
+        "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
+             tested_symbol_id INTEGER, tested_file_id INTEGER)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE project_files (id INTEGER PRIMARY KEY, file_path TEXT)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE index_metadata (key TEXT PRIMARY KEY, value TEXT)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO index_metadata (key, value) VALUES ('head_hash', 'matched-head')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path) VALUES (1, 'src/commands/hotspots.rs')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path) VALUES (2, 'tests/integration/cli_hotspots.rs')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id) \
+             VALUES (10, 2, 20, 1)",
+        [],
+    )
+    .unwrap();
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8 temp");
+    let plan = plan_at(&root, &packet, Some(&conn), &rust_profile());
+    assert!(
+        !plan.refused,
+        "foreign mapped src + README must stay ScopedOk; reason={:?}",
+        plan.fallback_reason
+    );
+    assert!(plan.fallback_reason.is_none());
+    let nextest = nextest_step(&plan).expect("ScopedOk nextest");
+    assert!(
+        nextest.command.contains("test(cli_hotspots)"),
+        "mapping stem must remain, got {}",
+        nextest.command
+    );
+    assert!(
+        !nextest
+            .command
+            .contains("test(readme_has_daily_5_front_door)"),
+        "foreign README stem must stay out, got {}",
+        nextest.command
+    );
+    assert!(
+        nextest.description.contains("via test_mapping"),
+        "description must stay on test_mapping, got {}",
+        nextest.description
+    );
+    assert!(
+        !nextest.description.contains("include_str"),
+        "description must not name include_str, got {}",
+        nextest.description
+    );
+}
+
+#[test]
+fn test_include_str_multi_referenced_docs_union_stems() {
+    let packet = packet_with_paths(&["docs/Ledgerful/skill.md", "docs/Call-Resolution.md"]);
+    let plan = plan_fast(&packet, None, &rust_profile());
+    let nextest = nextest_step(&plan).expect("multi-ref docs must inject");
+    for stem in [
+        "call_resolution_docs_honesty_ceiling",
+        "test_daily5_skill_sot_contains_five_argv_substrings",
+        "test_daily5_skill_sot_is_ai_only_procedure",
+    ] {
+        assert!(
+            nextest.command.contains(&format!("test({stem})")),
+            "union missing {stem}: {}",
+            nextest.command
+        );
+    }
+    let command = &nextest.command;
+    let first = command.find("test(call_resolution_docs_honesty_ceiling)");
+    let second = command.find("test(test_daily5_skill_sot_contains_five_argv_substrings)");
+    assert!(
+        first.is_some() && second.is_some() && first < second,
+        "stems must be sorted in -E, got {command}"
+    );
+}
+
+#[test]
+fn test_include_str_plus_packaging_is_one_nextest_step() {
+    let packet = packet_with_paths(&["docs/installation.md", "packaging/homebrew/ledgerful.rb"]);
+    let plan = plan_fast(&packet, None, &rust_profile());
+    let nextest_steps: Vec<_> = plan
+        .steps
+        .iter()
+        .filter(|s| s.command.contains("nextest"))
+        .collect();
+    assert_eq!(
+        nextest_steps.len(),
+        1,
+        "packaging + include_str must be one nextest step, got {:?}",
+        plan.steps
+    );
+    let nextest = nextest_steps[0];
+    assert!(
+        nextest.command.contains("test(bump_manifests)"),
+        "{}",
+        nextest.command
+    );
+    assert!(
+        nextest
+            .command
+            .contains("test(installation_md_has_live_brew_and_scoop_commands)"),
+        "{}",
+        nextest.command
+    );
+    assert!(
+        nextest.description.contains("bump_manifests")
+            && nextest.description.contains("include_str"),
+        "composite description, got {}",
+        nextest.description
+    );
+}
+
+#[test]
+fn test_include_str_docs_no_rust_profile_skips_nextest() {
+    let packet = packet_with_paths(&["docs/installation.md"]);
+    let plan = plan_fast(
+        &packet,
+        None,
+        &crate::platform::repository::RepositoryProfile::default(),
+    );
+    assert!(!plan.refused);
+    assert!(
+        nextest_step(&plan).is_none(),
+        "non-Rust profile must not inject doc nextest, got {:?}",
+        plan.steps
+    );
+}
+
+#[test]
+fn test_packaging_no_rust_profile_still_injects_bump_manifests() {
+    let packet = packet_with_paths(&["packaging/homebrew/ledgerful.rb"]);
+    let plan = plan_fast(
+        &packet,
+        None,
+        &crate::platform::repository::RepositoryProfile::default(),
+    );
+    assert!(!plan.refused);
+    let nextest = nextest_step(&plan).expect("packaging A2 injects without rust");
+    assert!(
+        nextest.command.contains("test(bump_manifests)"),
+        "expected bump_manifests without rust, got {}",
+        nextest.command
+    );
+}
+
+#[test]
+fn test_include_str_plus_unreferenced_doc_still_injects() {
+    let packet = packet_with_paths(&["docs/installation.md", "docs/architecture.md"]);
+    let plan = plan_fast(&packet, None, &rust_profile());
+    assert!(!plan.refused);
+    assert!(plan.fallback_reason.is_none());
+    let nextest = nextest_step(&plan).expect("referenced + unreferenced still injects");
+    assert!(
+        nextest
+            .command
+            .contains("test(installation_md_has_live_brew_and_scoop_commands)"),
+        "expected installation stem, got {}",
+        nextest.command
+    );
+    assert!(
+        !nextest.command.contains("bump_manifests"),
+        "mixed docs must not inject bump_manifests, got {}",
+        nextest.command
     );
 }
 
@@ -2087,6 +2407,177 @@ fn test_mixed_src_mapped_plus_packaging_unions_stem() {
     assert!(
         !nextest.description.contains("via test_mapping"),
         "unioned description must not claim test_mapping, got {}",
+        nextest.description
+    );
+}
+
+#[test]
+fn test_mixed_src_mapped_plus_include_str_doc_unions_stems() {
+    let packet = ImpactPacket {
+        head_hash: Some("matched-head".to_string()),
+        changes: vec![
+            ChangedFile {
+                path: PathBuf::from("src/commands/hotspots.rs"),
+                ..Default::default()
+            },
+            ChangedFile {
+                path: PathBuf::from("README.md"),
+                ..Default::default()
+            },
+        ],
+        ..ImpactPacket::default()
+    };
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute(
+        "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
+             tested_symbol_id INTEGER, tested_file_id INTEGER)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE project_files (id INTEGER PRIMARY KEY, file_path TEXT)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE index_metadata (key TEXT PRIMARY KEY, value TEXT)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO index_metadata (key, value) VALUES ('head_hash', 'matched-head')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path) VALUES (1, 'src/commands/hotspots.rs')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path) VALUES (2, 'tests/integration/cli_hotspots.rs')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id) \
+             VALUES (10, 2, 20, 1)",
+        [],
+    )
+    .unwrap();
+
+    let plan = plan_fast(&packet, Some(&conn), &rust_profile());
+    assert!(
+        !plan.refused,
+        "mapped src + README must ScopedOk with union; reason={:?}",
+        plan.fallback_reason
+    );
+    let nextest = nextest_step(&plan).expect("ScopedOk nextest");
+    assert!(
+        nextest.command.contains("test(cli_hotspots)"),
+        "original mapping stem must remain, got {}",
+        nextest.command
+    );
+    assert!(
+        nextest
+            .command
+            .contains("test(readme_has_daily_5_front_door)"),
+        "0480 must union README include_str stem, got {}",
+        nextest.command
+    );
+    assert!(
+        nextest.description.contains("include_str"),
+        "unioned description must name include_str, got {}",
+        nextest.description
+    );
+    assert!(
+        !nextest.description.contains("via test_mapping"),
+        "unioned description must not claim test_mapping, got {}",
+        nextest.description
+    );
+}
+
+#[test]
+fn test_mixed_src_mapped_plus_include_str_doc_no_rust_skips_doc_stems() {
+    let packet = ImpactPacket {
+        head_hash: Some("matched-head".to_string()),
+        changes: vec![
+            ChangedFile {
+                path: PathBuf::from("src/commands/hotspots.rs"),
+                ..Default::default()
+            },
+            ChangedFile {
+                path: PathBuf::from("README.md"),
+                ..Default::default()
+            },
+        ],
+        ..ImpactPacket::default()
+    };
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute(
+        "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
+             tested_symbol_id INTEGER, tested_file_id INTEGER)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE project_files (id INTEGER PRIMARY KEY, file_path TEXT)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE index_metadata (key TEXT PRIMARY KEY, value TEXT)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO index_metadata (key, value) VALUES ('head_hash', 'matched-head')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path) VALUES (1, 'src/commands/hotspots.rs')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path) VALUES (2, 'tests/integration/cli_hotspots.rs')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id) \
+             VALUES (10, 2, 20, 1)",
+        [],
+    )
+    .unwrap();
+
+    let plan = plan_fast(
+        &packet,
+        Some(&conn),
+        &crate::platform::repository::RepositoryProfile::default(),
+    );
+    assert!(
+        !plan.refused,
+        "mapped src + README without rust must still ScopedOk; reason={:?}",
+        plan.fallback_reason
+    );
+    let nextest = nextest_step(&plan).expect("ScopedOk nextest from mapping");
+    assert!(
+        nextest.command.contains("test(cli_hotspots)"),
+        "original mapping stem must remain, got {}",
+        nextest.command
+    );
+    assert!(
+        !nextest
+            .command
+            .contains("test(readme_has_daily_5_front_door)"),
+        "no-rust ScopedOk must not inject include_str stems, got {}",
+        nextest.command
+    );
+    assert!(
+        !nextest.description.contains("include_str"),
+        "no-rust description must not name include_str, got {}",
         nextest.description
     );
 }
@@ -2192,6 +2683,826 @@ fn test_openapi_json_is_not_non_code_cheap() {
         "openapi.json must not be NonCodeCheap; steps={:?} reason={:?}",
         plan.steps, plan.fallback_reason
     );
+}
+
+fn include_str_literals(src: &str) -> Vec<String> {
+    parse_include_str_args("foo.rs", src)
+        .unwrap_or_else(|err| panic!("{err}"))
+        .into_iter()
+        .map(|arg| match arg {
+            IncludeStrArg::Literal(path) | IncludeStrArg::CargoManifestConcat(path) => path,
+        })
+        .collect()
+}
+
+#[test]
+fn test_include_str_comment_paren_resolves_installation() {
+    let got = include_str_literals("include_str!(\n // )\n \"docs/installation.md\"\n)");
+    assert_eq!(got, vec!["docs/installation.md".to_string()]);
+}
+
+#[test]
+fn test_include_str_nested_block_comment_resolves_installation() {
+    let got = include_str_literals("include_str!( /* ) /* */ */ \"docs/installation.md\" )");
+    assert_eq!(got, vec!["docs/installation.md".to_string()]);
+}
+
+#[test]
+fn test_include_str_line_comment_ignores_first_call() {
+    let got = include_str_literals(
+        "// include_str!(\"docs/installation.md\")\ninclude_str!(\"docs/golden-path.md\")",
+    );
+    assert_eq!(got, vec!["docs/golden-path.md".to_string()]);
+}
+
+#[test]
+fn test_include_str_raw_string_resolves_installation() {
+    let got = include_str_literals("include_str!(r\"docs/installation.md\")");
+    assert_eq!(got, vec!["docs/installation.md".to_string()]);
+}
+
+#[test]
+fn test_include_str_raw_string_hashes_resolves_installation() {
+    let got = include_str_literals("include_str!(r#\"docs/installation.md\"#)");
+    assert_eq!(got, vec!["docs/installation.md".to_string()]);
+}
+
+#[test]
+fn test_include_str_char_quote_does_not_hide_call() {
+    let got = include_str_literals("let c = '\"'; include_str!(\"docs/installation.md\");");
+    assert_eq!(got, vec!["docs/installation.md".to_string()]);
+}
+
+#[test]
+fn test_include_str_lifetime_static_does_not_hide_call() {
+    let got =
+        include_str_literals("let _: &'static str = \"\"; include_str!(\"docs/installation.md\");");
+    assert_eq!(got, vec!["docs/installation.md".to_string()]);
+}
+
+#[test]
+fn test_include_str_byte_string_is_not_a_call() {
+    let got = include_str_literals("let _ = b\"include_str!(\\\"docs/installation.md\\\")\";");
+    assert!(got.is_empty(), "{got:?}");
+}
+
+#[test]
+fn test_include_str_raw_byte_string_is_not_a_call() {
+    let got = include_str_literals(
+        "let _ = br#\"include_str!(\\\"docs/installation.md\\\")\"#; include_str!(\"docs/golden-path.md\");",
+    );
+    assert_eq!(got, vec!["docs/golden-path.md".to_string()]);
+}
+
+#[test]
+fn test_include_str_byte_char_quote_does_not_hide_call() {
+    let got = include_str_literals("let _ = b'\"'; include_str!(\"docs/installation.md\");");
+    assert_eq!(got, vec!["docs/installation.md".to_string()]);
+}
+
+#[test]
+fn test_include_str_brace_form_resolves_installation() {
+    let got = include_str_literals("include_str! { \"docs/installation.md\" }");
+    assert_eq!(got, vec!["docs/installation.md".to_string()]);
+}
+
+#[test]
+fn test_include_str_bracket_form_is_unresolved() {
+    let err = parse_include_str_args("foo.rs", "include_str![\"docs/installation.md\"]")
+        .expect_err("bracket form is unresolved");
+    assert!(err.contains("unresolved"), "{err}");
+    assert!(err.contains("foo.rs"), "{err}");
+}
+
+#[test]
+fn test_include_str_concat_manifest_dir_resolves_installation() {
+    let src = "include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/docs/installation.md\"))";
+    let args = parse_include_str_args("src/foo.rs", src).expect("concat form");
+    match args.as_slice() {
+        [IncludeStrArg::CargoManifestConcat(rel)] => assert_eq!(rel, "docs/installation.md"),
+        other => panic!("expected concat path, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_include_str_material_stems_name_live_fns() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut stems: Vec<&str> = INCLUDE_STR_MATERIAL
+        .iter()
+        .flat_map(|(_, names)| names.iter().copied())
+        .collect();
+    stems.sort_unstable();
+    stems.dedup();
+    assert_eq!(stems.len(), 10, "distinct stem count");
+    let mut found = std::collections::BTreeSet::new();
+    let mut failures = Vec::new();
+    for dir in ["src", "tests", "crates"] {
+        walk_rs_files(
+            &crate_root.join(dir),
+            &crate_root,
+            &mut |rel, src| {
+                for stem in &stems {
+                    if code_has_fn_stem(src, stem, rel)? {
+                        found.insert(*stem);
+                    }
+                }
+                Ok(())
+            },
+            &mut failures,
+        );
+    }
+    assert!(
+        failures.is_empty(),
+        "stem scan failures:\n  {}",
+        failures.join("\n  ")
+    );
+    let missing: Vec<&&str> = stems.iter().filter(|stem| !found.contains(*stem)).collect();
+    assert!(missing.is_empty(), "missing fn stems: {missing:?}");
+}
+
+#[test]
+fn test_include_str_material_table_matches_live_cheap_sites() {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut live: Vec<String> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
+    for dir in ["src", "tests", "crates"] {
+        walk_rs_files(
+            &crate_root.join(dir),
+            &crate_root,
+            &mut |rel, src| {
+                live.extend(collect_cheap_include_str_paths(rel, src)?);
+                Ok(())
+            },
+            &mut failures,
+        );
+    }
+    assert!(
+        failures.is_empty(),
+        "unresolved include_str! forms:\n  {}",
+        failures.join("\n  ")
+    );
+    live.sort();
+    live.dedup();
+    let table: Vec<String> = INCLUDE_STR_MATERIAL
+        .iter()
+        .map(|(p, _)| (*p).to_string())
+        .collect();
+    assert_eq!(
+        live, table,
+        "cheap include_str! paths drifted from INCLUDE_STR_MATERIAL"
+    );
+    for (path, stems) in INCLUDE_STR_MATERIAL {
+        assert!(
+            !stems.is_empty(),
+            "INCLUDE_STR_MATERIAL[{path}] must have a non-empty stem list"
+        );
+    }
+}
+
+#[test]
+fn test_include_str_concat_extra_args_is_unresolved() {
+    let src =
+        "include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/docs/installation.md\", \"x\"))";
+    let err = collect_cheap_include_str_paths("src/foo.rs", src).unwrap_err();
+    assert!(
+        err.contains("unresolved concat"),
+        "extra concat args must fail, got {err}"
+    );
+}
+
+fn walk_rs_files(
+    dir: &Path,
+    crate_root: &Path,
+    visit: &mut impl FnMut(&str, &str) -> Result<(), String>,
+    failures: &mut Vec<String>,
+) {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let entries = match fs::read_dir(&current) {
+            Ok(e) => e,
+            Err(e) => {
+                failures.push(format!("{}: read_dir failed: {e}", current.display()));
+                continue;
+            }
+        };
+        let mut kids = Vec::new();
+        for entry in entries {
+            match entry {
+                Ok(e) => kids.push(e),
+                Err(e) => {
+                    failures.push(format!("{}: read_dir entry failed: {e}", current.display()))
+                }
+            }
+        }
+        kids.sort_by_key(|e| e.file_name());
+        for entry in kids {
+            let path = entry.path();
+            let name = entry.file_name();
+            if name == ".git" || name == "target" || name == "node_modules" || name == "vendor" {
+                continue;
+            }
+            let meta = match fs::symlink_metadata(&path) {
+                Ok(m) => m,
+                Err(e) => {
+                    failures.push(format!("{}: symlink_metadata failed: {e}", path.display()));
+                    continue;
+                }
+            };
+            if meta.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let rel = path
+                .strip_prefix(crate_root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let src = match fs::read_to_string(&path) {
+                Ok(s) => s,
+                Err(e) => {
+                    failures.push(format!("{rel}: read_to_string failed: {e}"));
+                    continue;
+                }
+            };
+            if let Err(e) = visit(&rel, &src) {
+                failures.push(e);
+            }
+        }
+    }
+}
+
+fn collect_cheap_include_str_paths(source_rel: &str, src: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for arg in parse_include_str_args(source_rel, src)? {
+        let resolved = match arg {
+            IncludeStrArg::Literal(rel) => resolve_from_source(source_rel, &rel),
+            IncludeStrArg::CargoManifestConcat(rel) => {
+                join_repo(&cargo_manifest_prefix(source_rel), &rel)
+            }
+        };
+        if is_non_code_cheap_path(Path::new(&resolved)) {
+            out.push(resolved);
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Debug)]
+enum IncludeStrArg {
+    Literal(String),
+    CargoManifestConcat(String),
+}
+
+fn parse_include_str_args(source_rel: &str, src: &str) -> Result<Vec<IncludeStrArg>, String> {
+    let mut args = Vec::new();
+    let mut i = 0;
+    while let Some(start) = find_code_include_str(src, i, source_rel)? {
+        let after_bang = start + "include_str!".len();
+        let j = skip_trivia(src, after_bang, source_rel)?;
+        if j >= src.len() {
+            return Err(format!("{source_rel}: unresolved include_str! form"));
+        }
+        let opener = src.as_bytes()[j];
+        if opener == b'[' || (opener != b'(' && opener != b'{') {
+            return Err(format!("{source_rel}: unresolved include_str! form"));
+        }
+        let inner_end = find_matching_delimiter(src, j, source_rel)?
+            .ok_or_else(|| format!("{source_rel}: unbalanced include_str invocation"))?;
+        let inner = &src[j + 1..inner_end];
+        args.push(parse_include_str_inner(source_rel, inner)?);
+        i = inner_end + 1;
+    }
+    Ok(args)
+}
+
+/// Byte offset of the next `include_str!` that is not inside a comment or literal.
+fn find_code_include_str(
+    src: &str,
+    from: usize,
+    source_rel: &str,
+) -> Result<Option<usize>, String> {
+    let b = src.as_bytes();
+    let mut i = from;
+    while i < b.len() {
+        if let Some(next) = consume_skipped(src, i, source_rel)? {
+            if next <= i {
+                return Err(format!("{source_rel}: scanner did not advance"));
+            }
+            i = next;
+            continue;
+        }
+        if src[i..].starts_with("include_str!") {
+            let prev_ok = i == 0 || !is_ident_byte(b[i - 1]);
+            if prev_ok {
+                return Ok(Some(i));
+            }
+        }
+        let step = src[i..].chars().next().map(char::len_utf8).unwrap_or(1);
+        i += step;
+    }
+    Ok(None)
+}
+
+fn parse_include_str_inner(source_rel: &str, inner: &str) -> Result<IncludeStrArg, String> {
+    let start = skip_trivia(inner, 0, source_rel)?;
+    if start >= inner.len() {
+        return Err(format!(
+            "{source_rel}: unresolved include_str! form: {}",
+            inner.trim()
+        ));
+    }
+    if let Some((lit, end)) = take_string_literal(inner, start, source_rel)? {
+        let after = skip_trivia(inner, end, source_rel)?;
+        if after != inner.len() {
+            return Err(format!(
+                "{source_rel}: unresolved include_str! form: {}",
+                inner.trim()
+            ));
+        }
+        return Ok(IncludeStrArg::Literal(lit));
+    }
+    if inner[start..].starts_with("concat!") {
+        let after_bang = start + "concat!".len();
+        let j = skip_trivia(inner, after_bang, source_rel)?;
+        if j >= inner.len() || inner.as_bytes()[j] != b'(' {
+            return Err(format!("{source_rel}: concat! missing '('"));
+        }
+        let inner_end = find_matching_delimiter(inner, j, source_rel)?
+            .ok_or_else(|| format!("{source_rel}: unbalanced concat!("))?;
+        let concat_inner = inner[j + 1..inner_end].trim();
+        let arg = parse_cargo_manifest_concat(source_rel, concat_inner)?;
+        let after = skip_trivia(inner, inner_end + 1, source_rel)?;
+        if after != inner.len() {
+            return Err(format!(
+                "{source_rel}: unresolved include_str! form: {}",
+                inner.trim()
+            ));
+        }
+        return Ok(arg);
+    }
+    Err(format!(
+        "{source_rel}: unresolved include_str! form: {}",
+        inner.trim()
+    ))
+}
+
+fn parse_cargo_manifest_concat(source_rel: &str, inner: &str) -> Result<IncludeStrArg, String> {
+    let compact: String = inner.split_whitespace().collect();
+    const PREFIX: &str = "env!(\"CARGO_MANIFEST_DIR\"),\"";
+    if let Some(rest) = compact.strip_prefix(PREFIX)
+        && let Some(rel) = rest.strip_suffix('"')
+    {
+        if rel.contains('"') {
+            return Err(format!(
+                "{source_rel}: unresolved concat! form (only env!(CARGO_MANIFEST_DIR)+string allowed): {inner}"
+            ));
+        }
+        let stripped = rel.strip_prefix('/').unwrap_or(rel);
+        return Ok(IncludeStrArg::CargoManifestConcat(
+            stripped.replace('\\', "/"),
+        ));
+    }
+    Err(format!(
+        "{source_rel}: unresolved concat! form (only env!(CARGO_MANIFEST_DIR)+string allowed): {inner}"
+    ))
+}
+
+fn parse_rust_string_literal(s: &str) -> Option<String> {
+    let s = s.trim();
+    if s.len() < 2 || !s.starts_with('"') || !s.ends_with('"') {
+        return None;
+    }
+    let inner = &s[1..s.len() - 1];
+    let mut out = String::new();
+    let mut chars = inner.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next()? {
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                '\\' => out.push('\\'),
+                '"' => out.push('"'),
+                other => out.push(other),
+            }
+        } else if c == '"' {
+            return None;
+        } else {
+            out.push(c);
+        }
+    }
+    Some(out)
+}
+
+fn is_ident_byte(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'_'
+}
+
+fn is_ident_start(c: char) -> bool {
+    c.is_ascii_alphabetic() || c == '_'
+}
+
+fn is_ident_continue(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+fn is_hex(c: u8) -> bool {
+    c.is_ascii_hexdigit()
+}
+
+/// Skip whitespace and comments. Strings and char literals stay in place.
+fn skip_trivia(src: &str, mut i: usize, source_rel: &str) -> Result<usize, String> {
+    let b = src.as_bytes();
+    loop {
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if src[i..].starts_with("//") {
+            i = end_of_line_comment(src, i);
+            continue;
+        }
+        if src[i..].starts_with("/*") {
+            i = end_of_block_comment(src, i, source_rel)?;
+            continue;
+        }
+        return Ok(i);
+    }
+}
+
+fn end_of_line_comment(src: &str, i: usize) -> usize {
+    src[i..]
+        .find('\n')
+        .map(|rel| i + rel + 1)
+        .unwrap_or(src.len())
+}
+
+fn end_of_block_comment(src: &str, i: usize, source_rel: &str) -> Result<usize, String> {
+    let b = src.as_bytes();
+    let mut k = i + 2;
+    let mut depth = 1i32;
+    while k + 1 < b.len() {
+        if b[k] == b'/' && b[k + 1] == b'*' {
+            depth += 1;
+            k += 2;
+            continue;
+        }
+        if b[k] == b'*' && b[k + 1] == b'/' {
+            depth -= 1;
+            k += 2;
+            if depth == 0 {
+                return Ok(k);
+            }
+            continue;
+        }
+        k += 1;
+    }
+    Err(format!("{source_rel}: unterminated block comment"))
+}
+
+enum RawString {
+    NotRaw,
+    End(usize),
+    Unterminated,
+    TooManyHashes,
+}
+
+fn classify_raw_string(src: &str, r_idx: usize) -> RawString {
+    let b = src.as_bytes();
+    if r_idx >= b.len() || b[r_idx] != b'r' {
+        return RawString::NotRaw;
+    }
+    let mut k = r_idx + 1;
+    let mut hashes = 0usize;
+    while k < b.len() && b[k] == b'#' {
+        hashes += 1;
+        if hashes >= 256 {
+            return RawString::TooManyHashes;
+        }
+        k += 1;
+    }
+    if k >= b.len() || b[k] != b'"' {
+        return RawString::NotRaw;
+    }
+    k += 1;
+    while k < b.len() {
+        if b[k] == b'"' {
+            let mut seen = 0usize;
+            let mut t = k + 1;
+            while seen < hashes && t < b.len() && b[t] == b'#' {
+                seen += 1;
+                t += 1;
+            }
+            if seen == hashes {
+                return RawString::End(t);
+            }
+        }
+        k += 1;
+    }
+    RawString::Unterminated
+}
+
+fn raw_string_body(src: &str, r_idx: usize, end: usize) -> String {
+    let b = src.as_bytes();
+    let mut k = r_idx + 1;
+    let mut hashes = 0usize;
+    while k < b.len() && b[k] == b'#' {
+        hashes += 1;
+        k += 1;
+    }
+    let body_start = k + 1;
+    let body_end = end - hashes - 1;
+    src[body_start..body_end].to_string()
+}
+
+fn end_of_ordinary_string(src: &str, i: usize, source_rel: &str) -> Result<usize, String> {
+    let b = src.as_bytes();
+    let mut k = i + 1;
+    while k < b.len() {
+        if b[k] == b'\\' {
+            if k + 1 >= b.len() {
+                return Err(format!("{source_rel}: unterminated string"));
+            }
+            k += 2;
+            continue;
+        }
+        if b[k] == b'"' {
+            return Ok(k + 1);
+        }
+        k += 1;
+    }
+    Err(format!("{source_rel}: unterminated string"))
+}
+
+fn end_of_escaped_char(src: &str, i: usize, source_rel: &str) -> Result<usize, String> {
+    let b = src.as_bytes();
+    let mut k = i + 2;
+    if k >= b.len() {
+        return Err(format!("{source_rel}: unterminated char literal"));
+    }
+    match b[k] {
+        b'n' | b'r' | b't' | b'0' | b'\\' | b'\'' | b'"' => k += 1,
+        b'x' => {
+            if k + 3 > b.len() || !is_hex(b[k + 1]) || !is_hex(b[k + 2]) {
+                return Err(format!("{source_rel}: unterminated char literal"));
+            }
+            k += 3;
+        }
+        b'u' => {
+            k += 1;
+            if b.get(k) != Some(&b'{') {
+                return Err(format!("{source_rel}: unterminated char literal"));
+            }
+            k += 1;
+            let start = k;
+            while k < b.len() && b[k] != b'}' {
+                if !is_hex(b[k]) {
+                    return Err(format!("{source_rel}: unterminated char literal"));
+                }
+                k += 1;
+            }
+            if k >= b.len() || k == start {
+                return Err(format!("{source_rel}: unterminated char literal"));
+            }
+            k += 1;
+        }
+        _ => return Err(format!("{source_rel}: unterminated char literal")),
+    }
+    if b.get(k) != Some(&b'\'') {
+        return Err(format!("{source_rel}: unterminated char literal"));
+    }
+    Ok(k + 1)
+}
+
+fn end_of_char_or_lifetime(src: &str, i: usize, source_rel: &str) -> Result<usize, String> {
+    let b = src.as_bytes();
+    if i + 1 >= b.len() {
+        return Err(format!("{source_rel}: unterminated char literal"));
+    }
+    if b[i + 1] == b'\\' {
+        return end_of_escaped_char(src, i, source_rel);
+    }
+    let Some(first) = src[i + 1..].chars().next() else {
+        return Err(format!("{source_rel}: unterminated char literal"));
+    };
+    let after = i + 1 + first.len_utf8();
+    if b.get(after) == Some(&b'\'') {
+        return Ok(after + 1);
+    }
+    if is_ident_start(first) {
+        let mut k = after;
+        while k < src.len() {
+            let Some(c) = src[k..].chars().next() else {
+                break;
+            };
+            if !is_ident_continue(c) {
+                break;
+            }
+            k += c.len_utf8();
+        }
+        return Ok(k);
+    }
+    Err(format!("{source_rel}: unterminated char literal"))
+}
+
+/// When `i` starts a comment or literal, return the index after it.
+fn consume_skipped(src: &str, i: usize, source_rel: &str) -> Result<Option<usize>, String> {
+    let b = src.as_bytes();
+    if i >= b.len() || !src.is_char_boundary(i) {
+        return Ok(None);
+    }
+    if src[i..].starts_with("//") {
+        return Ok(Some(end_of_line_comment(src, i)));
+    }
+    if src[i..].starts_with("/*") {
+        return Ok(Some(end_of_block_comment(src, i, source_rel)?));
+    }
+    if b[i] == b'"' {
+        return Ok(Some(end_of_ordinary_string(src, i, source_rel)?));
+    }
+    if b[i] == b'\'' {
+        return Ok(Some(end_of_char_or_lifetime(src, i, source_rel)?));
+    }
+    if b[i] == b'b' {
+        match b.get(i + 1).copied() {
+            Some(b'\'') => return Ok(Some(end_of_char_or_lifetime(src, i + 1, source_rel)?)),
+            Some(b'"') => return Ok(Some(end_of_ordinary_string(src, i + 1, source_rel)?)),
+            Some(b'r') => match classify_raw_string(src, i + 1) {
+                RawString::NotRaw => return Ok(None),
+                RawString::End(end) => return Ok(Some(end)),
+                RawString::Unterminated => {
+                    return Err(format!("{source_rel}: unterminated raw byte string"));
+                }
+                RawString::TooManyHashes => {
+                    return Err(format!("{source_rel}: raw string has 256 or more hashes"));
+                }
+            },
+            _ => return Ok(None),
+        }
+    }
+    if b[i] == b'r' {
+        match classify_raw_string(src, i) {
+            RawString::NotRaw => return Ok(None),
+            RawString::End(end) => return Ok(Some(end)),
+            RawString::Unterminated => {
+                return Err(format!("{source_rel}: unterminated raw string"));
+            }
+            RawString::TooManyHashes => {
+                return Err(format!("{source_rel}: raw string has 256 or more hashes"));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn take_string_literal(
+    src: &str,
+    i: usize,
+    source_rel: &str,
+) -> Result<Option<(String, usize)>, String> {
+    let b = src.as_bytes();
+    if i >= b.len() {
+        return Ok(None);
+    }
+    if b[i] == b'r' {
+        match classify_raw_string(src, i) {
+            RawString::NotRaw => return Ok(None),
+            RawString::End(end) => return Ok(Some((raw_string_body(src, i, end), end))),
+            RawString::Unterminated => {
+                return Err(format!("{source_rel}: unterminated raw string"));
+            }
+            RawString::TooManyHashes => {
+                return Err(format!("{source_rel}: raw string has 256 or more hashes"));
+            }
+        }
+    }
+    if b[i] == b'"' {
+        let end = end_of_ordinary_string(src, i, source_rel)?;
+        let lit = parse_rust_string_literal(&src[i..end]).ok_or_else(|| {
+            format!(
+                "{source_rel}: unresolved include_str! form: {}",
+                src[i..end].trim()
+            )
+        })?;
+        return Ok(Some((lit, end)));
+    }
+    Ok(None)
+}
+
+/// Pair `(` with `)` and `{` with `}`. `[` is not a delimiter here.
+fn find_matching_delimiter(
+    src: &str,
+    open_idx: usize,
+    source_rel: &str,
+) -> Result<Option<usize>, String> {
+    let b = src.as_bytes();
+    if open_idx >= b.len() {
+        return Ok(None);
+    }
+    let (open, close) = match b[open_idx] {
+        b'(' => (b'(', b')'),
+        b'{' => (b'{', b'}'),
+        _ => return Ok(None),
+    };
+    let mut depth = 0i32;
+    let mut i = open_idx;
+    while i < b.len() {
+        if i != open_idx
+            && let Some(next) = consume_skipped(src, i, source_rel)?
+        {
+            if next <= i {
+                return Err(format!("{source_rel}: scanner did not advance"));
+            }
+            i = next;
+            continue;
+        }
+        if b[i] == open {
+            depth += 1;
+        } else if b[i] == close {
+            depth -= 1;
+            if depth == 0 {
+                return Ok(Some(i));
+            }
+        }
+        i += 1;
+    }
+    Ok(None)
+}
+
+fn code_has_fn_stem(src: &str, stem: &str, source_rel: &str) -> Result<bool, String> {
+    let b = src.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if let Some(next) = consume_skipped(src, i, source_rel)? {
+            if next <= i {
+                return Err(format!("{source_rel}: scanner did not advance"));
+            }
+            i = next;
+            continue;
+        }
+        if src[i..].starts_with("fn") {
+            let prev_ok = i == 0 || !is_ident_byte(b[i - 1]);
+            let after = i + 2;
+            if prev_ok && after < b.len() && b[after].is_ascii_whitespace() {
+                let mut k = after;
+                while k < b.len() && b[k].is_ascii_whitespace() {
+                    k += 1;
+                }
+                if src[k..].starts_with(stem) {
+                    let end = k + stem.len();
+                    match b.get(end).copied() {
+                        Some(b'(') | Some(b'<') => return Ok(true),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        let step = src[i..].chars().next().map(char::len_utf8).unwrap_or(1);
+        i += step;
+    }
+    Ok(false)
+}
+
+fn cargo_manifest_prefix(source_rel: &str) -> String {
+    let parts: Vec<&str> = source_rel.split('/').collect();
+    if parts.len() >= 2 && parts[0] == "crates" {
+        format!("{}/{}", parts[0], parts[1])
+    } else {
+        String::new()
+    }
+}
+
+fn resolve_from_source(source_rel: &str, include_rel: &str) -> String {
+    let parent = match source_rel.rsplit_once('/') {
+        Some((dir, _)) => dir.to_string(),
+        None => String::new(),
+    };
+    join_repo(&parent, include_rel)
+}
+
+fn join_repo(base: &str, rel: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if !base.is_empty() {
+        parts.extend(
+            base.split('/')
+                .filter(|p| !p.is_empty() && *p != ".")
+                .map(str::to_string),
+        );
+    }
+    let rel_norm = rel.replace('\\', "/");
+    for p in rel_norm.split('/') {
+        if p.is_empty() || p == "." {
+            continue;
+        }
+        if p == ".." {
+            parts.pop();
+        } else {
+            parts.push(p.to_string());
+        }
+    }
+    parts.join("/")
 }
 
 fn step(cmd: &str) -> VerificationStep {

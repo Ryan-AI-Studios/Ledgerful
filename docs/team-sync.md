@@ -232,7 +232,7 @@ v1 target scheme: `dir://<absolute-path>` — a shared folder with per-device ou
 
 ## Algorithms (honest names)
 
-- **Bundle KDF:** Argon2id (pin: argon2 **0.5.x** — no 0.6 RC)
+- **Bundle KDF:** Argon2id (pin: argon2 **0.6.0** stable)
 - **AEAD:** XChaCha20-Poly1305 (chacha20poly1305 **0.11**)
 - **Device identity:** Ed25519 (ed25519-dalek **3.0.0**)
 - **Pair invite MAC (0111):**

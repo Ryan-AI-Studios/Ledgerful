@@ -26,6 +26,8 @@ Optional: `ledgerful session --json` — one-shot briefing (git/ledger/doctor/ch
 
 | Command | Role |
 |---|---|
+| `ledgerful bench --fixture PATH [--workload index-cold] [--runs N] [--output PATH] [--json]` | Live CLI child harness (not Daily 5, not `timings`). Parent stays on the engine; `--fixture` is the child's `-C`. Sha-gates the 12-hex embed. JSON `kind: workloadBench`. Default `--runs` is `DEFAULT_BENCH_RUNS` (5). |
+| `ledgerful bench --compare PATH_A PATH_B [--json]` | Compare two `workloadBench` files. `delta = b - a`. JSON `kind: workloadBenchCompare`. Mismatched workload / fixtureId / os / targetTriple exits 1 with no JSON. |
 | `ledgerful ledger search "<topic>" [--json]` | Committed-plan / TX FTS. **Quotes required** (clap `query` is one `String` token). Contrast: code `ledgerful search foo bar` stays unquoted multi-word. `--json` is a **bare array** (`Vec<LedgerEntry>`) — 0213 freeze; not a `schemaVersion` object. Key `related_tickets` frozen; **new** row values are ticket ids (or null), not staged file paths (files live on snapshot/`changed_files`). Additive omit-empty item keys `reason_kind` (`"trailer"` only; prose omits) and `risk_source` (`category` \| `explicit`). Empty `[]` is a valid FTS miss. Example: `ledgerful ledger search "0126" --json`. |
 | `ledgerful ledger audit <entity> [--json]` | Entity/file history. `--json` is `{exact, related}` camelCase items. File paths union entity-string matches with exact `changed_files.path` (`matchBasis`: `entity` \| `changed_files`; related is `directory`). Additive omit-empty `reasonKind` / `riskSource` / `matchBasis`. Human `Reason:` prefixes `[trailer]` when the stored reason is trailer-only. No new clap flags. |
 | `ledgerful ledger graph <tx> [--json] [--compact] [--layer …]` | Neighborhood `{exact, derived, heuristic}`. `--json` is that object (no `schemaVersion`); omit-empty `completeness` only when the 150/depth-2 cap hid a further hop or node. When completeness is present, stderr is `truncated: neighborhood capped at maxDepth 2 / maxNodes 150` (human and `--json`). `--compact` is human-only (refused with `--json`). `--layer exact\|derived\|heuristic` is repeatable. Human assemble-empty buckets name the layer reason plus `ledgerful ledger audit <entity>` (not the tx id; heuristic copy branches on whether exact assembled empty). `--layer` hide stays `None.` (filter, not assemble-empty). |
@@ -36,7 +38,7 @@ Optional: `ledgerful session --json` — one-shot briefing (git/ledger/doctor/ch
 | `ledgerful export evidence [--profile soc2] [--out PATH] [--force] [--control ID]` | Writes a SOC2 zip (no `--json`). Default dest `ledgerful-soc2-evidence.zip` (demo: `ledgerful-DEMO-evidence.zip`). `gateModeDisclosure.chainContinuityStatus` `verified:` requires a gated walk plus a real stored signed head. Always pass `--out` to a tempfile on EXEC. |
 | `ledgerful viz [--output PATH] [--limit N] [--depth N] [--entity ID] [--view graph\|services]` | Writes a standalone HTML file (no `--json`). Default dest `reports/graph.html` or `reports/services.html`. Always pass `--output` to a tempfile on EXEC. Both views inline vis-network 10.1.2 (no CDN). Graph **stdout**: `source: Cozo nodes/edges`, `limit:`, `truncated:`, `communities:`, `asset:`, then `Drawn: N nodes, M edges`. HTML `#evidence` / `graph_banner_tokens` stay tokens-only (`source`, `limit`, `truncated`, `communities`, `asset`) — no `Drawn:`. Services gated: `source: declared overlay; inference gated` (optional `persisted N not shown`); enabled: `source: persisted service_roots`. Services stdout has no `Drawn:`. |
 | `ledgerful graph export --format graphml\|cypher [--output PATH] [--limit N] [--entity ID] [--depth N]` | Cozo knowledge-graph interchange (GraphML or Cypher). Not `ledger graph`. No `--json`. Stdout is the document, or `wrote: PATH` when `--output` is set. Stderr is the summary; `truncated: graph export capped at limit N` only when this selection was cut. `--limit` is 1..=1000 (default 1000). |
-| `ledgerful graph path --from ID --to ID [--relation REL]` | Directed fewest-hop path on the Cozo `edge` store. Not `ledger graph`. No `--json`. Stdout is TSV `hop, source, relation, target, confidence, provenance_id`, or empty when `path: none` or `hops: 0`. Stderr names `source: Cozo nodes/edges`, the endpoints, `direction: source-to-target`, and `path: yes\|none`. |
+| `ledgerful graph path --from ID --to ID [--relation REL]` | Directed fewest-hop path on the Cozo `edge` store, only ids present as `node` rows. Not `ledger graph`. No `--json`. Stdout is TSV `hop, source, relation, target, confidence, provenance_id`, or empty when `path: none` or `hops: 0`. Stderr names `source: Cozo nodes/edges`, the endpoints, `direction: source-to-target`, and `path: yes\|none`. |
 | `ledgerful intent demo` | Interactive TUI demo (mock data). Non-interactive / non-TTY exits non-zero; stderr names the refuse plus `Next: run \`ledgerful intent demo\` in an interactive terminal` (TUI demo, not a batch workflow). No `--json`. |
 | `ledgerful ask` | Semantic Q&A. Stderr: `[Evidence]` counts, `gather {ms}ms`, skip banner, length-stop footer (`Answer truncated: model stop reason length.`). After a model answer, stdout ends with `[AskMeta] semantic=N bm25=N kg=N snippets=N gatherMs=N provider=P truncated=yes\|no` (omit-empty `structural=`). Length stop still exits 1. No `--json`. |
 
@@ -84,7 +86,7 @@ Requires `-e` / `--entity` or a positional entity. Missing entity is a usage err
 
 ## `ledgerful symbols`
 
-Scoped index inventory (not search). `--path` is a **prefix**. JSON `schemaVersion` 1. `qualifiedName` omits when empty, absent, or equal to `name` (not a vault key; identity is `(path, name, kind)` + `line`). Human prints stored `Type.method` when it differs. Class is populated (C++/TS); Interface is populated (TS/Go; this index may be 0). Rust inherent impl methods are Function + `Type.method`; trait methods are Method. Default limit 200 / max 5000. See `docs/agent-output-contract.md`.
+Scoped index inventory (not search). `--path` is a **prefix**. JSON `schemaVersion` 1. `qualifiedName` omits when empty, absent, or equal to `name` (not a vault key; identity is `(path, name, kind)` + `line`). Human prints stored `Type.method` when it differs. Class is populated (C++/TS/Java); Interface is populated (TS/Go/Java; this index may be 0); Enum is populated (Java). Rust inherent impl methods are Function + `Type.method`; trait methods are Method. Default limit 200 / max 5000. See `docs/agent-output-contract.md`.
 
 ## `ledger start --force` vs `ledger commit --force`
 
@@ -106,12 +108,19 @@ Inventory of registered commit validators. Empty human: `0 registered`, conseque
 ## `ledgerful policy check`
 
 Evaluates declared `.ledgerful/policy.toml` (or synthesized defaults). Machine
-flag is `--format json` (not `--json`). `passed` is no-violations. Synthesized
-+ idle (no bound verify) is human `IDLE (synthesized; not a merge gate)` with
-JSON `idle: true`; it is not a merge-gate pass. Observe still exit 0.
-`--format json` always includes `evaluation` (checked / idle / off / skipped
-counts + `rules[]`). Live `rulesDeclared` is 5; serde default zeros + empty
-`rules[]` is a legacy/unknown sentinel. Human path does not print those
+flag is `--format json` (not `--json`). `passed` is no-violations.
+Always-present `status` is `pass`, `fail`, or `idle` (not
+`evaluation.rules[].status`). `fail` if any violation; else `idle` if any rule
+is `idle` or `fail_on` / `max_risk_without_adr` is `skipped`; else `pass`,
+including an all-inapplicable policy (every boolean false, both thresholds
+off), which required nothing. A missing `status` key reads as `idle`. Exit 0
+is not `status: pass`. Synthesized + idle (no bound verify) is human
+`IDLE (synthesized; not a merge gate)` with JSON `idle: true`; it is not a
+merge-gate pass. A non-synthesized idle report is not `PASSED` and is
+uncolored: `IDLE (required rule did not run; not a merge gate)`. Observe still
+exit 0. `--format json` always includes `evaluation` (checked / idle / off /
+skipped counts + `rules[]`). Live `rulesDeclared` is 5; serde default zeros +
+empty `rules[]` is a legacy/unknown sentinel. Human path does not print those
 counts. `ledger validator doctor` is human-only: path-probe counts
 (`registered` / `enabled` / `inspected` / `resolved`); empty catalog is
 not a health pass.

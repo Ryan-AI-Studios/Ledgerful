@@ -77,6 +77,7 @@ impl Commands {
                 requirements,
                 id,
                 timeout,
+                include_mentions,
                 ..
             }) => {
                 if *json {
@@ -90,6 +91,9 @@ impl Commands {
                 }
                 if timeout.is_some() {
                     f.push("timeout");
+                }
+                if *include_mentions {
+                    f.push("include_mentions");
                 }
             }
             Commands::Scan(ScanArgs {
@@ -402,6 +406,33 @@ impl Commands {
                 }
                 if *opt_out {
                     f.push("opt_out");
+                }
+            }
+            Commands::Bench(BenchCliArgs {
+                fixture,
+                workload,
+                runs,
+                output,
+                json,
+                compare,
+            }) => {
+                if fixture.is_some() {
+                    f.push("fixture");
+                }
+                if *workload != crate::cli::args::BenchWorkload::IndexCold {
+                    f.push("workload");
+                }
+                if *runs != crate::cli::args::DEFAULT_BENCH_RUNS {
+                    f.push("runs");
+                }
+                if output.is_some() {
+                    f.push("output");
+                }
+                if *json {
+                    f.push("json");
+                }
+                if !compare.is_empty() {
+                    f.push("compare");
                 }
             }
             Commands::Search(SearchCliArgs {
@@ -1240,7 +1271,7 @@ impl Commands {
                     if args.depth.is_some() {
                         f.push("depth");
                     }
-                    if args.limit != 1000 {
+                    if args.limit != crate::commands::graph_export::DEFAULT_LIMIT {
                         f.push("limit");
                     }
                 }

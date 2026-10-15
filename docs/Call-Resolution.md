@@ -318,6 +318,24 @@ unique local function nor a same-file Method named `loads` can absorb
 `json.loads`. The same rule applies to Rust `use std::fs` + `fs::write` even
 when a local `mod fs` exists elsewhere in the crate.
 
+Java same-file bare and `this` calls use the file-level `method_declaration`
+count. One definition keeps the bare name and `RESOLVED`. Zero definitions use
+`{name}.external` and `UNRESOLVED`. More than one uses `{name}.overload` and
+`UNRESOLVED`. `{name}.external` records that this file has no
+`method_declaration` of that simple name. It does not prove the target lives
+outside the project: a superclass or same-package method can still exist. A
+scoped `new` binds a single one-constructor type only when the type segments
+equal that type's qualified name, or are a segment suffix of the type path
+after the file package (`new Other.Inner()` can bind
+`….Other.Inner.<init>` and does not bind `….NotOther.Inner`). A suffix that includes a package
+segment does not bind (`new example.Box()` does not bind `com.example.Box`).
+An unresolved `new.{type}` records that this file had no single
+one-constructor match. Another file can still declare that type. Java caller names
+are the symbol qualified name (`com.example.User.create`,
+`com.example.A.<init>`). A dotted caller matches `qualified_name` on a callable
+kind only and does not fall through to the simple name. Receiver calls, extra
+constructors, and `ctor.this` / `ctor.super` stay `UNRESOLVED`.
+
 ## Downstream impact
 
 `AMBIGUOUS` and `UNRESOLVED` edges write `callee_symbol_id = NULL`. Centrality,

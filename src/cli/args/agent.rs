@@ -172,6 +172,9 @@ pub struct ReviewArgs {
     /// Overall review emit budget in seconds (not the history-walk budget). `0` disables the clock (Ctrl-C still works).
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
+    /// Append stem-only ledger rows after exact path hits. They cannot displace a path hit.
+    #[arg(long)]
+    pub include_mentions: bool,
 }
 
 /// Clap bag for `search` (query tokens + flags). Not
@@ -283,11 +286,11 @@ pub struct VerifyArgs {
     /// Transaction ID to associate with this verification run
     #[arg(long)]
     pub tx_id: Option<String>,
-    /// Caps each auto-policy step. Omitted leaves the planned budget, including
-    /// a configured suite budget above 400 seconds. An explicit value is
-    /// min(planned, this flag). 0 keeps the 400-second ceiling on auto steps.
-    /// A manual command uses the flag as its timeout; omitted manual stays
-    /// 600 seconds, and manual 0 is an immediate timeout.
+    /// Caps each auto-policy step. Omitted leaves the planned budget. Test-class
+    /// planned seconds are `suite_timeout_secs` or `DEFAULT_TEST_SUITE_TIMEOUT_SECS`.
+    /// An explicit value is min(planned, this flag). 0 keeps the 400-second
+    /// ceiling on auto steps. A manual command uses the flag as its timeout;
+    /// omitted manual stays 600 seconds, and manual 0 is an immediate timeout.
     #[arg(long, short)]
     pub timeout: Option<u64>,
     /// Disable Bayesian failure prediction

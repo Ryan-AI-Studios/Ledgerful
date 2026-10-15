@@ -62,7 +62,7 @@ fn test_fast_dry_run_dirty_changelog_docs_no_snapshot_is_cheap() {
     init_committed_rust_repo(root);
     fs::write(root.join("CHANGELOG.md"), "## Unreleased\n").unwrap();
     fs::create_dir_all(root.join("docs")).unwrap();
-    fs::write(root.join("docs").join("installation.md"), "install\n").unwrap();
+    fs::write(root.join("docs").join("architecture.md"), "architecture\n").unwrap();
 
     let out = spawn_verify(root, &["verify", "--scope", "fast", "--dry-run"]);
     let stdout = stdout_text(&out);
@@ -78,7 +78,7 @@ fn test_fast_dry_run_dirty_changelog_docs_no_snapshot_is_cheap() {
     );
     assert!(
         !stdout.contains("nextest") && !stdout.to_ascii_lowercase().contains("cargo test"),
-        "must not schedule nextest/cargo test: {stdout:?}"
+        "unreferenced docs/CHANGELOG must not schedule nextest/cargo test: {stdout:?}"
     );
     assert!(
         stdout.contains("cargo fmt") && stdout.contains("clippy"),
@@ -87,6 +87,48 @@ fn test_fast_dry_run_dirty_changelog_docs_no_snapshot_is_cheap() {
     assert!(
         !stdout.contains("no impact packet"),
         "P2: None-packet dirty docs must not refuse: {stdout:?} {stderr:?}"
+    );
+}
+
+#[test]
+fn test_fast_dry_run_dirty_include_str_doc_stays_cheap_without_nextest() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    init_committed_rust_repo(root);
+    fs::create_dir_all(root.join("docs")).unwrap();
+    fs::write(root.join("docs").join("installation.md"), "install\n").unwrap();
+
+    let out = spawn_verify(root, &["verify", "--scope", "fast", "--json", "--dry-run"]);
+    let stdout = stdout_text(&out);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "include_str docs cheap dry-run must exit 0; stdout={stdout:?} stderr={stderr:?}"
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("include_str dry-run JSON");
+    assert_eq!(v["schemaVersion"], 1);
+    assert_eq!(v["scopeExecuted"], "fast");
+    assert!(v.get("fallbackReason").is_none(), "{v}");
+    assert_eq!(v["refused"], false);
+    let steps = v["steps"].as_array().expect("steps");
+    assert!(
+        steps
+            .iter()
+            .any(|step| step["command"].as_str().unwrap_or("").contains("cargo fmt")),
+        "fmt must be present: {v}"
+    );
+    assert!(
+        steps
+            .iter()
+            .any(|step| step["command"].as_str().unwrap_or("").contains("clippy")),
+        "clippy must be present: {v}"
+    );
+    assert!(
+        steps
+            .iter()
+            .all(|step| !step["command"].as_str().unwrap_or("").contains("nextest")),
+        "third-party installation.md must not schedule nextest: {v}"
     );
 }
 
@@ -406,4 +448,43 @@ fn suite_budget_survives_omitted_timeout_and_explicit_cap_still_mins() {
         .find(|step| step["budgetSource"] == "suite")
         .expect("suite step");
     assert_eq!(capped_test["timeoutSecs"], 25, "{capped_v}");
+}
+
+#[test]
+fn unconfigured_full_dry_run_stamps_test_class_with_library_constant() {
+    use ledgerful::verify::runner::{StepClass, classify_step_command};
+    use ledgerful::verify::timeouts::DEFAULT_TEST_SUITE_TIMEOUT_SECS;
+
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    init_committed_rust_repo(root);
+
+    let open = spawn_verify(root, &["verify", "--scope", "full", "--json", "--dry-run"]);
+    let open_stdout = stdout_text(&open);
+    let open_stderr = String::from_utf8_lossy(&open.stderr);
+    assert!(
+        open.status.success(),
+        "unconfigured full dry-run must exit 0; stdout={open_stdout:?} stderr={open_stderr:?}"
+    );
+    let open_v: serde_json::Value =
+        serde_json::from_str(open_stdout.trim()).expect("unconfigured dry-run JSON");
+    assert_eq!(open_v["schemaVersion"], 1);
+    let steps = open_v["steps"].as_array().expect("steps");
+    let mut test_steps = 0usize;
+    for step in steps {
+        let command = step["command"].as_str().unwrap_or("");
+        if command.contains("cargo fmt") {
+            assert_eq!(step["timeoutSecs"], 400, "{open_v}");
+            assert_eq!(step["budgetSource"], "format", "{open_v}");
+        }
+        if classify_step_command(command) == StepClass::Test {
+            test_steps += 1;
+            assert_eq!(
+                step["timeoutSecs"], DEFAULT_TEST_SUITE_TIMEOUT_SECS,
+                "{open_v}"
+            );
+            assert_eq!(step["budgetSource"], "suite", "{open_v}");
+        }
+    }
+    assert!(test_steps >= 1, "expected a test-class step: {open_v}");
 }

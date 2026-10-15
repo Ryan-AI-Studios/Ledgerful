@@ -484,6 +484,7 @@ pub fn compute_impact_from_snapshot_in_memory_with_history(
 
     packet.finalize();
     crate::impact::redact::redact_secrets(&mut packet);
+    crate::impact::scope::apply_prospective_scope_note(&mut packet);
 
     Ok(packet)
 }

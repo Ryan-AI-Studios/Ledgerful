@@ -123,14 +123,19 @@ Compiler-grade search and conceptual discovery.
     probe, not PATH alone). Empty probe → `scip.status = unavailable` (not failed). See
     `docs/Call-Resolution.md`.
 *   **Native language matrix**: tree-sitter structural indexing for **Rust**, **TypeScript/JavaScript**,
-    **Python**, **Go**, and **C/C++** (single `Language::Cpp` via `tree-sitter-cpp` for `.c`/`.h`/
-    `.cpp`/`.cc`/`.cxx`/`.hpp`/`.hh`/`.hxx`/`.h++`). C/C++ floor: symbols (declarator-aware names),
-    `#include` with stripped delimiters, same-file call edges (callee unwrap for templates /
-    members; unique same-file name → resolved, overloads stay unresolved), complexity/hotspots.
-    **Not** stack-graph / clangd fidelity; scip-clang is manual `--scip` only (not auto-generate).
-    **Auto-on (no separate CLI flag):** registering those D2 extensions on `Language::from_extension`
-    also admits C/C++ into daemon complexity diagnostics (`daemon/handlers.rs`) and the federated
-    scanner language gate (`federated/scanner.rs`) — the same extension map, not an opt-in toggle.
+    **Python**, **Go**, **C/C++** (single `Language::Cpp` via `tree-sitter-cpp` for `.c`/`.h`/
+    `.cpp`/`.cc`/`.cxx`/`.hpp`/`.hh`/`.hxx`/`.h++`), and **Java** (`.java` only via
+    `tree-sitter-java`). C/C++ floor: symbols (declarator-aware names), `#include` with stripped
+    delimiters, same-file call edges (callee unwrap for templates / members; unique same-file name
+    → resolved, overloads stay unresolved), complexity/hotspots. **Not** stack-graph / clangd
+    fidelity; scip-clang is manual `--scip` only (not auto-generate). Java floor: types / methods /
+    constructors named `<init>` / fields / enum constants, imports (including `static` and `.*`),
+    same-file calls, and complexity. Java does **not** extract routes, models, or observability
+    patterns, does not SCIP (`scip-java` is not wired), and does not resolve cross-file or
+    cross-language calls. **Auto-on (no separate CLI flag):** registering those extensions on
+    `Language::from_extension` also admits C/C++ and Java into daemon complexity diagnostics
+    (`daemon/handlers.rs`) and the federated scanner language gate (`federated/scanner.rs`) — the
+    same extension map, not an opt-in toggle.
 *   **Semantic Discovery**: AST-based chunking and local vector embeddings for conceptual/natural-language code search.
 
 ## 4. Predictable Verification
@@ -145,7 +150,7 @@ Move beyond blind test runs with intelligent, data-driven verification.
 *   **Failure Explanation Engine**: Generates concise, technical rationales for predicted failures using a local LLM backend.
 *   **Dynamic Verification Plans**: Deterministic plans generated from a blend of explicit configuration (`mode = "explicit"`), stack-aware automatic policy (`mode = "auto"`), structural impact, and historical outcomes.
 *   **Stack-Aware Auto-Policy**: When in `auto` mode, Ledgerful scans the workspace for supported stacks (Rust, Node, Deno) and seamlessly builds a robust verification plan. It infers test runners (npm, pnpm, yarn, bun, deno, cargo) and scripts without manual configuration.
-*   **CLI step timeout**: `verify --timeout` is optional. Omitting it leaves each step's planned budget, including `[verify] suite_timeout_secs` on auto-plan `cargo test` / `cargo nextest` steps (built-in 400 when that key is absent). An explicit value is `min(planned, flag)`. Auto `--timeout 0` stays the 400-second ceiling. Fast empty-changes stays fmt 60 / clippy 400; the normal auto plan still stamps fmt at 400. A step that hits the cap is a JSON fail row (`exitCode` 124, `Step timed out after`) and later steps are not started. Manual command and `[[verify.steps]]` keep their own timeouts (omitted manual is 600 seconds; manual `0` is an immediate timeout row, not a disabled clock). Signature verify (`--signatures` / `--chain` / `--against-export`) ignores the flag. Full scope is not a 40-second guarantee.
+*   **CLI step timeout**: `verify --timeout` is optional. Omitting it leaves each step's planned budget, including `[verify] suite_timeout_secs` on auto-plan `cargo test` / `cargo nextest` steps (built-in `DEFAULT_TEST_SUITE_TIMEOUT_SECS`, 400, when that key is absent). An explicit `suite_timeout_secs` replaces that built-in in either direction. An explicit flag is `min(planned, flag)`. Auto `--timeout 0` stays the 400-second ceiling. Fast empty-changes stays fmt 60 / clippy 400; the normal auto plan still stamps fmt at 400. A step that hits the cap is a JSON fail row (`exitCode` 124, `Step timed out after`) and later steps are not started. Manual command and `[[verify.steps]]` keep their own timeouts (omitted manual is 600 seconds; manual `0` is an immediate timeout row, not a disabled clock). Signature verify (`--signatures` / `--chain` / `--against-export`) ignores the flag. Full scope is not a 40-second guarantee.
 
 ## 5. Engineering Coverage & Self-Awareness
 
