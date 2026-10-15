@@ -1009,6 +1009,13 @@ mod tests {
         );
         let broken_dir: rusqlite::Result<String> = Err(rusqlite::Error::InvalidQuery);
         assert!(directory_from_file_lookup(broken_dir).is_err());
+        // A root path has no parent, so parent_directory() yields ".".
+        // Use a portable root for the unconditional case: r"C:\" is a root only on Windows.
+        // On Linux it is an ordinary single-component relative path whose parent is "",
+        // not a root, which is what made this assertion fail on the ubuntu CI lane while
+        // the Windows box the run uses passed it locally.
+        assert_eq!(parent_directory("/"), PathBuf::from("."));
+        #[cfg(windows)]
         assert_eq!(parent_directory(r"C:\"), PathBuf::from("."));
     }
 }
