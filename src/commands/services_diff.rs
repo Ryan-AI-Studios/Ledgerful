@@ -98,15 +98,28 @@ fn include_modules(args: &ServicesDiffArgs) -> bool {
     matches!(args.include, Some(ServiceIncludeScope::Modules))
 }
 
-fn keep_emitted_service_row(source: &str, route_count: i64, include_modules: bool) -> bool {
-    include_modules || source == "declared" || route_count > 0
+fn keep_emitted_service_row(
+    name: &str,
+    source: &str,
+    route_count: i64,
+    include_modules: bool,
+) -> bool {
+    if include_modules {
+        !crate::coverage::services::is_route_source_kind_token(name) || source == "declared"
+    } else {
+        crate::coverage::services::is_canonical_service_name(
+            name,
+            source == "declared",
+            route_count,
+        )
+    }
 }
 
 fn filter_service_rows(rows: Vec<ServiceRow>, include_modules: bool) -> (Vec<ServiceRow>, usize) {
     let mut kept = Vec::new();
     let mut omitted = 0usize;
     for row in rows {
-        if keep_emitted_service_row(row.source, row.route_count, include_modules) {
+        if keep_emitted_service_row(&row.name, row.source, row.route_count, include_modules) {
             kept.push(row);
         } else {
             omitted += 1;
@@ -176,12 +189,8 @@ fn source_for(name: &str, config: &crate::config::model::Config, preview: bool) 
 }
 
 fn declared_root(name: &str, config: &crate::config::model::Config) -> Option<String> {
-    config
-        .services
-        .definitions
-        .iter()
-        .find(|d| d.name == name)
-        .map(|d| d.root.replace('\\', "/"))
+    crate::coverage::services::selected_service_definition(name, &config.services.definitions)
+        .map(|definition| definition.root.replace('\\', "/"))
 }
 
 fn slash_dir(dir: &std::path::Path) -> String {
@@ -852,12 +861,16 @@ mod services_diff_unit_tests {
 
     #[test]
     fn services_emit_drops_directory_only_inferred() {
-        assert!(keep_emitted_service_row("declared", 0, false));
-        assert!(keep_emitted_service_row("inferred", 2, false));
-        assert!(keep_emitted_service_row("preview", 1, false));
-        assert!(!keep_emitted_service_row("inferred", 0, false));
-        assert!(!keep_emitted_service_row("preview", 0, false));
-        assert!(keep_emitted_service_row("inferred", 0, true));
+        assert!(keep_emitted_service_row("billing", "declared", 0, false));
+        assert!(keep_emitted_service_row("billing", "inferred", 2, false));
+        assert!(keep_emitted_service_row("billing", "preview", 1, false));
+        assert!(!keep_emitted_service_row("fixtures", "inferred", 0, false));
+        assert!(!keep_emitted_service_row("fixtures", "preview", 0, false));
+        assert!(keep_emitted_service_row("fixtures", "inferred", 0, true));
+        assert!(!keep_emitted_service_row("BUILDER", "inferred", 5, false));
+        assert!(!keep_emitted_service_row("BUILDER", "inferred", 0, true));
+        assert!(keep_emitted_service_row("BUILDER", "declared", 0, false));
+        assert!(keep_emitted_service_row("BUILDER", "declared", 0, true));
         let rows = vec![
             ServiceRow {
                 name: "billing".to_string(),
@@ -915,5 +928,30 @@ mod services_diff_unit_tests {
             .push(sample_def("TEST", "src/testsvc"));
         assert!(keep_emitted_service_name("TEST", &config));
         assert!(!keep_emitted_service_name("BUILDER", &config));
+    }
+
+    #[test]
+    fn declared_root_picks_smallest_root_not_first_config_match() {
+        let mut config = Config::default();
+        config
+            .services
+            .definitions
+            .push(sample_def("web", "services/beta"));
+        config
+            .services
+            .definitions
+            .push(sample_def("web", "services/alpha"));
+        assert_eq!(
+            declared_root("web", &config).as_deref(),
+            Some("services/alpha")
+        );
+        config
+            .services
+            .definitions
+            .push(sample_def("win", "services\\gamma"));
+        assert_eq!(
+            declared_root("win", &config).as_deref(),
+            Some("services/gamma")
+        );
     }
 }
