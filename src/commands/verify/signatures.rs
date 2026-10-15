@@ -8,7 +8,7 @@ use super::diagnostic::{
     ChainBreakKind, VerifyChainBreakJson, VerifyChainDimensionJson, VerifyChainHeadJson,
     VerifyCheckpointJson, VerifySignatureTrustJson, VerifySignaturesDimensionJson,
     VerifySignaturesJson, cap_sorted_breaks, cap_sorted_invalid_samples, diagnostic_schema_version,
-    verify_signatures_kind,
+    signature_assurance, verify_signatures_kind,
 };
 
 // 0262: public command-barrel names stay `crate::commands::verify::…`.
@@ -48,6 +48,16 @@ pub fn format_signature_success_line_colored() -> String {
     "All signature validations passed successfully!"
         .if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
         .to_string()
+}
+
+/// Signatures-only completion line. `unknown_key == 0` keeps the colored success
+/// sentence. A positive count is the uncolored unknown-key notice.
+pub(crate) fn format_signature_completion_line(unknown_key: usize) -> String {
+    if unknown_key == 0 {
+        format_signature_success_line_colored()
+    } else {
+        "VALID (unknown key). Crypto-valid signatures are not a trusted pin.".to_string()
+    }
 }
 
 /// Exit codes for signature / chain verification (0072 frozen table).
@@ -199,6 +209,7 @@ pub fn verify_ledger_signatures_with_options_and_adoption(
     let invalid_tx_ids: std::collections::HashSet<&str> =
         invalid.iter().map(|(tx_id, _, _)| tx_id.as_str()).collect();
     let mut classes: Vec<SigEntryClass> = Vec::with_capacity(entries.len());
+    let mut unknown_key = 0usize;
 
     for entry in &entries {
         let is_local = entry.origin == "LOCAL";
@@ -208,6 +219,14 @@ pub fn verify_ledger_signatures_with_options_and_adoption(
             // Federated rows are not crypto-classified for this path.
             crate::ledger::crypto::SignatureTrustStatus::Unsigned
         };
+        if is_local
+            && matches!(
+                status,
+                crate::ledger::crypto::SignatureTrustStatus::ValidUnknownKey
+            )
+        {
+            unknown_key += 1;
+        }
         let policy_invalid = is_local && invalid_tx_ids.contains(entry.tx_id.as_str());
         let class = class_for_sig_entry(is_local, status, signing_required, policy_invalid);
         classes.push(class);
@@ -326,7 +345,7 @@ pub fn verify_ledger_signatures_with_options_and_adoption(
         tracing::info!(
             target: "cli_summary",
             "{}",
-            format_signature_success_line_colored()
+            format_signature_completion_line(unknown_key)
         );
         Ok(())
     } else {
@@ -791,7 +810,7 @@ fn build_verify_signatures_json(
         sig_exit::INVALID_OR_CHAIN
     };
 
-    let payload = VerifySignaturesJson {
+    let mut payload = VerifySignaturesJson {
         schema_version: diagnostic_schema_version(),
         kind: verify_signatures_kind(),
         ok,
@@ -801,7 +820,9 @@ fn build_verify_signatures_json(
         chain,
         checkpoint,
         adoption: None,
+        assurance: super::diagnostic::VerifyAssuranceJson::default(),
     };
+    payload.assurance = signature_assurance(&payload);
     Ok((payload, first_human))
 }
 
@@ -878,6 +899,7 @@ fn emit_verify_signatures_json(
             manifest_digest: decision.manifest_digest,
         });
     }
+    payload.assurance = signature_assurance(&payload);
     let ok = payload.ok;
     let exit_code = payload.exit_code;
     let unsigned_fail = payload.signatures.unsigned;
@@ -1422,8 +1444,8 @@ fn collect_checkpoint_for_json(
 #[cfg(test)]
 mod sig_entry_stream_tests {
     use super::{
-        SignatureAggregateCounts, format_signature_success_line_colored,
-        format_summary_line_colored,
+        SignatureAggregateCounts, format_signature_completion_line,
+        format_signature_success_line_colored, format_summary_line_colored,
     };
     use std::io::{self, Write};
     use std::sync::{Arc, Mutex};
@@ -1495,6 +1517,24 @@ mod sig_entry_stream_tests {
         // under global override, so this pins the helper API + force-on path.
         let _ = StreamStdoutMarker;
         owo_colors::unset_override();
+    }
+
+    #[test]
+    fn signature_assurance_success_line_unknown_key_is_uncolored() {
+        let unknown = format_signature_completion_line(1);
+        assert_eq!(
+            unknown,
+            "VALID (unknown key). Crypto-valid signatures are not a trusted pin."
+        );
+        assert!(
+            !unknown.contains('\u{1b}'),
+            "unknown-key notice must be uncolored: {unknown:?}"
+        );
+        let known = format_signature_completion_line(0);
+        assert!(
+            known.contains("All signature validations passed"),
+            "{known:?}"
+        );
     }
 
     /// Compile-time / doc marker that signature colour uses Stdout (not Stderr).
@@ -1684,7 +1724,10 @@ mod sig_exit_tests {
 #[cfg(test)]
 mod verify_signatures_json_collect_tests {
     use super::*;
-    use crate::commands::verify::diagnostic::{ChainBreakKind, cap_sorted_invalid_samples};
+    use crate::commands::verify::diagnostic::{
+        AssuranceState, ChainBreakKind, VerifyAdoptionJson, VerifyAssuranceJson,
+        cap_sorted_invalid_samples, signature_assurance,
+    };
     use crate::ledger::crypto::compute_entry_hash_for_entry;
     use crate::ledger::types::{Category, ChangeType, EntryType, LedgerEntry};
 
@@ -2342,5 +2385,484 @@ mod verify_signatures_json_collect_tests {
         let rendered = payload.to_json_string().expect("json");
         assert!(!rendered.contains("rollback/tail-truncation"));
         assert!(!rendered.contains("Local chain has 1 linked entries"));
+    }
+
+    fn signed_unknown_entry() -> LedgerEntry {
+        let tmp = tempfile::tempdir().unwrap();
+        let keys_dir = tmp.path().join("keys");
+        std::fs::create_dir_all(&keys_dir).unwrap();
+        let mut row = entry("tx1", None, "LOCAL");
+        row.committed_at = "2026-01-01T00:00:00Z".into();
+        let input = crate::ledger::crypto::LedgerSignInput::from_entry(&row);
+        let (sig, pk) = crate::ledger::crypto::sign_ledger_entry_in_v2(&keys_dir, &input).unwrap();
+        row.signature = sig;
+        row.public_key = pk;
+        row
+    }
+
+    fn bare_assurance_payload(ok: bool) -> VerifySignaturesJson {
+        VerifySignaturesJson {
+            schema_version: 1,
+            kind: verify_signatures_kind(),
+            ok,
+            exit_code: if ok {
+                sig_exit::OK
+            } else {
+                sig_exit::INVALID_OR_CHAIN
+            },
+            strict: false,
+            signatures: VerifySignaturesDimensionJson::unchecked(),
+            chain: VerifyChainDimensionJson::unchecked(),
+            checkpoint: None,
+            adoption: None,
+            assurance: VerifyAssuranceJson::default(),
+        }
+    }
+
+    #[test]
+    fn signature_assurance_unpinned_when_pin_empty() {
+        let row = signed_unknown_entry();
+        let (payload, _) = build_verify_signatures_json(
+            &[row],
+            None,
+            true,
+            false,
+            None,
+            false,
+            false,
+            &[],
+            2,
+            false,
+        )
+        .unwrap();
+        assert!(payload.ok);
+        assert_eq!(payload.exit_code, sig_exit::OK);
+        assert_eq!(payload.signatures.invalid, 0);
+        assert_eq!(payload.signatures.trust.unknown_key, 1);
+        assert!(payload.signatures.trust.pin_empty);
+        assert_eq!(payload.assurance.status, AssuranceState::Unpinned);
+        assert_eq!(payload.assurance.validity, AssuranceState::Pass);
+        assert_eq!(payload.assurance.trust, AssuranceState::Unpinned);
+        assert_eq!(payload.assurance.chain, AssuranceState::NotRequested);
+        assert_eq!(payload.assurance.checkpoint, AssuranceState::NotRequested);
+    }
+
+    #[test]
+    fn signature_assurance_unknown_signer_when_pin_misses() {
+        let row = signed_unknown_entry();
+        let wrong = "11".repeat(32);
+        let (payload, _) = build_verify_signatures_json(
+            &[row],
+            None,
+            true,
+            false,
+            None,
+            false,
+            false,
+            &[wrong],
+            2,
+            false,
+        )
+        .unwrap();
+        assert!(payload.ok);
+        assert_eq!(payload.exit_code, sig_exit::OK);
+        assert_ne!(payload.exit_code, sig_exit::POLICY);
+        assert_eq!(payload.assurance.status, AssuranceState::UnknownSigner);
+        assert_eq!(payload.assurance.trust, AssuranceState::UnknownSigner);
+        assert_eq!(payload.assurance.validity, AssuranceState::Pass);
+    }
+
+    #[test]
+    fn signature_assurance_pass_when_pin_matches() {
+        let row = signed_unknown_entry();
+        let pin = row.public_key.clone().unwrap();
+        let (payload, _) = build_verify_signatures_json(
+            &[row],
+            None,
+            true,
+            false,
+            None,
+            false,
+            false,
+            &[pin],
+            2,
+            false,
+        )
+        .unwrap();
+        assert!(payload.ok);
+        assert_eq!(payload.exit_code, sig_exit::OK);
+        assert_eq!(payload.assurance.status, AssuranceState::Pass);
+        assert_eq!(payload.assurance.trust, AssuranceState::Pass);
+        assert_eq!(payload.assurance.chain, AssuranceState::NotRequested);
+    }
+
+    #[test]
+    fn signature_assurance_chain_only_empty_is_pass() {
+        let (payload, _) =
+            build_verify_signatures_json(&[], None, false, true, None, false, false, &[], 1, false)
+                .unwrap();
+        assert!(payload.chain.checked);
+        assert!(payload.ok);
+        assert_eq!(payload.assurance.validity, AssuranceState::NotRequested);
+        assert_eq!(payload.assurance.trust, AssuranceState::NotRequested);
+        assert_eq!(payload.assurance.chain, AssuranceState::Pass);
+        assert_eq!(payload.assurance.status, AssuranceState::Pass);
+    }
+
+    #[test]
+    fn signature_assurance_missing_head_is_fail() {
+        let a = entry("tx1", None, "LOCAL");
+        let a_hash = compute_entry_hash_for_entry(&a).expect("hash");
+        let b = entry("tx2", Some(&a_hash), "LOCAL");
+        let (payload, _) = build_verify_signatures_json(
+            &[a, b],
+            None,
+            true,
+            true,
+            None,
+            false,
+            false,
+            &[],
+            1,
+            false,
+        )
+        .expect("payload");
+        assert!(!payload.ok);
+        assert_eq!(payload.exit_code, sig_exit::INVALID_OR_CHAIN);
+        assert!(payload.chain.head.is_none());
+        assert_eq!(payload.assurance.status, AssuranceState::Fail);
+        assert_eq!(payload.assurance.chain, AssuranceState::Fail);
+        assert_ne!(payload.assurance.validity, AssuranceState::NotRequested);
+    }
+
+    #[test]
+    fn signature_assurance_head_sig_fail_is_chain_fail() {
+        let a = entry("tx1", None, "LOCAL");
+        let a_hash = compute_entry_hash_for_entry(&a).expect("hash");
+        let local = crate::ledger::types::ChainHead {
+            latest_entry_hash: a_hash,
+            genesis: "2026-01-01T00:00:00Z".into(),
+            length: 1,
+            head_signature: Some("00".repeat(64)),
+            head_public_key: Some("11".repeat(32)),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let (payload, _) = build_verify_signatures_json(
+            &[a],
+            Some(&local),
+            true,
+            true,
+            None,
+            false,
+            false,
+            &[],
+            1,
+            false,
+        )
+        .unwrap();
+        assert_eq!(payload.signatures.invalid, 0);
+        assert!(!payload.ok);
+        assert_eq!(payload.exit_code, sig_exit::INVALID_OR_CHAIN);
+        assert_eq!(payload.assurance.validity, AssuranceState::Pass);
+        assert_eq!(payload.assurance.chain, AssuranceState::Fail);
+        assert_eq!(payload.assurance.status, AssuranceState::Fail);
+    }
+
+    #[test]
+    fn signature_assurance_unsigned_required_stays_exit_3() {
+        let a = entry("tx1", None, "LOCAL");
+        let a_hash = compute_entry_hash_for_entry(&a).expect("hash");
+        let genesis = "2026-01-01T00:00:00Z";
+        let local = signed_head(&a_hash, genesis, 1);
+        let (payload, _) = build_verify_signatures_json(
+            &[a],
+            Some(&local),
+            true,
+            true,
+            None,
+            false,
+            true,
+            &[],
+            1,
+            false,
+        )
+        .expect("payload");
+        assert_eq!(payload.exit_code, sig_exit::UNSIGNED);
+        assert!(!payload.ok);
+        assert!(payload.signatures.unsigned > 0);
+        assert_eq!(payload.chain.break_count, 0);
+        let head = payload.chain.head.as_ref().expect("stored head");
+        assert!(head.signature_valid);
+        assert!(head.hash_match);
+        assert!(head.length_match);
+        assert_eq!(payload.assurance.validity, AssuranceState::Fail);
+        assert_eq!(payload.assurance.status, AssuranceState::Fail);
+        assert_eq!(payload.assurance.chain, AssuranceState::Pass);
+    }
+
+    #[test]
+    fn signature_assurance_invalid_crypto_is_fail() {
+        let mut a = entry("tx-bad", None, "LOCAL");
+        a.signature = Some("00".repeat(64));
+        a.public_key = Some("11".repeat(32));
+        let a_hash = compute_entry_hash_for_entry(&a).expect("hash");
+        let genesis = "2026-01-01T00:00:00Z";
+        let local = signed_head(&a_hash, genesis, 1);
+        let (payload, _) = build_verify_signatures_json(
+            &[a],
+            Some(&local),
+            true,
+            true,
+            None,
+            false,
+            false,
+            &[],
+            2,
+            false,
+        )
+        .expect("payload");
+        assert!(payload.signatures.invalid >= 1);
+        assert!(!payload.ok);
+        assert_eq!(payload.exit_code, sig_exit::INVALID_OR_CHAIN);
+        assert_eq!(payload.chain.break_count, 0);
+        let head = payload.chain.head.as_ref().expect("stored head");
+        assert!(head.signature_valid);
+        assert!(head.hash_match);
+        assert!(head.length_match);
+        assert_eq!(payload.assurance.validity, AssuranceState::Fail);
+        assert_eq!(payload.assurance.status, AssuranceState::Fail);
+        assert_eq!(payload.assurance.trust, AssuranceState::Unpinned);
+        assert_eq!(payload.assurance.chain, AssuranceState::Pass);
+    }
+
+    #[test]
+    fn signature_assurance_checkpoint_fail_is_not_a_chain_token() {
+        let tmp = tempfile::tempdir().unwrap();
+        let export_path = tmp.path().join("head.json");
+        std::fs::write(
+            &export_path,
+            r#"{
+  "latest_entry_hash": "abc",
+  "genesis": "2026-01-01T00:00:00Z",
+  "length": 4,
+  "head_signature": null,
+  "head_public_key": null,
+  "updated_at": "2026-01-01T00:00:00Z"
+}"#,
+        )
+        .unwrap();
+        let (payload, _) = build_verify_signatures_json(
+            &[],
+            None,
+            true,
+            false,
+            Some(export_path.as_path()),
+            false,
+            false,
+            &[],
+            1,
+            false,
+        )
+        .unwrap();
+        assert!(!payload.ok);
+        assert_eq!(payload.chain.break_count, 0);
+        assert!(payload.chain.head.is_none());
+        assert_eq!(payload.chain.linked_entries, 0);
+        assert_eq!(payload.assurance.checkpoint, AssuranceState::Fail);
+        assert_eq!(payload.assurance.status, AssuranceState::Fail);
+        assert_eq!(payload.assurance.chain, AssuranceState::Pass);
+    }
+
+    #[test]
+    fn signature_assurance_extends_with_empty_pin_is_unpinned() {
+        let a = entry("tx1", None, "LOCAL");
+        let a_hash = compute_entry_hash_for_entry(&a).expect("hash");
+        let b = entry("tx2", Some(&a_hash), "LOCAL");
+        let b_hash = compute_entry_hash_for_entry(&b).expect("hash");
+        let genesis = "2026-01-01T00:00:00Z".to_string();
+        let tmp = tempfile::tempdir().unwrap();
+        let keys = tmp.path().join("keys");
+        std::fs::create_dir_all(&keys).unwrap();
+        let (head_sig, head_pub) =
+            crate::ledger::crypto::sign_chain_head(&keys, &b_hash, &genesis, 2).unwrap();
+        let export_path = tmp.path().join("head.json");
+        let export = serde_json::json!({
+            "latest_entry_hash": a_hash,
+            "genesis": genesis,
+            "length": 1,
+            "head_signature": null,
+            "head_public_key": null,
+            "updated_at": genesis,
+        });
+        std::fs::write(&export_path, serde_json::to_string(&export).unwrap()).unwrap();
+        let local = crate::ledger::types::ChainHead {
+            latest_entry_hash: b_hash,
+            genesis: genesis.clone(),
+            length: 2,
+            head_signature: head_sig,
+            head_public_key: head_pub,
+            updated_at: "2026-01-01T00:00:01Z".into(),
+        };
+        let (payload, _) = build_verify_signatures_json(
+            &[a, b],
+            Some(&local),
+            true,
+            true,
+            Some(export_path.as_path()),
+            false,
+            false,
+            &[],
+            1,
+            false,
+        )
+        .unwrap();
+        assert!(payload.ok);
+        assert_eq!(payload.exit_code, sig_exit::OK);
+        assert_eq!(
+            payload.checkpoint.as_ref().map(|item| item.result),
+            Some(crate::ledger::chain_checkpoint::CheckpointResultKind::Extends)
+        );
+        assert!(payload.signatures.trust.pin_empty);
+        assert_eq!(payload.assurance.checkpoint, AssuranceState::Pass);
+        assert_eq!(payload.assurance.status, AssuranceState::Unpinned);
+        assert_eq!(payload.assurance.trust, AssuranceState::Unpinned);
+        assert_eq!(payload.assurance.chain, AssuranceState::Pass);
+    }
+
+    #[test]
+    fn signature_assurance_adoption_accepted_is_not_established() {
+        let mut clean = bare_assurance_payload(true);
+        clean.signatures.checked = true;
+        clean.signatures.trust.pin_empty = false;
+        clean.chain.checked = true;
+        clean.chain.head = Some(VerifyChainHeadJson {
+            signature_valid: true,
+            hash_match: true,
+            length_match: true,
+        });
+        clean.adoption = Some(VerifyAdoptionJson {
+            accepted: true,
+            adopted_count: 1,
+            unresolved_count: 0,
+            historical_continuity: "notEstablished".to_string(),
+            manifest_digest: "abc".into(),
+        });
+        let assured = signature_assurance(&clean);
+        assert_eq!(assured.status, AssuranceState::NotEstablished);
+        assert_eq!(assured.chain, AssuranceState::NotEstablished);
+        assert_eq!(
+            clean
+                .adoption
+                .as_ref()
+                .map(|item| item.historical_continuity.as_str()),
+            Some("notEstablished")
+        );
+
+        let mut broken = clean;
+        broken.ok = false;
+        broken.exit_code = sig_exit::INVALID_OR_CHAIN;
+        broken.chain.break_count = 1;
+        let failed = signature_assurance(&broken);
+        assert_eq!(failed.status, AssuranceState::Fail);
+        assert_eq!(failed.chain, AssuranceState::Fail);
+        assert_eq!(
+            broken
+                .adoption
+                .as_ref()
+                .map(|item| item.historical_continuity.as_str()),
+            Some("notEstablished")
+        );
+    }
+
+    #[test]
+    fn signature_assurance_all_absent_is_not_requested() {
+        let payload = bare_assurance_payload(true);
+        let assured = signature_assurance(&payload);
+        assert_eq!(assured.status, AssuranceState::NotRequested);
+        assert_eq!(assured.validity, AssuranceState::NotRequested);
+        assert_eq!(assured.trust, AssuranceState::NotRequested);
+        assert_eq!(assured.chain, AssuranceState::NotRequested);
+        assert_eq!(assured.checkpoint, AssuranceState::NotRequested);
+    }
+
+    #[test]
+    fn signature_assurance_trust_pass_does_not_mean_valid() {
+        let mut payload = bare_assurance_payload(false);
+        payload.signatures.checked = true;
+        payload.signatures.invalid = 1;
+        payload.signatures.trust.pin_empty = false;
+        payload.signatures.trust.unknown_key = 0;
+        let assured = signature_assurance(&payload);
+        assert_eq!(assured.validity, AssuranceState::Fail);
+        assert_eq!(assured.trust, AssuranceState::Pass);
+        assert_eq!(assured.status, AssuranceState::Fail);
+        assert_eq!(assured.chain, AssuranceState::NotRequested);
+        assert_eq!(assured.checkpoint, AssuranceState::NotRequested);
+    }
+
+    #[test]
+    fn signature_assurance_is_stable() {
+        let payload = bare_assurance_payload(true);
+        assert_eq!(signature_assurance(&payload), signature_assurance(&payload));
+    }
+
+    #[test]
+    fn signature_assurance_json_tokens() {
+        let row = signed_unknown_entry();
+        let (payload, _) = build_verify_signatures_json(
+            &[row],
+            None,
+            true,
+            false,
+            None,
+            false,
+            false,
+            &[],
+            2,
+            false,
+        )
+        .unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&payload.to_json_string().unwrap()).unwrap();
+        assert_eq!(value["assurance"]["status"], "unpinned");
+        assert_eq!(value["assurance"]["chain"], "notRequested");
+        let tokens = [
+            (AssuranceState::Pass, "pass"),
+            (AssuranceState::Fail, "fail"),
+            (AssuranceState::NotRequested, "notRequested"),
+            (AssuranceState::NotEstablished, "notEstablished"),
+            (AssuranceState::Unpinned, "unpinned"),
+            (AssuranceState::UnknownSigner, "unknownSigner"),
+        ];
+        for (state, token) in tokens {
+            assert_eq!(serde_json::to_value(state).unwrap(), token);
+        }
+    }
+
+    #[test]
+    fn signature_assurance_missing_key_is_not_requested() {
+        let row = signed_unknown_entry();
+        let (payload, _) = build_verify_signatures_json(
+            &[row],
+            None,
+            true,
+            false,
+            None,
+            false,
+            false,
+            &[],
+            2,
+            false,
+        )
+        .unwrap();
+        let mut value = serde_json::to_value(&payload).unwrap();
+        value.as_object_mut().unwrap().remove("assurance");
+        let back: VerifySignaturesJson = serde_json::from_value(value).unwrap();
+        assert_eq!(back.ok, payload.ok);
+        assert_eq!(back.assurance.status, AssuranceState::NotRequested);
+        assert_eq!(back.assurance.validity, AssuranceState::NotRequested);
+        assert_eq!(back.assurance.trust, AssuranceState::NotRequested);
+        assert_eq!(back.assurance.chain, AssuranceState::NotRequested);
+        assert_eq!(back.assurance.checkpoint, AssuranceState::NotRequested);
     }
 }

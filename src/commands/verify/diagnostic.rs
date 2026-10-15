@@ -215,7 +215,35 @@ pub struct VerifyCheckpointJson {
     pub result: CheckpointResultKind,
 }
 
-/// `kind: "verifySignatures"` — four dimensions; `ok` ⇔ exit 0.
+/// Headline and axis tokens for `verifySignatures.assurance`.
+///
+/// `NotRequested` is the deserialize default. A missing `assurance` key
+/// reads as not requested on every field. Live emit always writes the object.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum AssuranceState {
+    Pass,
+    Fail,
+    #[default]
+    NotRequested,
+    NotEstablished,
+    Unpinned,
+    UnknownSigner,
+}
+
+/// Always-present assurance beside `ok`. `ok` stays exit 0.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyAssuranceJson {
+    pub status: AssuranceState,
+    pub validity: AssuranceState,
+    pub trust: AssuranceState,
+    pub chain: AssuranceState,
+    pub checkpoint: AssuranceState,
+}
+
+/// `kind: "verifySignatures"` — dimensions plus always-present `assurance`.
+/// `ok` ⇔ exit 0.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VerifySignaturesJson {
@@ -232,6 +260,9 @@ pub struct VerifySignaturesJson {
     /// schemaVersion stays 1.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub adoption: Option<VerifyAdoptionJson>,
+    /// Always written. A missing key deserializes as `notRequested` on every field.
+    #[serde(default)]
+    pub assurance: VerifyAssuranceJson,
 }
 
 /// Adoption acceptance beside strict chain verification (0417).
@@ -284,6 +315,80 @@ pub fn verify_signatures_kind() -> String {
 
 pub fn diagnostic_schema_version() -> u32 {
     VERIFY_JSON_SCHEMA_VERSION
+}
+
+/// Pure assurance over a finished `verifySignatures` payload.
+///
+/// Does not walk the ledger, does not change `ok` or `exit_code`, and does
+/// not call `request_exit`. Call again after adoption mutates `ok` and breaks.
+pub fn signature_assurance(payload: &VerifySignaturesJson) -> VerifyAssuranceJson {
+    let validity = if !payload.signatures.checked {
+        AssuranceState::NotRequested
+    } else if payload.signatures.invalid > 0 || payload.signatures.unsigned > 0 {
+        AssuranceState::Fail
+    } else {
+        AssuranceState::Pass
+    };
+
+    let trust = if !payload.signatures.checked {
+        AssuranceState::NotRequested
+    } else if payload.signatures.trust.pin_empty {
+        AssuranceState::Unpinned
+    } else if payload.signatures.trust.unknown_key > 0 {
+        AssuranceState::UnknownSigner
+    } else {
+        AssuranceState::Pass
+    };
+
+    let head_fail = payload
+        .chain
+        .head
+        .as_ref()
+        .is_some_and(|head| !head.signature_valid || !head.hash_match || !head.length_match);
+    let missing_head = payload.chain.head.is_none() && payload.chain.linked_entries > 0;
+    let chain_fail = payload.chain.break_count > 0 || head_fail || missing_head;
+    let chain = if !payload.chain.checked {
+        AssuranceState::NotRequested
+    } else if chain_fail {
+        AssuranceState::Fail
+    } else if payload.adoption.as_ref().is_some_and(|item| item.accepted) {
+        AssuranceState::NotEstablished
+    } else {
+        AssuranceState::Pass
+    };
+
+    let checkpoint = match payload.checkpoint.as_ref() {
+        None => AssuranceState::NotRequested,
+        Some(item) if item.result.is_pass() => AssuranceState::Pass,
+        Some(_) => AssuranceState::Fail,
+    };
+
+    let dimension_ran =
+        payload.signatures.checked || payload.chain.checked || payload.checkpoint.is_some();
+    let status = if !payload.ok {
+        AssuranceState::Fail
+    } else if payload.adoption.as_ref().is_some_and(|item| item.accepted) {
+        AssuranceState::NotEstablished
+    } else if payload.signatures.checked && payload.signatures.trust.pin_empty {
+        AssuranceState::Unpinned
+    } else if payload.signatures.checked
+        && !payload.signatures.trust.pin_empty
+        && payload.signatures.trust.unknown_key > 0
+    {
+        AssuranceState::UnknownSigner
+    } else if !dimension_ran {
+        AssuranceState::NotRequested
+    } else {
+        AssuranceState::Pass
+    };
+
+    VerifyAssuranceJson {
+        status,
+        validity,
+        trust,
+        chain,
+        checkpoint,
+    }
 }
 
 /// Shared mix-refuse for dispatch (first) and execute (health+dry-run).
@@ -475,15 +580,28 @@ mod diagnostic_dto_tests {
             },
             checkpoint: None,
             adoption: None,
+            assurance: VerifyAssuranceJson {
+                status: AssuranceState::Fail,
+                validity: AssuranceState::Pass,
+                trust: AssuranceState::Unpinned,
+                chain: AssuranceState::Fail,
+                checkpoint: AssuranceState::NotRequested,
+            },
         };
+        assert_eq!(payload.assurance, signature_assurance(&payload));
         let json = payload.to_json_string().unwrap();
         assert!(json.contains("\"kind\": \"verifySignatures\""));
         assert!(json.contains("\"exitCode\": 1"));
         assert!(json.contains("\"extraGenesis\""));
-        assert!(!json.contains("checkpoint"));
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(
+            value.get("checkpoint").is_none(),
+            "top-level checkpoint stays omitted: {json}"
+        );
         assert!(!json.contains("invalidSamples"));
         assert!(!json.contains("\"head\""));
         assert!(json.contains("\"strict\": false"));
+        assert_eq!(value["assurance"]["status"], "fail");
     }
 
     #[test]
