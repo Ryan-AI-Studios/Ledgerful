@@ -69,6 +69,20 @@ fn test_verify_json_signatures_emits_kind() {
         v.get("checkpoint").is_none(),
         "checkpoint only with --against-export: {stdout}"
     );
+    assert_eq!(v["signatures"]["checked"], true);
+    assert_eq!(v["chain"]["checked"], false);
+    assert_eq!(v["signatures"]["trust"]["pinEmpty"], true);
+    assert_eq!(v["ok"], true);
+    assert!(
+        output.status.success(),
+        "signatures-only empty pin stays exit 0: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(v["assurance"]["status"], "unpinned");
+    assert_eq!(v["assurance"]["validity"], "pass");
+    assert_eq!(v["assurance"]["trust"], "unpinned");
+    assert_eq!(v["assurance"]["chain"], "notRequested");
+    assert_eq!(v["assurance"]["checkpoint"], "notRequested");
 }
 
 #[test]

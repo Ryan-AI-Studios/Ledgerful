@@ -349,6 +349,8 @@ present) is all-true. Do not treat signature-only `first_human` as a
 chain break. Stdout JSON is authoritative if stderr first-write still
 mentions exit 3.
 
+`verifySignatures.assurance` is always present. `schemaVersion` stays 1. `ok` stays exit 0. `assurance.status` is `pass`, `fail`, `unpinned`, `unknownSigner`, `notEstablished`, or `notRequested`. `fail` matches `ok: false`. `unpinned` means signatures were checked, the pin list is empty, and `ok` is true. `unknownSigner` means a crypto-valid key is outside a non-empty pin list and `ok` is true. `notEstablished` means `--accept-adoption` accepted and `ok` is true. `pass` is not a claim that an unrequested chain ran. `assurance.chain: notRequested` is not a failure. `assurance.trust` is never `fail`. `assurance.trust: pass` means the pin list is non-empty and `unknownKey` is 0. It does not mean cryptographic validity passed. Exit 2 stays unused. A missing `assurance` key reads as `notRequested` on every field. `adoption.historicalContinuity` stays `notEstablished`.
+
 Reject (miette, empty stdout, no partial JSON) mixed diagnostic modes:
 
 | Combo | Error |
