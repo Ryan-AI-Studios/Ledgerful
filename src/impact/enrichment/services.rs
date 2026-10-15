@@ -32,7 +32,7 @@ impl EnrichmentProvider for ServiceProvider {
                 Some(old_path) => old_path,
                 None => &change.path,
             };
-            let path_str = path_to_check.to_string_lossy().to_string();
+            let path_str = path_to_check.to_string_lossy().replace('\\', "/");
             let looked_up = conn.query_row(
                 "SELECT service_name FROM project_files WHERE file_path = ?1",
                 [path_str],
@@ -824,6 +824,25 @@ mod tests {
             .expect("old path names the service");
         assert_eq!(delta.affected_services, vec!["web".to_string()]);
         assert!(delta.services.iter().all(|service| service.name != "other"));
+    }
+
+    #[test]
+    fn service_identity_backslash_change_path_matches_stored_slash_path() {
+        let conn = migrated();
+        let file_id = insert_file(&conn, "services/web/app.rs", "web");
+        insert_route(&conn, file_id, "/app");
+        let storage = StorageManager::init_from_conn(conn);
+        let config = enabled_config();
+        let context = context_for(&storage, &config);
+        let mut packet = ImpactPacket {
+            changes: vec![changed(r"services\web\app.rs", None)],
+            ..Default::default()
+        };
+        ServiceProvider.enrich(&context, &mut packet).unwrap();
+        let delta = packet
+            .service_map_delta
+            .expect("backslash change path matches the stored slash path");
+        assert_eq!(delta.affected_services, vec!["web".to_string()]);
     }
 
     #[test]
