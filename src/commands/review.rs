@@ -25,7 +25,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use miette::Result;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -48,6 +48,7 @@ const MAX_FINDINGS: usize = 20;
 const MAX_CI: usize = 10;
 const MAX_CONTRACTS: usize = 20;
 const MAX_SEARCH_STEMS: usize = 3;
+const PRIOR_DECISIONS_RANK: &str = "substantive-path-overlap";
 
 #[derive(Debug, Clone, Default)]
 pub struct ReviewOpts {
@@ -56,6 +57,8 @@ pub struct ReviewOpts {
     pub requirements: Vec<String>,
     pub id: Option<String>,
     pub timeout: Option<u64>,
+    /// Append stem-only ledger rows after exact path hits.
+    pub include_mentions: bool,
     /// Test injection. CLI leaves `None`; `execute_review_in` installs Ctrl-C.
     pub cancel: Option<Arc<AtomicBool>>,
     /// Test injection. CLI leaves `None`.
@@ -92,9 +95,25 @@ pub struct ReviewEnvelope {
     pub prior_decisions: Vec<ReviewDecision>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub prior_decisions_truncated: bool,
-    pub implementation_claims: Vec<ReviewClaim>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_decisions_rank: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_decisions_omitted: Option<u32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prior_decisions_partial: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_decisions_mentions_omitted: Option<u32>,
+    pub implementation_claims: Vec<ReviewDecision>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub implementation_claims_truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implementation_claims_rank: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implementation_claims_omitted: Option<u32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub implementation_claims_partial: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implementation_claims_mentions_omitted: Option<u32>,
     pub unresolved_findings: ReviewFindings,
     pub ci_evidence: ReviewCiEvidence,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -170,14 +189,12 @@ pub struct ReviewRequirementItem {
 pub struct ReviewDecision {
     pub tx_id: String,
     pub summary: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ReviewClaim {
-    pub tx_id: String,
-    pub summary: String,
-    pub reason: String,
+    pub category: String,
+    pub committed_at: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overlapping_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mention_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -263,6 +280,7 @@ pub fn execute_review(
     requirements: Vec<String>,
     id: Option<String>,
     timeout: Option<u64>,
+    include_mentions: bool,
 ) -> Result<()> {
     let layout = crate::commands::helpers::get_layout()
         .map_err(|e| miette::miette!("review: layout unavailable: {e}"))?;
@@ -275,6 +293,7 @@ pub fn execute_review(
         requirements,
         id,
         timeout,
+        include_mentions,
         cancel: None,
         overall_deadline_override: None,
     };
@@ -417,11 +436,11 @@ pub fn execute_review_in(
         completeness,
         overall_stage_stop(deadline, &cancel, budget_secs, "ledger_search"),
     );
-    let (prior_decisions, prior_decisions_truncated, claims, claims_truncated) = match &storage {
+    let overlap = match &storage {
         Some(storage) if !files_changed.is_empty() && !completeness_is_overall(&completeness) => {
-            search_ledger_overlap(storage, &files_changed)
+            search_ledger_overlap(storage, &files_changed, opts.include_mentions)
         }
-        _ => (Vec::new(), false, Vec::new(), false),
+        _ => OverlapResult::skipped(),
     };
 
     let mut promised_out = promised;
@@ -505,10 +524,18 @@ pub fn execute_review_in(
         files_unexpected,
         files_intended_truncated,
         files_unexpected_truncated,
-        prior_decisions,
-        prior_decisions_truncated,
-        implementation_claims: claims,
-        implementation_claims_truncated: claims_truncated,
+        prior_decisions: overlap.items.clone(),
+        prior_decisions_truncated: overlap.truncated,
+        prior_decisions_rank: overlap.rank.clone(),
+        prior_decisions_omitted: overlap.omitted,
+        prior_decisions_partial: overlap.partial,
+        prior_decisions_mentions_omitted: overlap.mentions_omitted,
+        implementation_claims: overlap.items,
+        implementation_claims_truncated: overlap.truncated,
+        implementation_claims_rank: overlap.rank,
+        implementation_claims_omitted: overlap.omitted,
+        implementation_claims_partial: overlap.partial,
+        implementation_claims_mentions_omitted: overlap.mentions_omitted,
         unresolved_findings: findings,
         ci_evidence,
         coordinated,
@@ -875,45 +902,252 @@ fn path_stem(path: &str) -> Option<String> {
     }
 }
 
+struct OverlapResult {
+    items: Vec<ReviewDecision>,
+    truncated: bool,
+    rank: Option<String>,
+    omitted: Option<u32>,
+    partial: bool,
+    mentions_omitted: Option<u32>,
+}
+
+impl OverlapResult {
+    fn skipped() -> Self {
+        Self {
+            items: Vec::new(),
+            truncated: false,
+            rank: None,
+            omitted: None,
+            partial: false,
+            mentions_omitted: None,
+        }
+    }
+}
+
+struct OverlapAccum {
+    tx_id: String,
+    summary: String,
+    category: String,
+    committed_at: String,
+    paths: BTreeSet<String>,
+}
+
+impl OverlapAccum {
+    fn from_entry(entry: &crate::ledger::types::LedgerEntry) -> Self {
+        Self {
+            tx_id: entry.tx_id.clone(),
+            summary: entry.summary.clone(),
+            category: entry.category.to_string(),
+            committed_at: entry.committed_at.clone(),
+            paths: BTreeSet::new(),
+        }
+    }
+
+    fn substantive_count(&self) -> usize {
+        self.paths
+            .iter()
+            .filter(|path| substantive_review_key(path))
+            .count()
+    }
+
+    fn to_decision(&self, mention_only: bool) -> ReviewDecision {
+        ReviewDecision {
+            tx_id: self.tx_id.clone(),
+            summary: decision_summary(&self.summary),
+            category: self.category.clone(),
+            committed_at: self.committed_at.clone(),
+            overlapping_paths: if mention_only {
+                Vec::new()
+            } else {
+                self.paths.iter().cloned().collect()
+            },
+            mention_only,
+        }
+    }
+}
+
 fn search_ledger_overlap(
     storage: &StorageManager,
     files: &[ReviewFileChange],
-) -> (Vec<ReviewDecision>, bool, Vec<ReviewClaim>, bool) {
-    let mut stems: Vec<String> = files.iter().filter_map(|f| path_stem(&f.path)).collect();
+    include_mentions: bool,
+) -> OverlapResult {
+    let db = LedgerDb::new(storage.get_connection());
+    let keys = review_overlap_keys(files);
+    let mut partial = false;
+    let mut hits: BTreeMap<String, OverlapAccum> = BTreeMap::new();
+
+    for key in &keys {
+        let mut params = vec![key.clone()];
+        if !key.starts_with("./") {
+            params.push(format!("./{key}"));
+        }
+        for param in &params {
+            match db.find_ledger_entries_by_changed_file(param) {
+                Ok(entries) => {
+                    for entry in entries {
+                        record_overlap_hit(&mut hits, &entry, key);
+                    }
+                }
+                Err(_) => partial = true,
+            }
+        }
+        match db.find_ledger_entries_by_exact_entity_path(key) {
+            Ok(entries) => {
+                for entry in entries {
+                    record_overlap_hit(&mut hits, &entry, key);
+                }
+            }
+            Err(_) => partial = true,
+        }
+    }
+
+    let path_ids: BTreeSet<String> = hits.keys().cloned().collect();
+    let mut path_rows: Vec<OverlapAccum> = hits.into_values().collect();
+    path_rows.sort_by(path_rank_cmp);
+
+    let mention_rows = if include_mentions {
+        mention_hits(&db, files, &path_ids, &mut partial)
+    } else {
+        Vec::new()
+    };
+
+    let cap = MAX_PRIOR_DECISIONS.min(MAX_CLAIMS);
+    let path_omitted = path_rows.len().saturating_sub(cap);
+    let kept_paths: Vec<OverlapAccum> = path_rows.into_iter().take(cap).collect();
+    let room = cap.saturating_sub(kept_paths.len());
+    let mention_omitted = mention_rows.len().saturating_sub(room);
+    let mut items: Vec<ReviewDecision> = kept_paths
+        .iter()
+        .map(|hit| hit.to_decision(false))
+        .collect();
+    items.extend(
+        mention_rows
+            .iter()
+            .take(room)
+            .map(|hit| hit.to_decision(true)),
+    );
+
+    OverlapResult {
+        items,
+        truncated: path_omitted > 0 || mention_omitted > 0,
+        rank: Some(PRIOR_DECISIONS_RANK.to_string()),
+        omitted: omit_count(path_omitted),
+        partial,
+        mentions_omitted: omit_count(mention_omitted),
+    }
+}
+
+fn review_overlap_keys(files: &[ReviewFileChange]) -> Vec<String> {
+    let mut keys = BTreeSet::new();
+    for file in files {
+        let path = crate::impact::path_class::normalize_path(&file.path);
+        if !path.is_empty() {
+            keys.insert(path);
+        }
+        if let Some(old) = &file.old_path {
+            let old = crate::impact::path_class::normalize_path(old);
+            if !old.is_empty() {
+                keys.insert(old);
+            }
+        }
+    }
+    keys.into_iter().collect()
+}
+
+fn record_overlap_hit(
+    hits: &mut BTreeMap<String, OverlapAccum>,
+    entry: &crate::ledger::types::LedgerEntry,
+    key: &str,
+) {
+    hits.entry(entry.tx_id.clone())
+        .or_insert_with(|| OverlapAccum::from_entry(entry))
+        .paths
+        .insert(key.to_string());
+}
+
+fn substantive_review_key(key: &str) -> bool {
+    let base = key.rsplit('/').next().unwrap_or(key);
+    if base.eq_ignore_ascii_case("CHANGELOG.md") {
+        return false;
+    }
+    !matches!(
+        crate::impact::path_class::classify_path(key),
+        crate::impact::path_class::PathClass::Governance
+    )
+}
+
+fn path_rank_cmp(a: &OverlapAccum, b: &OverlapAccum) -> std::cmp::Ordering {
+    b.substantive_count()
+        .cmp(&a.substantive_count())
+        .then(b.paths.len().cmp(&a.paths.len()))
+        .then_with(|| committed_at_desc(&a.committed_at, &b.committed_at))
+        .then_with(|| b.tx_id.cmp(&a.tx_id))
+}
+
+fn committed_at_desc(a: &str, b: &str) -> std::cmp::Ordering {
+    let left = chrono::DateTime::parse_from_rfc3339(a).ok();
+    let right = chrono::DateTime::parse_from_rfc3339(b).ok();
+    match (left, right) {
+        (Some(a_time), Some(b_time)) => b_time.cmp(&a_time),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => b.cmp(a),
+    }
+}
+
+fn mention_hits(
+    db: &LedgerDb<'_>,
+    files: &[ReviewFileChange],
+    path_ids: &BTreeSet<String>,
+    partial: &mut bool,
+) -> Vec<OverlapAccum> {
+    let mut stems: Vec<String> = files
+        .iter()
+        .filter_map(|file| path_stem(&file.path))
+        .collect();
     stems.sort();
     stems.dedup();
     stems.truncate(MAX_SEARCH_STEMS);
-
-    let db = LedgerDb::new(storage.get_connection());
-    let mut decisions: BTreeMap<String, ReviewDecision> = BTreeMap::new();
-    let mut claims: BTreeMap<String, ReviewClaim> = BTreeMap::new();
+    let mut found: BTreeMap<String, OverlapAccum> = BTreeMap::new();
     for stem in &stems {
         match db.search_ledger(stem, None, None, false, Some(20), 0, false) {
             Ok(entries) => {
-                for e in entries {
-                    decisions.entry(e.tx_id.clone()).or_insert(ReviewDecision {
-                        tx_id: e.tx_id.clone(),
-                        summary: e.summary.clone(),
-                    });
-                    claims.entry(e.tx_id.clone()).or_insert(ReviewClaim {
-                        tx_id: e.tx_id,
-                        summary: e.summary,
-                        reason: e.reason,
-                    });
+                for entry in entries {
+                    if path_ids.contains(&entry.tx_id) {
+                        continue;
+                    }
+                    found
+                        .entry(entry.tx_id.clone())
+                        .or_insert_with(|| OverlapAccum::from_entry(&entry));
                 }
             }
-            Err(_) => continue,
+            Err(_) => *partial = true,
         }
     }
-    let mut prior: Vec<ReviewDecision> = decisions.into_values().collect();
-    prior.sort_by(|a, b| a.tx_id.cmp(&b.tx_id));
-    let prior_truncated = prior.len() > MAX_PRIOR_DECISIONS;
-    prior.truncate(MAX_PRIOR_DECISIONS);
-    let mut claim_items: Vec<ReviewClaim> = claims.into_values().collect();
-    claim_items.sort_by(|a, b| a.tx_id.cmp(&b.tx_id));
-    let claims_truncated = claim_items.len() > MAX_CLAIMS;
-    claim_items.truncate(MAX_CLAIMS);
-    (prior, prior_truncated, claim_items, claims_truncated)
+    let mut rows: Vec<OverlapAccum> = found.into_values().collect();
+    rows.sort_by(|a, b| {
+        committed_at_desc(&a.committed_at, &b.committed_at).then_with(|| b.tx_id.cmp(&a.tx_id))
+    });
+    rows
+}
+
+fn decision_summary(summary: &str) -> String {
+    let line = summary.lines().next().unwrap_or("").trim();
+    let mut chars = line.chars();
+    let head: String = chars.by_ref().take(200).collect();
+    if chars.next().is_some() {
+        format!("{head}...")
+    } else {
+        head
+    }
+}
+
+fn omit_count(n: usize) -> Option<u32> {
+    if n == 0 {
+        None
+    } else {
+        Some(u32::try_from(n).unwrap_or(u32::MAX))
+    }
 }
 
 fn load_promised_requirements(
@@ -1846,6 +2080,7 @@ mod tests {
         assert!(help.contains("--json"), "{help}");
         assert!(help.contains("--requirements"), "{help}");
         assert!(help.contains("--id"), "{help}");
+        assert!(help.contains("--include-mentions"), "{help}");
         assert!(help.contains("Overall review emit budget"), "{help}");
         assert!(
             !help.contains("History-walk wall-clock"),
@@ -2402,8 +2637,16 @@ mod tests {
             files_unexpected_truncated: false,
             prior_decisions: vec![],
             prior_decisions_truncated: false,
+            prior_decisions_rank: None,
+            prior_decisions_omitted: None,
+            prior_decisions_partial: false,
+            prior_decisions_mentions_omitted: None,
             implementation_claims: vec![],
             implementation_claims_truncated: false,
+            implementation_claims_rank: None,
+            implementation_claims_omitted: None,
+            implementation_claims_partial: false,
+            implementation_claims_mentions_omitted: None,
             unresolved_findings: ReviewFindings {
                 status: "none".into(),
                 items: vec![],
@@ -2486,8 +2729,16 @@ mod tests {
             files_unexpected_truncated: false,
             prior_decisions: vec![],
             prior_decisions_truncated: false,
+            prior_decisions_rank: None,
+            prior_decisions_omitted: None,
+            prior_decisions_partial: false,
+            prior_decisions_mentions_omitted: None,
             implementation_claims: vec![],
             implementation_claims_truncated: false,
+            implementation_claims_rank: None,
+            implementation_claims_omitted: None,
+            implementation_claims_partial: false,
+            implementation_claims_mentions_omitted: None,
             unresolved_findings: ReviewFindings {
                 status: "none".into(),
                 items: vec![],
@@ -3848,8 +4099,16 @@ mod tests {
             files_unexpected_truncated: false,
             prior_decisions: vec![],
             prior_decisions_truncated: false,
+            prior_decisions_rank: None,
+            prior_decisions_omitted: None,
+            prior_decisions_partial: false,
+            prior_decisions_mentions_omitted: None,
             implementation_claims: vec![],
             implementation_claims_truncated: false,
+            implementation_claims_rank: None,
+            implementation_claims_omitted: None,
+            implementation_claims_partial: false,
+            implementation_claims_mentions_omitted: None,
             unresolved_findings: ReviewFindings {
                 status: "none".into(),
                 items: vec![],
@@ -3918,8 +4177,16 @@ mod tests {
             files_unexpected_truncated: false,
             prior_decisions: vec![],
             prior_decisions_truncated: false,
+            prior_decisions_rank: None,
+            prior_decisions_omitted: None,
+            prior_decisions_partial: false,
+            prior_decisions_mentions_omitted: None,
             implementation_claims: vec![],
             implementation_claims_truncated: false,
+            implementation_claims_rank: None,
+            implementation_claims_omitted: None,
+            implementation_claims_partial: false,
+            implementation_claims_mentions_omitted: None,
             unresolved_findings: ReviewFindings {
                 status: "none".into(),
                 items: vec![],
@@ -3969,5 +4236,766 @@ mod tests {
                 .contains("overall analysis stopped"),
             "{overall}"
         );
+    }
+
+    struct Seed {
+        tx_id: String,
+        entity: String,
+        entity_normalized: String,
+        summary: String,
+        reason: String,
+        committed_at: String,
+        changed: Vec<String>,
+    }
+
+    fn row(
+        tx: &str,
+        entity: &str,
+        normalized: &str,
+        summary: &str,
+        reason: &str,
+        at: &str,
+        changed: &[&str],
+    ) -> Seed {
+        Seed {
+            tx_id: tx.to_string(),
+            entity: entity.to_string(),
+            entity_normalized: normalized.to_string(),
+            summary: summary.to_string(),
+            reason: reason.to_string(),
+            committed_at: at.to_string(),
+            changed: changed.iter().map(|p| (*p).to_string()).collect(),
+        }
+    }
+
+    fn file(path: &str, old: Option<&str>) -> ReviewFileChange {
+        ReviewFileChange {
+            path: path.to_string(),
+            change_type: "modified".to_string(),
+            old_path: old.map(str::to_string),
+        }
+    }
+
+    fn overlap_repo() -> (tempfile::TempDir, Layout, PathBuf, Config, StorageManager) {
+        let (tmp, layout, work, config) = harness_with_storage();
+        let storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())
+            .expect("reopen ledger.db");
+        (tmp, layout, work, config, storage)
+    }
+
+    fn insert_rows(storage: &mut StorageManager, rows: &[Seed]) {
+        let conn = storage.get_connection_mut();
+        for row in rows {
+            let snapshot_id: Option<i64> = if row.changed.is_empty() {
+                None
+            } else {
+                conn.execute(
+                    "INSERT INTO snapshots (timestamp, head_hash, branch_name, is_clean, packet_json) VALUES (?1, NULL, NULL, 1, '{}')",
+                    rusqlite::params![row.committed_at],
+                )
+                .unwrap();
+                let id = conn.last_insert_rowid();
+                for path in &row.changed {
+                    conn.execute(
+                        "INSERT INTO changed_files (snapshot_id, path, status, is_staged) VALUES (?1, ?2, 'MODIFIED', 1)",
+                        rusqlite::params![id, path],
+                    )
+                    .unwrap();
+                }
+                Some(id)
+            };
+            conn.execute(
+                "INSERT INTO transactions (tx_id, status, category, entity, entity_normalized, session_id, source, started_at, snapshot_id) VALUES (?1, 'COMMITTED', 'FEATURE', ?2, ?3, 'test', 'LOCAL', ?4, ?5)",
+                rusqlite::params![
+                    row.tx_id,
+                    row.entity,
+                    row.entity_normalized,
+                    row.committed_at,
+                    snapshot_id
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO ledger_entries (tx_id, category, entry_type, entity, entity_normalized, change_type, summary, reason, is_breaking, committed_at, origin, author, observed, prev_hash) VALUES (?1, 'FEATURE', 'IMPLEMENTATION', ?2, ?3, 'MODIFY', ?4, ?5, 0, ?6, 'LOCAL', 'test', 0, NULL)",
+                rusqlite::params![
+                    row.tx_id,
+                    row.entity,
+                    row.entity_normalized,
+                    row.summary,
+                    row.reason,
+                    row.committed_at
+                ],
+            )
+            .unwrap();
+        }
+    }
+
+    fn quiet_with(result: &OverlapResult) -> ReviewEnvelope {
+        ReviewEnvelope {
+            schema_version: 1,
+            kind: "review".into(),
+            analysis_mode: "range".into(),
+            range: "HEAD~1..HEAD".into(),
+            base_ref: "HEAD~1".into(),
+            head_ref: "HEAD".into(),
+            files_changed: vec![],
+            files_changed_truncated: false,
+            blast: ReviewBlast {
+                status: "unavailable".into(),
+                files_scanned: 0,
+                files_total: 0,
+                files_capped: false,
+                nodes: 0,
+                edges: 0,
+                reason: None,
+                honesty_notes: Vec::new(),
+            },
+            affected_symbols: vec![],
+            tests: ReviewTests {
+                status: "unavailable".into(),
+                exercising: vec![],
+                untested: vec![],
+                notes: None,
+            },
+            contracts: ReviewContracts {
+                status: "unavailable".into(),
+                items: vec![],
+                truncated: false,
+            },
+            promised_requirements: ReviewRequirements {
+                status: "none".into(),
+                items: vec![],
+                truncated: false,
+            },
+            requirements_files_truncated: false,
+            files_intended: None,
+            files_unexpected: None,
+            files_intended_truncated: false,
+            files_unexpected_truncated: false,
+            prior_decisions: result.items.clone(),
+            prior_decisions_truncated: result.truncated,
+            prior_decisions_rank: result.rank.clone(),
+            prior_decisions_omitted: result.omitted,
+            prior_decisions_partial: result.partial,
+            prior_decisions_mentions_omitted: result.mentions_omitted,
+            implementation_claims: result.items.clone(),
+            implementation_claims_truncated: result.truncated,
+            implementation_claims_rank: result.rank.clone(),
+            implementation_claims_omitted: result.omitted,
+            implementation_claims_partial: result.partial,
+            implementation_claims_mentions_omitted: result.mentions_omitted,
+            unresolved_findings: ReviewFindings {
+                status: "none".into(),
+                items: vec![],
+                truncated: false,
+            },
+            ci_evidence: ReviewCiEvidence {
+                status: "unavailable".into(),
+                items: vec![],
+                truncated: false,
+                bound_head: None,
+                historical: vec![],
+                historical_truncated: false,
+            },
+            coordinated: None,
+            completeness: None,
+        }
+    }
+
+    fn rank_json(
+        storage: &StorageManager,
+        files: &[ReviewFileChange],
+        include_mentions: bool,
+    ) -> (OverlapResult, serde_json::Value) {
+        let result = search_ledger_overlap(storage, files, include_mentions);
+        let json = serde_json::to_value(quiet_with(&result)).unwrap();
+        (result, json)
+    }
+
+    fn assert_arrays_match(json: &serde_json::Value) {
+        assert_eq!(json["priorDecisions"], json["implementationClaims"]);
+        assert_eq!(
+            json["priorDecisionsTruncated"],
+            json["implementationClaimsTruncated"]
+        );
+        assert_eq!(
+            json.get("priorDecisionsRank"),
+            json.get("implementationClaimsRank")
+        );
+        assert_eq!(
+            json.get("priorDecisionsOmitted"),
+            json.get("implementationClaimsOmitted")
+        );
+        assert_eq!(
+            json.get("priorDecisionsPartial"),
+            json.get("implementationClaimsPartial")
+        );
+        assert_eq!(
+            json.get("priorDecisionsMentionsOmitted"),
+            json.get("implementationClaimsMentionsOmitted")
+        );
+    }
+
+    fn assert_short_rows(json: &serde_json::Value) {
+        for row in json["priorDecisions"].as_array().unwrap() {
+            assert!(row.get("reason").is_none(), "{row}");
+            assert!(row.get("signature").is_none(), "{row}");
+            assert!(row.get("publicKey").is_none(), "{row}");
+            assert!(row.get("risk").is_none(), "{row}");
+            assert!(row.get("author").is_none(), "{row}");
+            assert!(row.get("prevHash").is_none(), "{row}");
+        }
+    }
+
+    fn ids_of(json: &serde_json::Value) -> Vec<String> {
+        json["priorDecisions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["txId"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn review_path_overlap_ranks_code_before_changelog() {
+        let (tmp, layout, work, config, mut storage) = overlap_repo();
+        insert_rows(
+            &mut storage,
+            &[
+                row(
+                    "tx-code",
+                    "src/exec/grouped.rs",
+                    "src/exec/grouped.rs",
+                    "Grouped first line\nreason body that must stay off the row",
+                    "SECRET-REASON",
+                    "2026-01-01T00:00:00Z",
+                    &["src/exec/grouped.rs"],
+                ),
+                row(
+                    "tx-log",
+                    "CHANGELOG.md",
+                    "CHANGELOG.md",
+                    "Changelog only\nmore",
+                    "ALSO-SECRET",
+                    "2026-08-01T00:00:00Z",
+                    &["CHANGELOG.md"],
+                ),
+                row(
+                    "tx-other",
+                    "docs/release.md",
+                    "docs/release.md",
+                    "unrelated release",
+                    "NOPE",
+                    "2026-09-01T00:00:00Z",
+                    &["docs/release.md"],
+                ),
+            ],
+        );
+        let files = vec![
+            file("src/exec/grouped.rs", None),
+            file("src/output/table.rs", None),
+            file("CHANGELOG.md", None),
+        ];
+        let (first, json) = rank_json(&storage, &files, false);
+        let again =
+            serde_json::to_vec(&search_ledger_overlap(&storage, &files, false).items).unwrap();
+        assert_eq!(serde_json::to_vec(&first.items).unwrap(), again);
+        assert_arrays_match(&json);
+        assert_short_rows(&json);
+        assert_eq!(
+            ids_of(&json),
+            vec!["tx-code".to_string(), "tx-log".to_string()]
+        );
+        assert_eq!(json["priorDecisions"][0]["summary"], "Grouped first line");
+        assert_eq!(json["priorDecisions"][0]["category"], "FEATURE");
+        assert_eq!(
+            json["priorDecisions"][0]["committedAt"],
+            "2026-01-01T00:00:00Z"
+        );
+        assert_eq!(json["priorDecisionsRank"], "substantive-path-overlap");
+        assert!(json.get("priorDecisionsPartial").is_none(), "{json}");
+        assert!(json.get("priorDecisionsOmitted").is_none(), "{json}");
+        assert!(!json.to_string().contains("SECRET-REASON"));
+        storage
+            .get_connection()
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .unwrap();
+        drop(storage);
+        fs::create_dir_all(work.join("src/exec")).unwrap();
+        fs::create_dir_all(work.join("src/output")).unwrap();
+        fs::write(work.join("src/exec/grouped.rs"), "fn grouped() {}\n").unwrap();
+        fs::write(work.join("src/output/table.rs"), "fn table() {}\n").unwrap();
+        fs::write(work.join("CHANGELOG.md"), "# log\n").unwrap();
+        assert!(
+            git(
+                &work,
+                &[
+                    "add",
+                    "src/exec/grouped.rs",
+                    "src/output/table.rs",
+                    "CHANGELOG.md"
+                ]
+            )
+            .status
+            .success()
+        );
+        assert!(git(&work, &["commit", "-m", "keys"]).status.success());
+        let (result, stdout) = run(
+            &layout,
+            &work,
+            &config,
+            ReviewOpts {
+                range: "HEAD~1..HEAD".to_string(),
+                json: true,
+                ..Default::default()
+            },
+        );
+        assert!(result.is_ok(), "{result:?}\n{stdout}");
+        let env = parse_env(&stdout);
+        let live = serde_json::to_value(&env).unwrap();
+        assert_arrays_match(&live);
+        assert_eq!(
+            ids_of(&live),
+            vec!["tx-code".to_string(), "tx-log".to_string()]
+        );
+        assert!(live.get("priorDecisionsPartial").is_none(), "{live}");
+        drop(tmp);
+    }
+
+    #[test]
+    fn review_path_overlap_rejects_prefix_and_keeps_old_path() {
+        let (_tmp, _layout, _work, _config, mut storage) = overlap_repo();
+        insert_rows(
+            &mut storage,
+            &[
+                row(
+                    "tx-extra",
+                    "src/exec/grouped_extra.rs",
+                    "src/exec/grouped_extra.rs",
+                    "extra",
+                    "no",
+                    "2026-04-01T00:00:00Z",
+                    &["src/exec/grouped_extra.rs"],
+                ),
+                row(
+                    "tx-prefix",
+                    "src/exec/grouped",
+                    "src/exec/grouped",
+                    "prefix entity",
+                    "no",
+                    "2026-04-02T00:00:00Z",
+                    &[],
+                ),
+                row(
+                    "tx-slash",
+                    "src/output/table.rs",
+                    "src/output/table.rs",
+                    "backslash stored",
+                    "no",
+                    "2026-04-03T00:00:00Z",
+                    &["src\\output\\table.rs"],
+                ),
+                row(
+                    "tx-old",
+                    "src/output/old_table.rs",
+                    "src/output/old_table.rs",
+                    "old path",
+                    "no",
+                    "2026-04-04T00:00:00Z",
+                    &["src/output/old_table.rs"],
+                ),
+            ],
+        );
+        let files = vec![
+            file("src/exec/grouped.rs", Some("src/output/old_table.rs")),
+            file("src/output/table.rs", None),
+        ];
+        let (_result, json) = rank_json(&storage, &files, false);
+        assert_eq!(
+            ids_of(&json),
+            vec!["tx-old".to_string(), "tx-slash".to_string()]
+        );
+        assert_eq!(
+            json["priorDecisions"][0]["overlappingPaths"],
+            serde_json::json!(["src/output/old_table.rs"])
+        );
+        assert_eq!(
+            json["priorDecisions"][1]["overlappingPaths"],
+            serde_json::json!(["src/output/table.rs"])
+        );
+    }
+
+    #[test]
+    fn review_path_overlap_entity_exact_without_changed_file() {
+        let (_tmp, _layout, _work, _config, mut storage) = overlap_repo();
+        insert_rows(
+            &mut storage,
+            &[
+                row(
+                    "tx-entity",
+                    "src/output/table.rs",
+                    "src/output/table.rs",
+                    "entity hit",
+                    "SECRET-REASON",
+                    "2026-03-01T00:00:00Z",
+                    &[],
+                ),
+                row(
+                    "tx-short",
+                    "src/output/table",
+                    "src/output/table",
+                    "short entity",
+                    "no",
+                    "2026-03-02T00:00:00Z",
+                    &[],
+                ),
+                row(
+                    "tx-case",
+                    "src/Output/table.rs",
+                    "src/output/table.rs",
+                    "case only on normalized",
+                    "no",
+                    "2026-03-03T00:00:00Z",
+                    &[],
+                ),
+            ],
+        );
+        let files = vec![file("src/output/table.rs", None)];
+        let (_result, json) = rank_json(&storage, &files, false);
+        assert_eq!(ids_of(&json), vec!["tx-entity".to_string()]);
+        assert_eq!(
+            json["priorDecisions"][0]["overlappingPaths"],
+            serde_json::json!(["src/output/table.rs"])
+        );
+        assert!(!json.to_string().contains("SECRET-REASON"));
+    }
+
+    #[test]
+    fn review_path_overlap_stored_dot_slash_matches_stripped_key() {
+        let (_tmp, _layout, _work, _config, mut storage) = overlap_repo();
+        insert_rows(
+            &mut storage,
+            &[
+                row(
+                    "tx-dot",
+                    "notes/dot.rs",
+                    "notes/dot.rs",
+                    "dot slash",
+                    "no",
+                    "2026-02-01T00:00:00Z",
+                    &["./src/output/table.rs"],
+                ),
+                row(
+                    "tx-trail",
+                    "src/output/table.rs",
+                    "src/output/table.rs",
+                    "no trailing slash stored",
+                    "no",
+                    "2026-02-02T00:00:00Z",
+                    &["src/output/table.rs"],
+                ),
+            ],
+        );
+        let (_dot, dot_json) = rank_json(&storage, &[file("./src/output/table.rs", None)], false);
+        assert_eq!(
+            ids_of(&dot_json),
+            vec!["tx-trail".to_string(), "tx-dot".to_string()]
+        );
+        assert_eq!(
+            dot_json["priorDecisions"][0]["overlappingPaths"],
+            serde_json::json!(["src/output/table.rs"])
+        );
+        assert_eq!(
+            dot_json["priorDecisions"][1]["overlappingPaths"],
+            serde_json::json!(["src/output/table.rs"])
+        );
+        let (_trail, trail_json) =
+            rank_json(&storage, &[file("src/output/table.rs/", None)], false);
+        assert!(ids_of(&trail_json).is_empty(), "{trail_json}");
+    }
+
+    #[test]
+    fn review_path_overlap_total_count_breaks_substantive_tie() {
+        let (_tmp, _layout, _work, _config, mut storage) = overlap_repo();
+        let at = "2026-05-01T00:00:00Z";
+        insert_rows(
+            &mut storage,
+            &[
+                row(
+                    "aaa",
+                    "src/exec/grouped.rs",
+                    "src/exec/grouped.rs",
+                    "total two",
+                    "no",
+                    at,
+                    &["src/exec/grouped.rs", "CHANGELOG.md"],
+                ),
+                row(
+                    "zzz",
+                    "src/exec/grouped.rs",
+                    "src/exec/grouped.rs",
+                    "total one",
+                    "no",
+                    at,
+                    &["src/exec/grouped.rs"],
+                ),
+            ],
+        );
+        let files = vec![
+            file("src/exec/grouped.rs", None),
+            file("CHANGELOG.md", None),
+        ];
+        let (_result, json) = rank_json(&storage, &files, false);
+        assert_eq!(ids_of(&json), vec!["aaa".to_string(), "zzz".to_string()]);
+    }
+
+    #[test]
+    fn review_path_overlap_cap_reports_omitted() {
+        let (_tmp, _layout, _work, _config, mut storage) = overlap_repo();
+        let mut rows = Vec::new();
+        for n in 1..=11 {
+            rows.push(row(
+                &format!("tx-{n:02}"),
+                "src/exec/grouped.rs",
+                "src/exec/grouped.rs",
+                "substantive",
+                "no",
+                &format!("2026-01-{n:02}T00:00:00Z"),
+                &["src/exec/grouped.rs"],
+            ));
+        }
+        insert_rows(&mut storage, &rows);
+        let (_result, json) = rank_json(&storage, &[file("src/exec/grouped.rs", None)], false);
+        let ids = ids_of(&json);
+        assert_eq!(ids.len(), 10);
+        assert_eq!(ids[0], "tx-11");
+        assert_eq!(ids[9], "tx-02");
+        assert!(!ids.iter().any(|id| id == "tx-01"));
+        assert_eq!(json["priorDecisionsOmitted"], 1);
+        assert_eq!(json["priorDecisionsTruncated"], true);
+        assert_eq!(json["priorDecisionsRank"], "substantive-path-overlap");
+        assert!(json.get("priorDecisionsPartial").is_none(), "{json}");
+        assert_arrays_match(&json);
+    }
+
+    #[test]
+    fn review_path_overlap_summary_cuts_on_scalar_values() {
+        let kept = "a".repeat(200);
+        let mut cut = kept.clone();
+        cut.push('你');
+        assert_eq!(decision_summary(&kept), kept);
+        assert_eq!(decision_summary(&cut), format!("{kept}..."));
+        assert!(!decision_summary(&cut).contains('你'));
+        let (_tmp, _layout, _work, _config, mut storage) = overlap_repo();
+        insert_rows(
+            &mut storage,
+            &[row(
+                "tx-long",
+                "src/exec/grouped.rs",
+                "src/exec/grouped.rs",
+                &cut,
+                "no",
+                "2026-01-01T00:00:00Z",
+                &["src/exec/grouped.rs"],
+            )],
+        );
+        let (_result, json) = rank_json(&storage, &[file("src/exec/grouped.rs", None)], false);
+        assert_eq!(json["priorDecisions"][0]["summary"], format!("{kept}..."));
+    }
+
+    #[test]
+    fn review_include_mentions_appends_after_path_hits() {
+        let cli = parse_cli(&["review", "--include-mentions", "HEAD~1..HEAD"]).unwrap();
+        match cli.command {
+            crate::cli::args::Commands::Review(args) => assert!(args.include_mentions),
+            other => panic!("review command, got {other:?}"),
+        }
+        let off = parse_cli(&["review", "HEAD~1..HEAD"]).unwrap();
+        match off.command {
+            crate::cli::args::Commands::Review(args) => assert!(!args.include_mentions),
+            other => panic!("review command, got {other:?}"),
+        }
+
+        let (_tmp, _layout, _work, _config, mut storage) = overlap_repo();
+        let repeated = "grouped ".repeat(30);
+        insert_rows(
+            &mut storage,
+            &[
+                row(
+                    "tx-path",
+                    "src/exec/grouped.rs",
+                    "src/exec/grouped.rs",
+                    "path hit",
+                    "no",
+                    "2026-03-01T00:00:00Z",
+                    &["src/exec/grouped.rs"],
+                ),
+                row(
+                    "tx-old",
+                    "notes/old.md",
+                    "notes/old.md",
+                    &repeated,
+                    "no",
+                    "2026-01-01T00:00:00Z",
+                    &["notes/old.md"],
+                ),
+                row(
+                    "tx-new",
+                    "notes/new.md",
+                    "notes/new.md",
+                    "grouped",
+                    "no",
+                    "2026-06-01T00:00:00Z",
+                    &["notes/new.md"],
+                ),
+            ],
+        );
+        let files = [file("src/exec/grouped.rs", None)];
+        let (_off_result, off_json) = rank_json(&storage, &files, false);
+        assert_eq!(ids_of(&off_json), vec!["tx-path".to_string()]);
+        assert!(off_json.get("priorDecisionsMentionsOmitted").is_none());
+        let (_on_result, on_json) = rank_json(&storage, &files, true);
+        assert_eq!(
+            ids_of(&on_json),
+            vec![
+                "tx-path".to_string(),
+                "tx-new".to_string(),
+                "tx-old".to_string()
+            ]
+        );
+        assert_eq!(on_json["priorDecisions"][1]["mentionOnly"], true);
+        assert_eq!(on_json["priorDecisions"][2]["mentionOnly"], true);
+        assert!(
+            on_json["priorDecisions"][1]
+                .get("overlappingPaths")
+                .is_none()
+        );
+        assert!(on_json["priorDecisions"][0].get("mentionOnly").is_none());
+
+        let mut filled = Vec::new();
+        for n in 1..=10 {
+            filled.push(row(
+                &format!("cap-{n:02}"),
+                "src/exec/grouped.rs",
+                "src/exec/grouped.rs",
+                "path",
+                "no",
+                &format!("2026-07-{n:02}T00:00:00Z"),
+                &["src/exec/grouped.rs"],
+            ));
+        }
+        filled.push(row(
+            "mention-one",
+            "notes/only.md",
+            "notes/only.md",
+            "grouped",
+            "no",
+            "2026-08-01T00:00:00Z",
+            &["notes/only.md"],
+        ));
+        let (_cap_tmp, _l, _w, _c, mut cap_storage) = overlap_repo();
+        insert_rows(&mut cap_storage, &filled);
+        let (_cap, cap_json) = rank_json(&cap_storage, &files, true);
+        assert_eq!(ids_of(&cap_json).len(), 10);
+        assert!(ids_of(&cap_json).iter().all(|id| id.starts_with("cap-")));
+        assert_eq!(cap_json["priorDecisionsMentionsOmitted"], 1);
+        assert!(
+            cap_json.get("priorDecisionsOmitted").is_none(),
+            "{cap_json}"
+        );
+        assert_eq!(cap_json["priorDecisionsTruncated"], true);
+        assert!(
+            cap_json["priorDecisions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row.get("mentionOnly").is_none())
+        );
+    }
+
+    #[test]
+    fn review_include_mentions_omitted_counts_are_separate() {
+        let (_tmp, _layout, _work, _config, mut storage) = overlap_repo();
+        let mut rows = Vec::new();
+        for n in 1..=12 {
+            rows.push(row(
+                &format!("path-{n:02}"),
+                "src/exec/grouped.rs",
+                "src/exec/grouped.rs",
+                "path",
+                "no",
+                &format!("2026-01-{n:02}T00:00:00Z"),
+                &["src/exec/grouped.rs"],
+            ));
+        }
+        for n in 1..=3 {
+            rows.push(row(
+                &format!("mention-{n}"),
+                &format!("notes/m{n}.md"),
+                &format!("notes/m{n}.md"),
+                "grouped",
+                "no",
+                &format!("2026-03-0{n}T00:00:00Z"),
+                &[&format!("notes/m{n}.md")],
+            ));
+        }
+        insert_rows(&mut storage, &rows);
+        let (_result, json) = rank_json(&storage, &[file("src/exec/grouped.rs", None)], true);
+        assert_eq!(ids_of(&json).len(), 10);
+        assert_eq!(json["priorDecisionsOmitted"], 2);
+        assert_eq!(json["priorDecisionsMentionsOmitted"], 3);
+        assert!(
+            json["priorDecisions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row.get("mentionOnly").is_none()),
+            "{json}"
+        );
+        assert_arrays_match(&json);
+    }
+
+    #[test]
+    fn review_path_overlap_partial_is_not_empty_success() {
+        let (_tmp, _layout, _work, _config, mut storage) = overlap_repo();
+        insert_rows(
+            &mut storage,
+            &[row(
+                "tx-entity",
+                "src/output/table.rs",
+                "src/output/table.rs",
+                "kept entity",
+                "SECRET-REASON",
+                "2026-01-01T00:00:00Z",
+                &[],
+            )],
+        );
+        storage
+            .get_connection_mut()
+            .execute_batch("DROP TABLE changed_files;")
+            .unwrap();
+        let (result, json) = rank_json(&storage, &[file("src/output/table.rs", None)], false);
+        assert!(result.partial);
+        assert_eq!(json["priorDecisionsRank"], "substantive-path-overlap");
+        assert_eq!(json["priorDecisionsPartial"], true);
+        assert_eq!(ids_of(&json), vec!["tx-entity".to_string()]);
+        assert!(!json.to_string().contains("SECRET-REASON"));
+        assert!(json.get("completeness").is_none());
+        assert_arrays_match(&json);
+    }
+
+    #[test]
+    fn review_history_row_has_no_invented_step() {
+        let item = ReviewCiItem::VerifyHistory {
+            timestamp: "2026-09-09T00:00:00Z".to_string(),
+            passed: false,
+            duration_secs: 4,
+            tx_id: Some("tx-hist".to_string()),
+            head: Some("abc".to_string()),
+        };
+        let json = serde_json::to_value(&item).unwrap();
+        assert!(json.get("step").is_none(), "{json}");
+        assert!(json.get("failingStep").is_none(), "{json}");
+        assert_eq!(json["kind"], "verifyHistory");
     }
 }
