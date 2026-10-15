@@ -10,10 +10,11 @@ use crate::impact::enrichment::edge_confidence::{
 use crate::impact::packet::{
     BlastEdge, BlastRadius, CoveringTest, ImpactPacket, StructuralCoupling, TestCoverage,
 };
+use crate::platform::process_policy::{ProcessPolicy, check_policy};
 use miette::{IntoDiagnostic, Result};
 use rusqlite::{Connection, params_from_iter};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// High-confidence edge: non-null callee is assumed by caller; status/evidence rule.
 /// Thin wrapper over the shared classifier (0117).
@@ -42,6 +43,194 @@ impl Default for BlastCaps {
             total_edges: 200,
         }
     }
+}
+
+/// How empty-edge blast notes observe optional SCIP indexers.
+///
+/// `silent` and `fixed` stay inside unit tests. Production passes `live`.
+#[derive(Debug, Clone)]
+pub struct BlastAugment {
+    mode: BlastAugmentMode,
+}
+
+#[derive(Debug, Clone)]
+enum BlastAugmentMode {
+    Silent,
+    Fixed(Vec<FixedProbe>),
+    Live(ProcessPolicy),
+}
+
+#[derive(Debug, Clone)]
+struct FixedProbe {
+    exe: String,
+    capable: bool,
+    policy_allows: bool,
+}
+
+impl BlastAugment {
+    /// Add no capability sentences. Existing blast fixtures pass this.
+    pub fn silent() -> Self {
+        Self {
+            mode: BlastAugmentMode::Silent,
+        }
+    }
+
+    /// `(exe, capable, policy_allows)`. A missing exe is not capable.
+    /// Does not call `is_capable`.
+    pub fn fixed(answers: &[(&str, bool, bool)]) -> Self {
+        Self {
+            mode: BlastAugmentMode::Fixed(
+                answers
+                    .iter()
+                    .map(|(exe, capable, policy_allows)| FixedProbe {
+                        exe: (*exe).to_string(),
+                        capable: *capable,
+                        policy_allows: *policy_allows,
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    /// Production probe. `is_capable` then `check_policy` for each wired exe.
+    pub fn live(policy: ProcessPolicy) -> Self {
+        Self {
+            mode: BlastAugmentMode::Live(policy),
+        }
+    }
+
+    fn capability_note(&self, label: &str, exe: &str) -> Option<String> {
+        match &self.mode {
+            BlastAugmentMode::Silent => None,
+            BlastAugmentMode::Fixed(answers) => {
+                let answer = answers.iter().find(|probe| probe.exe == exe);
+                Some(match answer {
+                    Some(probe) if probe.capable && probe.policy_allows => opt_in_sentence(label),
+                    Some(probe) if probe.capable => policy_blocked_sentence(exe),
+                    _ => unavailable_sentence(label, exe),
+                })
+            }
+            BlastAugmentMode::Live(policy) => {
+                if !crate::scip::orchestrator::is_capable(exe) {
+                    Some(unavailable_sentence(label, exe))
+                } else if check_policy(exe, policy).is_err() {
+                    Some(policy_blocked_sentence(exe))
+                } else {
+                    Some(opt_in_sentence(label))
+                }
+            }
+        }
+    }
+}
+
+/// Extension class for blast honesty. Unwired sentences are not emitted here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BlastPathClass {
+    Wired {
+        label: &'static str,
+        exe: &'static str,
+    },
+    Unwired(&'static str),
+    Silent,
+}
+
+const NO_SEED_NOTE: &str =
+    "No seed symbols bound to the index (file+name or qualified_name required)";
+const NO_CALLER_NOTE: &str = "No reverse callers found for bound seeds (native resolution included; zero edges is not isolation)";
+
+fn unavailable_sentence(label: &str, exe: &str) -> String {
+    format!(
+        "Optional SCIP augmentation unavailable for {label}: {exe} not available (capability probe). Native edges are unaffected. This command does not install an indexer."
+    )
+}
+
+fn policy_blocked_sentence(exe: &str) -> String {
+    format!(
+        "Optional SCIP augmentation blocked by process policy for {exe}. Native edges are unaffected."
+    )
+}
+
+fn opt_in_sentence(label: &str) -> String {
+    format!(
+        "Higher-precision {label} edges are opt-in via `ledgerful index --auto-scip` (not the default)."
+    )
+}
+
+/// Classify one relative path. Skipped segments and unknown extensions are silent.
+pub(crate) fn blast_lang_for_rel_path(rel: &str) -> BlastPathClass {
+    if crate::scip::presence::skip_scip_rel_path(rel) {
+        return BlastPathClass::Silent;
+    }
+    let normalized = normalize_path(rel);
+    let basename = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
+    let ext = match basename.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() => extension.to_ascii_lowercase(),
+        _ => return BlastPathClass::Silent,
+    };
+    match ext.as_str() {
+        "rs" => BlastPathClass::Wired {
+            label: "Rust",
+            exe: "rust-analyzer",
+        },
+        "ts" | "tsx" => BlastPathClass::Wired {
+            label: "TypeScript",
+            exe: "scip-typescript",
+        },
+        "py" | "pyi" => BlastPathClass::Wired {
+            label: "Python",
+            exe: "scip-python",
+        },
+        "go" => BlastPathClass::Unwired("SCIP indexer is not wired for Go."),
+        "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "hxx" | "hh" => {
+            BlastPathClass::Unwired("SCIP indexer is not wired for C/C++.")
+        }
+        "java" => BlastPathClass::Unwired("SCIP indexer is not wired for Java."),
+        "kt" | "kts" => BlastPathClass::Unwired("SCIP indexer is not wired for Kotlin."),
+        "scala" => BlastPathClass::Unwired("SCIP indexer is not wired for Scala."),
+        "cs" => BlastPathClass::Unwired("SCIP indexer is not wired for C#."),
+        "fs" => BlastPathClass::Unwired("SCIP indexer is not wired for F#."),
+        "php" => BlastPathClass::Unwired("SCIP indexer is not wired for PHP."),
+        "rb" => BlastPathClass::Unwired("SCIP indexer is not wired for Ruby."),
+        "swift" => BlastPathClass::Unwired("SCIP indexer is not wired for Swift."),
+        _ => BlastPathClass::Silent,
+    }
+}
+
+fn push_wired_capability_notes(seeds: &[Seed], augment: &BlastAugment, notes: &mut Vec<String>) {
+    let mut seen: BTreeSet<(&str, &str)> = BTreeSet::new();
+    for seed in seeds {
+        let rel = normalize_path(&seed.file_path);
+        let BlastPathClass::Wired { label, exe } = blast_lang_for_rel_path(&rel) else {
+            continue;
+        };
+        if !seen.insert((label, exe)) {
+            continue;
+        }
+        if let Some(note) = augment.capability_note(label, exe) {
+            notes.push(note);
+        }
+    }
+}
+
+fn push_unwired(notes: &mut Vec<String>, path: &Path) {
+    let rel = path.to_string_lossy().replace('\\', "/");
+    if let BlastPathClass::Unwired(sentence) = blast_lang_for_rel_path(&rel) {
+        notes.push((*sentence).to_string());
+    }
+}
+
+/// Unwired-language sentences for changed paths and `old_path`. Wired paths are silent.
+pub(crate) fn unwired_honesty_notes(changes: &[crate::impact::packet::ChangedFile]) -> Vec<String> {
+    let mut notes = Vec::new();
+    for change in changes {
+        push_unwired(&mut notes, &change.path);
+        if let Some(old) = change.old_path.as_ref() {
+            push_unwired(&mut notes, old);
+        }
+    }
+    notes.sort_unstable();
+    notes.dedup();
+    notes
 }
 
 /// Absolute product ceiling (config may request up to this; never higher).
@@ -292,6 +481,7 @@ pub fn compute_blast(
     depth_requested: u32,
     depth_max: u32,
     caps: BlastCaps,
+    augment: &BlastAugment,
 ) -> Result<BlastRadius> {
     let mut honesty_notes: Vec<String> = Vec::new();
 
@@ -315,9 +505,7 @@ pub fn compute_blast(
     };
 
     if seeds.is_empty() {
-        result.honesty_notes.push(
-            "No seed symbols bound to the index (file+name or qualified_name required)".to_string(),
-        );
+        result.honesty_notes.push(NO_SEED_NOTE.to_string());
         result.honesty_notes.extend(honesty_notes);
         result.honesty_notes.sort_unstable();
         result.honesty_notes.dedup();
@@ -395,12 +583,11 @@ pub fn compute_blast(
             .push("Hop >1 requested but no high-confidence hop-1 nodes to expand".to_string());
     }
 
-    // Thin neighborhood honesty (DoD-7): bound seeds but no reverse callers.
-    if all_edges.is_empty() && !seeds.is_empty() {
-        honesty_notes.push(
-            "No reverse callers found for bound seeds (thin neighborhood; try `ledgerful index --auto-scip` for higher-precision edges — opt-in, not default)"
-                .to_string(),
-        );
+    // Bound seeds and zero edges: native resolution ran. Capability notes are
+    // separate facts and are omitted when any edge was found.
+    if all_edges.is_empty() {
+        honesty_notes.push(NO_CALLER_NOTE.to_string());
+        push_wired_capability_notes(seeds, augment, &mut honesty_notes);
     }
 
     // Punchlist: neighbors only — seeds are already known via packet.changes.
@@ -710,7 +897,15 @@ mod tests {
         let seeds = resolve_seeds(&packet, &conn).unwrap();
         assert_eq!(seeds.len(), 1);
 
-        let blast = compute_blast(&conn, &seeds, 1, 3, BlastCaps::default()).unwrap();
+        let blast = compute_blast(
+            &conn,
+            &seeds,
+            1,
+            3,
+            BlastCaps::default(),
+            &BlastAugment::silent(),
+        )
+        .unwrap();
         assert_eq!(blast.depth_applied, 1);
         assert_eq!(blast.edges.len(), 1);
         assert_eq!(blast.edges[0].from_symbol, "caller_fn");
@@ -733,7 +928,15 @@ mod tests {
 
         let packet = packet_with_symbol("src/seed.rs", "seed_fn", Some("crate::seed_fn"));
         let seeds = resolve_seeds(&packet, &conn).unwrap();
-        let blast = compute_blast(&conn, &seeds, 2, 3, BlastCaps::default()).unwrap();
+        let blast = compute_blast(
+            &conn,
+            &seeds,
+            2,
+            3,
+            BlastCaps::default(),
+            &BlastAugment::silent(),
+        )
+        .unwrap();
 
         assert!(
             !blast.must_touch_files.iter().any(|f| f == "src/seed.rs"),
@@ -766,7 +969,15 @@ mod tests {
 
         let packet = packet_with_symbol("src/seed.rs", "seed_fn", Some("crate::seed_fn"));
         let seeds = resolve_seeds(&packet, &conn).unwrap();
-        let blast = compute_blast(&conn, &seeds, 2, 3, BlastCaps::default()).unwrap();
+        let blast = compute_blast(
+            &conn,
+            &seeds,
+            2,
+            3,
+            BlastCaps::default(),
+            &BlastAugment::silent(),
+        )
+        .unwrap();
 
         assert!(
             blast
@@ -798,7 +1009,15 @@ mod tests {
 
         let packet = packet_with_symbol("src/seed.rs", "seed_fn", Some("crate::seed_fn"));
         let seeds = resolve_seeds(&packet, &conn).unwrap();
-        let blast = compute_blast(&conn, &seeds, 2, 3, BlastCaps::default()).unwrap();
+        let blast = compute_blast(
+            &conn,
+            &seeds,
+            2,
+            3,
+            BlastCaps::default(),
+            &BlastAugment::silent(),
+        )
+        .unwrap();
 
         assert!(
             blast.edges.iter().any(|e| e.hop == 1
@@ -833,7 +1052,15 @@ mod tests {
 
         let packet = packet_with_symbol("src/seed.rs", "seed_fn", Some("crate::seed_fn"));
         let seeds = resolve_seeds(&packet, &conn).unwrap();
-        let blast = compute_blast(&conn, &seeds, 2, 3, BlastCaps::default()).unwrap();
+        let blast = compute_blast(
+            &conn,
+            &seeds,
+            2,
+            3,
+            BlastCaps::default(),
+            &BlastAugment::silent(),
+        )
+        .unwrap();
 
         assert!(blast.edges.iter().any(|e| e.from_symbol == "u_fn"));
         assert!(blast.edges.iter().any(|e| e.from_symbol == "c_fn"));
@@ -864,7 +1091,15 @@ mod tests {
 
         let packet = packet_with_symbol("src/seed.rs", "seed_fn", Some("crate::seed_fn"));
         let seeds = resolve_seeds(&packet, &conn).unwrap();
-        let blast = compute_blast(&conn, &seeds, 2, 3, BlastCaps::default()).unwrap();
+        let blast = compute_blast(
+            &conn,
+            &seeds,
+            2,
+            3,
+            BlastCaps::default(),
+            &BlastAugment::silent(),
+        )
+        .unwrap();
 
         assert_eq!(blast.edges.len(), 1, "pair must collapse to one edge");
         assert_eq!(blast.edges[0].evidence, "scip:ref");
@@ -894,7 +1129,15 @@ mod tests {
         assert_eq!(seeds.len(), 1);
         assert_eq!(seeds[0].symbol_id, new_a);
 
-        let blast = compute_blast(&conn, &seeds, 1, 3, BlastCaps::default()).unwrap();
+        let blast = compute_blast(
+            &conn,
+            &seeds,
+            1,
+            3,
+            BlastCaps::default(),
+            &BlastAugment::silent(),
+        )
+        .unwrap();
         assert_eq!(blast.edges.len(), 1);
         assert_eq!(blast.edges[0].from_symbol, "call_a");
         assert!(
@@ -921,7 +1164,15 @@ mod tests {
         let packet = packet_with_symbol("src/a.rs", "new", None);
         let seeds = resolve_seeds(&packet, &conn).unwrap();
         assert_eq!(seeds.len(), 1);
-        let blast = compute_blast(&conn, &seeds, 1, 3, BlastCaps::default()).unwrap();
+        let blast = compute_blast(
+            &conn,
+            &seeds,
+            1,
+            3,
+            BlastCaps::default(),
+            &BlastAugment::silent(),
+        )
+        .unwrap();
         assert_eq!(blast.edges.len(), 1);
         assert_eq!(blast.edges[0].from_symbol, "call_a");
     }
@@ -1019,6 +1270,7 @@ mod tests {
                 fanout_per_hop: 3,
                 total_edges: 2,
             },
+            &BlastAugment::silent(),
         )
         .unwrap();
         // total cap bites after fanout
@@ -1135,7 +1387,15 @@ mod tests {
 
         let packet = packet_with_symbol("src/seed.rs", "seed_fn", Some("crate::seed_fn"));
         let seeds = resolve_seeds(&packet, &conn).unwrap();
-        let blast = compute_blast(&conn, &seeds, 1, 3, BlastCaps::default()).unwrap();
+        let blast = compute_blast(
+            &conn,
+            &seeds,
+            1,
+            3,
+            BlastCaps::default(),
+            &BlastAugment::silent(),
+        )
+        .unwrap();
 
         let amb = blast
             .edges
@@ -1163,5 +1423,253 @@ mod tests {
         assert_eq!(blast.confidence_summary.scip_bound, 1);
         assert_eq!(blast.confidence_summary.total, 2);
         assert_eq!(blast.confidence_summary.expandable, 1);
+    }
+
+    fn bound_seed(conn: &Connection, path: &str) -> Vec<Seed> {
+        let file_id = insert_file(conn, path);
+        let _symbol = insert_symbol(conn, file_id, "seed_fn", "crate::seed_fn");
+        let packet = packet_with_symbol(path, "seed_fn", Some("crate::seed_fn"));
+        resolve_seeds(&packet, conn).unwrap()
+    }
+
+    fn assert_notes_stable(blast: &BlastRadius) {
+        let once = serde_json::to_vec(blast).unwrap();
+        let twice = serde_json::to_vec(blast).unwrap();
+        assert_eq!(once, twice);
+        let notes = &blast.honesty_notes;
+        assert!(notes.windows(2).all(|pair| pair[0] <= pair[1]));
+        let unique = notes.iter().collect::<BTreeSet<_>>();
+        assert_eq!(notes.len(), unique.len());
+    }
+
+    #[test]
+    fn blast_honesty_empty_seeds_emit_only_no_seed_sentence() {
+        let conn = setup_conn();
+        let augment = BlastAugment::fixed(&[("rust-analyzer", false, false)]);
+        let blast = compute_blast(&conn, &[], 1, 3, BlastCaps::default(), &augment).unwrap();
+        assert_eq!(blast.honesty_notes, vec![NO_SEED_NOTE.to_string()]);
+        assert!(blast.edges.is_empty());
+        assert_notes_stable(&blast);
+    }
+
+    #[test]
+    fn blast_honesty_bound_zero_edges_names_native_resolution() {
+        let conn = setup_conn();
+        let seeds = bound_seed(&conn, "src/seed.rs");
+        let blast = compute_blast(
+            &conn,
+            &seeds,
+            1,
+            3,
+            BlastCaps::default(),
+            &BlastAugment::silent(),
+        )
+        .unwrap();
+        assert!(blast.edges.is_empty());
+        assert_eq!(blast.honesty_notes, vec![NO_CALLER_NOTE.to_string()]);
+        let joined = blast.honesty_notes.join("\n");
+        assert!(!joined.contains("thin neighborhood"));
+        assert!(!joined.contains("--auto-scip"));
+        assert_notes_stable(&blast);
+    }
+
+    #[test]
+    fn blast_honesty_failed_rust_probe_does_not_suggest_auto_scip() {
+        let conn = setup_conn();
+        let seeds = bound_seed(&conn, "src/seed.rs");
+        let augment = BlastAugment::fixed(&[("rust-analyzer", false, true)]);
+        let blast = compute_blast(&conn, &seeds, 1, 3, BlastCaps::default(), &augment).unwrap();
+        assert_eq!(
+            blast.honesty_notes,
+            vec![
+                NO_CALLER_NOTE.to_string(),
+                unavailable_sentence("Rust", "rust-analyzer"),
+            ]
+        );
+        assert!(
+            !blast
+                .honesty_notes
+                .iter()
+                .any(|n| n.contains("--auto-scip"))
+        );
+        assert_notes_stable(&blast);
+    }
+
+    #[test]
+    fn blast_honesty_capable_allowed_probe_names_opt_in() {
+        let conn = setup_conn();
+        let seeds = bound_seed(&conn, "src/seed.rs");
+        let augment = BlastAugment::fixed(&[("rust-analyzer", true, true)]);
+        let blast = compute_blast(&conn, &seeds, 1, 3, BlastCaps::default(), &augment).unwrap();
+        assert_eq!(
+            blast.honesty_notes,
+            vec![opt_in_sentence("Rust"), NO_CALLER_NOTE.to_string(),]
+        );
+        assert_notes_stable(&blast);
+    }
+
+    #[test]
+    fn blast_honesty_policy_block_omits_error_display() {
+        let conn = setup_conn();
+        let seeds = bound_seed(&conn, "src/seed.rs");
+        let augment = BlastAugment::fixed(&[("rust-analyzer", true, false)]);
+        let blast = compute_blast(&conn, &seeds, 1, 3, BlastCaps::default(), &augment).unwrap();
+        let policy = policy_blocked_sentence("rust-analyzer");
+        assert_eq!(
+            blast.honesty_notes,
+            vec![NO_CALLER_NOTE.to_string(), policy.clone()]
+        );
+        assert!(!policy.contains("config.toml"));
+        assert!(!policy.contains("denied"));
+        assert_notes_stable(&blast);
+    }
+
+    #[test]
+    fn blast_honesty_resolved_edge_stays_when_probe_is_incapable() {
+        let conn = setup_conn();
+        let seed_f = insert_file(&conn, "src/seed.rs");
+        let caller_f = insert_file(&conn, "src/caller.rs");
+        let seed = insert_symbol(&conn, seed_f, "seed_fn", "crate::seed_fn");
+        let caller = insert_symbol(&conn, caller_f, "caller_fn", "crate::caller_fn");
+        insert_edge(
+            &conn,
+            caller,
+            caller_f,
+            seed,
+            seed_f,
+            "RESOLVED",
+            "call_expr",
+        );
+        let packet = packet_with_symbol("src/seed.rs", "seed_fn", Some("crate::seed_fn"));
+        let seeds = resolve_seeds(&packet, &conn).unwrap();
+        let augment = BlastAugment::fixed(&[("rust-analyzer", false, false)]);
+        let blast = compute_blast(&conn, &seeds, 1, 3, BlastCaps::default(), &augment).unwrap();
+        assert_eq!(blast.edges.len(), 1);
+        assert_eq!(blast.edges[0].resolution_status, "RESOLVED");
+        assert_eq!(blast.edges[0].evidence, "call_expr");
+        assert!(
+            blast
+                .honesty_notes
+                .iter()
+                .all(|note| !note.contains("capability probe"))
+        );
+        assert!(
+            blast
+                .honesty_notes
+                .iter()
+                .all(|note| !note.contains("not isolation"))
+        );
+        assert_notes_stable(&blast);
+    }
+
+    #[test]
+    fn blast_honesty_duplicate_rust_seeds_emit_one_capability_note() {
+        let conn = setup_conn();
+        let seeds = [
+            Seed {
+                symbol_id: 1,
+                name: "a_fn".into(),
+                file_path: "src/a.rs".into(),
+                qualified_name: Some("crate::a_fn".into()),
+            },
+            Seed {
+                symbol_id: 2,
+                name: "b_fn".into(),
+                file_path: "src/b.rs".into(),
+                qualified_name: Some("crate::b_fn".into()),
+            },
+        ];
+        let augment = BlastAugment::fixed(&[]);
+        let blast = compute_blast(&conn, &seeds, 1, 3, BlastCaps::default(), &augment).unwrap();
+        let unavailable = blast
+            .honesty_notes
+            .iter()
+            .filter(|note| note.contains("capability probe"))
+            .count();
+        assert_eq!(unavailable, 1);
+        assert_notes_stable(&blast);
+    }
+
+    #[test]
+    fn blast_honesty_skipped_seed_path_adds_no_capability_note() {
+        let conn = setup_conn();
+        let seeds = bound_seed(&conn, "tests/seed.rs");
+        let augment = BlastAugment::fixed(&[("rust-analyzer", false, false)]);
+        let blast = compute_blast(&conn, &seeds, 1, 3, BlastCaps::default(), &augment).unwrap();
+        assert_eq!(blast.honesty_notes, vec![NO_CALLER_NOTE.to_string()]);
+    }
+
+    #[test]
+    fn blast_honesty_lang_for_rel_path_matches_extension_table() {
+        assert_eq!(
+            blast_lang_for_rel_path("src/a.rs"),
+            BlastPathClass::Wired {
+                label: "Rust",
+                exe: "rust-analyzer",
+            }
+        );
+        assert_eq!(
+            blast_lang_for_rel_path("web/app.tsx"),
+            BlastPathClass::Wired {
+                label: "TypeScript",
+                exe: "scip-typescript",
+            }
+        );
+        assert_eq!(
+            blast_lang_for_rel_path("pkg/mod.pyi"),
+            BlastPathClass::Wired {
+                label: "Python",
+                exe: "scip-python",
+            }
+        );
+        assert_eq!(
+            blast_lang_for_rel_path("cmd/main.go"),
+            BlastPathClass::Unwired("SCIP indexer is not wired for Go.")
+        );
+        assert_eq!(
+            blast_lang_for_rel_path("src/lib.hpp"),
+            BlastPathClass::Unwired("SCIP indexer is not wired for C/C++.")
+        );
+        assert_eq!(
+            blast_lang_for_rel_path("src/App.java"),
+            BlastPathClass::Unwired("SCIP indexer is not wired for Java.")
+        );
+        assert_eq!(
+            blast_lang_for_rel_path("src/App.kts"),
+            BlastPathClass::Unwired("SCIP indexer is not wired for Kotlin.")
+        );
+        assert_eq!(
+            blast_lang_for_rel_path("src/App.scala"),
+            BlastPathClass::Unwired("SCIP indexer is not wired for Scala.")
+        );
+        assert_eq!(
+            blast_lang_for_rel_path("src/App.cs"),
+            BlastPathClass::Unwired("SCIP indexer is not wired for C#.")
+        );
+        assert_eq!(
+            blast_lang_for_rel_path("src/App.fs"),
+            BlastPathClass::Unwired("SCIP indexer is not wired for F#.")
+        );
+        assert_eq!(
+            blast_lang_for_rel_path("web/index.php"),
+            BlastPathClass::Unwired("SCIP indexer is not wired for PHP.")
+        );
+        assert_eq!(
+            blast_lang_for_rel_path("lib/app.rb"),
+            BlastPathClass::Unwired("SCIP indexer is not wired for Ruby.")
+        );
+        assert_eq!(
+            blast_lang_for_rel_path("App/Main.swift"),
+            BlastPathClass::Unwired("SCIP indexer is not wired for Swift.")
+        );
+        assert_eq!(
+            blast_lang_for_rel_path("tests/fixtures/main.go"),
+            BlastPathClass::Silent
+        );
+        assert_eq!(
+            blast_lang_for_rel_path("vendor/lib.c"),
+            BlastPathClass::Silent
+        );
+        assert_eq!(blast_lang_for_rel_path("README.md"), BlastPathClass::Silent);
     }
 }

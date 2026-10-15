@@ -123,6 +123,9 @@ pub struct ReviewBlast {
     pub edges: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Impact blast notes. Omitted when empty. Not merged into `reason`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub honesty_notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -385,6 +388,7 @@ pub fn execute_review_in(
                         .map(blast_reason_for)
                         .unwrap_or_else(|| "ledger.db unavailable".to_string()),
                 ),
+                honesty_notes: Vec::new(),
             },
             Vec::new(),
             ReviewTests {
@@ -629,43 +633,16 @@ fn compose_impact(
     );
     let (blast, symbols, completeness) = match impact {
         Ok(packet) => {
-            let edges = packet
-                .blast_radius
-                .as_ref()
-                .map(|b| b.edges.len())
-                .unwrap_or(0);
-            let nodes = packet
-                .blast_radius
-                .as_ref()
-                .map(|b| b.must_touch_files.len() + b.must_touch_symbols.len())
-                .unwrap_or(0);
-            let mut symbols = top_symbols_from_packet(&packet);
-            symbols.truncate(MAX_AFFECTED_SYMBOLS);
-            let reason = packet.completeness.as_ref().map(blast_reason_for);
-            (
-                ReviewBlast {
-                    status: "ok".to_string(),
-                    files_scanned,
-                    files_total,
-                    files_capped: files_changed_truncated,
-                    nodes,
-                    edges,
-                    reason,
-                },
-                symbols,
-                packet.completeness,
-            )
-        }
-        Err(e) => (
-            ReviewBlast {
-                status: "unavailable".to_string(),
+            let (blast, symbols) = review_blast_from_packet(
+                &packet,
                 files_scanned,
                 files_total,
-                files_capped: files_changed_truncated,
-                nodes: 0,
-                edges: 0,
-                reason: Some(format!("impact compose failed: {e}")),
-            },
+                files_changed_truncated,
+            );
+            (blast, symbols, packet.completeness)
+        }
+        Err(e) => (
+            review_blast_compose_failed(files_scanned, files_total, files_changed_truncated, &e),
             Vec::new(),
             None,
         ),
@@ -692,6 +669,56 @@ fn compose_impact(
         }
     };
     (blast, symbols, tests, contracts, completeness)
+}
+
+fn review_blast_from_packet(
+    packet: &crate::impact::packet::ImpactPacket,
+    files_scanned: usize,
+    files_total: usize,
+    files_capped: bool,
+) -> (ReviewBlast, Vec<String>) {
+    let blast_radius = packet.blast_radius.as_ref();
+    let edges = blast_radius.map(|b| b.edges.len()).unwrap_or(0);
+    let nodes = blast_radius
+        .map(|b| b.must_touch_files.len() + b.must_touch_symbols.len())
+        .unwrap_or(0);
+    let mut symbols = top_symbols_from_packet(packet);
+    symbols.truncate(MAX_AFFECTED_SYMBOLS);
+    let reason = packet.completeness.as_ref().map(blast_reason_for);
+    let honesty_notes = blast_radius
+        .map(|b| b.honesty_notes.clone())
+        .unwrap_or_default();
+    (
+        ReviewBlast {
+            status: "ok".to_string(),
+            files_scanned,
+            files_total,
+            files_capped,
+            nodes,
+            edges,
+            reason,
+            honesty_notes,
+        },
+        symbols,
+    )
+}
+
+fn review_blast_compose_failed(
+    files_scanned: usize,
+    files_total: usize,
+    files_capped: bool,
+    err: &impl std::fmt::Display,
+) -> ReviewBlast {
+    ReviewBlast {
+        status: "unavailable".to_string(),
+        files_scanned,
+        files_total,
+        files_capped,
+        nodes: 0,
+        edges: 0,
+        reason: Some(format!("impact compose failed: {err}")),
+        honesty_notes: Vec::new(),
+    }
 }
 
 fn blast_reason_for(c: &AnalysisCompleteness) -> String {
@@ -1707,6 +1734,9 @@ fn emit_review(envelope: &ReviewEnvelope, json: bool, out: &mut impl Write) -> R
         writeln!(out, "overall stop ({stage}).")
             .map_err(|e| miette::miette!("review write: {e}"))?;
     }
+    for note in &envelope.blast.honesty_notes {
+        writeln!(out, "{note}").map_err(|e| miette::miette!("review write: {e}"))?;
+    }
     writeln!(out, "Use --json for the agent envelope.")
         .map_err(|e| miette::miette!("review write: {e}"))?;
     Ok(())
@@ -2242,6 +2272,165 @@ mod tests {
     }
 
     #[test]
+    fn compose_impact__zero_edges_copies_honesty_notes() {
+        use crate::impact::packet::{BlastRadius, ChangedFile, ImpactPacket};
+        use crate::index::symbols::{Symbol, SymbolKind};
+
+        let note = "No reverse callers found for bound seeds (native resolution included; zero edges is not isolation)";
+        let packet = ImpactPacket {
+            changes: vec![ChangedFile {
+                path: PathBuf::from("src/exec/grouped.rs"),
+                status: "Modified".into(),
+                symbols: Some(vec![Symbol {
+                    name: "CapturedGrouped".into(),
+                    kind: SymbolKind::Function,
+                    is_public: true,
+                    cognitive_complexity: None,
+                    cyclomatic_complexity: None,
+                    line_start: None,
+                    line_end: None,
+                    qualified_name: Some("crate::exec::grouped::CapturedGrouped".into()),
+                    byte_start: None,
+                    byte_end: None,
+                    entrypoint_kind: None,
+                    metadata: std::collections::BTreeMap::new(),
+                }]),
+                ..ChangedFile::default()
+            }],
+            blast_radius: Some(BlastRadius {
+                depth_requested: 1,
+                depth_applied: 1,
+                honesty_notes: vec![note.to_string()],
+                ..BlastRadius::default()
+            }),
+            ..ImpactPacket::default()
+        };
+        let (blast, symbols) = review_blast_from_packet(&packet, 1, 1, false);
+        assert_eq!(blast.edges, 0);
+        assert_eq!(blast.nodes, 0);
+        assert_eq!(blast.honesty_notes, vec![note.to_string()]);
+        assert!(blast.reason.is_none());
+        assert_eq!(
+            symbols,
+            vec!["crate::exec::grouped::CapturedGrouped".to_string()]
+        );
+        let value = serde_json::to_value(&blast).unwrap();
+        assert!(value.get("reason").is_none());
+        assert_eq!(value["honestyNotes"][0], note);
+        assert!(value.get("edges").is_some());
+    }
+
+    #[test]
+    fn compose_impact__failure_leaves_honesty_notes_empty() {
+        let blast = review_blast_compose_failed(2, 4, true, &"db locked");
+        assert!(blast.honesty_notes.is_empty());
+        assert_eq!(
+            blast.reason.as_deref(),
+            Some("impact compose failed: db locked")
+        );
+        let value = serde_json::to_value(&blast).unwrap();
+        assert!(value.get("honestyNotes").is_none());
+        assert_eq!(value["reason"], "impact compose failed: db locked");
+    }
+
+    #[test]
+    fn review_json_honesty_notes_default_when_key_absent() {
+        let raw = r#"{"status":"ok","filesScanned":1,"filesTotal":1,"filesCapped":false,"nodes":0,"edges":0}"#;
+        let parsed: ReviewBlast = serde_json::from_str(raw).unwrap();
+        assert!(parsed.honesty_notes.is_empty());
+        let empty = ReviewBlast {
+            status: "ok".into(),
+            files_scanned: 1,
+            files_total: 1,
+            files_capped: false,
+            nodes: 0,
+            edges: 0,
+            reason: None,
+            honesty_notes: Vec::new(),
+        };
+        let text = serde_json::to_string(&empty).unwrap();
+        assert!(!text.contains("honestyNotes"));
+    }
+
+    #[test]
+    fn review_human_honesty_note_is_its_own_line() {
+        let note = "No reverse callers found for bound seeds (native resolution included; zero edges is not isolation)";
+        let env = ReviewEnvelope {
+            schema_version: 1,
+            kind: "review".into(),
+            analysis_mode: "range".into(),
+            range: "HEAD~1...HEAD".into(),
+            base_ref: "HEAD~1".into(),
+            head_ref: "HEAD".into(),
+            files_changed: vec![ReviewFileChange {
+                path: "src/exec/grouped.rs".into(),
+                change_type: "Modified".into(),
+                old_path: None,
+            }],
+            files_changed_truncated: false,
+            blast: ReviewBlast {
+                status: "ok".into(),
+                files_scanned: 1,
+                files_total: 1,
+                files_capped: false,
+                nodes: 0,
+                edges: 0,
+                reason: None,
+                honesty_notes: vec![note.into()],
+            },
+            affected_symbols: vec!["CapturedGrouped".into()],
+            tests: ReviewTests {
+                status: "unavailable".into(),
+                exercising: vec![],
+                untested: vec![],
+                notes: None,
+            },
+            contracts: ReviewContracts {
+                status: "unavailable".into(),
+                items: vec![],
+                truncated: false,
+            },
+            promised_requirements: ReviewRequirements {
+                status: "none".into(),
+                items: vec![],
+                truncated: false,
+            },
+            requirements_files_truncated: false,
+            files_intended: None,
+            files_unexpected: None,
+            files_intended_truncated: false,
+            files_unexpected_truncated: false,
+            prior_decisions: vec![],
+            prior_decisions_truncated: false,
+            implementation_claims: vec![],
+            implementation_claims_truncated: false,
+            unresolved_findings: ReviewFindings {
+                status: "none".into(),
+                items: vec![],
+                truncated: false,
+            },
+            ci_evidence: ReviewCiEvidence {
+                status: "unavailable".into(),
+                items: vec![],
+                truncated: false,
+                bound_head: None,
+                historical: vec![],
+                historical_truncated: false,
+            },
+            coordinated: None,
+            completeness: None,
+        };
+        let mut buf = Vec::new();
+        emit_review(&env, false, &mut buf).unwrap();
+        let stdout = String::from_utf8(buf).unwrap();
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert!(lines.contains(&note), "note must be its own line: {stdout}");
+        assert!(lines.contains(&"Use --json for the agent envelope."));
+        assert!(lines.iter().all(|line| !line.contains("Notes:")));
+        assert!(!stdout.contains("overall stop"));
+    }
+
+    #[test]
     fn review_completeness__history_only_copy_omits_scope() {
         let history = crate::impact::budget::completeness_for_walk(
             crate::impact::budget::HistoryWalkStop::Budget,
@@ -2271,6 +2460,7 @@ mod tests {
                 nodes: 0,
                 edges: 0,
                 reason: Some(blast_reason_for(&history)),
+                honesty_notes: Vec::new(),
             },
             affected_symbols: vec![],
             tests: ReviewTests {
@@ -3632,6 +3822,7 @@ mod tests {
                 nodes: 0,
                 edges: 0,
                 reason: None,
+                honesty_notes: Vec::new(),
             },
             affected_symbols: vec![],
             tests: ReviewTests {
@@ -3701,6 +3892,7 @@ mod tests {
                 nodes: 0,
                 edges: 0,
                 reason: Some("history walk stopped (budget)".into()),
+                honesty_notes: Vec::new(),
             },
             affected_symbols: vec![],
             tests: ReviewTests {

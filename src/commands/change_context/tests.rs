@@ -1220,6 +1220,7 @@ fn change_context_blast_confidence_summary_counts_only_no_edges() {
             expandable: 7,
             total: 8,
         },
+        honesty_notes: Vec::new(),
     };
     let v = serde_json::to_value(&summary).unwrap();
     assert!(
@@ -1230,6 +1231,42 @@ fn change_context_blast_confidence_summary_counts_only_no_edges() {
     assert_eq!(v["confidenceSummary"]["resolved"], 5);
     assert_eq!(v["confidenceSummary"]["total"], 8);
     assert_eq!(v["depth"], 1);
+    assert!(
+        v.get("honestyNotes").is_none(),
+        "empty notes omit the key: {v}"
+    );
+
+    let mut with_notes = summary.clone();
+    with_notes.honesty_notes = vec!["native resolution included".into()];
+    let noted = serde_json::to_value(&with_notes).unwrap();
+    assert_eq!(noted["honestyNotes"][0], "native resolution included");
+    assert!(noted.get("edges").is_none());
+
+    let raw = r#"{"depth":1,"mustTouchFileCount":0,"mustTouchSymbolCount":0,"confidenceSummary":{"scipBound":0,"resolved":0,"ambiguous":0,"unresolved":0,"capped":0,"unknown":0,"expandable":0,"total":0}}"#;
+    let parsed: BlastSummary = serde_json::from_str(raw).unwrap();
+    assert!(parsed.honesty_notes.is_empty());
+
+    let not_ready = not_ready_packet(
+        "test".into(),
+        None,
+        DoctorSection {
+            status: "missing".into(),
+            ready_for_publish: false,
+            block: 0,
+            warn: 0,
+            info: 0,
+            top_findings: Vec::new(),
+        },
+        LedgerSection {
+            pending_count: 0,
+            active_tx: Vec::new(),
+        },
+        NotReadyErrorClass::Other,
+    );
+    assert!(not_ready.blast.is_none());
+    let packet_json = serde_json::to_value(&not_ready).unwrap();
+    assert!(packet_json.get("blast").is_none());
+    assert_eq!(not_ready.schema_version, 1);
 
     // Both detail levels use the same BlastSummary shape (no detail gate on counts).
     for detail in [ChangeContextDetail::Minimal, ChangeContextDetail::Standard] {
