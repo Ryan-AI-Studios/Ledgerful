@@ -2024,7 +2024,6 @@ mod tests {
 
     #[test]
     fn review_one_commit__future_instant__emits_scope_overall() {
-        let started = Instant::now();
         let (_tmp, layout, work, config) = harness_with_storage();
         let (result, stdout) = run(
             &layout,
@@ -2038,13 +2037,14 @@ mod tests {
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
-        let elapsed = started.elapsed();
-        assert!(
-            elapsed <= Duration::from_secs(5),
-            "future Instant must emit in ≤5s, took {elapsed:?}"
-        );
         let env = parse_env(&stdout);
         assert_eq!(env.kind, "review");
+        // No wall-clock budget here on purpose: elapsed time from this test measures how
+        // loaded the CI runner is (the same harness takes <5s on an idle dev box and
+        // 8-45s on a loaded windows-latest runner), not whether the command honoured the
+        // deadline. The structural evidence is the envelope itself -- a review that runs
+        // to completion omits `completeness` entirely -- so scope=overall is what proves
+        // the near-instant deadline cut the pipeline short.
         assert_eq!(
             env.completeness.as_ref().and_then(|c| c.scope),
             Some(CompletenessScope::Overall),
