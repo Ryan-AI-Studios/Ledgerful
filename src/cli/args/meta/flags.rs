@@ -77,6 +77,7 @@ impl Commands {
                 requirements,
                 id,
                 timeout,
+                include_mentions,
                 ..
             }) => {
                 if *json {
@@ -90,6 +91,9 @@ impl Commands {
                 }
                 if timeout.is_some() {
                     f.push("timeout");
+                }
+                if *include_mentions {
+                    f.push("include_mentions");
                 }
             }
             Commands::Scan(ScanArgs {
