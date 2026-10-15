@@ -1630,3 +1630,297 @@ fn hotspots_budget_populated_pass_and_violation() {
         "budget inspect must not write extra hotspot_history rows"
     );
 }
+
+fn hotspot_history_timestamp_count(root: &std::path::Path) -> i64 {
+    let repo_root = Utf8Path::from_path(root).unwrap();
+    let storage = StorageManager::open_read_only_sqlite_only(&Layout::new(repo_root)).unwrap();
+    storage
+        .get_connection()
+        .query_row(
+            "SELECT COUNT(DISTINCT timestamp) FROM hotspot_history",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+fn run_hotspots(root: &std::path::Path, args: &[&str]) -> std::process::Output {
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    Command::new(ledgerful_bin)
+        .arg("hotspots")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .unwrap()
+}
+
+fn assert_hotspots_ok(output: &std::process::Output) -> String {
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).to_string()
+}
+
+#[test]
+fn canonical_list_records_hotspot_history_once() {
+    let tmp = setup_young_indexed_repo();
+    let root = tmp.path();
+    let trends_before = hotspot_trends_count(root);
+    let before = run_hotspots(root, &["trend", "--json"]);
+    let before_stdout = assert_hotspots_ok(&before);
+    let before_json: serde_json::Value = serde_json::from_str(&before_stdout).unwrap();
+    let snapshot_count = before_json["snapshotCount"].as_i64().unwrap();
+
+    let listed = run_hotspots(root, &["--json"]);
+    let stdout = assert_hotspots_ok(&listed);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(json["schemaVersion"], 1);
+    assert!(
+        json["provenance"]["snapshotAt"].as_str().is_some(),
+        "provenance.snapshotAt must be present: {stdout}"
+    );
+    assert_eq!(hotspot_history_timestamp_count(root), 1);
+    assert_eq!(hotspot_trends_count(root), trends_before);
+
+    let second = run_hotspots(root, &[]);
+    assert_hotspots_ok(&second);
+    assert_eq!(hotspot_history_timestamp_count(root), 1);
+    assert_eq!(hotspot_trends_count(root), trends_before);
+
+    let trend = run_hotspots(root, &["trend", "--json"]);
+    let trend_stdout = assert_hotspots_ok(&trend);
+    let trend_json: serde_json::Value = serde_json::from_str(&trend_stdout).unwrap();
+    assert_eq!(trend_json["historyAvailable"], true);
+    assert_eq!(trend_json["snapshotCount"], snapshot_count);
+
+    let budget = run_hotspots(root, &["budget", "--json"]);
+    let budget_stdout = assert_hotspots_ok(&budget);
+    let budget_json: serde_json::Value = serde_json::from_str(&budget_stdout).unwrap();
+    assert_ne!(budget_json["status"], "NO_DATA");
+    assert!(budget_json.get("emptyReason").is_none(), "{budget_json}");
+}
+
+#[test]
+fn narrow_limit_does_not_record_history() {
+    let tmp = setup_young_indexed_repo();
+    let root = tmp.path();
+    let output = run_hotspots(root, &["--limit", "5"]);
+    assert_hotspots_ok(&output);
+    assert_eq!(hotspot_history_count(root), 0);
+}
+
+#[test]
+fn snapshot_narrow_limit_errors() {
+    let tmp = setup_young_indexed_repo();
+    let root = tmp.path();
+    let output = run_hotspots(root, &["--limit", "5", "--snapshot"]);
+    assert!(!output.status.success(), "narrow snapshot must fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--snapshot requires the repository budget query (default filter, configured limit and max_commits, no --days, --entity, --since, or --all-parents)"),
+        "{stderr}"
+    );
+    assert_eq!(hotspot_history_count(root), 0);
+    assert_eq!(hotspot_trends_count(root), 0);
+}
+
+#[test]
+fn snapshot_include_docs_keeps_docs_error() {
+    let tmp = setup_young_indexed_repo();
+    let root = tmp.path();
+    let refused = run_hotspots(root, &["--include", "docs", "--snapshot"]);
+    assert!(!refused.status.success());
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("--snapshot cannot be combined with --include docs (docs lane score is frequency-only; hotspot_history stores f×c)"),
+        "{stderr}"
+    );
+    assert_eq!(hotspot_history_count(root), 0);
+    let listed = run_hotspots(root, &["--include", "docs"]);
+    assert_hotspots_ok(&listed);
+    assert_eq!(hotspot_history_count(root), 0);
+    assert_eq!(hotspot_trends_count(root), 0);
+}
+
+#[test]
+fn snapshot_include_tests_errors() {
+    let tmp = setup_young_indexed_repo();
+    let root = tmp.path();
+    let refused = run_hotspots(root, &["--include", "tests", "--snapshot"]);
+    assert!(!refused.status.success());
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("--snapshot cannot be combined with --include tests (the audit view is not the repository budget series)"),
+        "{stderr}"
+    );
+    assert_eq!(hotspot_history_count(root), 0);
+    let listed = run_hotspots(root, &["--include", "tests"]);
+    assert_hotspots_ok(&listed);
+    assert_eq!(hotspot_history_count(root), 0);
+    assert_eq!(hotspot_trends_count(root), 0);
+}
+
+#[test]
+fn include_vendor_snapshot_skips_trends() {
+    let tmp = setup_young_indexed_repo();
+    let root = tmp.path();
+    let trends_before = hotspot_trends_count(root);
+    let output = run_hotspots(root, &["--include", "vendor", "--snapshot"]);
+    let stdout = assert_hotspots_ok(&output);
+    assert!(
+        stdout.contains("Hotspot snapshot persisted") || stdout.contains("Hotspot and temporal"),
+        "{stdout}"
+    );
+    assert!(hotspot_history_count(root) > 0);
+    assert_eq!(hotspot_trends_count(root), trends_before);
+}
+
+#[test]
+fn auto_snapshot_false_skips_list_write() {
+    let tmp = setup_young_indexed_repo();
+    let root = tmp.path();
+    let config_path = root.join(".ledgerful").join("config.toml");
+    let text = fs::read_to_string(&config_path).unwrap();
+    assert!(
+        text.contains("auto_snapshot = true"),
+        "template must include the key once: {text}"
+    );
+    let updated = text.replacen("auto_snapshot = true", "auto_snapshot = false", 1);
+    assert_eq!(
+        updated.matches("[hotspots]").count(),
+        text.matches("[hotspots]").count()
+    );
+    fs::write(&config_path, updated).unwrap();
+
+    let listed = run_hotspots(root, &[]);
+    assert_hotspots_ok(&listed);
+    assert_eq!(hotspot_history_count(root), 0);
+
+    let snapshot = run_hotspots(root, &["--snapshot"]);
+    assert_hotspots_ok(&snapshot);
+    assert!(hotspot_history_count(root) > 0);
+    assert_eq!(hotspot_trends_count(root), 0);
+}
+
+#[test]
+fn unindexed_list_does_not_record_zeros() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/lib.rs"), "pub fn f() -> i32 { 1 }\n").unwrap();
+    git_add_and_commit(root, "initial");
+    {
+        let _guard = DirGuard::new(root);
+        execute_init(false, false).unwrap();
+    }
+    let output = run_hotspots(root, &[]);
+    let stdout = assert_hotspots_ok(&output);
+    assert!(
+        stdout.contains("Display") || stdout.contains("src"),
+        "unindexed list still prints: {stdout}"
+    );
+    assert_eq!(hotspot_history_count(root), 0);
+    assert_eq!(hotspot_trends_count(root), 0);
+}
+
+#[test]
+fn plain_list_missing_database_creates_nothing() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("README.md"), "one\n").unwrap();
+    git_add_and_commit(root, "initial");
+    let output = run_hotspots(root, &[]);
+    assert!(!output.status.success(), "missing database must error");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Storage not initialized"), "{stderr}");
+    assert!(
+        !root
+            .join(".ledgerful")
+            .join("state")
+            .join("ledger.db")
+            .exists()
+    );
+}
+
+#[test]
+fn snapshot_unchanged_scores_skip_couplings() {
+    let tmp = setup_young_indexed_repo();
+    let root = tmp.path();
+    let first = run_hotspots(root, &["--snapshot"]);
+    assert_hotspots_ok(&first);
+    let timestamps = hotspot_history_timestamp_count(root);
+    let couplings = temporal_coupling_history_count(root);
+    assert_eq!(timestamps, 1);
+    let second = run_hotspots(root, &["--snapshot"]);
+    let stdout = assert_hotspots_ok(&second);
+    assert!(
+        stdout.contains("Hotspot snapshot unchanged (same scores)."),
+        "{stdout}"
+    );
+    assert_eq!(hotspot_history_timestamp_count(root), timestamps);
+    assert_eq!(temporal_coupling_history_count(root), couplings);
+    assert_eq!(hotspot_trends_count(root), 0);
+}
+
+#[test]
+#[serial_test::serial(cwd)]
+fn snapshot_overall_skip_line_hidden_in_json() {
+    use ledgerful::cli::HotspotArgs;
+    use ledgerful::commands::hotspots::{HotspotRunOpts, execute_hotspots_with_opts};
+    use std::time::{Duration, Instant};
+
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("README.md"), "one\n").unwrap();
+    git_add_and_commit(root, "initial");
+    let _guard = DirGuard::new(root);
+    let expired = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .unwrap_or_else(Instant::now);
+    let mut human = Vec::new();
+    execute_hotspots_with_opts(
+        HotspotArgs {
+            snapshot: true,
+            ..Default::default()
+        },
+        HotspotRunOpts {
+            overall_deadline_override: Some(expired),
+            ..Default::default()
+        },
+        Some(&mut human),
+    )
+    .unwrap();
+    let human_out = String::from_utf8_lossy(&human);
+    assert!(
+        human_out.contains("Hotspot snapshot skipped: overall budget."),
+        "{human_out}"
+    );
+    let mut json_buf = Vec::new();
+    execute_hotspots_with_opts(
+        HotspotArgs {
+            snapshot: true,
+            json: true,
+            ..Default::default()
+        },
+        HotspotRunOpts {
+            overall_deadline_override: Some(expired),
+            ..Default::default()
+        },
+        Some(&mut json_buf),
+    )
+    .unwrap();
+    let json_out = String::from_utf8_lossy(&json_buf);
+    assert!(
+        !json_out.contains("Hotspot snapshot skipped:"),
+        "{json_out}"
+    );
+    let value: serde_json::Value = serde_json::from_str(json_out.trim()).unwrap();
+    assert_eq!(value["schemaVersion"], 1);
+    assert_eq!(value["files"].as_array().map(Vec::len), Some(0));
+}

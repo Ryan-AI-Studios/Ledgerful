@@ -1,9 +1,11 @@
 use super::explain::complexity_for_entity_path;
 use super::list::{
-    CouplingsPersistOutcome, format_snapshot_persist_message, latest_hotspot_history_timestamp,
+    CouplingsPersistOutcome, HistoryPersistDecision, HistoryPersistView, HistoryWrite,
+    HotspotPersistOutcome, auto_snapshot_warning_line, format_snapshot_persist_message,
+    history_persist_decision as decide_history_persist, latest_hotspot_history_timestamp,
     list_hotspot_json, live_list_provenance, omitted_docs_footer, omitted_hotspots_footer,
-    omitted_vendor_hotspots_footer, persist_hotspots_and_couplings, wrap_hotspots_list_json,
-    wrap_hotspots_list_json_with_completeness,
+    omitted_vendor_hotspots_footer, persist_hotspots_and_couplings, settle_persist_attempt,
+    wrap_hotspots_list_json, wrap_hotspots_list_json_with_completeness,
 };
 use super::trend::{
     TrendMode, TrendRow, build_trend_summary, compute_history_available, format_trend_ts,
@@ -1601,10 +1603,12 @@ fn hotspots_list__cancel_after_storage_open__git_gate_stop_cancelled() {
     let repo = open_repo(root_path).expect("repo");
     let config = crate::config::model::Config::default();
     let mut buf = Vec::new();
+    // 0512: `--snapshot` requires the canonical repository-budget query, so a
+    // non-default `--limit` is refused before the walk. The cancel path under
+    // test is independent of the limit, so leave it at the configured default.
     super::list::execute_hotspots_list(
         HotspotArgs {
             json: true,
-            limit: Some(5),
             snapshot: true,
             ..Default::default()
         },
@@ -2446,15 +2450,26 @@ fn hotspots_semantic__mid_query_budget__stage_semantic_no_provenance() {
 #[test]
 #[allow(non_snake_case)]
 fn format_snapshot_persist_message__four_variants__locked_copy() {
+    let persisted = HotspotPersistOutcome {
+        history: HistoryWrite::Inserted,
+        couplings: Some(CouplingsPersistOutcome::Persisted),
+    };
     assert_eq!(
-        format_snapshot_persist_message(CouplingsPersistOutcome::Persisted),
+        format_snapshot_persist_message(&persisted),
         "Hotspot and temporal coupling snapshot persisted to SQLite."
     );
+    let young = HotspotPersistOutcome {
+        history: HistoryWrite::Inserted,
+        couplings: Some(CouplingsPersistOutcome::InsufficientHistory),
+    };
     assert_eq!(
-        format_snapshot_persist_message(CouplingsPersistOutcome::InsufficientHistory),
+        format_snapshot_persist_message(&young),
         "Hotspot snapshot persisted to SQLite (temporal coupling history skipped: repository has fewer than 10 commits)."
     );
-    let budget = format_snapshot_persist_message(CouplingsPersistOutcome::BudgetSkipped);
+    let budget = format_snapshot_persist_message(&HotspotPersistOutcome {
+        history: HistoryWrite::Inserted,
+        couplings: Some(CouplingsPersistOutcome::BudgetSkipped),
+    });
     assert_eq!(
         budget,
         "Hotspot snapshot persisted to SQLite (temporal coupling history skipped: persist budget)."
@@ -2463,7 +2478,10 @@ fn format_snapshot_persist_message__four_variants__locked_copy() {
         !budget.contains("fewer than 10 commits"),
         "budget skip must not use the young-repo sentence: {budget}"
     );
-    let cancelled = format_snapshot_persist_message(CouplingsPersistOutcome::Cancelled);
+    let cancelled = format_snapshot_persist_message(&HotspotPersistOutcome {
+        history: HistoryWrite::Inserted,
+        couplings: Some(CouplingsPersistOutcome::Cancelled),
+    });
     assert_eq!(
         cancelled,
         "Hotspot snapshot persisted to SQLite (temporal coupling history skipped: cancelled)."
@@ -2471,6 +2489,13 @@ fn format_snapshot_persist_message__four_variants__locked_copy() {
     assert!(
         !cancelled.contains("fewer than 10 commits"),
         "cancel skip must not use the young-repo sentence: {cancelled}"
+    );
+    assert_eq!(
+        format_snapshot_persist_message(&HotspotPersistOutcome {
+            history: HistoryWrite::Unchanged,
+            couplings: None,
+        }),
+        "Hotspot snapshot unchanged (same scores)."
     );
 }
 
@@ -2580,9 +2605,13 @@ fn persist_hotspots_and_couplings__expired_budget__budget_skipped_no_coupling_ro
     let hotspots = [sample_hotspot()];
     let budget = AnalysisBudget::expired(Arc::new(AtomicBool::new(false)));
     let outcome =
-        persist_hotspots_and_couplings(&storage, &repo, &hotspots, &config, Some(&budget))
+        persist_hotspots_and_couplings(&storage, &repo, &hotspots, &config, Some(&budget), true)
             .expect("persist");
-    assert_eq!(outcome, CouplingsPersistOutcome::BudgetSkipped);
+    assert_eq!(outcome.history, HistoryWrite::Inserted);
+    assert_eq!(
+        outcome.couplings,
+        Some(CouplingsPersistOutcome::BudgetSkipped)
+    );
     assert!(
         table_count(&storage, "hotspot_history") > 0,
         "hotspot rows must still be inserted"
@@ -2607,9 +2636,10 @@ fn persist_hotspots_and_couplings__cancel_flag__cancelled_no_coupling_rows() {
     let hotspots = [sample_hotspot()];
     let budget = AnalysisBudget::unlimited(Arc::new(AtomicBool::new(true)));
     let outcome =
-        persist_hotspots_and_couplings(&storage, &repo, &hotspots, &config, Some(&budget))
+        persist_hotspots_and_couplings(&storage, &repo, &hotspots, &config, Some(&budget), true)
             .expect("persist");
-    assert_eq!(outcome, CouplingsPersistOutcome::Cancelled);
+    assert_eq!(outcome.history, HistoryWrite::Inserted);
+    assert_eq!(outcome.couplings, Some(CouplingsPersistOutcome::Cancelled));
     assert!(
         table_count(&storage, "hotspot_history") > 0,
         "hotspot rows must still be inserted"
@@ -2619,5 +2649,435 @@ fn persist_hotspots_and_couplings__cancel_flag__cancelled_no_coupling_rows() {
         0,
         "cancelled walk must not store truncated couplings"
     );
+    let _ = storage.shutdown();
+}
+
+#[allow(clippy::too_many_arguments)]
+fn persist_view<'a>(
+    args: &'a crate::cli::HotspotArgs,
+    scores: &'a [f32],
+    walk_stop: crate::impact::budget::HistoryWalkStop,
+    complexity_skipped: bool,
+    head_present: bool,
+    overall_stop: bool,
+    cancelled: bool,
+    auto_snapshot: bool,
+) -> HistoryPersistView<'a> {
+    HistoryPersistView {
+        args,
+        configured_limit: 10,
+        configured_max_commits: 500,
+        auto_snapshot,
+        walk_stop,
+        complexity_skipped,
+        head_present,
+        scores,
+        overall_stop,
+        cancelled,
+    }
+}
+
+#[test]
+fn history_persist_decision() {
+    use crate::cli::{HotspotArgs, HotspotIncludeScope};
+    use crate::impact::budget::HistoryWalkStop;
+
+    let scores = [0.4_f32];
+    let base = HotspotArgs::default();
+    assert_eq!(
+        decide_history_persist(&persist_view(
+            &base,
+            &scores,
+            HistoryWalkStop::Complete,
+            false,
+            true,
+            false,
+            false,
+            true,
+        )),
+        HistoryPersistDecision::WriteHistory
+    );
+
+    let mut snapshot = base.clone();
+    snapshot.snapshot = true;
+    assert_eq!(
+        decide_history_persist(&persist_view(
+            &snapshot,
+            &scores,
+            HistoryWalkStop::Complete,
+            false,
+            true,
+            false,
+            false,
+            true,
+        )),
+        HistoryPersistDecision::WriteHistoryAndCouplings
+    );
+
+    let mut vendor = snapshot.clone();
+    vendor.include = Some(HotspotIncludeScope::Vendor);
+    assert_eq!(
+        decide_history_persist(&persist_view(
+            &vendor,
+            &scores,
+            HistoryWalkStop::Complete,
+            false,
+            true,
+            false,
+            false,
+            true,
+        )),
+        HistoryPersistDecision::WriteHistoryAndCouplings
+    );
+
+    assert_eq!(
+        decide_history_persist(&persist_view(
+            &base,
+            &scores,
+            HistoryWalkStop::Complete,
+            false,
+            true,
+            false,
+            false,
+            false,
+        )),
+        HistoryPersistDecision::SilentSkip,
+        "auto_snapshot false selects no automatic write"
+    );
+
+    let mut since = snapshot.clone();
+    since.since = Some("HEAD~1".to_string());
+    assert_eq!(
+        decide_history_persist(&persist_view(
+            &since,
+            &scores,
+            HistoryWalkStop::Complete,
+            false,
+            true,
+            false,
+            false,
+            true,
+        )),
+        HistoryPersistDecision::Error {
+            message: "--snapshot requires the repository budget query (default filter, configured limit and max_commits, no --days, --entity, --since, or --all-parents)",
+        }
+    );
+    let mut since_auto = base.clone();
+    since_auto.since = Some("HEAD~1".to_string());
+    assert_eq!(
+        decide_history_persist(&persist_view(
+            &since_auto,
+            &scores,
+            HistoryWalkStop::Complete,
+            false,
+            true,
+            false,
+            false,
+            true,
+        )),
+        HistoryPersistDecision::SilentSkip
+    );
+
+    let mut parents = snapshot.clone();
+    parents.all_parents = true;
+    assert!(matches!(
+        decide_history_persist(&persist_view(
+            &parents,
+            &scores,
+            HistoryWalkStop::Complete,
+            false,
+            true,
+            false,
+            false,
+            true,
+        )),
+        HistoryPersistDecision::Error { .. }
+    ));
+    let mut parents_auto = base.clone();
+    parents_auto.all_parents = true;
+    assert_eq!(
+        decide_history_persist(&persist_view(
+            &parents_auto,
+            &scores,
+            HistoryWalkStop::Complete,
+            false,
+            true,
+            false,
+            false,
+            true,
+        )),
+        HistoryPersistDecision::SilentSkip
+    );
+
+    assert_eq!(
+        decide_history_persist(&persist_view(
+            &snapshot,
+            &scores,
+            HistoryWalkStop::Complete,
+            false,
+            false,
+            false,
+            false,
+            true,
+        )),
+        HistoryPersistDecision::SilentSkip,
+        "missing head does not select a write"
+    );
+
+    let skip = |args: &HotspotArgs,
+                scores: &[f32],
+                walk: HistoryWalkStop,
+                complexity_skipped: bool,
+                overall_stop: bool,
+                cancelled: bool|
+     -> &'static str {
+        match decide_history_persist(&persist_view(
+            args,
+            scores,
+            walk,
+            complexity_skipped,
+            true,
+            overall_stop,
+            cancelled,
+            true,
+        )) {
+            HistoryPersistDecision::SnapshotSkip { line } => line,
+            other => panic!("expected a skip line, got {other:?}"),
+        }
+    };
+    assert_eq!(
+        skip(
+            &snapshot,
+            &scores,
+            HistoryWalkStop::Complete,
+            false,
+            false,
+            true
+        ),
+        "Hotspot snapshot skipped: cancelled."
+    );
+    assert_eq!(
+        skip(
+            &snapshot,
+            &scores,
+            HistoryWalkStop::Complete,
+            false,
+            true,
+            false
+        ),
+        "Hotspot snapshot skipped: overall budget."
+    );
+    assert_eq!(
+        skip(
+            &snapshot,
+            &scores,
+            HistoryWalkStop::Budget,
+            false,
+            false,
+            false
+        ),
+        "Hotspot snapshot skipped: history budget."
+    );
+    assert_eq!(
+        skip(
+            &snapshot,
+            &scores,
+            HistoryWalkStop::Complete,
+            true,
+            false,
+            false
+        ),
+        "Hotspot snapshot skipped: complexity was not scored."
+    );
+    assert_eq!(
+        skip(
+            &snapshot,
+            &[],
+            HistoryWalkStop::Complete,
+            false,
+            false,
+            false
+        ),
+        "Hotspot snapshot skipped: no ranked files."
+    );
+    assert_eq!(
+        skip(
+            &snapshot,
+            &[0.0, 0.0],
+            HistoryWalkStop::Complete,
+            false,
+            false,
+            false
+        ),
+        "Hotspot snapshot skipped: complexity was not scored."
+    );
+
+    assert_eq!(
+        decide_history_persist(&persist_view(
+            &base,
+            &scores,
+            HistoryWalkStop::Budget,
+            false,
+            true,
+            false,
+            false,
+            true,
+        )),
+        HistoryPersistDecision::SilentSkip
+    );
+    assert_eq!(
+        decide_history_persist(&persist_view(
+            &base,
+            &scores,
+            HistoryWalkStop::Complete,
+            true,
+            true,
+            false,
+            false,
+            true,
+        )),
+        HistoryPersistDecision::SilentSkip
+    );
+    assert_eq!(
+        decide_history_persist(&persist_view(
+            &base,
+            &[],
+            HistoryWalkStop::Complete,
+            false,
+            true,
+            false,
+            false,
+            true,
+        )),
+        HistoryPersistDecision::SilentSkip
+    );
+    assert_eq!(
+        decide_history_persist(&persist_view(
+            &base,
+            &[0.0],
+            HistoryWalkStop::Complete,
+            false,
+            true,
+            false,
+            false,
+            true,
+        )),
+        HistoryPersistDecision::SilentSkip
+    );
+}
+
+fn busy_locked_storage() -> (
+    tempfile::TempDir,
+    crate::state::storage::StorageManager,
+    rusqlite::Connection,
+    gix::Repository,
+) {
+    use crate::state::layout::Layout;
+    use crate::state::storage::StorageManager;
+    use std::fs;
+    use std::process::Command;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    assert!(
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "test"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    fs::write(root.join("README.md"), "one\n").unwrap();
+    assert!(
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["commit", "-m", "first"])
+            .current_dir(root)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .status()
+            .unwrap()
+            .success()
+    );
+    let layout = Layout::new(camino::Utf8Path::from_path(root).unwrap());
+    layout.ensure_state_dir().unwrap();
+    let storage = StorageManager::init_with_layout(&layout).unwrap();
+    let locker =
+        rusqlite::Connection::open(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    locker
+        .execute_batch("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 0;")
+        .unwrap();
+    locker.execute("BEGIN IMMEDIATE", []).unwrap();
+    let repo = crate::git::repo::open_repo(root).expect("open git repo");
+    (tmp, storage, locker, repo)
+}
+
+#[test]
+fn auto_snapshot_busy_warns_and_exits_zero() {
+    use crate::state::storage::hotspot_trends::report_is_database_busy;
+    use std::time::{Duration, Instant};
+
+    let (_tmp, storage, _locker, repo) = busy_locked_storage();
+    let config = crate::config::model::Config::default();
+    let hotspots = [sample_hotspot()];
+    let start = Instant::now();
+    let result = persist_hotspots_and_couplings(&storage, &repo, &hotspots, &config, None, false);
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "busy retries must not wait on the 5000ms pragma: {elapsed:?}"
+    );
+    assert!(
+        elapsed >= Duration::from_millis(140),
+        "expected three 50ms retries: {elapsed:?}"
+    );
+    let err = result.expect_err("locked database");
+    assert!(report_is_database_busy(&err).is_some(), "{err}");
+    assert_eq!(
+        auto_snapshot_warning_line(&err),
+        "[Ledgerful] WARNING: hotspot snapshot was not recorded (database locked)."
+    );
+    let settled = settle_persist_attempt(false, Err(err)).expect("automatic path exits 0");
+    assert!(settled.is_none());
+    let _ = storage.shutdown();
+}
+
+#[test]
+fn snapshot_busy_returns_error() {
+    use crate::state::storage::hotspot_trends::report_is_database_busy;
+    use std::time::{Duration, Instant};
+
+    let (_tmp, storage, _locker, repo) = busy_locked_storage();
+    let config = crate::config::model::Config::default();
+    let hotspots = [sample_hotspot()];
+    let start = Instant::now();
+    let result = persist_hotspots_and_couplings(&storage, &repo, &hotspots, &config, None, false);
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "busy retries must not wait on the 5000ms pragma: {elapsed:?}"
+    );
+    let err = result.expect_err("explicit snapshot returns the lock error");
+    assert!(report_is_database_busy(&err).is_some(), "{err}");
+    assert!(settle_persist_attempt(true, Err(err)).is_err());
     let _ = storage.shutdown();
 }

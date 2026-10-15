@@ -69,7 +69,7 @@ pub struct HotspotArgs {
     #[arg(long, short)]
     pub semantic: bool,
 
-    /// Persist the results as a snapshot in the history tables
+    /// Persist the repository budget series in hotspot_history, including temporal couplings.
     #[arg(long)]
     pub snapshot: bool,
 
