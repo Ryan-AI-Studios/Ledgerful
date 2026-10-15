@@ -157,30 +157,19 @@ impl CouplingProvider {
         let temporal_engine =
             TemporalEngine::new(history_provider, context.config.temporal.clone());
 
-        match temporal_engine.calculate_couplings_budgeted(context.history_budget.as_ref()) {
-            Ok(mut couplings) => {
-                // Filter: at least one file must be in packet.changes
-                let change_paths: std::collections::HashSet<_> =
-                    packet.changes.iter().map(|c| &c.path).collect();
-
-                couplings.retain(|c| {
-                    change_paths.contains(&c.file_a) || change_paths.contains(&c.file_b)
-                });
-
-                // Sort by score descending
-                couplings.sort_by(|a, b| {
-                    b.score
-                        .partial_cmp(&a.score)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-
-                // Cap
-                let limit = context.config.coverage.max_coupling_pairs;
-                if couplings.len() > limit {
-                    couplings.truncate(limit);
-                }
-
-                packet.set_temporal_couplings(couplings);
+        match temporal_engine.calculate_coupling_report_budgeted(context.history_budget.as_ref()) {
+            Ok(report) => {
+                let (file_couplings, audit_couplings, discarded) = apply_temporal_presentation(
+                    report.file_couplings,
+                    report.audit_couplings,
+                    &report.discarded_tree_paths,
+                    &packet.changes,
+                    packet.path_mode.as_str(),
+                    context.config.coverage.max_coupling_pairs,
+                );
+                packet.set_temporal_couplings(file_couplings);
+                packet.temporal_couplings_audit = audit_couplings;
+                packet.discarded_tree_paths = discarded;
             }
             Err(e) => {
                 warn!("Temporal analysis failed: {e}");
@@ -190,6 +179,67 @@ impl CouplingProvider {
 
         Ok(())
     }
+}
+
+/// Change-filter both lists, derive tree paths from the filtered audit pairs,
+/// drop code-mode demotions from the file list, then cap each coupling list.
+/// `discarded` is not truncated and is not re-filtered after the cap.
+pub(crate) fn apply_temporal_presentation(
+    mut file_couplings: Vec<crate::impact::packet::TemporalCoupling>,
+    mut audit_couplings: Vec<crate::impact::packet::TemporalCoupling>,
+    engine_tree_paths: &[camino::Utf8PathBuf],
+    changes: &[crate::impact::packet::ChangedFile],
+    path_mode: &str,
+    limit: usize,
+) -> (
+    Vec<crate::impact::packet::TemporalCoupling>,
+    Vec<crate::impact::packet::TemporalCoupling>,
+    Vec<std::path::PathBuf>,
+) {
+    let change_paths: std::collections::HashSet<_> = changes.iter().map(|c| &c.path).collect();
+    let hits_change = |c: &crate::impact::packet::TemporalCoupling| {
+        change_paths.contains(&c.file_a) || change_paths.contains(&c.file_b)
+    };
+    file_couplings.retain(&hits_change);
+    audit_couplings.retain(&hits_change);
+
+    let engine_trees: std::collections::HashSet<String> = engine_tree_paths
+        .iter()
+        .map(|path| path.as_str().replace('\\', "/"))
+        .collect();
+    let mut discarded: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for pair in &audit_couplings {
+        for side in [&pair.file_a, &pair.file_b] {
+            let key = side.to_string_lossy().replace('\\', "/");
+            if engine_trees.contains(&key) {
+                discarded.insert(key);
+            }
+        }
+    }
+
+    file_couplings.retain(|coupling| {
+        !crate::impact::path_class::should_demote_pair(
+            &coupling.file_a.to_string_lossy(),
+            &coupling.file_b.to_string_lossy(),
+            path_mode,
+        )
+    });
+
+    if file_couplings.len() > limit {
+        file_couplings.truncate(limit);
+    }
+    if audit_couplings.len() > limit {
+        audit_couplings.truncate(limit);
+    }
+
+    (
+        file_couplings,
+        audit_couplings,
+        discarded
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .collect(),
+    )
 }
 
 #[cfg(test)]
@@ -466,6 +516,111 @@ mod tests {
 
         // Temporal engine needs a real git repo; filter/cap logic is covered
         // when git history is available. Structural path is the DoD surface.
+    }
+
+    #[test]
+    fn path_mode_all_restores_changelog_and_keeps_tree_partner_on_audit() {
+        use crate::impact::packet::TemporalCoupling;
+        use camino::Utf8PathBuf;
+
+        let file_pairs = vec![
+            TemporalCoupling {
+                file_a: PathBuf::from("src/a.rs"),
+                file_b: PathBuf::from("CHANGELOG.md"),
+                score: 0.95,
+            },
+            TemporalCoupling {
+                file_a: PathBuf::from("src/a.rs"),
+                file_b: PathBuf::from("src/b.rs"),
+                score: 0.9,
+            },
+        ];
+        let audit = vec![
+            file_pairs[0].clone(),
+            file_pairs[1].clone(),
+            TemporalCoupling {
+                file_a: PathBuf::from("src/a.rs"),
+                file_b: PathBuf::from("a"),
+                score: 0.91,
+            },
+        ];
+        let changes = vec![ChangedFile {
+            path: PathBuf::from("src/a.rs"),
+            status: "Modified".to_string(),
+            ..ChangedFile::default()
+        }];
+        let trees = vec![Utf8PathBuf::from("a"), Utf8PathBuf::from("unused")];
+
+        let (files, audit_out, discarded) = apply_temporal_presentation(
+            file_pairs.clone(),
+            audit.clone(),
+            &trees,
+            &changes,
+            "all",
+            50,
+        );
+        assert!(
+            files
+                .iter()
+                .any(|c| c.file_a.ends_with("CHANGELOG.md") || c.file_b.ends_with("CHANGELOG.md")),
+            "pathMode=all restores the changelog file pair: {files:?}"
+        );
+        assert!(
+            files.iter().all(|c| c.file_a != *"a" && c.file_b != *"a"),
+            "tree partner stays off the default list: {files:?}"
+        );
+        assert!(
+            audit_out
+                .iter()
+                .any(|c| c.file_a == *"a" || c.file_b == *"a"),
+            "tree partner stays on the audit list: {audit_out:?}"
+        );
+        assert_eq!(discarded, vec![PathBuf::from("a")]);
+
+        let count = crate::impact::path_class::count_presented_temporal_exclusions(
+            &files, &audit_out, &discarded, "all", 0.7,
+        );
+        assert_eq!(count, 1, "pathMode=all counts the tree pair once");
+
+        let (capped_files, capped_audit, capped_discarded) = apply_temporal_presentation(
+            file_pairs.clone(),
+            audit.clone(),
+            &trees,
+            &changes,
+            "all",
+            1,
+        );
+        assert_eq!(capped_files.len(), 1);
+        assert_eq!(capped_audit.len(), 1);
+        assert_eq!(
+            capped_discarded,
+            vec![PathBuf::from("a")],
+            "tree path outlives the truncated audit pair"
+        );
+
+        let (code_files, code_audit, code_discarded) =
+            apply_temporal_presentation(file_pairs, audit, &trees, &changes, "code", 50);
+        let code_count = crate::impact::path_class::count_presented_temporal_exclusions(
+            &code_files,
+            &code_audit,
+            &code_discarded,
+            "code",
+            0.7,
+        );
+        assert_eq!(
+            code_count, 2,
+            "code mode counts the changelog pair and the tree pair"
+        );
+        assert!(
+            code_files
+                .iter()
+                .all(|c| { c.file_a != *"CHANGELOG.md" && c.file_b != *"CHANGELOG.md" }),
+            "code mode demotes the changelog pair: {code_files:?}"
+        );
+        assert!(
+            code_files.iter().any(|c| c.file_b == *"src/b.rs"),
+            "code pair stays: {code_files:?}"
+        );
     }
 
     /// Production wiring (0118): after blast success, CouplingProvider sets

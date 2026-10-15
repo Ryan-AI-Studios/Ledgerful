@@ -6,14 +6,24 @@ use camino::Utf8PathBuf;
 use gix::Repository;
 use gix::object::tree::diff::ChangeDetached;
 use miette::Result;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 #[derive(Clone, Default)]
 pub struct CommitFileSet {
     pub files: HashSet<Utf8PathBuf>,
+    /// Directory entries from the same commit. Not counted toward the leaf cap.
+    pub tree_paths: HashSet<Utf8PathBuf>,
     pub is_merge: bool,
     /// Hex id when the walk recorded one (`None` in mocks).
     pub id: Option<String>,
+}
+
+/// File pairs, the wider audit pairs, and tree paths from commits the leaf cap kept.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TemporalCouplingReport {
+    pub file_couplings: Vec<TemporalCoupling>,
+    pub audit_couplings: Vec<TemporalCoupling>,
+    pub discarded_tree_paths: Vec<Utf8PathBuf>,
 }
 
 /// Result of a budgeted first-parent (or all-parents) walk.
@@ -199,6 +209,7 @@ impl<'repo> HistoryProvider for GixHistoryProvider<'repo> {
 
             let is_merge = commit.parent_ids().count() > 1;
             let mut files = HashSet::new();
+            let mut tree_paths = HashSet::new();
 
             if !is_merge {
                 let current_tree = match commit.tree() {
@@ -240,31 +251,64 @@ impl<'repo> HistoryProvider for GixHistoryProvider<'repo> {
 
                 for change in changes {
                     match change {
-                        ChangeDetached::Addition { location, .. }
-                        | ChangeDetached::Deletion { location, .. }
-                        | ChangeDetached::Modification { location, .. } => {
-                            files.insert(Utf8PathBuf::from(
-                                String::from_utf8_lossy(&location).into_owned(),
-                            ));
+                        ChangeDetached::Addition {
+                            location,
+                            entry_mode,
+                            ..
+                        }
+                        | ChangeDetached::Deletion {
+                            location,
+                            entry_mode,
+                            ..
+                        } => {
+                            record_leaf_or_tree(
+                                &mut files,
+                                &mut tree_paths,
+                                location.as_ref(),
+                                entry_mode,
+                            );
+                        }
+                        ChangeDetached::Modification {
+                            location,
+                            previous_entry_mode,
+                            entry_mode,
+                            ..
+                        } => {
+                            let path = location_path(&location);
+                            if previous_entry_mode.is_tree() && entry_mode.is_tree() {
+                                tree_paths.insert(path);
+                            } else {
+                                files.insert(path);
+                            }
                         }
                         ChangeDetached::Rewrite {
                             location,
                             source_location,
+                            source_entry_mode,
+                            entry_mode,
                             ..
                         } => {
-                            files.insert(Utf8PathBuf::from(
-                                String::from_utf8_lossy(&location).into_owned(),
-                            ));
-                            files.insert(Utf8PathBuf::from(
-                                String::from_utf8_lossy(&source_location).into_owned(),
-                            ));
+                            record_leaf_or_tree(
+                                &mut files,
+                                &mut tree_paths,
+                                source_location.as_ref(),
+                                source_entry_mode,
+                            );
+                            record_leaf_or_tree(
+                                &mut files,
+                                &mut tree_paths,
+                                location.as_ref(),
+                                entry_mode,
+                            );
                         }
                     }
                 }
+                prefer_leaf(&files, &mut tree_paths);
             }
 
             history.push(CommitFileSet {
                 files,
+                tree_paths,
                 is_merge,
                 id: Some(info.id().to_string()),
             });
@@ -277,6 +321,31 @@ impl<'repo> HistoryProvider for GixHistoryProvider<'repo> {
             commits_walked,
             head,
         })
+    }
+}
+
+fn location_path(location: &[u8]) -> Utf8PathBuf {
+    Utf8PathBuf::from(String::from_utf8_lossy(location).into_owned())
+}
+
+fn record_leaf_or_tree(
+    files: &mut HashSet<Utf8PathBuf>,
+    trees: &mut HashSet<Utf8PathBuf>,
+    location: &[u8],
+    mode: gix::objs::tree::EntryMode,
+) {
+    let path = location_path(location);
+    if mode.is_tree() {
+        trees.insert(path);
+    } else {
+        files.insert(path);
+    }
+}
+
+/// A path recorded as both a leaf and a tree in one commit stays a leaf.
+fn prefer_leaf(files: &HashSet<Utf8PathBuf>, trees: &mut HashSet<Utf8PathBuf>) {
+    for path in files {
+        trees.remove(path);
     }
 }
 
@@ -298,6 +367,19 @@ impl<P: HistoryProvider> TemporalEngine<P> {
         &self,
         budget: Option<&AnalysisBudget>,
     ) -> Result<Vec<TemporalCoupling>, GitError> {
+        Ok(self
+            .calculate_coupling_report_budgeted(budget)?
+            .file_couplings)
+    }
+
+    /// File pairs, audit pairs, and tree paths from commits the leaf cap kept.
+    /// Does not change-filter. An incomplete walk under the 10-commit floor
+    /// returns an empty report. A completed walk under that floor is
+    /// `InsufficientHistory` with no partial audit list.
+    pub fn calculate_coupling_report_budgeted(
+        &self,
+        budget: Option<&AnalysisBudget>,
+    ) -> Result<TemporalCouplingReport, GitError> {
         let walk = self.provider.get_history_budgeted(
             self.config.max_commits,
             None,
@@ -309,8 +391,9 @@ impl<P: HistoryProvider> TemporalEngine<P> {
         let history = walk.history;
 
         let mut commit_count = 0;
-        // Store (commit_index, weight) for each file
         let mut file_weighted_commits: HashMap<Utf8PathBuf, Vec<(usize, f64)>> = HashMap::new();
+        let mut audit_weighted_commits: HashMap<Utf8PathBuf, Vec<(usize, f64)>> = HashMap::new();
+        let mut kept_trees: BTreeSet<Utf8PathBuf> = BTreeSet::new();
         let mut total_commit_index = 0;
 
         for commit_set in history {
@@ -324,19 +407,33 @@ impl<P: HistoryProvider> TemporalEngine<P> {
                 continue;
             }
 
-            // Exponential decay: most recent commit gets weight 1.0
+            // Exponential decay: most recent kept commit gets weight 1.0
             // weight = 2^(-commit_index / half_life)
             let weight = if self.config.decay_half_life > 0 {
                 (2.0_f64).powf(-(total_commit_index as f64) / (self.config.decay_half_life as f64))
             } else {
-                1.0 // no decay if half_life is 0 (edge case)
+                1.0
             };
 
-            for file in commit_set.files {
+            for file in &commit_set.files {
                 file_weighted_commits
-                    .entry(file)
+                    .entry(file.clone())
                     .or_default()
                     .push((total_commit_index, weight));
+                audit_weighted_commits
+                    .entry(file.clone())
+                    .or_default()
+                    .push((total_commit_index, weight));
+            }
+            for tree in &commit_set.tree_paths {
+                if commit_set.files.contains(tree) {
+                    continue;
+                }
+                audit_weighted_commits
+                    .entry(tree.clone())
+                    .or_default()
+                    .push((total_commit_index, weight));
+                kept_trees.insert(tree.clone());
             }
 
             commit_count += 1;
@@ -345,7 +442,7 @@ impl<P: HistoryProvider> TemporalEngine<P> {
 
         if commit_count < 10 {
             if !matches!(walk_stop, HistoryWalkStop::Complete) {
-                return Ok(Vec::new());
+                return Ok(TemporalCouplingReport::default());
             }
             return Err(GitError::InsufficientHistory {
                 found: commit_count,
@@ -353,99 +450,104 @@ impl<P: HistoryProvider> TemporalEngine<P> {
             });
         }
 
-        // Filter files below min_revisions threshold
-        let mut eligible_files: Vec<Utf8PathBuf> = file_weighted_commits
-            .iter()
-            .filter(|(_, commits)| commits.len() >= self.config.min_revisions)
-            .map(|(path, _)| path.clone())
-            .collect();
-        eligible_files.sort_unstable();
+        Ok(TemporalCouplingReport {
+            file_couplings: couplings_from_weighted(&file_weighted_commits, &self.config),
+            audit_couplings: couplings_from_weighted(&audit_weighted_commits, &self.config),
+            discarded_tree_paths: kept_trees.into_iter().collect(),
+        })
+    }
+}
 
-        // Build per-file weighted totals for normalization
-        let mut file_total_weight: HashMap<&Utf8PathBuf, f64> = HashMap::new();
-        for path in &eligible_files {
-            let total: f64 = file_weighted_commits[path].iter().map(|(_, w)| w).sum();
-            file_total_weight.insert(path, total);
-        }
+fn couplings_from_weighted(
+    file_weighted_commits: &HashMap<Utf8PathBuf, Vec<(usize, f64)>>,
+    config: &TemporalConfig,
+) -> Vec<TemporalCoupling> {
+    let mut eligible_files: Vec<Utf8PathBuf> = file_weighted_commits
+        .iter()
+        .filter(|(_, commits)| commits.len() >= config.min_revisions)
+        .map(|(path, _)| path.clone())
+        .collect();
+    eligible_files.sort_unstable();
 
-        let mut couplings = Vec::new();
+    let mut file_total_weight: HashMap<&Utf8PathBuf, f64> = HashMap::new();
+    for path in &eligible_files {
+        let total: f64 = file_weighted_commits[path].iter().map(|(_, w)| w).sum();
+        file_total_weight.insert(path, total);
+    }
 
-        for i in 0..eligible_files.len() {
-            for j in (i + 1)..eligible_files.len() {
-                let file_a = &eligible_files[i];
-                let file_b = &eligible_files[j];
+    let mut couplings = Vec::new();
 
-                let commits_a = &file_weighted_commits[file_a];
-                let commits_b = &file_weighted_commits[file_b];
+    for i in 0..eligible_files.len() {
+        for j in (i + 1)..eligible_files.len() {
+            let file_a = &eligible_files[i];
+            let file_b = &eligible_files[j];
 
-                // Calculate weighted shared commits using merge-join on sorted commit indices
-                let mut shared_weight: f64 = 0.0;
-                let mut shared_count: usize = 0;
+            let commits_a = &file_weighted_commits[file_a];
+            let commits_b = &file_weighted_commits[file_b];
 
-                let mut ai = 0;
-                let mut bi = 0;
-                while ai < commits_a.len() && bi < commits_b.len() {
-                    match commits_a[ai].0.cmp(&commits_b[bi].0) {
-                        std::cmp::Ordering::Less => ai += 1,
-                        std::cmp::Ordering::Greater => bi += 1,
-                        std::cmp::Ordering::Equal => {
-                            // Same commit — use the weight from file_a (same commit, same weight)
-                            shared_weight += commits_a[ai].1;
-                            shared_count += 1;
-                            ai += 1;
-                            bi += 1;
-                        }
+            let mut shared_weight: f64 = 0.0;
+            let mut shared_count: usize = 0;
+
+            let mut ai = 0;
+            let mut bi = 0;
+            while ai < commits_a.len() && bi < commits_b.len() {
+                match commits_a[ai].0.cmp(&commits_b[bi].0) {
+                    std::cmp::Ordering::Less => ai += 1,
+                    std::cmp::Ordering::Greater => bi += 1,
+                    std::cmp::Ordering::Equal => {
+                        shared_weight += commits_a[ai].1;
+                        shared_count += 1;
+                        ai += 1;
+                        bi += 1;
                     }
                 }
+            }
 
-                // Apply minimum shared commits threshold
-                if shared_count < self.config.min_shared_commits {
-                    continue;
-                }
+            if shared_count < config.min_shared_commits {
+                continue;
+            }
 
-                let total_a = file_total_weight[file_a];
-                let total_b = file_total_weight[file_b];
+            let total_a = file_total_weight[file_a];
+            let total_b = file_total_weight[file_b];
 
-                let score_a = if total_a > 0.0 {
-                    (shared_weight / total_a) as f32
-                } else {
-                    0.0
-                };
-                let score_b = if total_b > 0.0 {
-                    (shared_weight / total_b) as f32
-                } else {
-                    0.0
-                };
+            let score_a = if total_a > 0.0 {
+                (shared_weight / total_a) as f32
+            } else {
+                0.0
+            };
+            let score_b = if total_b > 0.0 {
+                (shared_weight / total_b) as f32
+            } else {
+                0.0
+            };
 
-                if score_a > self.config.coupling_threshold {
-                    couplings.push(TemporalCoupling {
-                        file_a: file_a.clone().into(),
-                        file_b: file_b.clone().into(),
-                        score: score_a,
-                    });
-                }
+            if score_a > config.coupling_threshold {
+                couplings.push(TemporalCoupling {
+                    file_a: file_a.clone().into(),
+                    file_b: file_b.clone().into(),
+                    score: score_a,
+                });
+            }
 
-                if score_b > self.config.coupling_threshold {
-                    couplings.push(TemporalCoupling {
-                        file_a: file_b.clone().into(),
-                        file_b: file_a.clone().into(),
-                        score: score_b,
-                    });
-                }
+            if score_b > config.coupling_threshold {
+                couplings.push(TemporalCoupling {
+                    file_a: file_b.clone().into(),
+                    file_b: file_a.clone().into(),
+                    score: score_b,
+                });
             }
         }
-
-        // Deterministic sorting by score (desc) then paths
-        couplings.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.file_a.cmp(&b.file_a))
-                .then_with(|| a.file_b.cmp(&b.file_b))
-        });
-
-        Ok(couplings)
     }
+
+    couplings.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.file_a.cmp(&b.file_a))
+            .then_with(|| a.file_b.cmp(&b.file_b))
+    });
+
+    couplings
 }
 
 #[cfg(test)]
@@ -547,6 +649,7 @@ mod tests {
                 files.insert(Utf8PathBuf::from(format!("src/f{i}.rs")));
                 CommitFileSet {
                     files,
+                    tree_paths: std::collections::HashSet::new(),
                     is_merge: false,
                     id: None,
                 }
@@ -680,6 +783,7 @@ mod tests {
             }
             commits.push(CommitFileSet {
                 files,
+                tree_paths: std::collections::HashSet::new(),
                 is_merge: false,
                 id: None,
             });
@@ -723,6 +827,7 @@ mod tests {
             }
             commits.push(CommitFileSet {
                 files,
+                tree_paths: std::collections::HashSet::new(),
                 is_merge: false,
                 id: None,
             });
@@ -766,6 +871,7 @@ mod tests {
             files.insert(Utf8PathBuf::from("src/recent.rs"));
             commits.push(CommitFileSet {
                 files,
+                tree_paths: std::collections::HashSet::new(),
                 is_merge: false,
                 id: None,
             });
@@ -775,6 +881,7 @@ mod tests {
             files.insert(Utf8PathBuf::from("src/a.rs"));
             commits.push(CommitFileSet {
                 files,
+                tree_paths: std::collections::HashSet::new(),
                 is_merge: false,
                 id: None,
             });
@@ -785,6 +892,7 @@ mod tests {
             files.insert(Utf8PathBuf::from("src/old.rs"));
             commits.push(CommitFileSet {
                 files,
+                tree_paths: std::collections::HashSet::new(),
                 is_merge: false,
                 id: None,
             });
@@ -794,6 +902,7 @@ mod tests {
             files.insert(Utf8PathBuf::from("src/a.rs"));
             commits.push(CommitFileSet {
                 files,
+                tree_paths: std::collections::HashSet::new(),
                 is_merge: false,
                 id: None,
             });
@@ -831,5 +940,253 @@ mod tests {
 
     fn path(s: &str) -> PathBuf {
         PathBuf::from(s)
+    }
+
+    fn has_pair(couplings: &[TemporalCoupling], a: &str, b: &str) -> bool {
+        couplings.iter().any(|c| {
+            (c.file_a == path(a) && c.file_b == path(b))
+                || (c.file_a == path(b) && c.file_b == path(a))
+        })
+    }
+
+    fn path_set(paths: &[&str]) -> HashSet<Utf8PathBuf> {
+        paths.iter().copied().map(Utf8PathBuf::from).collect()
+    }
+
+    #[test]
+    fn leaf_cap_keeps_file_pairs_and_audits_tree_partners() {
+        let mut commits = Vec::new();
+        for _ in 0..10 {
+            commits.push(CommitFileSet {
+                files: path_set(&["a/b/c.rs", "a/b/d.rs"]),
+                tree_paths: path_set(&["a", "a/b"]),
+                is_merge: false,
+                id: None,
+            });
+        }
+        commits.push(CommitFileSet {
+            files: path_set(&["w.rs", "x.rs", "y.rs", "z.rs"]),
+            tree_paths: path_set(&["only-over-cap"]),
+            is_merge: false,
+            id: None,
+        });
+
+        let mut config = make_config(1, 1, 0, 0.1);
+        config.max_files_per_commit = 3;
+        let engine = TemporalEngine::new(MockHistoryProvider::new(commits), config);
+        let report = engine
+            .calculate_coupling_report_budgeted(None)
+            .expect("report");
+
+        assert!(
+            has_pair(&report.file_couplings, "a/b/c.rs", "a/b/d.rs"),
+            "leaf pair missing from file list: {:?}",
+            report.file_couplings
+        );
+        assert!(
+            !has_pair(&report.file_couplings, "a/b/c.rs", "a"),
+            "tree partner leaked into file pairs: {:?}",
+            report.file_couplings
+        );
+        assert!(
+            has_pair(&report.audit_couplings, "a", "a/b"),
+            "tree pair missing from audit: {:?}",
+            report.audit_couplings
+        );
+        assert!(
+            has_pair(&report.audit_couplings, "a/b/c.rs", "a"),
+            "leaf-tree pair missing from audit: {:?}",
+            report.audit_couplings
+        );
+        for leaf in ["w.rs", "x.rs", "y.rs", "z.rs"] {
+            assert!(
+                report
+                    .file_couplings
+                    .iter()
+                    .chain(report.audit_couplings.iter())
+                    .all(|c| c.file_a != path(leaf) && c.file_b != path(leaf)),
+                "over-cap commit contributed {leaf}"
+            );
+        }
+        assert!(
+            !report
+                .discarded_tree_paths
+                .iter()
+                .any(|p| p.as_str() == "only-over-cap"),
+            "over-cap tree path must not be recorded: {:?}",
+            report.discarded_tree_paths
+        );
+        assert!(
+            report
+                .discarded_tree_paths
+                .iter()
+                .any(|p| p.as_str() == "a")
+        );
+        assert!(report.discarded_tree_paths.windows(2).all(|w| w[0] <= w[1]));
+    }
+
+    #[test]
+    fn incomplete_walk_under_floor_returns_empty_report() {
+        let diffs = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let budget = AnalysisBudget::expired(cancel);
+        let provider = CountingHistoryProvider {
+            commits: dummy_commits(20),
+            diffs: std::sync::Arc::clone(&diffs),
+        };
+        let engine = TemporalEngine::new(provider, make_config(1, 1, 0, 0.1));
+        let report = engine
+            .calculate_coupling_report_budgeted(Some(&budget))
+            .expect("incomplete walk is an empty report, not InsufficientHistory");
+        assert!(report.file_couplings.is_empty());
+        assert!(report.audit_couplings.is_empty());
+        assert!(report.discarded_tree_paths.is_empty());
+    }
+
+    #[test]
+    fn gix_history_classifies_trees_links_and_gitlinks() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = gix::init(dir.path()).expect("init");
+        let sig = gix::actor::SignatureRef::from_bytes(b"Tester <t@example.com> 1700000000 +0000")
+            .expect("signature");
+        let mode_blob = gix::objs::tree::EntryMode::from(gix::objs::tree::EntryKind::Blob);
+        let mode_tree = gix::objs::tree::EntryMode::from(gix::objs::tree::EntryKind::Tree);
+        let mode_link = gix::objs::tree::EntryMode::from(gix::objs::tree::EntryKind::Link);
+        let mode_commit = gix::objs::tree::EntryMode::from(gix::objs::tree::EntryKind::Commit);
+
+        let blob_c = repo.write_blob(b"one").expect("blob c").detach();
+        let tree_b = gix::objs::Tree {
+            entries: vec![gix::objs::tree::Entry {
+                mode: mode_blob,
+                filename: "c.rs".into(),
+                oid: blob_c,
+            }],
+        };
+        let tree_b_id = repo.write_object(&tree_b).expect("tree b").detach();
+        let tree_a = gix::objs::Tree {
+            entries: vec![gix::objs::tree::Entry {
+                mode: mode_tree,
+                filename: "b".into(),
+                oid: tree_b_id,
+            }],
+        };
+        let tree_a_id = repo.write_object(&tree_a).expect("tree a").detach();
+        let root1 = gix::objs::Tree {
+            entries: vec![gix::objs::tree::Entry {
+                mode: mode_tree,
+                filename: "a".into(),
+                oid: tree_a_id,
+            }],
+        };
+        let root1_id = repo.write_object(&root1).expect("root1").detach();
+        let first = repo
+            .commit_as(
+                sig,
+                sig,
+                "HEAD",
+                "add nested blob\n",
+                root1_id,
+                std::iter::empty::<gix::ObjectId>(),
+            )
+            .expect("commit 1")
+            .detach();
+
+        let blob_d = repo.write_blob(b"two").expect("blob d").detach();
+        let blob_link = repo.write_blob(b"target").expect("link blob").detach();
+        let tree_b2 = gix::objs::Tree {
+            entries: vec![gix::objs::tree::Entry {
+                mode: mode_blob,
+                filename: "d.rs".into(),
+                oid: blob_d,
+            }],
+        };
+        let tree_b2_id = repo.write_object(&tree_b2).expect("tree b2").detach();
+        let tree_a2 = gix::objs::Tree {
+            entries: vec![gix::objs::tree::Entry {
+                mode: mode_tree,
+                filename: "b".into(),
+                oid: tree_b2_id,
+            }],
+        };
+        let tree_a2_id = repo.write_object(&tree_a2).expect("tree a2").detach();
+        let mut root_entries = vec![
+            gix::objs::tree::Entry {
+                mode: mode_tree,
+                filename: "a".into(),
+                oid: tree_a2_id,
+            },
+            gix::objs::tree::Entry {
+                mode: mode_link,
+                filename: "link".into(),
+                oid: blob_link,
+            },
+            gix::objs::tree::Entry {
+                mode: mode_commit,
+                filename: "sub".into(),
+                oid: blob_c,
+            },
+        ];
+        root_entries.sort();
+        let root2 = gix::objs::Tree {
+            entries: root_entries,
+        };
+        let root2_id = repo.write_object(&root2).expect("root2").detach();
+        repo.commit_as(
+            sig,
+            sig,
+            "HEAD",
+            "delete blob and add leaf modes\n",
+            root2_id,
+            [first],
+        )
+        .expect("commit 2");
+
+        let history = GixHistoryProvider::new(&repo)
+            .get_history(10, None, None, false)
+            .expect("history");
+        let deletion = history.first().expect("newest commit is the deletion");
+        for leaf in ["a/b/c.rs", "a/b/d.rs", "link", "sub"] {
+            assert!(
+                deletion.files.contains(&Utf8PathBuf::from(leaf)),
+                "deletion commit missing leaf {leaf} in {:?}",
+                deletion.files
+            );
+        }
+        for tree in ["a", "a/b"] {
+            assert!(
+                deletion.tree_paths.contains(&Utf8PathBuf::from(tree)),
+                "deletion commit missing tree {tree} in {:?}",
+                deletion.tree_paths
+            );
+            assert!(
+                !deletion.files.contains(&Utf8PathBuf::from(tree)),
+                "deletion commit leaked tree {tree} into {:?}",
+                deletion.files
+            );
+        }
+        let files: HashSet<Utf8PathBuf> = history
+            .iter()
+            .flat_map(|c| c.files.iter().cloned())
+            .collect();
+        let trees: HashSet<Utf8PathBuf> = history
+            .iter()
+            .flat_map(|c| c.tree_paths.iter().cloned())
+            .collect();
+        for leaf in ["a/b/c.rs", "a/b/d.rs", "link", "sub"] {
+            assert!(
+                files.contains(&Utf8PathBuf::from(leaf)),
+                "missing leaf {leaf} in {files:?}"
+            );
+        }
+        for tree in ["a", "a/b"] {
+            assert!(
+                trees.contains(&Utf8PathBuf::from(tree)),
+                "missing tree {tree} in {trees:?}; files={files:?}"
+            );
+            assert!(
+                !files.contains(&Utf8PathBuf::from(tree)),
+                "tree {tree} leaked into files {files:?}"
+            );
+        }
     }
 }

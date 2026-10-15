@@ -129,6 +129,42 @@ pub fn count_demoted_temporal(
     count
 }
 
+/// Pairs excluded from the default temporal list (0502).
+///
+/// An empty audit list falls back to [`count_demoted_temporal`] on the file
+/// list so hand-built packets stay valid. Otherwise each audit pair at or
+/// above `threshold` counts once when `should_demote_pair` demotes it or
+/// either side is a discarded tree path. `pathMode=all` still counts those
+/// tree-side pairs. `should_demote_pair` itself is unchanged.
+pub fn count_presented_temporal_exclusions(
+    file_couplings: &[crate::impact::packet::TemporalCoupling],
+    audit: &[crate::impact::packet::TemporalCoupling],
+    discarded_tree_paths: &[std::path::PathBuf],
+    path_mode: &str,
+    threshold: f32,
+) -> u32 {
+    if audit.is_empty() {
+        return count_demoted_temporal(file_couplings, path_mode, threshold);
+    }
+    let trees: std::collections::HashSet<String> = discarded_tree_paths
+        .iter()
+        .map(|path| normalize_path(&path.to_string_lossy()))
+        .collect();
+    let mut count = 0u32;
+    for tc in audit {
+        if tc.score < threshold {
+            continue;
+        }
+        let a = tc.file_a.to_string_lossy();
+        let b = tc.file_b.to_string_lossy();
+        let tree_side = trees.contains(&normalize_path(&a)) || trees.contains(&normalize_path(&b));
+        if should_demote_pair(&a, &b, path_mode) || tree_side {
+            count = count.saturating_add(1);
+        }
+    }
+    count
+}
+
 /// Resolve pathMode string from `--include-governance` flag.
 pub fn path_mode_from_include_governance(include_governance: bool) -> &'static str {
     if include_governance { "all" } else { "code" }

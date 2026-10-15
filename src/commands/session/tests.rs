@@ -955,6 +955,7 @@ fn session_hotspot_file_from_skip_fallback_score_zero() {
             files.insert(camino::Utf8PathBuf::from("hist.rs"));
             Ok(vec![CommitFileSet {
                 files,
+                tree_paths: std::collections::HashSet::new(),
                 is_merge: false,
                 id: None,
             }])

@@ -391,6 +391,13 @@ fn test_hotspots_trend_shows_multiple_timestamps_after_three_commits() {
             ),
         )
         .unwrap();
+        // A new leaf each commit changes the score tuple so dedup keeps a row.
+        // Directory entries are not hotspot files.
+        fs::write(
+            root.join(format!("src/leaf{i}.rs")),
+            format!("pub fn leaf_{i}() {{}}\n"),
+        )
+        .unwrap();
         git_add_and_commit_no_verify(root, &format!("commit {i}"));
         let layout = Layout::new(Utf8Path::from_path(root).unwrap());
         execute_hook_post_commit_for_layout(&layout).unwrap();
@@ -424,6 +431,12 @@ fn test_hotspots_trend_shows_multiple_timestamps_after_three_commits() {
         entries.len() >= 3,
         "expected 3+ trend entries, got {}: {stdout}",
         entries.len()
+    );
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry["file_path"].as_str() != Some("src")),
+        "directory path src is not a hotspot trend row: {stdout}"
     );
 }
 

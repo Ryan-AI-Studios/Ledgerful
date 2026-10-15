@@ -113,6 +113,40 @@ fn read_set_demotes_governance_temporal_under_code_mode() {
 }
 
 #[test]
+fn read_set_ignores_tree_path_that_is_only_on_the_audit_list() {
+    let mut impact = base_packet(vec![make_changed("src/a.rs")]);
+    impact.temporal_couplings = vec![TemporalCoupling {
+        file_a: PathBuf::from("src/a.rs"),
+        file_b: PathBuf::from("src/b.rs"),
+        score: 0.9,
+    }];
+    impact.temporal_couplings_audit = vec![
+        TemporalCoupling {
+            file_a: PathBuf::from("src/a.rs"),
+            file_b: PathBuf::from("src/b.rs"),
+            score: 0.9,
+        },
+        TemporalCoupling {
+            file_a: PathBuf::from("src/a.rs"),
+            file_b: PathBuf::from("a"),
+            score: 0.95,
+        },
+    ];
+    impact.discarded_tree_paths = vec![PathBuf::from("a")];
+    let (set, _, _) = build_read_set(&impact, 20, 0.7, "all");
+    let paths: Vec<&str> = set.iter().map(|e| e.path.as_str()).collect();
+    assert!(
+        paths.contains(&"src/b.rs"),
+        "file partner stays priority 3: {paths:?}"
+    );
+    assert!(
+        !paths.contains(&"a"),
+        "audit-only tree path is not a readSet entry: {paths:?}"
+    );
+    assert!(set.iter().all(|e| e.priority != 3 || e.path != "a"));
+}
+
+#[test]
 fn read_set_max_files_sets_capped_flags() {
     let impact = base_packet(vec![
         make_changed("src/a.rs"),

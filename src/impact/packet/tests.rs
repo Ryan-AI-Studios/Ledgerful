@@ -126,6 +126,9 @@ fn test_schema_stability_golden() {
             file_b: PathBuf::from("b.rs"),
             score: 0.8,
         }],
+        // Empty → omitted. Exact key set stays 39.
+        temporal_couplings_audit: Vec::new(),
+        discarded_tree_paths: Vec::new(),
         structural_couplings: vec![StructuralCoupling {
             caller_symbol_name: "x".to_string(),
             callee_symbol_name: "y".to_string(),
