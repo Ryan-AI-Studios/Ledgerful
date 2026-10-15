@@ -128,6 +128,7 @@ pub fn build_change_context(
         must_touch_file_count: b.must_touch_files.len(),
         must_touch_symbol_count: b.must_touch_symbols.len(),
         confidence_summary: b.confidence_summary,
+        honesty_notes: b.honesty_notes.clone(),
     });
 
     let test_coverage = Some(summarize_test_coverage(storage, &impact));

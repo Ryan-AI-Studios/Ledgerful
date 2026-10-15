@@ -189,6 +189,9 @@ pub struct BlastSummary {
     /// Class counts only (0117). Same shape as `blastRadius.confidenceSummary`.
     /// Present at both `minimal` and `standard` detail. **No** edges array.
     pub confidence_summary: crate::impact::enrichment::edge_confidence::EdgeConfidenceSummary,
+    /// Impact blast honesty notes. Omitted when empty. Still no edges array.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub honesty_notes: Vec<String>,
 }
 
 /// Deepened test-coverage / gap summary (0115). Re-exports the shared library
