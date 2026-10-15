@@ -397,9 +397,11 @@ async fn session_exchange_handler() {}
         !human.contains("urn:ledgerful:"),
         "default human must not dump URNs: {human}"
     );
+    // 0509: the Target cell is the operator-facing route (`links[].path`), so a
+    // unique product mount prints the mounted path, not the indexed pattern.
     assert!(
-        human.contains("GET /session"),
-        "Target column is endpoint tlabel GET /session: {human}"
+        human.contains("GET /api/session"),
+        "Target column is the mounted endpoint route GET /api/session: {human}"
     );
     assert!(
         human.contains("Source") && human.contains("Enforcement") && human.contains("none"),
