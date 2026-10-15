@@ -148,4 +148,89 @@ mod tests {
         provider.enrich(&context, &mut packet).unwrap();
         assert!(!packet.dead_code_findings.is_empty());
     }
+
+    #[test]
+    fn dead_code_enrichment_omits_cfg_test_helper() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::state::migrations::get_migrations()
+            .to_latest(&mut conn)
+            .unwrap();
+        let storage = StorageManager::init_from_conn(conn);
+        let conn = storage.get_connection();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at) VALUES ('src/widget.rs', 'Rust', 'hw', 80, 'OK', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let widget_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, byte_start, byte_end, metadata, last_indexed_at) VALUES (?1, 'crate::tests', 'tests', 'Module', 'INTERNAL', 100, 300, '{\"cfg\":\"#[cfg(test)]\"}', '2026-01-01')",
+            [widget_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, byte_start, byte_end, last_indexed_at) VALUES (?1, 'crate::helper', 'helper', 'Function', 'INTERNAL', 120, 160, '2026-01-01')",
+            [widget_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, byte_start, byte_end, last_indexed_at) VALUES (?1, 'crate::widget_prod', 'widget_prod', 'Function', 'INTERNAL', 10, 40, '2026-01-01')",
+            [widget_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at) VALUES ('src/other.rs', 'Rust', 'ho', 40, 'OK', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let other_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, byte_start, byte_end, last_indexed_at) VALUES (?1, 'crate::other_fn', 'other_fn', 'Function', 'INTERNAL', 120, 160, '2026-01-01')",
+            [other_id],
+        )
+        .unwrap();
+
+        let mut config = Config::default();
+        config.dead_code.enabled = true;
+        config.dead_code.confidence_threshold = 0.0;
+        let repo = tempfile::tempdir().unwrap();
+        let context = EnrichmentContext {
+            storage: &storage,
+            config: &config,
+            file_id_map: HashMap::new(),
+            project_root: repo.path().to_path_buf(),
+            warnings: Arc::new(Mutex::new(Vec::new())),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            skip_git_history_enrichment: false,
+            history_budget: None,
+            overall_deadline: None,
+        };
+        let change = |path: &str| ChangedFile {
+            path: PathBuf::from(path),
+            status: "Modified".to_string(),
+            old_path: None,
+            is_staged: true,
+            symbols: None,
+            imports: None,
+            runtime_usage: None,
+            analysis_status: crate::impact::packet::FileAnalysisStatus::default(),
+            analysis_warnings: Vec::new(),
+            api_routes: Vec::new(),
+            data_models: Vec::new(),
+            ci_gates: Vec::new(),
+        };
+        let mut packet = ImpactPacket {
+            changes: vec![change("src/widget.rs"), change("src/other.rs")],
+            ..ImpactPacket::default()
+        };
+        DeadCodeProvider.enrich(&context, &mut packet).unwrap();
+        let names: Vec<&str> = packet
+            .dead_code_findings
+            .iter()
+            .map(|finding| finding.symbol_name.as_str())
+            .collect();
+        assert!(names.contains(&"widget_prod"), "{names:?}");
+        assert!(names.contains(&"other_fn"), "{names:?}");
+        assert!(!names.contains(&"helper"), "{names:?}");
+    }
 }

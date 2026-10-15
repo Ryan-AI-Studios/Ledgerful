@@ -168,7 +168,7 @@ pub struct DeadCodeArgs {
     /// no-op (Function/Method only).
     #[arg(long)]
     pub include_traits: bool,
-    /// Include test/fixture paths that are omitted by default
+    /// Include omitted test paths and #[cfg(test)] symbols
     #[arg(long)]
     pub include_tests: bool,
     /// Include vendored paths that are omitted by default

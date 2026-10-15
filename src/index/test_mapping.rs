@@ -427,6 +427,13 @@ pub(crate) fn is_test_path(path: &str) -> bool {
     {
         return true;
     }
+    // Rust files whose basename is exactly `tests.rs` (not `_tests.rs`,
+    // which is already matched above, and not `test.rs` / `Tests.rs`).
+    if let Some(file_name) = normalized_path.rsplit('/').next()
+        && file_name == "tests.rs"
+    {
+        return true;
+    }
     false
 }
 
@@ -644,6 +651,25 @@ mod tests {
         assert!(is_test_path("src/foo.spec.tsx"));
         assert!(is_test_path("pkg/foo_test.py"));
         assert!(is_test_path("test_helpers.py"));
+    }
+
+    #[test]
+    fn is_test_path_basename_tests_rs() {
+        assert!(is_test_path("src/commands/hook_repair/tests.rs"));
+        assert!(is_test_path(r"src\commands\hook_repair\tests.rs"));
+        assert!(is_test_path("src/tests.rs"));
+        assert!(is_test_path("tests.rs"));
+        assert!(is_test_path("src/foo_tests.rs"));
+        assert!(is_test_path("tests/integration/cli.rs"));
+        assert!(is_test_path("src/hook_repair/tests/helper.rs"));
+        assert!(!is_test_path("src/commands/test_mapping.rs"));
+        assert!(!is_test_path("src/index/test_mapping.rs"));
+        assert!(!is_test_path("src/contest.rs"));
+        assert!(!is_test_path("src/latest.rs"));
+        assert!(!is_test_path("src/test.rs"));
+        assert!(!is_test_path("src/mytests.rs"));
+        assert!(!is_test_path("src/Tests.rs"));
+        assert!(!is_test_path("src/foo.rs"));
     }
 
     #[test]
