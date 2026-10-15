@@ -397,9 +397,11 @@ async fn session_exchange_handler() {}
         !human.contains("urn:ledgerful:"),
         "default human must not dump URNs: {human}"
     );
+    // 0509: the Target cell is the operator-facing route (`links[].path`), so a
+    // unique product mount prints the mounted path, not the indexed pattern.
     assert!(
-        human.contains("GET /session"),
-        "Target column is endpoint tlabel GET /session: {human}"
+        human.contains("GET /api/session"),
+        "Target column is the mounted endpoint route GET /api/session: {human}"
     );
     assert!(
         human.contains("Source") && human.contains("Enforcement") && human.contains("none"),
@@ -577,22 +579,17 @@ fn security_impact_changed_clean_tree_is_clean_diff() {
     let (bare_json, stderr, code) = run_cli(root, &["security", "impact", "--json"]);
     assert_eq!(code, 0, "security impact --json; stderr={stderr}");
     let bare: serde_json::Value = serde_json::from_str(bare_json.trim())
-        .unwrap_or_else(|e| panic!("expected populated impact JSON: {e}\n{bare_json}"));
+        .unwrap_or_else(|e| panic!("expected CleanDiff JSON: {e}\n{bare_json}"));
+    assert_eq!(bare["scope"], "changed", "{bare_json}");
+    assert_eq!(bare["emptyReason"], "cleanDiff", "{bare_json}");
+    assert_eq!(bare["resultCount"], 0, "{bare_json}");
+    assert_eq!(bare["indexedCount"], 8, "{bare_json}");
+    assert_eq!(bare["coverage"]["policies"], 8, "{bare_json}");
     assert!(
-        bare.is_object(),
-        "populated security impact --json must be an object envelope, got: {bare_json}"
-    );
-    let rows = bare["impacted"].as_array().unwrap_or_else(|| {
-        panic!("populated security impact --json must expose impacted[], got: {bare_json}")
-    });
-    assert_eq!(
-        rows.len(),
-        8,
-        "impact must still list all indexed policies, got: {bare_json}"
-    );
-    assert!(
-        bare.get("indexedCount").is_some(),
-        "populated security impact --json must include indexedCount, got: {bare_json}"
+        bare["impacted"]
+            .as_array()
+            .is_some_and(|rows| rows.is_empty()),
+        "{bare_json}"
     );
 }
 
@@ -735,8 +732,11 @@ fn security_impact_unfiltered_scope_is_inventory() {
     let tmp = init_cedar_indexed_clean_repo();
     let root = tmp.path();
 
-    let (stdout, stderr, code) = run_cli(root, &["security", "impact", "--json"]);
-    assert_eq!(code, 0, "security impact --json; stderr={stderr}");
+    let (stdout, stderr, code) = run_cli(root, &["security", "impact", "--inventory", "--json"]);
+    assert_eq!(
+        code, 0,
+        "security impact --inventory --json; stderr={stderr}"
+    );
     let v: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("expected impact JSON: {e}\n{stdout}"));
     assert_eq!(v["scope"], "inventory", "unfiltered scope: {stdout}");
@@ -756,8 +756,13 @@ fn security_impact_unfiltered_scope_is_inventory() {
         .unwrap_or_else(|| panic!("impacted[]: {stdout}"));
     assert_eq!(rows.len(), 8, "{stdout}");
     assert!(
-        rows.iter()
-            .all(|row| row["is_changed"] == false && row["enforcement"] == "none"),
+        rows.iter().all(|row| {
+            row["is_changed"] == false
+                && row["enforcement"] == "none"
+                && row["mountProvenance"] == "unknown"
+                && row.get("mountedPath").is_none()
+                && row.get("mountPrefix").is_none()
+        }),
         "clean tree inventory items: {stdout}"
     );
     let mut by_label = std::collections::BTreeMap::new();
@@ -841,14 +846,29 @@ fn security_impact_changed_scope_is_changed() {
 
 /// 0317: inventory title on populated and empty unfiltered human.
 #[test]
-fn security_impact_human_inventory_title() {
+fn security_impact_human_titles_for_diff_and_inventory() {
     let tmp = init_cedar_indexed_clean_repo();
     let root = tmp.path();
     let (human, stderr, code) = run_cli(root, &["security", "impact"]);
     assert_eq!(code, 0, "security impact; stderr={stderr}");
     assert!(
+        human.contains("Security Policy Impact"),
+        "bare diff title: {human}"
+    );
+    assert!(
+        human.contains("0 of 8 policies match changed files"),
+        "bare CleanDiff denominator: {human}"
+    );
+    assert!(
+        !contains_declared_not_enforced(&human),
+        "bare CleanDiff omits the declared one-liner: {human}"
+    );
+
+    let (human, stderr, code) = run_cli(root, &["security", "impact", "--inventory"]);
+    assert_eq!(code, 0, "security impact --inventory; stderr={stderr}");
+    assert!(
         human.contains("Security Policy Inventory"),
-        "populated inventory title: {human}"
+        "inventory title: {human}"
     );
     assert!(
         !human.contains("Security Policy Impact Analysis"),
@@ -874,8 +894,14 @@ fn security_impact_human_inventory_title() {
     let (empty_human, stderr, code) = run_cli(empty.path(), &["security", "impact"]);
     assert_eq!(code, 0, "empty security impact; stderr={stderr}");
     assert!(
-        empty_human.contains("Security Policy Inventory"),
-        "empty inventory title: {empty_human}"
+        empty_human.contains("Security Policy Impact"),
+        "empty diff title: {empty_human}"
+    );
+    assert!(
+        empty_human.contains(
+            "Knowledge graph is populated, but no Cedar policy/principal/action/resource nodes exist. This repo has no Cedar policy files configured — add them under 'policies/' and run `ledgerful index --analyze-graph` to populate this surface."
+        ),
+        "empty init is noMatches: {empty_human}"
     );
     assert!(
         !empty_human.contains("Security Policy Impact Analysis"),
@@ -892,8 +918,8 @@ fn security_impact_human_inventory_title() {
 fn security_impact_human_source_and_one_liner() {
     let tmp = init_cedar_indexed_clean_repo();
     let root = tmp.path();
-    let (human, stderr, code) = run_cli(root, &["security", "impact"]);
-    assert_eq!(code, 0, "security impact; stderr={stderr}");
+    let (human, stderr, code) = run_cli(root, &["security", "impact", "--inventory"]);
+    assert_eq!(code, 0, "security impact --inventory; stderr={stderr}");
     let title = human
         .find("Security Policy Inventory")
         .unwrap_or_else(|| panic!("title missing: {human}"));
@@ -1045,5 +1071,71 @@ permit (
     assert!(
         contains_declared_not_enforced(&human),
         "populated --changed prints the one-liner: {human}"
+    );
+
+    let (bare, stderr, code) = run_cli(root, &["security", "impact", "--json"]);
+    assert_eq!(code, 0, "two-file bare --json; stderr={stderr}");
+    let bare_v: serde_json::Value = serde_json::from_str(bare.trim())
+        .unwrap_or_else(|e| panic!("expected impact JSON: {e}\n{bare}"));
+    let bare_n = bare_v["impacted"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or_else(|| panic!("impacted[]: {bare}"));
+    assert_eq!(bare_v["scope"], "changed", "{bare}");
+    assert_eq!(
+        bare_v["indexedCount"].as_u64(),
+        Some(indexed as u64),
+        "{bare}"
+    );
+    assert_eq!(bare_n, n, "{bare}");
+}
+
+#[test]
+fn security_impact_unrelated_readme_is_clean_diff() {
+    let tmp = init_cedar_indexed_clean_repo();
+    let root = tmp.path();
+    fs::write(root.join("README.md"), "unrelated\n").unwrap();
+
+    let (stdout, stderr, code) = run_cli(root, &["security", "impact", "--json"]);
+    assert_eq!(code, 0, "bare --json; stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("expected JSON: {e}\n{stdout}"));
+    assert_eq!(v["emptyReason"], "cleanDiff", "{stdout}");
+    assert_eq!(v["indexedCount"], 8, "{stdout}");
+    assert_eq!(v["resultCount"], 0, "{stdout}");
+
+    let (stdout, stderr, code) = run_cli(root, &["security", "impact", "--inventory", "--json"]);
+    assert_eq!(code, 0, "inventory --json; stderr={stderr}");
+    let inventory: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("expected JSON: {e}\n{stdout}"));
+    let rows = inventory["impacted"].as_array().expect("impacted");
+    assert_eq!(rows.len(), 8, "{stdout}");
+    assert!(
+        rows.iter()
+            .all(|row| row["is_changed"] == false && row["mountProvenance"] == "unknown"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn security_impact_deleted_policy_file_is_changed() {
+    let tmp = init_cedar_indexed_clean_repo();
+    let root = tmp.path();
+    fs::remove_file(root.join("policies").join("daemon-api.cedar")).unwrap();
+
+    let (stdout, stderr, code) = run_cli(root, &["security", "impact", "--json"]);
+    assert_eq!(code, 0, "bare --json; stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("expected JSON: {e}\n{stdout}"));
+    assert_eq!(v["resultCount"], 8, "{stdout}");
+    assert_eq!(v["indexedCount"], 8, "{stdout}");
+    let rows = v["impacted"].as_array().expect("impacted");
+    assert!(
+        rows.iter().all(|row| {
+            row["is_changed"] == true
+                && row["changeEvidence"] == "policyFile"
+                && row["sourceMissing"] == true
+        }),
+        "{stdout}"
     );
 }

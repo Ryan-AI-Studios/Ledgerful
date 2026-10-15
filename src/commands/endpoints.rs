@@ -464,13 +464,222 @@ fn slash_normalize(path: &str) -> String {
     path.replace('\\', "/")
 }
 
-fn join_mount(prefix: &str, path: &str) -> String {
+pub(crate) fn join_mount(prefix: &str, path: &str) -> String {
     let prefix = prefix.trim_end_matches('/');
     if path.starts_with('/') {
         format!("{prefix}{path}")
     } else {
         format!("{prefix}/{path}")
     }
+}
+
+/// One `api_routes` row used to attach a public mount to security output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RouteMountRow {
+    pub(crate) method: String,
+    pub(crate) path_pattern: String,
+    pub(crate) framework: String,
+    pub(crate) mount_prefix: Option<String>,
+    pub(crate) file_path: Option<String>,
+    pub(crate) handler_file: Option<String>,
+    pub(crate) route_source: String,
+}
+
+/// Unique product mount, or `unknown` / `ambiguous` with the path fields omitted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MountEvidence {
+    pub(crate) provenance: &'static str,
+    pub(crate) mount_prefix: Option<String>,
+    pub(crate) mounted_path: Option<String>,
+    pub(crate) route_files: Vec<String>,
+}
+
+impl MountEvidence {
+    pub(crate) fn unknown() -> Self {
+        Self {
+            provenance: "unknown",
+            mount_prefix: None,
+            mounted_path: None,
+            route_files: Vec::new(),
+        }
+    }
+
+    pub(crate) fn ambiguous() -> Self {
+        Self {
+            provenance: "ambiguous",
+            mount_prefix: None,
+            mounted_path: None,
+            route_files: Vec::new(),
+        }
+    }
+}
+
+struct PublicMount {
+    provenance: &'static str,
+    mount_prefix: Option<String>,
+    mounted_path: Option<String>,
+}
+
+fn public_mount_of(row: &RouteMountRow) -> PublicMount {
+    if let Some(prefix) = row.mount_prefix.as_deref() {
+        PublicMount {
+            provenance: "nest",
+            mount_prefix: Some(prefix.to_string()),
+            mounted_path: Some(join_mount(prefix, &row.path_pattern)),
+        }
+    } else if row.framework == "Axum" {
+        PublicMount {
+            provenance: "literal",
+            mount_prefix: None,
+            mounted_path: Some(row.path_pattern.clone()),
+        }
+    } else {
+        PublicMount {
+            provenance: "unknown",
+            mount_prefix: None,
+            mounted_path: None,
+        }
+    }
+}
+
+fn is_product_mount_row(row: &RouteMountRow) -> bool {
+    if row.route_source == "TEST" {
+        return false;
+    }
+    !row.file_path
+        .as_deref()
+        .is_some_and(crate::index::test_mapping::is_test_path)
+}
+
+fn accept_route_file(raw: &str) -> Option<String> {
+    let mut path = raw.replace('\\', "/");
+    if path.is_empty() {
+        return None;
+    }
+    if let Some(rest) = path.strip_prefix("./") {
+        path = rest.to_string();
+    }
+    if path.is_empty() || path.starts_with('/') {
+        return None;
+    }
+    let bytes = path.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return None;
+    }
+    Some(path)
+}
+
+fn route_files_from(rows: &[RouteMountRow]) -> Vec<String> {
+    let mut files = Vec::new();
+    for row in rows {
+        if let Some(path) = row.file_path.as_deref().and_then(accept_route_file) {
+            files.push(path);
+        }
+        if let Some(path) = row.handler_file.as_deref().and_then(accept_route_file) {
+            files.push(path);
+        }
+    }
+    files.sort();
+    files.dedup();
+    files
+}
+
+fn reduce_product_mounts(rows: Vec<RouteMountRow>) -> MountEvidence {
+    if rows.is_empty() {
+        return MountEvidence::unknown();
+    }
+    let publics: Vec<PublicMount> = rows.iter().map(public_mount_of).collect();
+    let first = &publics[0];
+    let same = publics.iter().all(|item| {
+        item.provenance == first.provenance
+            && item.mount_prefix == first.mount_prefix
+            && item.mounted_path == first.mounted_path
+    });
+    if same && (first.provenance == "nest" || first.provenance == "literal") {
+        MountEvidence {
+            provenance: first.provenance,
+            mount_prefix: first.mount_prefix.clone(),
+            mounted_path: first.mounted_path.clone(),
+            route_files: route_files_from(&rows),
+        }
+    } else if same {
+        MountEvidence::unknown()
+    } else {
+        MountEvidence::ambiguous()
+    }
+}
+
+/// Product `api_routes` rows. Fixture and test registration files are omitted.
+/// No method filter, no path `LIKE`, and no dedupe. An empty table is success.
+pub(crate) fn load_route_mount_rows(conn: &rusqlite::Connection) -> Result<Vec<RouteMountRow>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT ar.method, ar.path_pattern, ar.framework, ar.mount_prefix, \
+             pf.file_path, impl_pf.file_path, ar.route_source \
+             FROM api_routes ar \
+             LEFT JOIN project_files pf ON ar.handler_file_id = pf.id \
+             LEFT JOIN project_symbols ps ON ar.handler_symbol_id = ps.id \
+             LEFT JOIN project_files impl_pf ON ps.file_id = impl_pf.id",
+        )
+        .into_diagnostic()?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(RouteMountRow {
+                method: row.get(0)?,
+                path_pattern: row.get(1)?,
+                framework: row.get(2)?,
+                mount_prefix: row.get(3)?,
+                file_path: row.get(4)?,
+                handler_file: row.get(5)?,
+                route_source: row.get(6)?,
+            })
+        })
+        .into_diagnostic()?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .into_diagnostic()?;
+    Ok(rows.into_iter().filter(is_product_mount_row).collect())
+}
+
+pub(crate) fn mount_evidence_for_stored_route(
+    rows: &[RouteMountRow],
+    method: &str,
+    path_pattern: &str,
+) -> MountEvidence {
+    let kept: Vec<RouteMountRow> = rows
+        .iter()
+        .filter(|row| is_product_mount_row(row))
+        .filter(|row| row.method.eq_ignore_ascii_case(method) && row.path_pattern == path_pattern)
+        .cloned()
+        .collect();
+    reduce_product_mounts(kept)
+}
+
+pub(crate) fn mount_evidence_for_cedar_action(
+    rows: &[RouteMountRow],
+    method: &str,
+    action_path: &str,
+) -> MountEvidence {
+    let action = format!("{method} {action_path}");
+    let kept: Vec<RouteMountRow> = rows
+        .iter()
+        .filter(|row| is_product_mount_row(row))
+        .filter(|row| {
+            if !crate::policy::cedar::cedar_action_matches_route(
+                &action,
+                &row.method,
+                &row.path_pattern,
+            ) {
+                return false;
+            }
+            let public = public_mount_of(row);
+            let Some(public_path) = public.mounted_path.as_deref() else {
+                return false;
+            };
+            public_path == action_path || row.path_pattern == action_path
+        })
+        .cloned()
+        .collect();
+    reduce_product_mounts(kept)
 }
 
 fn handler_unresolved_reason(
@@ -1463,5 +1672,66 @@ mod tests {
         assert_eq!(v["consumersParse"], "invalid");
         assert!(v.get("consumers").is_none());
         assert!(v.get("authSource").is_none());
+    }
+
+    #[test]
+    fn mount_evidence_loader_omits_fixture_and_returns_nest() {
+        let storage = in_memory_storage();
+        let conn = storage.get_connection();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            (
+                "src/router.rs",
+                "Rust",
+                "hash_mount",
+                40,
+                "2026-05-01T00:00:00Z",
+            ),
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO api_routes
+                (method, path_pattern, handler_symbol_name, handler_file_id,
+                 framework, route_source, is_dynamic, route_confidence, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                "GET",
+                "/other",
+                "test_handler",
+                file_id,
+                "Axum",
+                "TEST",
+                0,
+                1.0,
+                "2026-05-01T00:00:00Z",
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO api_routes
+                (method, path_pattern, handler_symbol_name, handler_file_id,
+                 framework, route_source, mount_prefix, is_dynamic, route_confidence, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            rusqlite::params![
+                "GET",
+                "/config",
+                "config_handler",
+                file_id,
+                "Axum",
+                "DECORATOR",
+                "/api",
+                0,
+                1.0,
+                "2026-05-01T00:00:00Z",
+            ],
+        )
+        .unwrap();
+        let rows = super::load_route_mount_rows(conn).expect("loader");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].method, "GET");
+        assert_eq!(rows[0].path_pattern, "/config");
+        assert_eq!(rows[0].mount_prefix.as_deref(), Some("/api"));
     }
 }
