@@ -114,6 +114,14 @@ pub struct ImpactPacket {
     /// Inline explanations for `no_source_seeds` / mapped=0 (0227 docs mode).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub glossary: Option<std::collections::BTreeMap<String, String>>,
+    /// Window label for the embedded hotspot list (0503). Omitted when the
+    /// hotspot provider did not finish a calculation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hotspot_provenance: Option<crate::impact::budget::HotspotProvenance>,
+    /// Prospective scope sentence (0503). Omitted unless `analysis_mode` is
+    /// `prospective` and `tree_clean` is false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_note: Option<String>,
 }
 
 fn default_path_mode() -> String {
@@ -236,6 +244,8 @@ impl ImpactPacket {
             && self.analysis_warnings.is_empty()
             && self.dead_code_findings.is_empty()
             && self.prospective_paths.is_empty()
+            && self.hotspot_provenance.is_none()
+            && self.scope_note.is_none()
         // path_mode / demoted_temporal_count / analysis_mode / actionable_lead /
         // glossary are metadata or presentation overlays — they do not make a
         // clean packet "non-empty" for empty-tree checks.
@@ -294,6 +304,8 @@ impl Default for ImpactPacket {
             prospective_paths: Vec::new(),
             actionable_lead: Vec::new(),
             glossary: None,
+            hotspot_provenance: None,
+            scope_note: None,
         }
     }
 }
@@ -690,10 +702,14 @@ impl ImpactPacket {
             return true;
         }
 
-        // Phase 4: Strip hotspots
+        // Phase 4: Strip hotspots and the window label that describes them.
         if !self.hotspots.is_empty() {
             stripped = true;
             debit_clear_vec(&mut running, &mut self.hotspots);
+        }
+        if self.hotspot_provenance.is_some() {
+            stripped = true;
+            debit_take_opt(&mut running, &mut self.hotspot_provenance);
         }
         if stripped && under(running) {
             confirm_compact_len(self);

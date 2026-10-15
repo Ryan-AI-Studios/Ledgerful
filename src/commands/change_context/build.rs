@@ -163,6 +163,7 @@ pub fn build_change_context(
         next_actions,
         impact_schema_version: Some(impact.schema_version.clone()),
         completeness: impact.completeness.clone(),
+        scope_note: impact.scope_note.clone(),
     })
 }
 
@@ -303,6 +304,7 @@ pub(crate) fn not_ready_packet(
         next_actions: next_actions_for_class(class),
         impact_schema_version: None,
         completeness: None,
+        scope_note: None,
     }
 }
 

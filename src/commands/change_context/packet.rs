@@ -139,6 +139,10 @@ pub struct ChangeContextPacket {
     /// fire and any history walk completed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completeness: Option<crate::impact::budget::AnalysisCompleteness>,
+    /// Prospective scope sentence copied from the impact analysis (0503).
+    /// Omitted unless that analysis was prospective with `treeClean` false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_note: Option<String>,
 }
 
 /// Structured agent scannable header (0173). Coexists with freeform `summary`.

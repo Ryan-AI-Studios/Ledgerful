@@ -1420,6 +1420,7 @@ fn change_context_schema_version_stays_one_with_affected_flows_key() {
         next_actions: vec![],
         impact_schema_version: Some("v1".into()),
         completeness: None,
+        scope_note: None,
     };
     let v = serde_json::to_value(&packet).unwrap();
     assert_eq!(v["schemaVersion"], 1);
@@ -1619,6 +1620,7 @@ fn change_context_json_emits_freshness_rows() {
         next_actions: vec![],
         impact_schema_version: Some("v1".into()),
         completeness: None,
+        scope_note: None,
     };
     let v = serde_json::to_value(&packet).unwrap();
     assert_eq!(v["schemaVersion"], 1);
@@ -1648,6 +1650,7 @@ fn change_context_json_emits_freshness_rows() {
         .expect("older packet deserializes");
     assert!(missing.freshness.is_empty());
     assert!(missing.completeness.is_none());
+    assert!(missing.scope_note.is_none());
     let v = serde_json::to_value(&packet).unwrap();
     assert!(
         v.get("completeness").is_none(),
@@ -1692,12 +1695,32 @@ fn change_context_packet__additive_completeness_omit_when_complete() {
         next_actions: vec![],
         impact_schema_version: None,
         completeness: None,
+        scope_note: None,
     };
     let v = serde_json::to_value(&packet).unwrap();
     assert!(
         v.get("completeness").is_none(),
         "complete packet omits completeness: {v}"
     );
+    assert!(v.get("scopeNote").is_none());
+    assert!(v.get("treeClean").is_none());
+    assert!(v.get("hotspots").is_none());
+    assert!(v.get("serviceMapDelta").is_none());
+    assert_eq!(v["schemaVersion"], 1);
+
+    let noted = ChangeContextPacket {
+        scope_note: Some(crate::index::surface_freshness::PROSPECTIVE_SCOPE_NOTE.to_string()),
+        ..packet
+    };
+    let noted_v = serde_json::to_value(&noted).unwrap();
+    assert_eq!(
+        noted_v["scopeNote"],
+        crate::index::surface_freshness::PROSPECTIVE_SCOPE_NOTE
+    );
+    assert!(noted_v.get("treeClean").is_none());
+    assert!(noted_v.get("hotspots").is_none());
+    assert!(noted_v.get("serviceMapDelta").is_none());
+    assert_eq!(noted_v["schemaVersion"], 1);
 }
 
 #[test]
@@ -1736,6 +1759,7 @@ fn change_context_human_prints_freshness_block() {
         next_actions: vec![],
         impact_schema_version: None,
         completeness: None,
+        scope_note: None,
     };
     let lines = super::emit::freshness_block_lines(&packet);
     assert!(lines.iter().any(|l| l.contains("freshness:")));

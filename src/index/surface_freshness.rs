@@ -14,6 +14,10 @@ use crate::state::reports::ImpactFreshness;
 pub const SCOPE_NOTE: &str =
     "selected range is nonempty; treeClean is range emptiness, not working-tree dirtiness";
 
+/// Prospective `impact` / `change-context` `scopeNote` when the synthesized
+/// snapshot is nonempty and `treeClean` is false.
+pub const PROSPECTIVE_SCOPE_NOTE: &str = "analyzed set is nonempty; treeClean is false because these paths were synthesized as modified, not because the working tree is dirty";
+
 /// Pinned symbols reason (not an independent parser clock).
 pub const SYMBOLS_REASON: &str = "derived from indexed source files; matches file content-hash";
 /// Status-aligned symbols reason when copied files status is stale.
