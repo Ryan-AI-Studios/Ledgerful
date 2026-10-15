@@ -93,3 +93,75 @@ impl ImpactProvider for DependencyImpactProvider {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::DependencyImpactProvider;
+    use crate::config::model::Config;
+    use crate::impact::analysis::ImpactProvider;
+    use crate::impact::packet::{ImpactPacket, Service, ServiceMapDelta};
+    use crate::policy::rules::Rules;
+    use std::path::PathBuf;
+
+    fn named(name: &str) -> Service {
+        Service {
+            name: name.to_string(),
+            directory: PathBuf::from(name),
+            routes: Vec::new(),
+            data_models: Vec::new(),
+            owners: Vec::new(),
+            runtime_name: None,
+            queues: Vec::new(),
+            topics: Vec::new(),
+            rpc_endpoints: Vec::new(),
+        }
+    }
+
+    fn packet_with(affected: &[&str], extra_services: &[&str]) -> ImpactPacket {
+        let mut names: Vec<&str> = affected.to_vec();
+        names.extend(extra_services.iter().copied());
+        names.sort_unstable();
+        names.dedup();
+        ImpactPacket {
+            service_map_delta: Some(ServiceMapDelta {
+                services: names.iter().copied().map(named).collect(),
+                affected_services: affected.iter().map(|name| (*name).to_string()).collect(),
+                cross_service_edges: Vec::new(),
+                total_services: names.len(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn cross_service_elevation_counts_filtered_affected_services() {
+        let config = Config::default();
+        assert_eq!(
+            config.coverage.services.cross_service_elevation_threshold,
+            2
+        );
+        let rules = Rules::default();
+        let provider = DependencyImpactProvider;
+
+        // "src" is the directory label and "billing" is a neighbor. Neither is affected.
+        let one = packet_with(&["web"], &["src", "billing"]);
+        let one_impact = provider.analyze(&one, &rules, &config).unwrap();
+        assert!(
+            one_impact
+                .reasons
+                .iter()
+                .all(|reason| !reason.contains("Cross-service change affecting")),
+            "{:?}",
+            one_impact.reasons
+        );
+        assert_eq!(one_impact.weight, 0);
+
+        let two = packet_with(&["billing", "web"], &["notify"]);
+        let two_impact = provider.analyze(&two, &rules, &config).unwrap();
+        assert_eq!(
+            two_impact.reasons,
+            vec!["Cross-service change affecting 2 services".to_string()]
+        );
+        assert_eq!(two_impact.weight, 10);
+    }
+}
