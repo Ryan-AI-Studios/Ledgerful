@@ -1,15 +1,59 @@
 use super::*;
+use std::collections::HashMap;
+
+/// Exact `#[cfg(test)]` containers in one file, sorted and deduped.
+fn cfg_test_ranges_from<'b>(symbols: impl IntoIterator<Item = &'b Symbol>) -> Vec<(i32, i32)> {
+    let mut ranges = Vec::new();
+    for symbol in symbols {
+        let Some(cfg) = symbol.metadata.get("cfg") else {
+            continue;
+        };
+        if !crate::index::languages::rust::symbols::cfg_attr_is_exact_test(cfg) {
+            continue;
+        }
+        let (Some(start), Some(end)) = (symbol.byte_start, symbol.byte_end) else {
+            continue;
+        };
+        if start >= 0 && end >= start {
+            ranges.push((start, end));
+        }
+    }
+    ranges.sort_unstable();
+    ranges.dedup();
+    ranges
+}
+
+fn symbol_is_cfg_test(symbol: &Symbol, ranges: &[(i32, i32)]) -> bool {
+    if symbol
+        .metadata
+        .get("cfg")
+        .is_some_and(|cfg| crate::index::languages::rust::symbols::cfg_attr_is_exact_test(cfg))
+    {
+        return true;
+    }
+    let (Some(start), Some(end)) = (symbol.byte_start, symbol.byte_end) else {
+        return false;
+    };
+    ranges.iter().any(|&(container_start, container_end)| {
+        start >= container_start
+            && end <= container_end
+            && (start != container_start || end != container_end)
+    })
+}
 
 impl<'a> ConfidenceScorer<'a> {
     /// Score a single symbol. Returns `None` if the symbol is an entrypoint itself,
     /// a standard trait (when `include_traits` is false), or if the final confidence
     /// falls below the threshold after name-based penalties are applied.
+    ///
+    /// A direct call does not see sibling `#[cfg(test)]` ranges. File and repo
+    /// scans pass those ranges in.
     pub fn score_symbol(
         &self,
         symbol: &Symbol,
         file_path: &Path,
     ) -> Result<Option<DeadCodeFinding>> {
-        self.score_symbol_inner(symbol, file_path, true)
+        self.score_symbol_inner(symbol, file_path, true, &[])
     }
 
     fn score_symbol_inner(
@@ -17,6 +61,7 @@ impl<'a> ConfidenceScorer<'a> {
         symbol: &Symbol,
         file_path: &Path,
         omit_paths: bool,
+        cfg_test_ranges: &[(i32, i32)],
     ) -> Result<Option<DeadCodeFinding>> {
         if filters::is_entrypoint(symbol) {
             return Ok(None);
@@ -34,10 +79,17 @@ impl<'a> ConfidenceScorer<'a> {
             return Ok(None);
         }
 
+        let path_key = file_path.to_string_lossy().replace('\\', "/");
+        let cfg_test = symbol_is_cfg_test(symbol, cfg_test_ranges);
+        let test_classified = crate::index::test_mapping::is_test_path(&path_key) || cfg_test;
+
         if omit_paths {
-            let path_key = file_path.to_string_lossy().replace('\\', "/");
-            if !self.include_tests && crate::index::test_mapping::is_test_path(&path_key) {
-                self.omitted_test_paths.borrow_mut().insert(path_key);
+            if !self.include_tests && test_classified {
+                if crate::index::test_mapping::is_test_path(&path_key) {
+                    self.omitted_test_paths
+                        .borrow_mut()
+                        .insert(path_key.clone());
+                }
                 return Ok(None);
             }
             if !self.include_vendor && crate::impact::hotspots::is_vendor_hotspot_path(&path_key) {
@@ -52,9 +104,23 @@ impl<'a> ConfidenceScorer<'a> {
 
         let reachability = self.reachability_score(symbol, file_path)?;
         let git_activity = self.git_activity_score(file_path)?;
-        let test_coverage = self.test_coverage_score(symbol, file_path)?;
-
-        let raw_confidence = self.blend(reachability, git_activity, test_coverage);
+        let (raw_confidence, test_coverage) = if test_classified {
+            let sum = self.config.reachability_weight + self.config.git_activity_weight;
+            let raw = if sum <= 0.0 {
+                0.0
+            } else {
+                (self.config.reachability_weight * reachability.unwrap_or(0.0)
+                    + self.config.git_activity_weight * git_activity)
+                    / sum
+            };
+            (raw, None)
+        } else {
+            let test_coverage = self.test_coverage_score(symbol, file_path)?;
+            (
+                self.blend(reachability, git_activity, test_coverage),
+                test_coverage,
+            )
+        };
         let penalty = filters::name_penalty(&symbol.name);
         // DX4: apply the derive-based penalty for Struct/Enum symbols that
         // carry an implicit-usage `#[derive(...)]` trait (serde, Debug, etc.).
@@ -127,9 +193,12 @@ impl<'a> ConfidenceScorer<'a> {
         omit_paths: bool,
     ) -> Result<Vec<DeadCodeFinding>> {
         let stored_path = Path::new(&resolved.stored_path);
+        let cfg_test_ranges = cfg_test_ranges_from(resolved.symbols.iter());
         let mut findings = Vec::new();
         for symbol in &resolved.symbols {
-            if let Some(finding) = self.score_symbol_inner(symbol, stored_path, omit_paths)? {
+            if let Some(finding) =
+                self.score_symbol_inner(symbol, stored_path, omit_paths, &cfg_test_ranges)?
+            {
                 findings.push(finding);
             }
         }
@@ -160,11 +229,26 @@ impl<'a> ConfidenceScorer<'a> {
         let start = std::time::Instant::now();
         let symbols = self.get_all_symbols()?;
         let total_symbols = symbols.len();
+        let mut range_map: HashMap<String, Vec<(i32, i32)>> = HashMap::new();
+        let mut grouped: HashMap<String, Vec<usize>> = HashMap::new();
+        for (idx, (_, file_path)) in symbols.iter().enumerate() {
+            let key = file_path.to_string_lossy().replace('\\', "/");
+            grouped.entry(key).or_default().push(idx);
+        }
+        for (key, idxs) in &grouped {
+            range_map.insert(
+                key.clone(),
+                cfg_test_ranges_from(idxs.iter().map(|idx| &symbols[*idx].0)),
+            );
+        }
         let mut scanned = 0usize;
         let mut findings = Vec::new();
-        for (symbol, file_path) in symbols {
+        for (symbol, file_path) in &symbols {
             scanned += 1;
-            if let Some(finding) = self.score_symbol(&symbol, &file_path)? {
+            let key = file_path.to_string_lossy().replace('\\', "/");
+            let empty: &[(i32, i32)] = &[];
+            let ranges = range_map.get(&key).map(Vec::as_slice).unwrap_or(empty);
+            if let Some(finding) = self.score_symbol_inner(symbol, file_path, true, ranges)? {
                 findings.push(finding);
                 if findings.len() >= limit {
                     break;

@@ -614,6 +614,29 @@ fn parse_derive_traits(attr_text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Exact `cfg(test)` attribute text. One `cfg` group whose body is `test`.
+///
+/// Accepts an optional `#[` `]` wrapper and whitespace around `cfg` and the
+/// body. Nested or combined predicates (`not`, `all`, `any`, `feature`) are
+/// not exact.
+pub(crate) fn cfg_attr_is_exact_test(attr: &str) -> bool {
+    let trimmed = attr.trim();
+    let inner = if trimmed.starts_with("#[") && trimmed.ends_with(']') {
+        trimmed[2..trimmed.len() - 1].trim()
+    } else {
+        trimmed
+    };
+    let Some(after_cfg) = inner.strip_prefix("cfg") else {
+        return false;
+    };
+    let rest = after_cfg.trim_start();
+    if rest.len() < 2 || !rest.starts_with('(') || !rest.ends_with(')') {
+        return false;
+    }
+    let body = &rest[1..rest.len() - 1];
+    body.trim() == "test"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1237,5 +1260,53 @@ mod tests {
             "#[cfg(test)] on a mod is not a test function; metadata={:?}",
             tests_mod.metadata
         );
+    }
+
+    #[test]
+    fn cfg_attr_is_exact_test_accepts_plain_and_whitespace() {
+        for text in ["#[cfg(test)]", "#[cfg( test )]", "cfg(test)"] {
+            assert!(cfg_attr_is_exact_test(text), "{text}");
+        }
+        for text in [
+            "#[cfg(not(test))]",
+            "#[cfg(all(test))]",
+            "#[cfg(feature = \"test\")]",
+            "#[cfg(test_mode)]",
+            "#[test]",
+            "",
+        ] {
+            assert!(!cfg_attr_is_exact_test(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn cfg_test_mod_stores_cfg_and_helper_does_not() {
+        let content = r#"
+            #[cfg(test)]
+            mod tests {
+                fn helper() {}
+            }
+        "#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        let helper = symbols
+            .iter()
+            .find(|s| s.name == "helper" && s.kind == SymbolKind::Function)
+            .expect("helper");
+        assert!(!helper.metadata.contains_key("test"));
+        assert!(!helper.metadata.contains_key("cfg"));
+        let tests_mod = symbols
+            .iter()
+            .find(|s| s.name == "tests" && s.kind == SymbolKind::Module)
+            .expect("tests mod");
+        assert!(!tests_mod.metadata.contains_key("test"));
+        let cfg = tests_mod.metadata.get("cfg").map(String::as_str);
+        assert!(
+            cfg.is_some_and(cfg_attr_is_exact_test),
+            "module cfg={cfg:?}"
+        );
+        let (helper_start, helper_end) = (helper.byte_start.unwrap(), helper.byte_end.unwrap());
+        let (mod_start, mod_end) = (tests_mod.byte_start.unwrap(), tests_mod.byte_end.unwrap());
+        assert!(helper_start >= mod_start && helper_end <= mod_end);
+        assert!(helper_start != mod_start || helper_end != mod_end);
     }
 }

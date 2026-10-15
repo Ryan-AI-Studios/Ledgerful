@@ -375,6 +375,7 @@ mod tests {
     use crate::index::symbols::{Symbol, SymbolKind};
     use crate::state::storage::StorageManager;
     use crate::state::storage_cozo::CozoStorage;
+    use std::collections::HashMap;
     use std::path::PathBuf;
 
     pub(super) fn in_memory_storage_with_cozo() -> (StorageManager, CozoStorage) {
@@ -2132,6 +2133,390 @@ mod tests {
                 .iter()
                 .any(|s| s.symbol_name == "test_only")
         );
+    }
+
+    fn insert_project_file(conn: &rusqlite::Connection, path: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at) VALUES (?1, 'Rust', 'h0510', 40, 'OK', '2026-01-01')",
+            [path],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn insert_project_symbol(
+        conn: &rusqlite::Connection,
+        file_id: i64,
+        name: &str,
+        kind: &str,
+        byte_start: Option<i32>,
+        byte_end: Option<i32>,
+        metadata: Option<&str>,
+    ) -> i64 {
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, byte_start, byte_end, metadata, last_indexed_at) VALUES (?1, ?2, ?3, ?4, 'INTERNAL', ?5, ?6, ?7, '2026-01-01')",
+            rusqlite::params![
+                file_id,
+                format!("crate::{name}"),
+                name,
+                kind,
+                byte_start,
+                byte_end,
+                metadata
+            ],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn finding_named<'a>(
+        findings: &'a [DeadCodeFinding],
+        name: &str,
+    ) -> Option<&'a DeadCodeFinding> {
+        findings.iter().find(|finding| finding.symbol_name == name)
+    }
+
+    fn has_no_test_coverage(finding: &DeadCodeFinding) -> bool {
+        finding
+            .factors
+            .iter()
+            .any(|factor| matches!(factor, ConfidenceFactor::NoTestCoverage))
+    }
+
+    #[test]
+    fn dead_code_non_test_names_are_not_omitted_paths() {
+        let (storage, _cozo) = in_memory_storage_with_cozo();
+        let config = default_config();
+        let repo = tempfile::tempdir().unwrap();
+        let scorer = ConfidenceScorer::new(None, &storage, &config, repo.path(), false);
+        for path in [
+            "src/index/test_mapping.rs",
+            "src/contest.rs",
+            "src/latest.rs",
+            "src/test.rs",
+        ] {
+            let symbol = make_symbol("helper_fn", Some("helper_fn"), None);
+            let _ = scorer.score_symbol(&symbol, Path::new(path)).unwrap();
+        }
+        assert_eq!(scorer.omitted_test_path_count(), 0);
+        let tests_rs = make_symbol("helper_fn", Some("helper_fn"), None);
+        assert!(
+            scorer
+                .score_symbol(&tests_rs, Path::new(r"src\commands\hook_repair\tests.rs"))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(scorer.omitted_test_path_count(), 1);
+    }
+
+    #[test]
+    fn dead_code_tests_rs_omitted_until_include_tests() {
+        let (storage, _cozo) = in_memory_storage_with_cozo();
+        let conn = storage.get_connection();
+        seed_rs_edge_and_mapping(conn);
+        let file_id = insert_project_file(conn, "src/commands/hook_repair/tests.rs");
+        insert_project_symbol(conn, file_id, "helper_fn", "Function", None, None, None);
+        let config = default_config();
+        let repo = tempfile::tempdir().unwrap();
+        let default = ConfidenceScorer::new(None, &storage, &config, repo.path(), false);
+        let path = Path::new("src/commands/hook_repair/tests.rs");
+        let omitted = default.score_file(path).unwrap();
+        assert!(finding_named(&omitted, "helper_fn").is_none());
+        assert_eq!(default.omitted_test_path_count(), 1);
+
+        for (include_tests, include_vendor) in [(true, false), (true, true)] {
+            let included = ConfidenceScorer::new(None, &storage, &config, repo.path(), false)
+                .with_path_include(include_tests, include_vendor);
+            let findings = included.score_file(path).unwrap();
+            let helper = finding_named(&findings, "helper_fn").expect("helper_fn");
+            assert!(!has_no_test_coverage(helper));
+        }
+
+        let mut explainer = ConfidenceScorer::new(None, &storage, &config, repo.path(), false);
+        let explanation = explainer.explain_file(path).unwrap();
+        let explained = explanation
+            .symbols
+            .iter()
+            .find(|symbol| symbol.symbol_name == "helper_fn")
+            .expect("explain helper_fn");
+        assert!(
+            !explained
+                .factors
+                .iter()
+                .any(|factor| matches!(factor.kind, ConfidenceFactor::NoTestCoverage))
+        );
+    }
+
+    #[test]
+    fn dead_code_cfg_test_helper_omitted_production_remains() {
+        let (storage, _cozo) = in_memory_storage_with_cozo();
+        let conn = storage.get_connection();
+        seed_rs_edge_and_mapping(conn);
+        let file_id = insert_project_file(conn, "src/widget.rs");
+        insert_project_symbol(
+            conn,
+            file_id,
+            "tests",
+            "Module",
+            Some(100),
+            Some(300),
+            Some("{\"cfg\":\"#[cfg(test)]\"}"),
+        );
+        insert_project_symbol(
+            conn,
+            file_id,
+            "helper",
+            "Function",
+            Some(120),
+            Some(160),
+            None,
+        );
+        insert_project_symbol(
+            conn,
+            file_id,
+            "widget_prod",
+            "Function",
+            Some(10),
+            Some(40),
+            None,
+        );
+        insert_project_symbol(
+            conn,
+            file_id,
+            "Widget",
+            "Type",
+            Some(400),
+            Some(700),
+            Some("{\"cfg\":\"#[cfg(test)]\"}"),
+        );
+        insert_project_symbol(
+            conn,
+            file_id,
+            "helper_method",
+            "Function",
+            Some(420),
+            Some(460),
+            None,
+        );
+        insert_project_symbol(
+            conn,
+            file_id,
+            "not_test",
+            "Function",
+            Some(800),
+            Some(840),
+            Some("{\"cfg\":\"#[cfg(not(test))]\"}"),
+        );
+        insert_project_symbol(
+            conn,
+            file_id,
+            "feature_test",
+            "Function",
+            Some(900),
+            Some(940),
+            Some("{\"cfg\":\"#[cfg(feature = \\\"test\\\")]\"}"),
+        );
+        insert_project_symbol(
+            conn,
+            file_id,
+            "plain",
+            "Module",
+            Some(1000),
+            Some(1200),
+            None,
+        );
+        insert_project_symbol(
+            conn,
+            file_id,
+            "inside_plain",
+            "Function",
+            Some(1040),
+            Some(1080),
+            None,
+        );
+        insert_project_symbol(
+            conn,
+            file_id,
+            "unscoped_helper",
+            "Function",
+            None,
+            None,
+            None,
+        );
+
+        let config = default_config();
+        let repo = tempfile::tempdir().unwrap();
+        let path = Path::new("src/widget.rs");
+        let default = ConfidenceScorer::new(None, &storage, &config, repo.path(), false);
+        let file_findings = default.score_file(path).unwrap();
+        for name in [
+            "widget_prod",
+            "not_test",
+            "feature_test",
+            "inside_plain",
+            "unscoped_helper",
+        ] {
+            assert!(
+                finding_named(&file_findings, name).is_some(),
+                "missing {name} in {file_findings:?}"
+            );
+        }
+        assert!(finding_named(&file_findings, "helper").is_none());
+        assert!(finding_named(&file_findings, "helper_method").is_none());
+        assert!(has_no_test_coverage(
+            finding_named(&file_findings, "widget_prod").unwrap()
+        ));
+        assert_eq!(default.omitted_test_path_count(), 0);
+
+        let scanned = default.scan_repo(50).unwrap();
+        for name in [
+            "widget_prod",
+            "not_test",
+            "feature_test",
+            "inside_plain",
+            "unscoped_helper",
+        ] {
+            assert!(
+                finding_named(&scanned, name).is_some(),
+                "scan missing {name}"
+            );
+        }
+        assert!(finding_named(&scanned, "helper").is_none());
+        assert!(finding_named(&scanned, "helper_method").is_none());
+        assert_eq!(default.omitted_test_path_count(), 0);
+
+        let included = ConfidenceScorer::new(None, &storage, &config, repo.path(), false)
+            .with_path_include(true, false);
+        let restored = included.score_file(path).unwrap();
+        for name in ["helper", "helper_method"] {
+            let finding = finding_named(&restored, name).unwrap_or_else(|| panic!("{name}"));
+            assert!(!has_no_test_coverage(finding));
+        }
+
+        let mut explainer = ConfidenceScorer::new(None, &storage, &config, repo.path(), false);
+        let explanation = explainer.explain_file(path).unwrap();
+        let explained_helper = explanation
+            .symbols
+            .iter()
+            .find(|symbol| symbol.symbol_name == "helper")
+            .expect("explain helper");
+        assert!(
+            !explained_helper
+                .factors
+                .iter()
+                .any(|factor| matches!(factor.kind, ConfidenceFactor::NoTestCoverage))
+        );
+        let explained_prod = explanation
+            .symbols
+            .iter()
+            .find(|symbol| symbol.symbol_name == "widget_prod")
+            .expect("explain widget_prod");
+        assert!(
+            explained_prod
+                .factors
+                .iter()
+                .any(|factor| matches!(factor.kind, ConfidenceFactor::NoTestCoverage))
+        );
+    }
+
+    #[test]
+    fn dead_code_include_tests_partial_git_moves_both_ways() {
+        let (storage, _cozo) = in_memory_storage_with_cozo();
+        let conn = storage.get_connection();
+        seed_rs_edge_and_mapping(conn);
+        let covered_file = insert_project_file(conn, "tests/covered.rs");
+        let covered_id = insert_project_symbol(
+            conn,
+            covered_file,
+            "covered_fn",
+            "Function",
+            None,
+            None,
+            None,
+        );
+        let uncovered_file = insert_project_file(conn, "tests/uncovered.rs");
+        insert_project_symbol(
+            conn,
+            uncovered_file,
+            "uncovered_fn",
+            "Function",
+            None,
+            None,
+            None,
+        );
+        let (test_symbol_id, test_file_id): (i64, i64) = conn
+            .query_row(
+                "SELECT id, file_id FROM project_symbols WHERE symbol_name = 'entry_main'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id, mapping_kind, last_indexed_at) VALUES (?1, ?2, ?3, ?4, 'IMPORT', '2026-01-01')",
+            rusqlite::params![test_symbol_id, test_file_id, covered_id, covered_file],
+        )
+        .unwrap();
+
+        let config = default_config();
+        let mut scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false)
+            .with_path_include(true, false);
+        let mut days = HashMap::new();
+        days.insert(PathBuf::from("tests/covered.rs"), 45u32);
+        days.insert(PathBuf::from("tests/uncovered.rs"), 36u32);
+        scorer.precomputed_git_activity = Some(GitActivityIndex {
+            last_touched_days: days,
+            repo_available: true,
+        });
+
+        let covered_sym = make_symbol("covered_fn", Some("crate::covered_fn"), None);
+        let uncovered_sym = make_symbol("uncovered_fn", Some("crate::uncovered_fn"), None);
+        assert_eq!(
+            scorer
+                .test_coverage_score(&covered_sym, Path::new("tests/covered.rs"))
+                .unwrap(),
+            Some(0.0)
+        );
+        assert_eq!(
+            scorer
+                .test_coverage_score(&uncovered_sym, Path::new("tests/uncovered.rs"))
+                .unwrap(),
+            Some(1.0)
+        );
+        assert_eq!(
+            scorer
+                .reachability_score(&covered_sym, Path::new("tests/covered.rs"))
+                .unwrap(),
+            Some(1.0),
+            "covered_fn reachability must be 1.0 before the blend boundary is meaningful"
+        );
+        assert_eq!(
+            scorer
+                .reachability_score(&uncovered_sym, Path::new("tests/uncovered.rs"))
+                .unwrap(),
+            Some(1.0),
+            "uncovered_fn reachability must be 1.0 before the blend boundary is meaningful"
+        );
+
+        let covered = scorer.score_file(Path::new("tests/covered.rs")).unwrap();
+        let covered_fn = finding_named(&covered, "covered_fn").expect("covered_fn");
+        assert!(!has_no_test_coverage(covered_fn));
+        let uncovered = scorer.score_file(Path::new("tests/uncovered.rs")).unwrap();
+        assert!(finding_named(&uncovered, "uncovered_fn").is_none());
+
+        let omitted = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
+        assert!(
+            omitted
+                .score_file(Path::new("tests/covered.rs"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            omitted
+                .score_file(Path::new("tests/uncovered.rs"))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(omitted.omitted_test_path_count(), 2);
     }
 
     #[test]
