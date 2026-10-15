@@ -167,10 +167,16 @@ version = "1.0.0"
     let v: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("stdout must be pure JSON");
     let findings = v["findings"].as_array().expect("findings array");
-    assert!(
-        !findings.iter().any(|f| f["code"] == "binary-behind-tree"),
-        "consumer layout must not emit binary-behind-tree: {v}"
-    );
+    for code in [
+        "binary-behind-tree",
+        "binary-ahead-of-tree",
+        "binary-diverges-from-tree",
+    ] {
+        assert!(
+            !findings.iter().any(|f| f["code"] == code),
+            "consumer layout must not emit {code}: {v}"
+        );
+    }
 }
 
 /// 0205 T0+T12: consumer repos skip GitHub Latest (zero HTTP, no 0205 codes).

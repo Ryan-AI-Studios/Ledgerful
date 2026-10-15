@@ -566,6 +566,80 @@ fn daemon_about_names_lsp_and_stdio_on_first_line() {
     assert!(help.contains("unused"), "interval help={help}");
 }
 
+fn rendered_about(cmd: &clap::Command) -> String {
+    let about = cmd.get_about().map(|s| s.to_string()).unwrap_or_default();
+    let long = cmd
+        .get_long_about()
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    format!("{about}\n{long}")
+}
+
+fn about_line(cmd: &clap::Command) -> String {
+    cmd.get_about().map(|s| s.to_string()).unwrap_or_default()
+}
+
+#[test]
+fn help_status_about_is_ledger_pending() {
+    let status = Cli::command()
+        .find_subcommand("status")
+        .expect("status")
+        .clone();
+    assert_eq!(
+        about_line(&status),
+        "Ledger pending and drift, same bytes as ledger status --json or --compact. Not git status and not doctor."
+    );
+}
+
+#[test]
+fn help_audit_about_is_ledger_velocity() {
+    let cmd = Cli::command();
+    let expected =
+        "Ledger velocity and entity churn. Not dependencies audit and not a vulnerability scan.";
+    let audit = cmd.find_subcommand("audit").expect("audit").clone();
+    assert_eq!(about_line(&audit), expected);
+    let ledger = cmd.find_subcommand("ledger").expect("ledger").clone();
+    let ledger_audit = ledger.find_subcommand("audit").expect("ledger audit");
+    assert_eq!(about_line(ledger_audit), expected);
+}
+
+#[test]
+fn help_dependencies_audit_about_is_osv_import() {
+    let cmd = Cli::command();
+    let dependencies = cmd
+        .find_subcommand("dependencies")
+        .expect("dependencies")
+        .clone();
+    let audit = dependencies
+        .find_subcommand("audit")
+        .expect("dependencies audit");
+    assert_eq!(
+        about_line(audit),
+        "Import an OSV-Scanner JSON report. Does not run a scanner. Not ledgerful audit."
+    );
+}
+
+#[test]
+fn help_graph_and_search_trigrams_stay() {
+    let cmd = Cli::command();
+    let graph = cmd.find_subcommand("graph").expect("graph").clone();
+    let graph_help = rendered_about(&graph);
+    assert!(
+        graph_help.contains("not ledger graph"),
+        "graph help={graph_help}"
+    );
+    let trigrams = cmd
+        .find_subcommand("search-trigrams")
+        .expect("search-trigrams")
+        .clone();
+    assert!(trigrams.is_hide_set());
+    assert!(
+        about_line(&trigrams).contains("trigram"),
+        "search-trigrams about={}",
+        about_line(&trigrams)
+    );
+}
+
 #[test]
 fn ledger_stack_quiet_does_not_imply_machine() {
     let cli = Cli::try_parse_from(["ledgerful", "--quiet", "ledger", "stack"]).unwrap();

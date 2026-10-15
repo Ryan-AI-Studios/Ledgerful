@@ -239,9 +239,10 @@ Tips:
     Reset(ResetArgs),
     /// Health check for Ledgerful and local model stack
     Doctor(DoctorArgs),
-    /// Ledger pending/drift status (`--json` / `--compact`; not a full alias of `ledger status`)
+    /// Ledger pending and drift, same bytes as ledger status --json or --compact. Not git status and not doctor.
     // after_help is alias honesty (0282), not a 0100 spray — Status is a leaf.
-    #[command(after_help = STATUS_AFTER_HELP)]
+    // clap 4.6 strips one trailing period from about. The locked sentence keeps it.
+    #[command(after_help = STATUS_AFTER_HELP, verbatim_doc_comment)]
     Status(StatusArgs),
     /// Configuration management
     // after_help only on Config (0100 DoD-8): clap auto-help is insufficient for
@@ -252,7 +253,9 @@ Tips:
     },
     /// Detect likely dead code across the repository
     DeadCode(DeadCodeArgs),
-    /// Perform a holistic project audit or history for an entity
+    /// Ledger velocity and entity churn. Not dependencies audit and not a vulnerability scan.
+    // clap 4.6 strips one trailing period from about. The locked sentence keeps it.
+    #[command(verbatim_doc_comment)]
     Audit(AuditArgs),
     /// Local-only per-command timing analysis (Track 0043; `--global` is Track 0044)
     Timings(TimingsCliArgs),

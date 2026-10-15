@@ -54,6 +54,45 @@ fn normalize_sha_hex(s: &str) -> String {
     s.trim().to_ascii_lowercase()
 }
 
+/// Where the running commit sits relative to worktree HEAD.
+///
+/// `NotConsulted` means the caller did not ask. The other variants are the
+/// result of `merge_base` after both ids resolve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitAncestry {
+    NotConsulted,
+    RunningIsAncestor,
+    HeadIsAncestor,
+    Divergent,
+    Unknown,
+}
+
+/// Resolve both SHAs and compare their merge base.
+///
+/// A missing, ambiguous, or unresolvable id is [`CommitAncestry::Unknown`].
+/// This function does not create commits and does not spawn `git`.
+pub fn commit_ancestry(repo: &Repository, running_sha: &str, head_sha: &str) -> CommitAncestry {
+    let running = match repo.rev_parse_single(running_sha.trim()) {
+        Ok(id) => id.detach(),
+        Err(_) => return CommitAncestry::Unknown,
+    };
+    let head = match repo.rev_parse_single(head_sha.trim()) {
+        Ok(id) => id.detach(),
+        Err(_) => return CommitAncestry::Unknown,
+    };
+    let base = match repo.merge_base(running, head) {
+        Ok(id) => id.detach(),
+        Err(_) => return CommitAncestry::Unknown,
+    };
+    if base == running {
+        CommitAncestry::RunningIsAncestor
+    } else if base == head {
+        CommitAncestry::HeadIsAncestor
+    } else {
+        CommitAncestry::Divergent
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,5 +144,73 @@ mod tests {
         assert!(!sha_prefix_equal("", ""));
         assert!(!sha_prefix_equal("   ", "b57f447"));
         assert!(!sha_prefix_equal("abcd", "abce"));
+    }
+
+    #[test]
+    fn commit_ancestry_parent_child_and_divergent() {
+        let dir = tempdir().unwrap();
+        let repo = gix::init(dir.path()).unwrap();
+        let tree = repo.empty_tree().id;
+        let time = "0 +0000";
+        let author = gix::actor::SignatureRef {
+            name: "Ledgerful Test".into(),
+            email: "test@example.com".into(),
+            time,
+        };
+        let parent = repo
+            .commit_as(
+                author,
+                author,
+                "refs/heads/main",
+                "parent",
+                tree,
+                std::iter::empty::<gix::ObjectId>(),
+            )
+            .unwrap();
+        let parent_id = parent.detach();
+        let parent_sha = parent_id.to_string();
+        let child = repo
+            .commit_as(
+                author,
+                author,
+                "refs/heads/child",
+                "child",
+                tree,
+                [parent_id],
+            )
+            .unwrap();
+        let child_sha = child.to_string();
+        let other = repo
+            .commit_as(
+                author,
+                author,
+                "refs/heads/other",
+                "other",
+                tree,
+                [parent_id],
+            )
+            .unwrap();
+        let other_sha = other.to_string();
+
+        assert_eq!(
+            commit_ancestry(&repo, &parent_sha, &child_sha),
+            CommitAncestry::RunningIsAncestor
+        );
+        assert_eq!(
+            commit_ancestry(&repo, &child_sha, &parent_sha),
+            CommitAncestry::HeadIsAncestor
+        );
+        assert_eq!(
+            commit_ancestry(&repo, &child_sha, &other_sha),
+            CommitAncestry::Divergent
+        );
+        assert_eq!(
+            commit_ancestry(
+                &repo,
+                "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+                &child_sha
+            ),
+            CommitAncestry::Unknown
+        );
     }
 }

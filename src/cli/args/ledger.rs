@@ -37,8 +37,9 @@ fn parse_provenance_limit(raw: &str) -> Result<usize, String> {
     Ok(n)
 }
 
-/// Perform a holistic project audit or history for an entity.
+/// Ledger velocity and entity churn. Not dependencies audit and not a vulnerability scan.
 #[derive(Args, Debug)]
+#[command(verbatim_doc_comment)]
 pub struct AuditArgs {
     /// Entity path to audit (e.g. src/main.rs)
     #[arg(short, long, conflicts_with = "pos_entity")]
@@ -407,7 +408,9 @@ pub enum LedgerCommands {
         #[command(subcommand)]
         command: RecoveryCommands,
     },
-    /// Perform a holistic project audit or history for an entity
+    /// Ledger velocity and entity churn. Not dependencies audit and not a vulnerability scan.
+    // clap 4.6 strips one trailing period from about. The locked sentence keeps it.
+    #[command(verbatim_doc_comment)]
     Audit {
         /// Entity path to audit (e.g. src/main.rs)
         #[arg(short, long, conflicts_with = "pos_entity")]

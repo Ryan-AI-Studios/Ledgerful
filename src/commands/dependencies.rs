@@ -51,7 +51,9 @@ pub enum DependencySubcommands {
         #[arg(short = 'a', long)]
         all: bool,
     },
-    /// Audit dependencies for known vulnerabilities (requires OSV-Scanner JSON)
+    /// Import an OSV-Scanner JSON report. Does not run a scanner. Not ledgerful audit.
+    // clap 4.6 strips one trailing period from about. The locked sentence keeps it.
+    #[command(verbatim_doc_comment)]
     Audit {
         /// Path to OSV-Scanner JSON output
         #[arg(short, long)]

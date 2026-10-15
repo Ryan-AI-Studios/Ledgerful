@@ -418,6 +418,7 @@ mod tests {
         BINARY_BEHIND_TREE_CODE, BINARY_BEHIND_TREE_REMEDIATION, build_binary_behind_tree_finding,
         classify_binary_currency,
     };
+    use crate::git::repo::CommitAncestry;
 
     mod env_guard {
         include!(concat!(
@@ -1213,13 +1214,42 @@ mod tests {
         assert!(latest_rem.contains(LATEST_TAG));
         assert!(latest_rem.contains("ledgerful --version"));
 
-        let lag = classify_binary_currency("0.2.9", Some("0.2.10"), OLD_SHA, Some(TIP_SHA), true)
-            .expect("0137 PATH ≠ HEAD");
+        let lag = classify_binary_currency(
+            "0.2.9",
+            Some("0.2.10"),
+            OLD_SHA,
+            Some(TIP_SHA),
+            true,
+            CommitAncestry::HeadIsAncestor,
+        )
+        .expect("0137 PATH ≠ HEAD");
         let behind_tree = build_binary_behind_tree_finding(&lag);
         assert_eq!(behind_tree.code, BINARY_BEHIND_TREE_CODE);
         let tree_rem = behind_tree.remediation.as_deref().expect("0137 rem");
         assert_eq!(tree_rem, BINARY_BEHIND_TREE_REMEDIATION);
         assert!(tree_rem.contains("cargo install --path . --force"));
+        assert!(
+            !tree_rem.contains("update --binary"),
+            "tree remediation must not borrow the Latest updater: {tree_rem}"
+        );
+
+        let ahead_lag = classify_binary_currency(
+            "0.2.10",
+            Some("0.2.9"),
+            TIP_SHA,
+            Some(OLD_SHA),
+            true,
+            CommitAncestry::RunningIsAncestor,
+        )
+        .expect("newer semver stays ahead");
+        let ahead_tree = build_binary_behind_tree_finding(&ahead_lag);
+        assert_eq!(ahead_tree.code, "binary-ahead-of-tree");
+        let ahead_rem = ahead_tree.remediation.as_deref().expect("ahead rem");
+        assert_eq!(ahead_rem, "ledgerful --version");
+        assert!(
+            !ahead_rem.contains("cargo install"),
+            "ahead must not install this worktree: {ahead_rem}"
+        );
 
         let mut both = class.findings.clone();
         both.push(behind_tree);
@@ -1232,5 +1262,6 @@ mod tests {
             .and_then(|f| f.remediation.as_deref())
             .unwrap_or("");
         assert!(!latest_text.contains("cargo install --path ."));
+        assert!(!latest_text.contains("--force"));
     }
 }
