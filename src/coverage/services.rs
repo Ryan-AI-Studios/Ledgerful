@@ -406,6 +406,28 @@ pub fn is_route_source_kind_token(name: &str) -> bool {
     )
 }
 
+/// Default service identity shared by `services list` and impact.
+/// A kind token counts only when it is declared. Otherwise a name is kept
+/// when it is declared or it has at least one `api_routes` row.
+pub fn is_canonical_service_name(name: &str, declared: bool, api_route_count: i64) -> bool {
+    if is_route_source_kind_token(name) && !declared {
+        return false;
+    }
+    declared || api_route_count > 0
+}
+
+/// The definition impact and `declared_root` both copy.
+/// Equal roots keep the earlier config definition (`min_by` is stable that way).
+pub fn selected_service_definition<'a>(
+    name: &str,
+    definitions: &'a [crate::config::model::ServiceDefinition],
+) -> Option<&'a crate::config::model::ServiceDefinition> {
+    definitions
+        .iter()
+        .filter(|definition| definition.name == name)
+        .min_by(|left, right| left.root.cmp(&right.root))
+}
+
 /// Infer service boundaries from routes, call graph, and directory topology.
 pub fn infer_services(
     routes: &[ApiRouteSource],
@@ -958,6 +980,71 @@ mod tests {
         for name in ["tests", "web", "billing-api", "builder"] {
             assert!(!is_route_source_kind_token(name), "{name}");
         }
+    }
+
+    #[test]
+    fn is_canonical_service_name_rejects_undeclared_kind_token_with_routes() {
+        assert!(!is_canonical_service_name("BUILDER", false, 5));
+        assert!(is_canonical_service_name("BUILDER", true, 0));
+        assert!(!is_canonical_service_name("web", false, 0));
+        assert!(is_canonical_service_name("web", false, 1));
+        assert!(is_canonical_service_name("web", true, 0));
+    }
+
+    #[test]
+    fn selected_service_definition_picks_smallest_root() {
+        let definitions = vec![
+            crate::config::model::ServiceDefinition {
+                name: "web".to_string(),
+                root: "services/beta".to_string(),
+                owners: vec!["from-beta".to_string()],
+                runtime_name: None,
+                queues: Vec::new(),
+                topics: Vec::new(),
+                rpc_endpoints: Vec::new(),
+            },
+            crate::config::model::ServiceDefinition {
+                name: "web".to_string(),
+                root: "services/alpha".to_string(),
+                owners: vec!["from-alpha".to_string()],
+                runtime_name: Some("alpha-runtime".to_string()),
+                queues: vec!["q".to_string()],
+                topics: vec!["t".to_string()],
+                rpc_endpoints: vec!["r".to_string()],
+            },
+        ];
+        let selected = selected_service_definition("web", &definitions)
+            .expect("two definitions share the name");
+        assert_eq!(selected.root, "services/alpha");
+        assert_eq!(selected.owners, vec!["from-alpha".to_string()]);
+        assert_eq!(selected.runtime_name.as_deref(), Some("alpha-runtime"));
+    }
+
+    #[test]
+    fn selected_service_definition_keeps_earlier_config_order_on_equal_roots() {
+        let definitions = vec![
+            crate::config::model::ServiceDefinition {
+                name: "web".to_string(),
+                root: "services/a".to_string(),
+                owners: vec!["first".to_string()],
+                runtime_name: None,
+                queues: Vec::new(),
+                topics: Vec::new(),
+                rpc_endpoints: Vec::new(),
+            },
+            crate::config::model::ServiceDefinition {
+                name: "web".to_string(),
+                root: "services/a".to_string(),
+                owners: vec!["second".to_string()],
+                runtime_name: None,
+                queues: Vec::new(),
+                topics: Vec::new(),
+                rpc_endpoints: Vec::new(),
+            },
+        ];
+        let selected = selected_service_definition("web", &definitions)
+            .expect("equal roots still select one definition");
+        assert_eq!(selected.owners, vec!["first".to_string()]);
     }
 
     fn sample_route(route_source: &str, handler: &str) -> ApiRoute {
