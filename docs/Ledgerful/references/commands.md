@@ -108,12 +108,19 @@ Inventory of registered commit validators. Empty human: `0 registered`, conseque
 ## `ledgerful policy check`
 
 Evaluates declared `.ledgerful/policy.toml` (or synthesized defaults). Machine
-flag is `--format json` (not `--json`). `passed` is no-violations. Synthesized
-+ idle (no bound verify) is human `IDLE (synthesized; not a merge gate)` with
-JSON `idle: true`; it is not a merge-gate pass. Observe still exit 0.
-`--format json` always includes `evaluation` (checked / idle / off / skipped
-counts + `rules[]`). Live `rulesDeclared` is 5; serde default zeros + empty
-`rules[]` is a legacy/unknown sentinel. Human path does not print those
+flag is `--format json` (not `--json`). `passed` is no-violations.
+Always-present `status` is `pass`, `fail`, or `idle` (not
+`evaluation.rules[].status`). `fail` if any violation; else `idle` if any rule
+is `idle` or `fail_on` / `max_risk_without_adr` is `skipped`; else `pass`,
+including an all-inapplicable policy (every boolean false, both thresholds
+off), which required nothing. A missing `status` key reads as `idle`. Exit 0
+is not `status: pass`. Synthesized + idle (no bound verify) is human
+`IDLE (synthesized; not a merge gate)` with JSON `idle: true`; it is not a
+merge-gate pass. A non-synthesized idle report is not `PASSED` and is
+uncolored: `IDLE (required rule did not run; not a merge gate)`. Observe still
+exit 0. `--format json` always includes `evaluation` (checked / idle / off /
+skipped counts + `rules[]`). Live `rulesDeclared` is 5; serde default zeros +
+empty `rules[]` is a legacy/unknown sentinel. Human path does not print those
 counts. `ledger validator doctor` is human-only: path-probe counts
 (`registered` / `enabled` / `inspected` / `resolved`); empty catalog is
 not a health pass.

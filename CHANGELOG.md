@@ -8,6 +8,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Policy evaluation status (0507):** `policy check --format json` always includes `status` (`pass`, `fail`, or `idle`). `fail` means a rule produced a violation. `idle` means a required rule did not run and nothing failed. `pass` means every applicable rule was checked and held. An all-inapplicable policy is `pass` because it required nothing. `passed` stays no-violations. Exit codes stay observe-always-zero and enforce-nonzero-only-on-violations. `schemaVersion` stays 1.
 - **Review decisions (0506):** `review --json` ranks `priorDecisions` and `implementationClaims` by exact path overlap. Both arrays are the same short rows. Changelog-only overlaps follow a substantive path hit. `--include-mentions` appends stem-only rows after those hits and cannot displace them. A failed lookup sets omit-empty `partial` and keeps the hits that succeeded. `schemaVersion` stays 1.
 - **Service identity (0505):** Impact `serviceMapDelta` uses the `services list` identity and omits directory-only names.
 - **Blast availability (0504):** Review and change-context copy omit-empty blast honesty notes. Zero edges with bound seeds name native resolution instead of always suggesting `--auto-scip`. A missing indexer is a capability note and does not erase a native edge. `reason` stays the completeness or compose-failure string.
