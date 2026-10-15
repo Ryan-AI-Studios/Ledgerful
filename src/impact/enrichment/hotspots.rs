@@ -101,11 +101,75 @@ mod tests {
     use crate::state::storage::StorageManager;
     use rusqlite::Connection;
     use std::collections::HashMap;
-    use std::path::PathBuf;
+    use std::path::Path;
+    use std::process::Command;
     use std::sync::{Arc, Mutex};
+    use tempfile::tempdir;
+
+    fn setup_git_repo(dir: &Path) {
+        git_cmd(dir, &["init"]);
+        git_cmd(dir, &["config", "user.email", "test@test.com"]);
+        git_cmd(dir, &["config", "user.name", "Test User"]);
+    }
+
+    fn git_add_and_commit(dir: &Path, msg: &str) {
+        git_cmd(dir, &["add", "-A"]);
+        git_cmd(dir, &["commit", "-m", msg]);
+    }
+
+    fn git_cmd(dir: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("Failed to execute git command");
+        if !output.status.success() {
+            panic!(
+                "git command failed: {:?}\nstderr: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    /// Creates a temporary git repo with 12+ commits of history,
+    /// sufficient to clear the 10-commit floor required by
+    /// TemporalEngine::calculate_couplings (GitError::InsufficientHistory).
+    fn setup_temp_repo_with_history() -> tempfile::TempDir {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+
+        setup_git_repo(root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "pub fn hotspot_fn(x: i32) -> i32 {\n    if x > 0 { x + 1 } else { x - 1 }\n}\n",
+        )
+        .unwrap();
+        git_add_and_commit(root, "initial");
+
+        // TemporalEngine::calculate_couplings requires at least 10 commits of
+        // history (see GitError::InsufficientHistory in src/git/mod.rs).
+        // Touch the file across enough additional commits to clear that floor with margin.
+        for i in 1..=12 {
+            std::fs::write(
+                root.join("src/lib.rs"),
+                format!(
+                    "pub fn hotspot_fn(x: i32) -> i32 {{\n    if x > {i} {{ x + 1 }} else {{ x - 1 }}\n}}\n"
+                ),
+            )
+            .unwrap();
+            git_add_and_commit(root, &format!("touch {i}"));
+        }
+
+        tmp
+    }
 
     #[test]
     fn enrich_calculates_hotspots() {
+        let _temp_repo = setup_temp_repo_with_history();
+        let temp_root = _temp_repo.path().to_path_buf();
+
         let mut conn = Connection::open_in_memory().unwrap();
         get_migrations().to_latest(&mut conn).unwrap();
         let storage = StorageManager::init_from_conn(conn);
@@ -114,8 +178,7 @@ mod tests {
             storage: &storage,
             config: &config,
             file_id_map: HashMap::new(),
-            project_root: std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from(r"C:\dev\ledgerful")),
+            project_root: temp_root,
             warnings: Arc::new(Mutex::new(Vec::new())),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
             skip_git_history_enrichment: false,
