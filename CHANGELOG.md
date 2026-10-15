@@ -9,6 +9,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - **Temporal file evidence (0502):** Directory entries from git diffs stay out of the default temporal list and no longer count toward the leaf cap. `--include-governance` restores governance and changelog file pairs. Directory partners stay on the omit-empty audit list. `hotspots explain` adds commit subject and committer time (`+00:00`) and does not emit author names.
+- **Change packet scope (0503):** Impact hotspots and service-map rows follow the change and its explained consequences. Prospective `treeClean: false` keeps the empty-tree bypass and gains a scope note. Embedded hotspot scores carry `hotspotProvenance`.
 
 ## [0.2.17] - 2026-10-14
 

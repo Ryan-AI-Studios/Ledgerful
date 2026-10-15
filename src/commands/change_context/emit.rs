@@ -55,6 +55,9 @@ fn print_human(packet: &ChangeContextPacket) {
     }
     println!("  status:           {}", packet.status);
     println!("  summary:          {}", packet.summary);
+    if let Some(line) = crate::impact::scope::scope_note_line(packet.scope_note.as_deref()) {
+        println!("{line}");
+    }
     if let Some(ref risk) = packet.risk_level {
         println!("  risk:             {risk}");
     }

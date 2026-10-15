@@ -349,6 +349,8 @@ fn test_schema_stability_golden() {
         prospective_paths: Vec::new(),
         actionable_lead: Vec::new(),
         glossary: None,
+        hotspot_provenance: None,
+        scope_note: None,
     };
 
     let json = serde_json::to_string_pretty(&packet).unwrap();

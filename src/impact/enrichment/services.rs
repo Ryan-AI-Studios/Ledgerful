@@ -1,10 +1,8 @@
-use crate::coverage::services::compute_cross_service_edges;
 use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
 use crate::impact::packet::{ImpactPacket, Service, ServiceMapDelta};
-use crate::index::call_graph::{CallEdge, CallGraph, CallKind, ResolutionStatus};
 use miette::{IntoDiagnostic, Result};
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::path::Path;
 use tracing::debug;
 
 pub struct ServiceProvider;
@@ -115,22 +113,65 @@ impl EnrichmentProvider for ServiceProvider {
             }
         }
 
-        // 2. Load All Known Services
-        let mut service_stmt = conn
-            .prepare(
-                "SELECT DISTINCT service_name FROM project_files WHERE service_name IS NOT NULL",
-            )
-            .into_diagnostic()?;
-        let service_names: Vec<String> = service_stmt
-            .query_map([], |row| row.get(0))
+        // 2. Neighbors are the other service_name on a structural edge that
+        // touches an affected service. Do not load every service_name.
+        let mut affected_services: Vec<String> = affected_services_set.into_iter().collect();
+        affected_services.sort();
+        let placeholders = vec!["?"; affected_services.len()].join(",");
+        let edge_sql = format!(
+            "SELECT pf_caller.service_name, pf_callee.service_name \
+             FROM structural_edges se \
+             JOIN project_files pf_caller ON se.caller_file_id = pf_caller.id \
+             JOIN project_files pf_callee ON se.callee_file_id = pf_callee.id \
+             WHERE pf_caller.service_name IN ({placeholders}) \
+                OR pf_callee.service_name IN ({placeholders})"
+        );
+        let mut bind: Vec<&str> = Vec::with_capacity(affected_services.len() * 2);
+        for name in &affected_services {
+            bind.push(name.as_str());
+        }
+        bind.extend(affected_services.iter().map(String::as_str));
+
+        let mut edge_stmt = conn.prepare(&edge_sql).into_diagnostic()?;
+        let pairs = edge_stmt
+            .query_map(rusqlite::params_from_iter(bind), |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                ))
+            })
             .into_diagnostic()?
             .collect::<rusqlite::Result<Vec<_>>>()
             .into_diagnostic()?;
 
-        let total_services = service_names.len();
+        let affected_lookup: HashSet<&str> = affected_services.iter().map(String::as_str).collect();
+        let mut neighbors: BTreeSet<String> = BTreeSet::new();
+        let mut edge_counts: BTreeMap<(String, String), usize> = BTreeMap::new();
+        for (caller, callee) in pairs {
+            let (Some(caller), Some(callee)) = (caller, callee) else {
+                continue;
+            };
+            if caller.is_empty() || callee.is_empty() || caller == callee {
+                continue;
+            }
+            let caller_in = affected_lookup.contains(caller.as_str());
+            let callee_in = affected_lookup.contains(callee.as_str());
+            if !caller_in && !callee_in {
+                continue;
+            }
+            if caller_in && !callee_in {
+                neighbors.insert(callee.clone());
+            } else if callee_in && !caller_in {
+                neighbors.insert(caller.clone());
+            }
+            *edge_counts.entry((caller, callee)).or_default() += 1;
+        }
+
+        let mut keep_names: BTreeSet<String> = affected_services.iter().cloned().collect();
+        keep_names.extend(neighbors);
         let mut services = Vec::new();
 
-        for name in &service_names {
+        for name in &keep_names {
             // Load routes
             let mut route_stmt = conn
                 .prepare(
@@ -186,43 +227,11 @@ impl EnrichmentProvider for ServiceProvider {
             });
         }
 
-        // 3. Load Call Graph Edges
-        let mut edge_stmt = conn
-            .prepare(
-                "SELECT COALESCE(ps_caller.qualified_name, ps_caller.symbol_name), \
-                    pf_caller.file_path, \
-                    COALESCE(ps_callee.qualified_name, ps_callee.symbol_name), \
-                    pf_callee.file_path
-             FROM structural_edges se
-             JOIN project_symbols ps_caller ON se.caller_symbol_id = ps_caller.id
-             JOIN project_files pf_caller ON se.caller_file_id = pf_caller.id
-             JOIN project_symbols ps_callee ON se.callee_symbol_id = ps_callee.id
-             JOIN project_files pf_callee ON se.callee_file_id = pf_callee.id",
-            )
-            .into_diagnostic()?;
-
-        let edges = edge_stmt
-            .query_map([], |row| {
-                Ok(CallEdge {
-                    caller_name: row.get(0)?,
-                    caller_file: PathBuf::from(row.get::<_, String>(1)?),
-                    callee_name: row.get(2)?,
-                    callee_file: Some(PathBuf::from(row.get::<_, String>(3)?)),
-                    call_kind: CallKind::Direct,
-                    resolution_status: ResolutionStatus::Resolved,
-                    confidence: 1.0,
-                    evidence: "".to_string(),
-                })
-            })
-            .into_diagnostic()?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .into_diagnostic()?;
-
-        let call_graph = CallGraph { edges };
-        let cross_service_edges = compute_cross_service_edges(&services, &call_graph);
-
-        let mut affected_services: Vec<String> = affected_services_set.into_iter().collect();
-        affected_services.sort();
+        let total_services = services.len();
+        let cross_service_edges: Vec<(String, String, usize)> = edge_counts
+            .into_iter()
+            .map(|((caller, callee), count)| (caller, callee, count))
+            .collect();
 
         packet.set_service_map_delta(Some(ServiceMapDelta {
             services,
@@ -303,6 +312,13 @@ mod tests {
         )
         .unwrap();
 
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at, service_name)
+             VALUES ('svc/c.rs', 'Rust', 'hash', 1, '2026-01-01T00:00:00Z', 'svc_c')",
+            [],
+        )
+        .unwrap();
+
         let storage = StorageManager::init_from_conn(conn);
         let mut file_id_map = HashMap::new();
         file_id_map.insert(PathBuf::from("svc/a.rs"), file_id_a);
@@ -340,8 +356,61 @@ mod tests {
 
         ServiceProvider.enrich(&context, &mut packet).unwrap();
 
-        let delta = packet.service_map_delta.unwrap();
-        assert_eq!(delta.total_services, 2);
-        assert!(delta.affected_services.contains(&"svc_a".to_string()));
+        let delta = packet.service_map_delta.expect("owner keeps a service map");
+        assert_eq!(delta.affected_services, vec!["svc_a".to_string()]);
+        assert_eq!(
+            delta.cross_service_edges,
+            vec![("svc_a".to_string(), "svc_b".to_string(), 1)]
+        );
+        assert!(delta.services.iter().all(|service| service.name != "svc_c"));
+        assert_eq!(delta.services.len(), 2);
+        assert_eq!(delta.total_services, delta.services.len());
+    }
+
+    #[test]
+    fn enrich_leaves_service_map_unset_when_changed_file_has_no_service() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at, service_name)
+             VALUES ('svc/none.rs', 'Rust', 'hash', 1, '2026-01-01T00:00:00Z', NULL)",
+            [],
+        )
+        .unwrap();
+        let storage = StorageManager::init_from_conn(conn);
+        let mut config = crate::config::model::Config::default();
+        config.coverage.enabled = true;
+        config.coverage.services.enabled = true;
+        let context = EnrichmentContext {
+            storage: &storage,
+            config: &config,
+            file_id_map: HashMap::new(),
+            project_root: PathBuf::new(),
+            warnings: Arc::new(Mutex::new(Vec::new())),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(30),
+            skip_git_history_enrichment: false,
+            history_budget: None,
+            overall_deadline: None,
+        };
+        let mut packet = ImpactPacket {
+            changes: vec![ChangedFile {
+                path: PathBuf::from("svc/none.rs"),
+                status: "Modified".to_string(),
+                old_path: None,
+                is_staged: false,
+                symbols: None,
+                imports: None,
+                runtime_usage: None,
+                analysis_status: FileAnalysisStatus::default(),
+                analysis_warnings: Vec::new(),
+                api_routes: Vec::new(),
+                data_models: Vec::new(),
+                ci_gates: Vec::new(),
+            }],
+            ..Default::default()
+        };
+
+        ServiceProvider.enrich(&context, &mut packet).unwrap();
+        assert!(packet.service_map_delta.is_none());
     }
 }

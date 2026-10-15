@@ -1,8 +1,11 @@
 use crate::git::repo::open_repo;
-use crate::impact::budget::{CompletenessFilter, completeness_for_walk};
+use crate::impact::budget::{
+    CompletenessFilter, HotspotProvenance, HotspotProvenanceSource, completeness_for_walk,
+};
 use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
 use crate::impact::hotspots::calculate_hotspots_detailed;
 use crate::impact::packet::ImpactPacket;
+use crate::impact::scope::retain_scoped_hotspots;
 use crate::impact::temporal::GixHistoryProvider;
 use miette::Result;
 use tracing::{debug, warn};
@@ -26,9 +29,13 @@ impl EnrichmentProvider for HotspotProvider {
 
         let history_provider = GixHistoryProvider::new(&repo);
 
+        // The shared scorer truncates to `query.limit`. The packet query asks
+        // for the full scored list so a seed outside the global top-N survives,
+        // then `retain_scoped_hotspots` applies the configured cap.
+        let configured_limit = context.config.hotspots.limit;
         let query = crate::impact::hotspots::HotspotQuery {
             commits: context.config.hotspots.max_commits,
-            limit: context.config.hotspots.limit,
+            limit: usize::MAX,
             all_parents: context.config.temporal.all_parents,
             decay_half_life: context.config.hotspots.decay_half_life,
             budget: context.history_budget.clone(),
@@ -65,7 +72,17 @@ impl EnrichmentProvider for HotspotProvider {
                     context.add_warning(msg);
                     packet.completeness = Some(c);
                 }
-                packet.set_hotspots(calc.hotspots);
+                let scoped = retain_scoped_hotspots(calc.hotspots, packet, configured_limit);
+                packet.set_hotspots(scoped);
+                packet.hotspot_provenance = Some(HotspotProvenance {
+                    source: HotspotProvenanceSource::Live,
+                    commits_requested: Some(query.commits as u64),
+                    days_requested: query.days,
+                    limit: Some(configured_limit as u64),
+                    filter: Some(CompletenessFilter::Unfiltered),
+                    head: calc.head.clone(),
+                    ..HotspotProvenance::default()
+                });
             }
             Err(e) => {
                 warn!("Hotspot analysis failed: {e}");
@@ -109,6 +126,21 @@ mod tests {
 
         HotspotProvider.enrich(&context, &mut packet).unwrap();
 
-        assert!(packet.hotspots.len() <= config.hotspots.limit);
+        assert!(
+            packet.hotspots.is_empty(),
+            "an empty change list keeps no hotspot row"
+        );
+        let provenance = packet
+            .hotspot_provenance
+            .as_ref()
+            .expect("a finished calculation still labels the window");
+        assert_eq!(provenance.source, HotspotProvenanceSource::Live);
+        assert_eq!(
+            provenance.commits_requested,
+            Some(config.hotspots.max_commits as u64)
+        );
+        assert_eq!(provenance.limit, Some(config.hotspots.limit as u64));
+        assert_eq!(provenance.filter, Some(CompletenessFilter::Unfiltered));
+        assert_ne!(provenance.limit, Some(u64::MAX));
     }
 }

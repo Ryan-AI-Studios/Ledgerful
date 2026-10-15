@@ -57,6 +57,9 @@ pub fn print_impact_summary_with_full(packet: &ImpactPacket, full: bool) {
     {
         println!("  {sentence}");
     }
+    if let Some(line) = crate::impact::scope::scope_note_line(packet.scope_note.as_deref()) {
+        println!("{line}");
+    }
 
     let docs_mode = packet.glossary.is_some();
     if docs_mode {
@@ -176,6 +179,9 @@ pub fn print_impact_brief(packet: &ImpactPacket) {
         demoted_temporal_sentence(&packet.path_mode, packet.demoted_temporal_count)
     {
         println!("  {sentence}");
+    }
+    if let Some(line) = crate::impact::scope::scope_note_line(packet.scope_note.as_deref()) {
+        println!("{line}");
     }
     if packet.glossary.is_some() {
         println!("{}", crate::impact::lead::format_actionable_section(packet));
