@@ -68,6 +68,7 @@ pub(crate) fn cypher_string(input: &str) -> String {
             '\'' => out.push_str("\\'"),
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
             c if is_illegal_xml(c) => {
                 let code = u32::from(c);
                 out.push_str(&format!("\\u{code:04X}"));
