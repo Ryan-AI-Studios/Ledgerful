@@ -37,6 +37,12 @@ pub const SYNTHESIZED_IDLE_RESULT: &str = "IDLE (synthesized; not a merge gate)"
 pub const SYNTHESIZED_IDLE_FOOTER: &str =
     "No declared policy.toml; idle synthesized defaults are not a merge gate.";
 
+/// Human Result when a required rule did not run and nothing failed (0507).
+const REQUIRED_IDLE_RESULT: &str = "IDLE (required rule did not run; not a merge gate)";
+
+/// Human footer for that required-idle Result. Uncolored.
+const REQUIRED_IDLE_FOOTER: &str = "A required rule did not run. This is not a merge gate.";
+
 // ---------------------------------------------------------------------------
 // Public report contract (camelCase JSON, mirrors 0047 PrScanReport discipline)
 // ---------------------------------------------------------------------------
@@ -65,6 +71,10 @@ pub struct PolicyCheckReport {
     /// does not recurse. Default zeros are the legacy/unknown sentinel.
     #[serde(default)]
     pub evaluation: PolicyEvaluation,
+    /// `pass` | `fail` | `idle`. Always serialized. A missing key reads as `idle`.
+    /// Not `passed`, and not `evaluation.rules[].status`.
+    #[serde(default)]
+    pub status: PolicyHeadline,
 }
 
 /// Count of declared [`PolicyRules`] fields. Independent of `rules.len()`.
@@ -134,6 +144,38 @@ pub enum PolicyRuleEvalStatus {
     Skipped,
 }
 
+/// Whether required policy rules ran. `Default` is `Idle` so a legacy payload
+/// without `status` does not deserialize as approval.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum PolicyHeadline {
+    Pass,
+    Fail,
+    #[default]
+    Idle,
+}
+
+/// Classify a finished report. Does not read notes. Empty `rules` is the
+/// unknown sentinel (`Idle`), not a vacuous pass. A violation still wins.
+fn policy_headline(violations_empty: bool, rules: &[PolicyRuleEval]) -> PolicyHeadline {
+    if !violations_empty {
+        return PolicyHeadline::Fail;
+    }
+    if rules.is_empty() {
+        return PolicyHeadline::Idle;
+    }
+    let required_did_not_run = rules.iter().any(|rule| {
+        rule.status == PolicyRuleEvalStatus::Idle
+            || (rule.status == PolicyRuleEvalStatus::Skipped
+                && matches!(rule.rule_id.as_str(), "fail_on" | "max_risk_without_adr"))
+    });
+    if required_did_not_run {
+        PolicyHeadline::Idle
+    } else {
+        PolicyHeadline::Pass
+    }
+}
+
 /// A single policy violation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "camelCase")]
@@ -190,14 +232,18 @@ pub fn execute_policy_check(
         print_human_report(&report);
     }
 
-    // Observe: always exit 0 (Ok). Enforce: nonzero on violations.
-    if report.mode == PolicyMode::Enforce.as_str() && !report.passed {
+    // Observe: always exit 0 (Ok). Enforce: nonzero on violations. `status` is not read.
+    if enforcement_rejects(&report) {
         return Err(miette::miette!(
             "Policy check failed with {} violation(s)",
             report.violations.len()
         ));
     }
     Ok(())
+}
+
+fn enforcement_rejects(report: &PolicyCheckReport) -> bool {
+    report.mode == PolicyMode::Enforce.as_str() && !report.passed
 }
 
 /// Evaluate policy without printing or exiting. Used by the CLI and tests.
@@ -431,6 +477,7 @@ impl EvalContext {
             POLICY_RULES_DECLARED,
             "every PolicyRules field must be recorded: {evaluation:?}"
         );
+        let status = policy_headline(passed, &evaluation.rules);
         Ok(PolicyCheckReport {
             schema_version: POLICY_CHECK_SCHEMA_VERSION,
             violations: self.violations,
@@ -440,6 +487,7 @@ impl EvalContext {
             notes: self.notes,
             idle,
             evaluation,
+            status,
         })
     }
 
@@ -944,6 +992,8 @@ fn is_synthesized_idle_pass(report: &PolicyCheckReport) -> bool {
 fn human_result_label(report: &PolicyCheckReport) -> &'static str {
     if is_synthesized_idle_pass(report) {
         SYNTHESIZED_IDLE_RESULT
+    } else if report.status == PolicyHeadline::Idle {
+        REQUIRED_IDLE_RESULT
     } else if report.passed {
         "PASSED"
     } else if report.mode == PolicyMode::Observe.as_str() {
@@ -959,9 +1009,15 @@ fn human_footer_line(report: &PolicyCheckReport) -> Option<&'static str> {
     }
     if is_synthesized_idle_pass(report) {
         Some(SYNTHESIZED_IDLE_FOOTER)
+    } else if report.status == PolicyHeadline::Idle {
+        Some(REQUIRED_IDLE_FOOTER)
     } else {
         Some("No policy violations.")
     }
+}
+
+fn human_chrome_suppressed(report: &PolicyCheckReport) -> bool {
+    is_synthesized_idle_pass(report) || report.status == PolicyHeadline::Idle
 }
 
 fn print_human_report(report: &PolicyCheckReport) {
@@ -983,7 +1039,7 @@ fn print_human_report(report: &PolicyCheckReport) {
         report.policy_source
     );
     let label = human_result_label(report);
-    let rendered = if is_synthesized_idle_pass(report) {
+    let rendered = if human_chrome_suppressed(report) {
         label.to_string()
     } else if report.passed {
         label
@@ -1018,7 +1074,7 @@ fn print_human_report(report: &PolicyCheckReport) {
     }
 
     if let Some(footer) = human_footer_line(report) {
-        if is_synthesized_idle_pass(report) {
+        if human_chrome_suppressed(report) {
             println!("\n{footer}");
         } else {
             println!(
@@ -1154,12 +1210,14 @@ mod tests {
             notes: vec![],
             idle: false,
             evaluation: PolicyEvaluation::default(),
+            status: PolicyHeadline::Fail,
         };
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["schemaVersion"], 1);
         assert_eq!(json["passed"], false);
         assert_eq!(json["mode"], "enforce");
         assert_eq!(json["policySource"], "local");
+        assert_eq!(json["status"], "fail");
         // Empty notes omitted from JSON (additive optional field).
         assert!(json.get("notes").is_none());
         assert!(json.get("idle").is_none());
@@ -1182,9 +1240,11 @@ mod tests {
             notes: vec!["risk rules skipped: risk not evaluable".into()],
             idle: false,
             evaluation: PolicyEvaluation::default(),
+            status: PolicyHeadline::Idle,
         };
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["notes"][0], "risk rules skipped: risk not evaluable");
+        assert_eq!(json["status"], "idle");
         assert!(json.get("idle").is_none());
     }
 
@@ -1194,6 +1254,7 @@ mod tests {
         policy_source: &str,
         notes: Vec<String>,
         idle: bool,
+        status: PolicyHeadline,
     ) -> PolicyCheckReport {
         let violations = if passed {
             vec![]
@@ -1215,14 +1276,28 @@ mod tests {
             notes,
             idle,
             evaluation: PolicyEvaluation::default(),
+            status,
+        }
+    }
+
+    fn rule(id: &str, status: PolicyRuleEvalStatus) -> PolicyRuleEval {
+        PolicyRuleEval {
+            rule_id: id.to_string(),
+            status,
         }
     }
 
     #[test]
     fn human_result_label_synthesized_idle_pass_is_idle() {
         let idle_note = vec![VERIFICATION_MUST_PASS_IDLE_NOTE.to_string()];
-        let synthesized_idle =
-            sample_report(true, "observe", "synthesized", idle_note.clone(), false);
+        let synthesized_idle = sample_report(
+            true,
+            "observe",
+            "synthesized",
+            idle_note.clone(),
+            false,
+            PolicyHeadline::Idle,
+        );
         assert_eq!(
             human_result_label(&synthesized_idle),
             SYNTHESIZED_IDLE_RESULT
@@ -1234,9 +1309,10 @@ mod tests {
                 "observe",
                 "local",
                 idle_note.clone(),
-                true
+                true,
+                PolicyHeadline::Idle,
             )),
-            "PASSED"
+            REQUIRED_IDLE_RESULT
         );
         assert_eq!(
             human_result_label(&sample_report(
@@ -1244,9 +1320,10 @@ mod tests {
                 "observe",
                 "trusted-path",
                 idle_note.clone(),
-                true
+                true,
+                PolicyHeadline::Idle,
             )),
-            "PASSED"
+            REQUIRED_IDLE_RESULT
         );
         assert_eq!(
             human_result_label(&sample_report(
@@ -1254,9 +1331,10 @@ mod tests {
                 "enforce",
                 "base-branch",
                 idle_note,
-                true
+                true,
+                PolicyHeadline::Idle,
             )),
-            "PASSED"
+            REQUIRED_IDLE_RESULT
         );
         assert_eq!(
             human_result_label(&sample_report(
@@ -1264,7 +1342,8 @@ mod tests {
                 "observe",
                 "synthesized",
                 vec![],
-                false
+                false,
+                PolicyHeadline::Fail,
             )),
             "WARNINGS (observe — not blocking)"
         );
@@ -1274,7 +1353,8 @@ mod tests {
                 "enforce",
                 "synthesized",
                 vec![],
-                false
+                false,
+                PolicyHeadline::Fail,
             )),
             "FAILED"
         );
@@ -1284,7 +1364,8 @@ mod tests {
                 "observe",
                 "synthesized",
                 vec![],
-                false
+                false,
+                PolicyHeadline::Pass,
             )),
             "PASSED"
         );
@@ -1299,13 +1380,21 @@ mod tests {
                 "observe",
                 "synthesized",
                 idle_note.clone(),
-                false
+                false,
+                PolicyHeadline::Idle,
             )),
             Some(SYNTHESIZED_IDLE_FOOTER)
         );
         assert_eq!(
-            human_footer_line(&sample_report(true, "observe", "local", idle_note, true)),
-            Some("No policy violations.")
+            human_footer_line(&sample_report(
+                true,
+                "observe",
+                "local",
+                idle_note,
+                true,
+                PolicyHeadline::Idle,
+            )),
+            Some(REQUIRED_IDLE_FOOTER)
         );
         assert_eq!(
             human_footer_line(&sample_report(
@@ -1313,7 +1402,8 @@ mod tests {
                 "observe",
                 "synthesized",
                 vec![],
-                false
+                false,
+                PolicyHeadline::Fail,
             )),
             None
         );
@@ -1321,9 +1411,17 @@ mod tests {
 
     #[test]
     fn json_idle_additive_omit_false() {
-        let omitted = sample_report(true, "observe", "local", vec![], false);
+        let omitted = sample_report(
+            true,
+            "observe",
+            "local",
+            vec![],
+            false,
+            PolicyHeadline::Pass,
+        );
         let json = serde_json::to_value(&omitted).unwrap();
         assert!(json.get("idle").is_none());
+        assert_eq!(json["status"], "pass");
 
         let included = sample_report(
             true,
@@ -1331,6 +1429,7 @@ mod tests {
             "synthesized",
             vec![VERIFICATION_MUST_PASS_IDLE_NOTE.to_string()],
             true,
+            PolicyHeadline::Idle,
         );
         let json_true = serde_json::to_value(&included).unwrap();
         assert_eq!(json_true["idle"], true);
@@ -1339,10 +1438,223 @@ mod tests {
         let back: PolicyCheckReport = serde_json::from_str(legacy).unwrap();
         assert!(!back.idle);
         assert!(back.passed);
+        assert_eq!(back.status, PolicyHeadline::Idle);
         assert_eq!(back.policy_source, "local");
         assert_eq!(back.evaluation, PolicyEvaluation::default());
         assert_eq!(back.evaluation.rules_declared, 0);
         assert!(back.evaluation.rules.is_empty());
+    }
+
+    #[test]
+    fn policy_headline_fail_wins_over_idle() {
+        let rules = vec![
+            rule("verification_must_pass", PolicyRuleEvalStatus::Idle),
+            rule("require_signed_entries", PolicyRuleEvalStatus::Checked),
+            rule("no_pending_tx", PolicyRuleEvalStatus::Checked),
+            rule("fail_on", PolicyRuleEvalStatus::Off),
+            rule("max_risk_without_adr", PolicyRuleEvalStatus::Off),
+        ];
+        assert_eq!(policy_headline(false, &rules), PolicyHeadline::Fail);
+    }
+
+    #[test]
+    fn policy_headline_declared_verification_idle_is_idle() {
+        let rules = vec![
+            rule("verification_must_pass", PolicyRuleEvalStatus::Idle),
+            rule("require_signed_entries", PolicyRuleEvalStatus::Checked),
+            rule("no_pending_tx", PolicyRuleEvalStatus::Off),
+            rule("fail_on", PolicyRuleEvalStatus::Off),
+            rule("max_risk_without_adr", PolicyRuleEvalStatus::Checked),
+        ];
+        assert_eq!(policy_headline(true, &rules), PolicyHeadline::Idle);
+    }
+
+    #[test]
+    fn policy_headline_risk_skipped_is_idle() {
+        let rules = vec![
+            rule("verification_must_pass", PolicyRuleEvalStatus::Checked),
+            rule("require_signed_entries", PolicyRuleEvalStatus::Checked),
+            rule("no_pending_tx", PolicyRuleEvalStatus::Checked),
+            rule("fail_on", PolicyRuleEvalStatus::Skipped),
+            rule("max_risk_without_adr", PolicyRuleEvalStatus::Skipped),
+        ];
+        assert_eq!(policy_headline(true, &rules), PolicyHeadline::Idle);
+    }
+
+    #[test]
+    fn policy_headline_all_checked_is_pass() {
+        let rules = vec![
+            rule("verification_must_pass", PolicyRuleEvalStatus::Checked),
+            rule("require_signed_entries", PolicyRuleEvalStatus::Checked),
+            rule("no_pending_tx", PolicyRuleEvalStatus::Checked),
+            rule("fail_on", PolicyRuleEvalStatus::Checked),
+            rule("max_risk_without_adr", PolicyRuleEvalStatus::Checked),
+        ];
+        assert_eq!(policy_headline(true, &rules), PolicyHeadline::Pass);
+    }
+
+    #[test]
+    fn policy_headline_single_risk_skipped_is_idle() {
+        let fail_on_skipped = vec![
+            rule("verification_must_pass", PolicyRuleEvalStatus::Checked),
+            rule("require_signed_entries", PolicyRuleEvalStatus::Checked),
+            rule("no_pending_tx", PolicyRuleEvalStatus::Checked),
+            rule("fail_on", PolicyRuleEvalStatus::Skipped),
+            rule("max_risk_without_adr", PolicyRuleEvalStatus::Off),
+        ];
+        assert_eq!(
+            policy_headline(true, &fail_on_skipped),
+            PolicyHeadline::Idle
+        );
+        let max_risk_skipped = vec![
+            rule("verification_must_pass", PolicyRuleEvalStatus::Checked),
+            rule("require_signed_entries", PolicyRuleEvalStatus::Checked),
+            rule("no_pending_tx", PolicyRuleEvalStatus::Checked),
+            rule("fail_on", PolicyRuleEvalStatus::Off),
+            rule("max_risk_without_adr", PolicyRuleEvalStatus::Skipped),
+        ];
+        assert_eq!(
+            policy_headline(true, &max_risk_skipped),
+            PolicyHeadline::Idle
+        );
+    }
+
+    #[test]
+    fn policy_headline_fail_wins_over_risk_skipped() {
+        let rules = vec![
+            rule("verification_must_pass", PolicyRuleEvalStatus::Checked),
+            rule("require_signed_entries", PolicyRuleEvalStatus::Checked),
+            rule("no_pending_tx", PolicyRuleEvalStatus::Checked),
+            rule("fail_on", PolicyRuleEvalStatus::Skipped),
+            rule("max_risk_without_adr", PolicyRuleEvalStatus::Off),
+        ];
+        assert_eq!(policy_headline(false, &rules), PolicyHeadline::Fail);
+    }
+
+    #[test]
+    fn policy_headline_empty_rules_is_idle() {
+        assert_eq!(policy_headline(true, &[]), PolicyHeadline::Idle);
+        assert_eq!(policy_headline(false, &[]), PolicyHeadline::Fail);
+    }
+
+    #[test]
+    fn policy_headline_disabled_and_pr_skip_are_pass() {
+        let rules = vec![
+            rule("require_signed_entries", PolicyRuleEvalStatus::Skipped),
+            rule("no_pending_tx", PolicyRuleEvalStatus::Skipped),
+            rule("verification_must_pass", PolicyRuleEvalStatus::Skipped),
+            rule("fail_on", PolicyRuleEvalStatus::Off),
+            rule("max_risk_without_adr", PolicyRuleEvalStatus::Off),
+        ];
+        assert_eq!(policy_headline(true, &rules), PolicyHeadline::Pass);
+    }
+
+    #[test]
+    fn policy_headline_is_stable() {
+        let rules = vec![
+            rule("require_signed_entries", PolicyRuleEvalStatus::Checked),
+            rule("no_pending_tx", PolicyRuleEvalStatus::Skipped),
+            rule("verification_must_pass", PolicyRuleEvalStatus::Off),
+            rule("fail_on", PolicyRuleEvalStatus::Checked),
+            rule("max_risk_without_adr", PolicyRuleEvalStatus::Off),
+        ];
+        assert_eq!(policy_headline(true, &rules), policy_headline(true, &rules));
+    }
+
+    #[test]
+    fn policy_headline_json_tokens_are_pass_fail_idle() {
+        let pass = sample_report(
+            true,
+            "observe",
+            "local",
+            vec![],
+            false,
+            PolicyHeadline::Pass,
+        );
+        let fail = sample_report(
+            false,
+            "enforce",
+            "local",
+            vec![],
+            false,
+            PolicyHeadline::Fail,
+        );
+        let idle = sample_report(
+            true,
+            "observe",
+            "local",
+            vec![],
+            false,
+            PolicyHeadline::Idle,
+        );
+        assert_eq!(serde_json::to_value(&pass).unwrap()["status"], "pass");
+        assert_eq!(serde_json::to_value(&fail).unwrap()["status"], "fail");
+        assert_eq!(serde_json::to_value(&idle).unwrap()["status"], "idle");
+    }
+
+    #[test]
+    fn human_chrome_suppressed_for_required_idle() {
+        let note = vec![VERIFICATION_MUST_PASS_IDLE_NOTE.to_string()];
+        let synthesized = sample_report(
+            true,
+            "observe",
+            "synthesized",
+            note.clone(),
+            true,
+            PolicyHeadline::Idle,
+        );
+        let declared = sample_report(true, "observe", "local", note, true, PolicyHeadline::Idle);
+        let clean = sample_report(
+            true,
+            "observe",
+            "local",
+            vec![],
+            false,
+            PolicyHeadline::Pass,
+        );
+        let violation = sample_report(
+            false,
+            "enforce",
+            "local",
+            vec![],
+            false,
+            PolicyHeadline::Fail,
+        );
+        assert!(human_chrome_suppressed(&synthesized));
+        assert!(human_chrome_suppressed(&declared));
+        assert!(!human_chrome_suppressed(&clean));
+        assert!(!human_chrome_suppressed(&violation));
+    }
+
+    #[test]
+    fn enforcement_rejects_ignores_idle_status() {
+        let idle_enforce = sample_report(
+            true,
+            "enforce",
+            "local",
+            vec![],
+            false,
+            PolicyHeadline::Idle,
+        );
+        let fail_enforce = sample_report(
+            false,
+            "enforce",
+            "local",
+            vec![],
+            false,
+            PolicyHeadline::Fail,
+        );
+        let fail_observe = sample_report(
+            false,
+            "observe",
+            "local",
+            vec![],
+            false,
+            PolicyHeadline::Fail,
+        );
+        assert!(!enforcement_rejects(&idle_enforce));
+        assert!(enforcement_rejects(&fail_enforce));
+        assert!(!enforcement_rejects(&fail_observe));
     }
 
     #[test]

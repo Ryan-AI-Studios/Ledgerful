@@ -12,7 +12,7 @@ Short flags only. Humans: `ledgerful --help`.
 | `ledgerful search …` | Discovery (`--auto-index` when stale). Code FTS; unquoted multi-word OK. Not `ledger search`. `--json` agents pin `path` + `line`; `content` is a preview (`/` paths). Hidden `search-trigrams` (0352) is a 3-character content-trigram AND path list (`--json` `kind: searchTrigrams`); not Daily 5. |
 | `ledgerful verify --scope fast` | Local gate |
 
-`ledgerful verify --dry-run` without `--scope` previews the pre-push **fast** plan (executed `verify` without flags stays **full**; `--scope full --dry-run` is the full preview). Quoted scoped nextest `-E 'test(…) + test(…)'` / `-E "…"` filtersets prepare as Direct argv; unquoted `\` skips the next character (POSIX); unescaped unquoted metas still refuse. `--json --dry-run` / `--json --health` / `--json --signatures` emit sibling `kind`s (`verifyDryRun` / `verifyHealth` / `verifySignatures`); executed `verify --json` still has no `kind`. Mixed diagnostic flags refuse (empty stdout). `verifySignatures.chain.head` is omit-empty when a stored head exists. Fully-clean auto-policy dry-run skips prediction.
+`ledgerful verify --dry-run` without `--scope` previews the pre-push **fast** plan (executed `verify` without flags stays **full**; `--scope full --dry-run` is the full preview). Quoted scoped nextest `-E 'test(…) + test(…)'` / `-E "…"` filtersets prepare as Direct argv; unquoted `\` skips the next character (POSIX); unescaped unquoted metas still refuse. `--json --dry-run` / `--json --health` / `--json --signatures` emit sibling `kind`s (`verifyDryRun` / `verifyHealth` / `verifySignatures`); executed `verify --json` still has no `kind`. Mixed diagnostic flags refuse (empty stdout). `verifySignatures.chain.head` is omit-empty when a stored head exists. Fully-clean auto-policy dry-run skips prediction. `verifySignatures.assurance.status` separates validity, signer trust, and chain continuity. `ok: true` with `unpinned` is not a trusted pin. An unrequested chain stays `assurance.chain: notRequested` and stays exit 0 when nothing else failed.
 
 Optional: `ledgerful session --json` — one-shot briefing (git/ledger/doctor/change-context/hotspots/`impactCache` + additive `configChecklist[]` of applicable gaps). Does **not** replace Daily 5. Does not rewrite `latest-impact.json`. Human `session` is a 10-line summary, not JSON. `session.next` stays structural (no `config set`). Session `git.dirtyPaths` omits `watch.ignore_patterns` (change-context parity); harness junctions are not product dirt. Session `hotspots.files[]` `score` is 0–1; additive `displayScore` is ln (same units as `hotspots --json`). Session vs CLI list windows differ — compare `provenance` before ranks. Human hotspot tables use **Display**, not a bare Score column. History walks honor `[hotspots] history_budget_secs` (default 45; `0` disables the clock). `hotspots` list/explain `--timeout` is an overall emit budget (0349). Review `--timeout` is an overall emit budget (0348). Unscoped `audit` / `ledger audit --timeout` is an overall emit budget (0350).
 
@@ -108,12 +108,19 @@ Inventory of registered commit validators. Empty human: `0 registered`, conseque
 ## `ledgerful policy check`
 
 Evaluates declared `.ledgerful/policy.toml` (or synthesized defaults). Machine
-flag is `--format json` (not `--json`). `passed` is no-violations. Synthesized
-+ idle (no bound verify) is human `IDLE (synthesized; not a merge gate)` with
-JSON `idle: true`; it is not a merge-gate pass. Observe still exit 0.
-`--format json` always includes `evaluation` (checked / idle / off / skipped
-counts + `rules[]`). Live `rulesDeclared` is 5; serde default zeros + empty
-`rules[]` is a legacy/unknown sentinel. Human path does not print those
+flag is `--format json` (not `--json`). `passed` is no-violations.
+Always-present `status` is `pass`, `fail`, or `idle` (not
+`evaluation.rules[].status`). `fail` if any violation; else `idle` if any rule
+is `idle` or `fail_on` / `max_risk_without_adr` is `skipped`; else `pass`,
+including an all-inapplicable policy (every boolean false, both thresholds
+off), which required nothing. A missing `status` key reads as `idle`. Exit 0
+is not `status: pass`. Synthesized + idle (no bound verify) is human
+`IDLE (synthesized; not a merge gate)` with JSON `idle: true`; it is not a
+merge-gate pass. A non-synthesized idle report is not `PASSED` and is
+uncolored: `IDLE (required rule did not run; not a merge gate)`. Observe still
+exit 0. `--format json` always includes `evaluation` (checked / idle / off /
+skipped counts + `rules[]`). Live `rulesDeclared` is 5; serde default zeros +
+empty `rules[]` is a legacy/unknown sentinel. Human path does not print those
 counts. `ledger validator doctor` is human-only: path-probe counts
 (`registered` / `enabled` / `inspected` / `resolved`); empty catalog is
 not a health pass.
