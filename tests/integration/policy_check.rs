@@ -5,7 +5,7 @@
 
 use ledgerful::commands::init::execute_init;
 use ledgerful::commands::policy_check::{
-    POLICY_CHECK_SCHEMA_VERSION, PolicyCheckReport, PolicyRuleEvalStatus,
+    POLICY_CHECK_SCHEMA_VERSION, PolicyCheckReport, PolicyHeadline, PolicyRuleEvalStatus,
     VERIFICATION_MUST_PASS_IDLE_NOTE, evaluate_policy_check, execute_policy_check,
     parse_policy_toml,
 };
@@ -246,6 +246,12 @@ fail_on = "off"
     let report = evaluate_policy_check(None, None, None).unwrap();
 
     assert_eq!(report.schema_version, POLICY_CHECK_SCHEMA_VERSION);
+    assert!(
+        report.passed,
+        "green repo with risk off must pass: {:?}",
+        report.violations
+    );
+    assert_eq!(report.status, PolicyHeadline::Pass);
     let json = serde_json::to_value(&report).unwrap();
     assert_eq!(json["schemaVersion"], 1);
     assert!(json["violations"].is_array());
@@ -306,6 +312,7 @@ fail_on = "off"
     let report = evaluate_policy_check(None, None, None).unwrap();
     assert_eq!(report.mode, "observe");
     assert!(!report.passed, "should have violations");
+    assert_eq!(report.status, PolicyHeadline::Fail);
     assert!(
         report.violations.iter().all(|v| v.severity == "warn"),
         "observe marks severity warn: {:?}",
@@ -424,6 +431,7 @@ fail_on = "off"
         "local mode must flag sidecar: {:?}",
         local.violations
     );
+    assert_eq!(local.status, PolicyHeadline::Fail);
 
     // --pr mode → committed range only; NO sidecar-based no_pending_tx violation.
     let pr = evaluate_policy_check(Some("HEAD~1...HEAD"), None, None).unwrap();
@@ -443,6 +451,7 @@ fail_on = "off"
         "--pr no_pending_tx must be skipped: {:?}",
         pr.evaluation.rules
     );
+    assert_eq!(pr.status, PolicyHeadline::Pass);
 }
 
 /// DoD-1c / CX-P2: pending DB txs are workspace state; `--pr` skips them.
@@ -659,6 +668,8 @@ fail_on = "off"
         "expected idle note, got {:?}",
         report.notes
     );
+    assert_eq!(report.status, PolicyHeadline::Idle);
+    assert_eq!(report.policy_source, "local");
 }
 
 /// 0292: synthesized idle (no policy.toml) is idle JSON, not a merge-gate pass.
@@ -704,6 +715,7 @@ fn verification_must_pass_synthesized_idle_is_idle_pass() {
         report.notes
     );
     assert!(report.idle, "synthesized idle must set idle: true");
+    assert_eq!(report.status, PolicyHeadline::Idle);
     assert_evaluation_identity(&report);
     assert!(
         report.evaluation.rules_idle >= 1,
@@ -749,6 +761,7 @@ fail_on = "off"
 
     let report = evaluate_policy_check(None, None, None).unwrap();
     assert!(!report.idle, "local write must not be synthesized idle");
+    assert_eq!(report.status, PolicyHeadline::Pass);
     assert_eq!(report.policy_source, "local");
     assert_evaluation_identity(&report);
     for id in ["fail_on", "max_risk_without_adr"] {
@@ -2163,11 +2176,14 @@ fn policy_check_report_roundtrip() {
         notes: vec![],
         idle: false,
         evaluation: Default::default(),
+        status: PolicyHeadline::Pass,
     };
     let json = serde_json::to_string(&report).unwrap();
     let back: PolicyCheckReport = serde_json::from_str(&json).unwrap();
     assert_eq!(report, back);
-    assert!(!json.contains("\"idle\""));
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(value.get("idle").is_none());
+    assert_eq!(value["status"], "pass");
 
     // Non-empty notes round-trip too.
     let with_notes = PolicyCheckReport {
@@ -2183,12 +2199,15 @@ fn policy_check_report_roundtrip() {
         idle: true,
         notes: vec![VERIFICATION_MUST_PASS_IDLE_NOTE.to_string()],
         policy_source: "synthesized".into(),
+        status: PolicyHeadline::Idle,
         ..report
     };
     let json3 = serde_json::to_string(&with_idle).unwrap();
     let back3: PolicyCheckReport = serde_json::from_str(&json3).unwrap();
     assert_eq!(with_idle, back3);
     assert!(json3.contains("\"idle\":true"));
+    let value3: serde_json::Value = serde_json::from_str(&json3).unwrap();
+    assert_eq!(value3["status"], "idle");
 
     let legacy = r#"{"schemaVersion":1,"violations":[],"passed":true,"mode":"observe","policySource":"local"}"#;
     let from_legacy: PolicyCheckReport = serde_json::from_str(legacy).unwrap();

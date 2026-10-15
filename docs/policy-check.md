@@ -206,16 +206,23 @@ Risk thresholds compare inclusively: `fail_on = medium` fires on medium **and** 
 | `enforce` | yes | **nonzero** (severities marked `error`) |
 
 JSON `passed` is `true` only when there are zero violations (independent of mode).
+Exit 0 is not `status: pass`. Observe with violations is still exit 0. Enforce
+with `status: idle` and no violations is still exit 0.
 
-Human **Result** is `PASSED` when `passed` is true **except** when the
-policy was **synthesized** (no `policy.toml`) **and** the idle
-`verification_must_pass` note is present: then Result is
-`IDLE (synthesized; not a merge gate)` (not green) and the footer is
-`No declared policy.toml; idle synthesized defaults are not a merge gate.`
-instead of `No policy violations.` Declared sources (`local` /
-`base-branch` / `trusted-path`) still print `PASSED` on idle. JSON
-`passed` stays `true` (no violations). Additive `idle: true` is
-emitted when that idle note was pushed (omitted when false).
+Human **Result** is `PASSED` (green) when `status` is `pass` and there are no
+violations, with footer `No policy violations.` When the policy was
+**synthesized** (no `policy.toml`) **and** the idle `verification_must_pass`
+note is present, Result is `IDLE (synthesized; not a merge gate)` and the
+footer is `No declared policy.toml; idle synthesized defaults are not a merge gate.`
+Both of those lines are uncolored. When the report is not that synthesized
+case and `status` is `idle`, Result is
+`IDLE (required rule did not run; not a merge gate)` and the footer is
+`A required rule did not run. This is not a merge gate.` Both are uncolored.
+That covers a declared policy whose `verification_must_pass` did not run, and
+a report that is idle only because a risk rule was skipped. An all-inapplicable
+policy (every boolean false, both thresholds off) is `status: pass` because it
+required nothing. JSON `passed` stays `true` when there are no violations.
+Additive `idle: true` is emitted when that idle note was pushed (omitted when false).
 
 ## JSON machine contract (`--format json`)
 
@@ -236,7 +243,8 @@ bump `schemaVersion`.
   ],
   "passed": false,
   "mode": "enforce",
-  "policySource": "base-branch"
+  "policySource": "base-branch",
+  "status": "fail"
 }
 ```
 
@@ -260,7 +268,8 @@ verify):
   "notes": [
     "verification_must_pass: idle evaluation target; no bound verification run (unbound verifies do not satisfy). Not a current-change fail."
   ],
-  "idle": true
+  "idle": true,
+  "status": "idle"
 }
 ```
 
