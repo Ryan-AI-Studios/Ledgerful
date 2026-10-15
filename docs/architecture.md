@@ -39,7 +39,7 @@ CLI
     - `ask` loads the latest impact packet, truncates and sanitizes context, then invokes Gemini.
     - `hotspots` computes risk density from git history and stored complexity.
 - `federate` exports public interfaces and scans sibling schemas.
-- `audit` (top-level) performs a holistic project audit or history for an entity.
+- `audit` (top-level): Ledger velocity and entity churn. Not dependencies audit and not a vulnerability scan.
 - `daemon` is optional and feature-gated behind `--features daemon`.
 - `reset` removes derived state without touching files outside `.ledgerful/`.
 - `web` starts the optional local dashboard (feature-gated behind `web`).

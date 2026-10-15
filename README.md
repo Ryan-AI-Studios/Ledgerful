@@ -167,10 +167,10 @@ Default-features `--help` names, in clap order. Hidden variants (`bridge`, `sear
 | `intent` | Manage Ledgerful intent capture and TUI interaction |
 | `reset` | Reset Ledgerful state or configuration |
 | `doctor` | Health check for Ledgerful and local model stack |
-| `status` | Ledger pending/drift status (`--json` / `--compact`; not a full alias of `ledger status`) |
+| `status` | Ledger pending and drift, same bytes as ledger status --json or --compact. Not git status and not doctor. |
 | `config` | Configuration management |
 | `dead-code` | Detect likely dead code across the repository |
-| `audit` | Perform a holistic project audit or history for an entity |
+| `audit` | Ledger velocity and entity churn. Not dependencies audit and not a vulnerability scan. |
 | `timings` | Local-only per-command timing analysis (Track 0043; `--global` is Track 0044) |
 | `bench` | Run a pinned live CLI workload N times (not timings history) |
 | `viz` | Generate an interactive visualization of the knowledge graph |

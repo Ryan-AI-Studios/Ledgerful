@@ -152,7 +152,7 @@ VRAM section: shown under default and `--full`; **suppressed under quiet**.
 
 ### `sessionPriority` (0225)
 
-On **observe** + `intent.require_signing = false`, `PHANTOM_PROMOTED_WITHOUT_VERIFY`, `sig-pin`, and `sig-version` are assigned `sessionPriority: later` at emission (CLI `doctor --json` only; omitted from sidecar `doctor-results.json` / change-context `topFindings`). Hygiene findings (`is_hygiene`: Warn+Optional, or Info any category) are also `later` on observe **and** enforce (0295). Human default omits 0225 signing bodies and prints `{n} signing finding(s) deferred (observe) — run doctor --full` (Ascii: `--` in place of `—`) — **not** the 0174 hygiene line. The signing trailer counts **only** those three codes (zero signing-later omits it). `hygiene_count` stays `is_hygiene` only. Default Index Health still expands action-critical warns; the `is_later() && !full` omit is for 0225 signing warns (hygiene-later never reach that list). Header `warnAction` still counts signing later (0209); `--full` expands later bodies. Enforce or `require_signing` keeps the signing trio `now`. `binary-behind-tree` / `hook-template-stale` stay `now`. Category / `is_action_critical` / 0138 B7 unchanged.
+On **observe** + `intent.require_signing = false`, `PHANTOM_PROMOTED_WITHOUT_VERIFY`, `sig-pin`, and `sig-version` are assigned `sessionPriority: later` at emission (CLI `doctor --json` only; omitted from sidecar `doctor-results.json` / change-context `topFindings`). Hygiene findings (`is_hygiene`: Warn+Optional, or Info any category) are also `later` on observe **and** enforce (0295). Human default omits 0225 signing bodies and prints `{n} signing finding(s) deferred (observe) — run doctor --full` (Ascii: `--` in place of `—`) — **not** the 0174 hygiene line. The signing trailer counts **only** those three codes (zero signing-later omits it). `hygiene_count` stays `is_hygiene` only. Default Index Health still expands action-critical warns; the `is_later() && !full` omit is for 0225 signing warns (hygiene-later never reach that list). Header `warnAction` still counts signing later (0209); `--full` expands later bodies. Enforce or `require_signing` keeps the signing trio `now`. `binary-behind-tree` / `hook-template-stale` stay `now`. `binary-ahead-of-tree` and `binary-diverges-from-tree` are info, so `later`. Category / `is_action_critical` / 0138 B7 unchanged.
 
 ### Acknowledged standing warnings (0226)
 
@@ -170,19 +170,46 @@ Optional top-level `u64` wall-clock milliseconds from after the `--json`/`--appl
 conflict guard until immediately before JSON serialization. `schemaVersion` stays `1`.
 Agents may use it to spot session-start regressions; not a SLI contract.
 
-### `binary-behind-tree` (0137)
+### `binary-behind-tree` (0137, 0513)
 
 | Field | Value |
 |---|---|
 | `code` | `binary-behind-tree` |
 | `severity` | `warn` |
 | `category` | `tools` |
-| When | **Engine worktree only** (`Cargo.toml` package name exactly `ledgerful` **and** `src/cli/args/mod.rs` exists). Version string lag and/or embedded build short-SHA ≠ worktree HEAD (gix). |
-| Not | Consumer repos; matching version+SHA; embed `unknown` + equal version (no commit false positive). |
+| `sessionPriority` | `now` |
+| When | **Engine worktree only** (`Cargo.toml` package name exactly `ledgerful` **and** `src/cli/args/mod.rs` exists). The running version triple is older than this worktree, or the versions are equal or not comparable and the running commit is an ancestor of worktree HEAD. |
+| Not | Consumer repos. Prefix-equal SHAs. Equal versions with an unusable SHA. A newer running triple (`binary-ahead-of-tree`). Equal or unparsed versions whose commits diverge or whose ancestry is unknown (`binary-diverges-from-tree`). |
 | `readyForPublish` | **Not** blocked (warn only). Counts in `dashboard_failures` (category ≠ optional). |
-| `remediation` | Always: `ledgerful update --binary` then the GitHub Latest page then `cargo install --path . --force` then `ledgerful --version`. Cargo is **not** the first line. **No** auto-install from doctor. |
+| `remediation` | Exactly two lines: `cargo install --path . --force` then `ledgerful --version`. **No** `ledgerful update --binary`. **No** GitHub Latest URL. **No** auto-install from doctor. |
 
-Agents may also read currency from `environment.binaryVersion` + `environment.buildSha` (schemaVersion stays **1**).
+### `binary-ahead-of-tree` (0513)
+
+| Field | Value |
+|---|---|
+| `code` | `binary-ahead-of-tree` |
+| `severity` | `info` |
+| `category` | `tools` |
+| `sessionPriority` | `later` (info is hygiene) |
+| When | **Engine worktree only.** The running version triple is newer than this worktree, or the versions are equal or not comparable and worktree HEAD is an ancestor of the running commit. |
+| Not | Consumer repos. Not a reason to install this worktree over the running binary. |
+| `readyForPublish` | **Not** blocked. Info does not increment `dashboard_failures`. |
+| `remediation` | Exactly `ledgerful --version`. Must not contain `cargo install`. |
+
+### `binary-diverges-from-tree` (0513)
+
+| Field | Value |
+|---|---|
+| `code` | `binary-diverges-from-tree` |
+| `severity` | `info` |
+| `category` | `tools` |
+| `sessionPriority` | `later` (info is hygiene) |
+| When | **Engine worktree only.** Versions are equal, or not comparable, and the commits have diverged or ancestry is unknown (including unusable SHAs when the raw version strings differ). |
+| Not | Consumer repos. A proven ancestor relationship (that is behind or ahead). Prefix-equal SHAs. Identical raw version strings. |
+| `readyForPublish` | **Not** blocked. Info does not increment `dashboard_failures`. |
+| `remediation` | Exactly `ledgerful --version`. Must not contain `cargo install`. |
+
+Agents may also read currency from `environment.binaryVersion` + `environment.buildSha` (schemaVersion stays **1**). Display SHAs are shortened. The literal `unknown` is not printed as a SHA.
 
 ### `binary-behind-latest` (0205)
 
