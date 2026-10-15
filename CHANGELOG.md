@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.18] - 2026-10-15
+
 ### Fixed
 
 - **Security delta and mounted routes (0509):** bare `security impact` is the git diff. `--inventory` lists every indexed policy and conflicts with `--changed`. A unique product route supplies the mounted path. Ambiguous mounts are not chosen. `schemaVersion` stays 1.

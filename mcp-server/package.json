@@ -1,7 +1,7 @@
 {
   "name": "@ledgerful/mcp-server",
-  "version": "0.1.26",
-  "ledgerfulEngineTag": "v0.2.17",
+  "version": "0.1.27",
+  "ledgerfulEngineTag": "v0.2.18",
   "description": "Ledgerful MCP stdio server wrapper for AI coding agents",
   "license": "SEE LICENSE IN LICENSE",
   "repository": {
