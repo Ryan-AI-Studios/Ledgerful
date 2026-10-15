@@ -1927,6 +1927,13 @@
             "items": {
               "$ref": "#/components/schemas/TrendPointDto"
             }
+          },
+          "lastDay": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Newest stored day when `data` is empty and `project_trend_days` has a\nday outside the requested window. Omitted when the table is empty or\n`data` is non-empty."
           }
         }
       },

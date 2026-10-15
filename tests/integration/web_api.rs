@@ -865,6 +865,84 @@ async fn test_trends_returns_empty_array_when_no_data() {
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
     let data = json["data"].as_array().expect("data is an array");
     assert!(data.is_empty(), "expected empty data array, got {data:?}");
+    assert!(
+        json.get("lastDay").is_none(),
+        "empty table omits lastDay: {json}"
+    );
+    handle.abort();
+}
+
+#[tokio::test]
+async fn api_trends_empty_window_reports_last_day() {
+    use ledgerful::state::storage::StorageManager;
+
+    let empty = temp_layout();
+    let (url, token, handle) = spawn_server(empty.layout()).await;
+    let body = tokio::task::spawn_blocking(move || {
+        authed_get(&url, &token, "/api/trends?days=1")
+            .call()
+            .unwrap()
+            .into_string()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(json["data"].as_array().unwrap().is_empty(), "{json}");
+    assert!(json.get("lastDay").is_none(), "{json}");
+    handle.abort();
+    let _ = handle.await;
+
+    let guard = temp_layout();
+    let layout = guard.layout();
+    layout.ensure_state_dir().unwrap();
+    let db_path = layout.state_subdir().join("ledger.db");
+    let storage = StorageManager::init(db_path.as_std_path()).unwrap();
+    let old_day = (chrono::Utc::now() - chrono::Duration::days(40))
+        .format("%Y-%m-%d")
+        .to_string();
+    storage
+        .get_connection()
+        .execute(
+            "INSERT INTO project_trend_days (day, score, changes, high_risk_count) VALUES (?1, 7.0, 1, 0)",
+            rusqlite::params![&old_day],
+        )
+        .unwrap();
+    drop(storage);
+
+    let (url, token, handle) = spawn_server(layout.clone()).await;
+    let url_outside = url.clone();
+    let token_outside = token.clone();
+    let outside = tokio::task::spawn_blocking(move || {
+        authed_get(&url_outside, &token_outside, "/api/trends?days=1")
+            .call()
+            .unwrap()
+            .into_string()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    let outside_json: serde_json::Value = serde_json::from_str(&outside).unwrap();
+    assert!(
+        outside_json["data"].as_array().unwrap().is_empty(),
+        "{outside_json}"
+    );
+    assert_eq!(outside_json["lastDay"].as_str(), Some(old_day.as_str()));
+
+    let inside = tokio::task::spawn_blocking(move || {
+        authed_get(&url, &token, "/api/trends?days=90")
+            .call()
+            .unwrap()
+            .into_string()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    let inside_json: serde_json::Value = serde_json::from_str(&inside).unwrap();
+    let data = inside_json["data"].as_array().expect("data");
+    assert_eq!(data.len(), 1, "{inside_json}");
+    assert_eq!(data[0]["date"].as_str(), Some(old_day.as_str()));
+    assert!(inside_json.get("lastDay").is_none(), "{inside_json}");
     handle.abort();
 }
 

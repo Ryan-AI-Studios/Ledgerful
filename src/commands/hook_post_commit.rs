@@ -5,20 +5,24 @@ use crate::commands::hook_sidecar::{RECOVER_HINT, hash_message, mark_promote_fai
 pub use crate::commands::hook_sidecar::{PendingHookTx, read_pending_sidecar};
 use crate::git::numstat::per_file_numstat;
 use crate::git::repo::{get_head_info, open_repo};
+use crate::impact::budget::{AnalysisBudget, HistoryWalkStop};
 use crate::impact::hotspots::normalize_score;
-use crate::impact::hotspots::{HotspotQuery, calculate_hotspots};
+use crate::impact::hotspots::{HotspotQuery, calculate_hotspots_detailed};
 use crate::impact::packet::Hotspot;
 use crate::impact::temporal::GixHistoryProvider;
 use crate::ledger::{ChangeType, CommitRequest, TransactionManager, VerificationStatus};
 use crate::state::storage::StorageManager;
-use crate::state::storage::hotspot_trends::insert_hotspot_trends_with_retry;
+use crate::state::storage::hotspot_trends::{
+    TrendInsert, insert_hotspot_trends_with_retry, report_is_database_busy,
+};
 use chrono::{Duration as ChronoDuration, Utc};
 use miette::{IntoDiagnostic, Result, miette};
 use std::collections::HashMap;
 use std::fs;
-use std::sync::mpsc;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Entry point for the `internal hook-post-commit` command. This is invoked by
 /// the git `post-commit` hook and must never block or fail the commit: any
@@ -49,8 +53,13 @@ pub fn execute_hook_post_commit_for_layout(layout: &crate::state::layout::Layout
         tracing::error!(target: "cli_summary", "{msg}");
     }
 
-    // Then, in a detached thread, record hotspot trends. The thread has a
-    // 10-second wall-clock budget and is best-effort only.
+    // One 10-second deadline for the insert and for the index that follows it.
+    // The insert outcome is sent first. Catch-up and the incremental index run
+    // only when at least one second remains, and the main thread waits for
+    // that completion only until this same deadline. It does not join the
+    // worker. On Windows, process exit kills a thread that is still running
+    // when the deadline fires. Git is never failed.
+    let deadline = Instant::now() + POST_COMMIT_BUDGET;
     let db_path = layout
         .state_subdir()
         .join("ledger.db")
@@ -58,43 +67,54 @@ pub fn execute_hook_post_commit_for_layout(layout: &crate::state::layout::Layout
         .to_path_buf();
     let repo_root = layout.root.clone();
     let layout_for_worker = layout.clone();
+    let (outcome_tx, outcome_rx) = mpsc::channel();
     let (done_tx, done_rx) = mpsc::channel();
-    let _handle = thread::Builder::new()
+    let spawned = thread::Builder::new()
         .name("post-commit-worker".to_string())
         .spawn(move || {
-            let start = std::time::Instant::now();
-            let result = record_hotspot_trends(&repo_root, &db_path);
-            if let Err(ref e) = result {
-                tracing::debug!("Post-commit hook: work failed: {}", e);
-            }
+            let budget = post_commit_walk_budget(&layout_for_worker, deadline);
+            let outcome = record_hotspot_trends_with_budget(&repo_root, &db_path, &budget);
+            let _ = outcome_tx.send(outcome);
 
-            // Best-effort bounded catch-up: if project_trend_days is empty or
-            // stale, backfill from existing hotspot_trends data (90-day window).
-            // Idempotent, safe to run on every commit.
-            if let Ok(storage) = StorageManager::init_with_layout(&layout_for_worker)
-                && let Err(e) = catch_up_project_trends(&storage, 90)
-            {
-                tracing::debug!("Post-commit hook: catch-up failed: {}", e);
-            }
-            let elapsed = start.elapsed();
-            if elapsed > Duration::from_secs(10) {
-                tracing::debug!(
-                    "Post-commit hook: work took {:?}, exceeding 10s budget",
-                    elapsed
-                );
+            if deadline.saturating_duration_since(Instant::now()) >= Duration::from_secs(1) {
+                if let Ok(storage) = StorageManager::init_with_layout(&layout_for_worker)
+                    && let Err(e) = catch_up_project_trends(&storage, 90)
+                {
+                    tracing::debug!("Post-commit hook: catch-up failed: {}", e);
+                }
+                if let Ok(storage) = StorageManager::init_with_layout(&layout_for_worker) {
+                    let config = load_ledger_config(&layout_for_worker).unwrap_or_default();
+                    let mut indexer =
+                        crate::index::ProjectIndexer::new(storage, repo_root.clone(), config);
+                    if let Err(e) = indexer.incremental_index() {
+                        tracing::debug!("Post-commit hook: incremental index failed: {}", e);
+                    }
+                    if let Err(e) = indexer.shutdown_storage() {
+                        tracing::debug!("Post-commit hook: storage shutdown failed: {}", e);
+                    }
+                }
             }
             let _ = done_tx.send(());
-            let _ = result;
         });
+    if spawned.is_err() {
+        tracing::debug!("Post-commit hook: failed to spawn worker");
+        return Ok(());
+    }
 
-    // Wait up to the 10-second budget for the recorder to finish. On Windows
-    // the process exits immediately when the main thread returns, killing any
-    // still-running detached threads before they can commit SQLite writes, so
-    // we must block briefly here while still never failing the git commit.
-    // The budget was raised from 5s to 10s to accommodate the best-effort
-    // incremental index that runs before hotspot trend recording.
-    if done_rx.recv_timeout(Duration::from_secs(10)).is_err() {
-        tracing::debug!("Post-commit hook: post-commit work did not complete within 10s budget");
+    let outcome_wait = deadline.saturating_duration_since(Instant::now());
+    match outcome_rx.recv_timeout(outcome_wait) {
+        Ok(outcome) => {
+            if let Some(line) = warning_line(outcome) {
+                tracing::warn!(target: "cli_summary", "{line}");
+            }
+            let done_wait = deadline.saturating_duration_since(Instant::now());
+            if done_rx.recv_timeout(done_wait).is_err() {
+                tracing::debug!("Post-commit hook: index did not finish before the 10s deadline");
+            }
+        }
+        Err(_) => {
+            tracing::warn!(target: "cli_summary", "{DEADLINE_WARNING}");
+        }
     }
 
     Ok(())
@@ -290,21 +310,85 @@ fn update_changed_files_diff_stats(
     Ok(())
 }
 
+/// Shared post-commit wall clock. The outcome wait and the completion wait
+/// both end at `Instant::now() + POST_COMMIT_BUDGET` captured once.
+const POST_COMMIT_BUDGET: Duration = Duration::from_secs(10);
+
+const HISTORY_BUDGET_WARNING: &str =
+    "[Ledgerful] WARNING: post-commit hotspot trend sample was not recorded (history budget).";
+const DATABASE_LOCKED_WARNING: &str =
+    "[Ledgerful] WARNING: post-commit hotspot trend sample was not recorded (database locked).";
+const DEADLINE_WARNING: &str =
+    "[Ledgerful] WARNING: post-commit hotspot trend sample did not finish within 10s.";
+
+/// What the post-commit worker recorded. Every exit sends one of these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RecordOutcome {
+    Inserted,
+    Deduped,
+    Empty,
+    NotRecordedHistoryBudget,
+    NotRecordedDatabaseLocked,
+    Silent,
+}
+
+/// `Some` when the walk must not be stored. A non-complete walk is not a
+/// sample, including when the file list is non-empty: complexity was skipped
+/// and every non-docs score is `0.0`.
+pub(crate) fn outcome_for_walk(
+    stop: HistoryWalkStop,
+    hotspots_empty: bool,
+) -> Option<RecordOutcome> {
+    match stop {
+        HistoryWalkStop::Complete if hotspots_empty => Some(RecordOutcome::Empty),
+        HistoryWalkStop::Complete => None,
+        HistoryWalkStop::Budget | HistoryWalkStop::Cancelled => {
+            Some(RecordOutcome::NotRecordedHistoryBudget)
+        }
+    }
+}
+
+pub(crate) fn warning_line(outcome: RecordOutcome) -> Option<&'static str> {
+    match outcome {
+        RecordOutcome::Inserted
+        | RecordOutcome::Deduped
+        | RecordOutcome::Empty
+        | RecordOutcome::Silent => None,
+        RecordOutcome::NotRecordedHistoryBudget => Some(HISTORY_BUDGET_WARNING),
+        RecordOutcome::NotRecordedDatabaseLocked => Some(DATABASE_LOCKED_WARNING),
+    }
+}
+
+fn post_commit_walk_budget(
+    layout: &crate::state::layout::Layout,
+    deadline: Instant,
+) -> AnalysisBudget {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let history_secs = load_ledger_config(layout)
+        .map(|config| config.hotspots.history_budget_secs)
+        .unwrap_or(0);
+    match deadline.checked_sub(Duration::from_secs(1)) {
+        Some(insert_reserve) => {
+            AnalysisBudget::capped_by_overall(history_secs, Some(insert_reserve), cancel)
+        }
+        None => AnalysisBudget::expired(cancel),
+    }
+}
+
 /// Append a hotspot snapshot for the current HEAD to `hotspot_trends`.
 ///
-/// * Uses WAL mode and retries up to 3 times with 50 ms backoff on database
-///   busy/locked errors.
-/// * Dedupes by commit hash or by identical per-file scores compared with the
-///   last recorded snapshot.
-/// * Returns `Ok(())` on success or on any recoverable failure (missing git
-///   index, empty repo, locked database after retries, etc.). Errors are only
-///   returned for unexpected programming/IO issues so callers can log them.
-fn record_hotspot_trends(repo_root: &camino::Utf8Path, db_path: &std::path::Path) -> Result<()> {
+/// The caller supplies the walk budget. This function does not index. Every
+/// path returns a [`RecordOutcome`], including storage-open failure.
+pub(crate) fn record_hotspot_trends_with_budget(
+    repo_root: &camino::Utf8Path,
+    db_path: &std::path::Path,
+    budget: &AnalysisBudget,
+) -> RecordOutcome {
     let repo = match open_repo(repo_root.as_std_path()) {
         Ok(r) => r,
         Err(e) => {
             tracing::debug!("Post-commit hook: cannot open repo: {}", e);
-            return Ok(());
+            return RecordOutcome::Silent;
         }
     };
 
@@ -312,11 +396,11 @@ fn record_hotspot_trends(repo_root: &camino::Utf8Path, db_path: &std::path::Path
         Ok((Some(h), b)) => (h, b),
         Ok((None, _)) => {
             tracing::debug!("Post-commit hook: no HEAD hash");
-            return Ok(());
+            return RecordOutcome::Silent;
         }
         Err(e) => {
             tracing::debug!("Post-commit hook: cannot read HEAD: {}", e);
-            return Ok(());
+            return RecordOutcome::Silent;
         }
     };
 
@@ -335,7 +419,7 @@ fn record_hotspot_trends(repo_root: &camino::Utf8Path, db_path: &std::path::Path
                     "Post-commit hook: cannot derive state_dir from db_path {}",
                     db_path.display()
                 );
-                return Ok(());
+                return RecordOutcome::Silent;
             }
         }
     };
@@ -345,34 +429,7 @@ fn record_hotspot_trends(repo_root: &camino::Utf8Path, db_path: &std::path::Path
         Ok(s) => s,
         Err(e) => {
             tracing::debug!("Post-commit hook: cannot open storage: {}", e);
-            return Ok(());
-        }
-    };
-
-    // Best-effort incremental index: refreshes AST/symbol index for changed
-    // files only. Non-fatal — failures are logged and swallowed so the git
-    // commit never fails.
-    use crate::index::ProjectIndexer;
-    let mut indexer = ProjectIndexer::new(storage, repo_root.to_owned(), config.clone());
-    if let Err(e) = indexer.incremental_index() {
-        tracing::debug!("Post-commit hook: incremental index failed: {}", e);
-    }
-    // Explicitly shutdown storage to release SQLite/CozoDB locks before re-opening
-    if let Err(e) = indexer.shutdown_storage() {
-        tracing::debug!("Post-commit hook: storage shutdown failed: {}", e);
-    }
-    drop(indexer);
-
-    // Re-open write for hotspot calculation + trend insert.
-    // True SQLITE_OPEN_READ_ONLY forbids inserts; trend recording must use write open.
-    let storage = match StorageManager::init_with_layout(&layout) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::debug!(
-                "Post-commit hook: cannot re-open write storage for trends: {}",
-                e
-            );
-            return Ok(());
+            return RecordOutcome::Silent;
         }
     };
 
@@ -381,24 +438,41 @@ fn record_hotspot_trends(repo_root: &camino::Utf8Path, db_path: &std::path::Path
         limit: config.hotspots.limit,
         commits: config.hotspots.max_commits,
         decay_half_life: config.hotspots.decay_half_life,
+        budget: Some(budget.clone()),
         ..Default::default()
     };
 
-    let hotspots = match calculate_hotspots(&storage, &history_provider, &query) {
-        Ok(h) => h,
+    let calculated = match calculate_hotspots_detailed(&storage, &history_provider, &query) {
+        Ok(calc) => calc,
         Err(e) => {
             tracing::debug!("Post-commit hook: hotspot calculation failed: {}", e);
-            return Ok(());
+            return RecordOutcome::Silent;
         }
     };
 
-    if hotspots.is_empty() {
-        tracing::debug!("Post-commit hook: no hotspots computed for this commit");
-        return Ok(());
+    if let Some(outcome) = outcome_for_walk(calculated.walk_stop, calculated.hotspots.is_empty()) {
+        if outcome == RecordOutcome::Empty {
+            tracing::debug!("Post-commit hook: no hotspots computed for this commit");
+        }
+        return outcome;
     }
 
     let timestamp = Utc::now().to_rfc3339();
-    insert_hotspot_trends_with_retry(&storage, &hotspots, &head_hash, &timestamp)?;
+    let inserted = match insert_hotspot_trends_with_retry(
+        &storage,
+        &calculated.hotspots,
+        &head_hash,
+        &timestamp,
+    ) {
+        Ok(kind) => kind,
+        Err(e) => {
+            if report_is_database_busy(&e).is_some() {
+                return RecordOutcome::NotRecordedDatabaseLocked;
+            }
+            tracing::debug!("Post-commit hook: trend insert failed: {}", e);
+            return RecordOutcome::Silent;
+        }
+    };
     if let Err(e) = upsert_project_trend_day(&storage, &timestamp) {
         tracing::debug!(
             "Post-commit hook: failed to upsert project trend day: {}",
@@ -407,10 +481,13 @@ fn record_hotspot_trends(repo_root: &camino::Utf8Path, db_path: &std::path::Path
     }
     tracing::debug!(
         "Post-commit hook: recorded {} hotspot trend rows for {}",
-        hotspots.len(),
+        calculated.hotspots.len(),
         head_hash
     );
-    Ok(())
+    match inserted {
+        TrendInsert::Inserted => RecordOutcome::Inserted,
+        TrendInsert::Deduped => RecordOutcome::Deduped,
+    }
 }
 
 /// Update the daily project trend rollup for the UTC date of `timestamp`.
@@ -807,5 +884,99 @@ mod tests {
             )
             .unwrap();
         assert_eq!(file_a, "src/a.rs");
+    }
+
+    #[test]
+    fn post_commit_budget_stop_with_files_records_nothing() {
+        assert_eq!(
+            outcome_for_walk(HistoryWalkStop::Budget, false),
+            Some(RecordOutcome::NotRecordedHistoryBudget)
+        );
+        assert_eq!(
+            outcome_for_walk(HistoryWalkStop::Complete, true),
+            Some(RecordOutcome::Empty)
+        );
+        assert_eq!(outcome_for_walk(HistoryWalkStop::Complete, false), None);
+    }
+
+    #[test]
+    fn post_commit_silent_outcome_has_no_warning() {
+        assert_eq!(warning_line(RecordOutcome::Silent), None);
+        assert_eq!(
+            warning_line(RecordOutcome::NotRecordedDatabaseLocked),
+            Some(DATABASE_LOCKED_WARNING)
+        );
+        assert_ne!(
+            warning_line(RecordOutcome::NotRecordedDatabaseLocked),
+            Some(DEADLINE_WARNING)
+        );
+        assert_eq!(
+            warning_line(RecordOutcome::NotRecordedHistoryBudget),
+            Some(HISTORY_BUDGET_WARNING)
+        );
+    }
+
+    #[test]
+    fn post_commit_records_trends_before_incremental_index() {
+        let src = include_str!("hook_post_commit.rs");
+        let start = src
+            .find("fn execute_hook_post_commit_for_layout")
+            .expect("hook function");
+        let rest = &src[start..];
+        let end = rest
+            .find("\nfn promote_pending_ledger_tx")
+            .expect("next function");
+        let body = &rest[..end];
+        let send = body.find("outcome_tx.send").expect("outcome send");
+        let index = body.find("incremental_index").expect("index call");
+        assert!(send < index, "outcome send must precede incremental_index");
+    }
+
+    #[test]
+    fn post_commit_expired_budget_records_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        git(&["init"]);
+        git(&["config", "user.email", "ledgerful-test@example.com"]);
+        git(&["config", "user.name", "ledgerful-test"]);
+        std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
+        git(&["add", "a.rs"]);
+        git(&["commit", "--no-gpg-sign", "-m", "init"]);
+
+        let repo_root = camino::Utf8PathBuf::from_path_buf(root.to_path_buf()).unwrap();
+        let layout = crate::state::layout::Layout::new(repo_root.clone());
+        layout.ensure_state_dir().unwrap();
+        let db_path = layout.state_subdir().join("ledger.db");
+        let storage = StorageManager::init(db_path.as_std_path()).unwrap();
+        drop(storage);
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let budget = AnalysisBudget::expired(cancel);
+        assert!(budget.deadline.is_some());
+        let outcome = record_hotspot_trends_with_budget(&repo_root, db_path.as_std_path(), &budget);
+        assert_eq!(outcome, RecordOutcome::NotRecordedHistoryBudget);
+        assert_eq!(warning_line(outcome), Some(HISTORY_BUDGET_WARNING));
+
+        let storage = StorageManager::init(db_path.as_std_path()).unwrap();
+        let count: i64 = storage
+            .get_connection()
+            .query_row("SELECT COUNT(*) FROM hotspot_trends", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        let days: i64 = storage
+            .get_connection()
+            .query_row("SELECT COUNT(*) FROM project_trend_days", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(days, 0);
     }
 }

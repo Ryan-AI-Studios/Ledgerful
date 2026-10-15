@@ -160,6 +160,176 @@ fn seed_hotspot_trends(root: &std::path::Path, paths_and_scores: &[(&str, f64)])
     drop(storage);
 }
 
+fn seed_hotspot_trend_recorded_at(
+    root: &std::path::Path,
+    path: &str,
+    score: f64,
+    recorded_at: &str,
+) {
+    let repo_root = Utf8Path::from_path(root).unwrap();
+    let layout = Layout::new(repo_root);
+    let storage = StorageManager::init_with_layout(&layout).unwrap();
+    storage
+        .get_connection()
+        .execute(
+            "INSERT INTO hotspot_trends (file_path, score, frequency, complexity, commit_hash, recorded_at) \
+             VALUES (?1, ?2, NULL, NULL, ?3, ?4)",
+            rusqlite::params![path, score, "seed-recorded-at", recorded_at],
+        )
+        .unwrap();
+    drop(storage);
+}
+
+fn run_hotspots_trend(root: &std::path::Path, args: &[&str]) -> std::process::Output {
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let mut command = Command::new(ledgerful_bin);
+    command
+        .arg("hotspots")
+        .arg("trend")
+        .args(args)
+        .current_dir(root);
+    command.output().unwrap()
+}
+
+#[test]
+fn trend_window_empty_reports_last_sample() {
+    let tmp = setup_young_indexed_repo();
+    let root = tmp.path();
+    let recorded_at = (chrono::Utc::now() - chrono::Duration::days(40)).to_rfc3339();
+    seed_hotspot_trend_recorded_at(root, "src/lib.rs", 0.2, &recorded_at);
+
+    let output = run_hotspots_trend(root, &["--days", "30", "--json"]);
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).unwrap();
+    assert_eq!(json["historyAvailable"], serde_json::json!(true));
+    assert_eq!(json["emptyReason"], "windowEmpty");
+    assert_eq!(json["lastSampleAt"], recorded_at);
+    assert_eq!(json["snapshotCount"], 0);
+    assert_eq!(json["bootstrapHint"], serde_json::Value::Null);
+    assert!(json["provenance"].get("lastRecordedAt").is_none(), "{json}");
+
+    let human = run_hotspots_trend(root, &["--days", "30"]);
+    assert!(human.status.success());
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(stdout.contains("No trend data in this window."), "{stdout}");
+    assert!(stdout.contains("Last sample recorded at"), "{stdout}");
+    assert!(
+        stdout.contains(&recorded_at),
+        "human last sample must be the stored text: {stdout}"
+    );
+    assert!(!stdout.contains("No trend history yet"), "{stdout}");
+}
+
+#[test]
+fn trend_entity_no_series() {
+    let tmp = setup_young_indexed_repo();
+    let root = tmp.path();
+    seed_hotspot_trends(root, &[("src/lib.rs", 0.4)]);
+
+    let output = run_hotspots_trend(root, &["--entity", "src/missing.rs", "--json"]);
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).unwrap();
+    assert_eq!(json["emptyReason"], "noSeries");
+    assert!(json.get("lastSampleAt").is_none(), "{json}");
+    assert_eq!(json["historyAvailable"], serde_json::json!(true));
+    assert_eq!(json["bootstrapHint"], serde_json::Value::Null);
+
+    let human = run_hotspots_trend(root, &["--entity", "src/missing.rs"]);
+    assert!(human.status.success());
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        stdout.contains("No stored trend samples for this path."),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("No trend data in this window."),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("Last sample recorded at"), "{stdout}");
+    assert!(
+        !stdout.contains("ledgerful hotspots trend --bootstrap"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn trend_entity_history_only_is_no_series() {
+    let tmp = setup_young_indexed_repo();
+    let root = tmp.path();
+    assert_eq!(hotspot_trends_count(root), 0);
+    seed_hotspot_history_score(root, "src/lib.rs", 0.3, "2026-01-01T00:00:00Z");
+
+    let output = run_hotspots_trend(root, &["--entity", "src/missing.rs", "--json"]);
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).unwrap();
+    assert_eq!(json["emptyReason"], "noSeries");
+    assert!(json.get("lastSampleAt").is_none(), "{json}");
+    assert_eq!(json["historyAvailable"], serde_json::json!(true));
+    assert_eq!(json["bootstrapHint"], serde_json::Value::Null);
+
+    let human = run_hotspots_trend(root, &["--entity", "src/missing.rs"]);
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        stdout.contains("No stored trend samples for this path."),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("No trend data in this window."),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("Last sample recorded at"), "{stdout}");
+}
+
+#[test]
+fn trend_no_lifetime_keeps_bootstrap() {
+    let tmp = setup_young_indexed_repo();
+    let root = tmp.path();
+    assert_eq!(hotspot_trends_count(root), 0);
+    assert_eq!(hotspot_history_count(root), 0);
+
+    let output = run_hotspots_trend(root, &["--json"]);
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).unwrap();
+    assert_eq!(json["historyAvailable"], serde_json::json!(false));
+    assert_eq!(
+        json["bootstrapHint"],
+        serde_json::json!("ledgerful hotspots trend --bootstrap")
+    );
+    assert!(json.get("emptyReason").is_none(), "{json}");
+    assert!(json.get("lastSampleAt").is_none(), "{json}");
+
+    let human = run_hotspots_trend(root, &[]);
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        stdout.contains("No trend history yet for this repository."),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("ledgerful hotspots trend --bootstrap"),
+        "{stdout}"
+    );
+}
+
 #[test]
 fn test_trend_no_history_non_bootstrap_human_shows_exact_command() {
     let tmp = setup_indexed_repo();
