@@ -32,7 +32,7 @@ impl EnrichmentProvider for ServiceProvider {
                 Some(old_path) => old_path,
                 None => &change.path,
             };
-            let path_str = path_to_check.to_string_lossy().to_string();
+            let path_str = path_to_check.to_string_lossy().replace('\\', "/");
             let looked_up = conn.query_row(
                 "SELECT service_name FROM project_files WHERE file_path = ?1",
                 [path_str],
@@ -367,6 +367,7 @@ fn directory_from_file_lookup(result: rusqlite::Result<String>) -> Result<std::p
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::impact::analysis::ImpactProvider;
     use crate::impact::packet::{ChangedFile, FileAnalysisStatus};
     use crate::state::migrations::get_migrations;
     use crate::state::storage::StorageManager;
@@ -636,6 +637,31 @@ mod tests {
         .unwrap();
     }
 
+    fn insert_symbol(conn: &Connection, file_id: i64, qualified: &str, symbol: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at)
+             VALUES (?1, ?2, ?3, 'Function', '2026-01-01T00:00:00Z')",
+            rusqlite::params![file_id, qualified, symbol],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn insert_edge(
+        conn: &Connection,
+        caller_symbol: i64,
+        caller_file: i64,
+        callee_symbol: i64,
+        callee_file: i64,
+    ) {
+        conn.execute(
+            "INSERT INTO structural_edges (caller_symbol_id, caller_file_id, callee_symbol_id, callee_file_id, call_kind, resolution_status, confidence)
+             VALUES (?1, ?2, ?3, ?4, 'DIRECT', 'RESOLVED', 1.0)",
+            rusqlite::params![caller_symbol, caller_file, callee_symbol, callee_file],
+        )
+        .unwrap();
+    }
+
     fn definition(
         name: &str,
         root: &str,
@@ -824,6 +850,122 @@ mod tests {
             .expect("old path names the service");
         assert_eq!(delta.affected_services, vec!["web".to_string()]);
         assert!(delta.services.iter().all(|service| service.name != "other"));
+    }
+
+    #[test]
+    fn service_identity_backslash_change_path_matches_stored_slash_path() {
+        let conn = migrated();
+        let file_id = insert_file(&conn, "services/web/app.rs", "web");
+        insert_route(&conn, file_id, "/app");
+        let storage = StorageManager::init_from_conn(conn);
+        let config = enabled_config();
+        let context = context_for(&storage, &config);
+        let mut packet = ImpactPacket {
+            changes: vec![changed(r"services\web\app.rs", None)],
+            ..Default::default()
+        };
+        ServiceProvider.enrich(&context, &mut packet).unwrap();
+        let delta = packet
+            .service_map_delta
+            .expect("backslash change path matches the stored slash path");
+        assert_eq!(delta.affected_services, vec!["web".to_string()]);
+    }
+
+    #[test]
+    fn service_identity_routed_edges_order_by_caller_then_callee() {
+        let conn = migrated();
+        let file_m = insert_file(&conn, "svc/m.rs", "svc_m");
+        insert_route(&conn, file_m, "/m");
+        let sym_m = insert_symbol(&conn, file_m, "crate::handler_m", "handler_m");
+
+        let file_d = insert_file(&conn, "svc/d.rs", "svc_d");
+        insert_route(&conn, file_d, "/d");
+        let sym_d = insert_symbol(&conn, file_d, "crate::handler_d", "handler_d");
+        // Stored first. Caller `svc_m` sorts after caller `svc_a`.
+        insert_edge(&conn, sym_m, file_m, sym_d, file_d);
+
+        let file_a = insert_file(&conn, "svc/a.rs", "svc_a");
+        insert_route(&conn, file_a, "/a");
+        let sym_a = insert_symbol(&conn, file_a, "crate::handler_a", "handler_a");
+        insert_edge(&conn, sym_a, file_a, sym_m, file_m);
+
+        let file_z = insert_file(&conn, "svc/z.rs", "svc_z");
+        let sym_z = insert_symbol(&conn, file_z, "crate::handler_z", "handler_z");
+        insert_edge(&conn, sym_m, file_m, sym_z, file_z);
+        insert_file(&conn, "svc/c.rs", "svc_c");
+
+        let storage = StorageManager::init_from_conn(conn);
+        let config = enabled_config();
+        let context = context_for(&storage, &config);
+        let mut packet = ImpactPacket {
+            changes: vec![changed("svc/m.rs", None)],
+            ..Default::default()
+        };
+        ServiceProvider.enrich(&context, &mut packet).unwrap();
+        let delta = packet
+            .service_map_delta
+            .expect("routed neighbors stay on the map");
+        assert_eq!(delta.affected_services, vec!["svc_m".to_string()]);
+        assert_eq!(
+            delta
+                .services
+                .iter()
+                .map(|service| service.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["svc_a", "svc_d", "svc_m"]
+        );
+        assert!(delta.services.iter().all(|service| service.name != "svc_c"));
+        assert!(delta.services.iter().all(|service| service.name != "svc_z"));
+        assert_eq!(
+            delta.cross_service_edges,
+            vec![
+                ("svc_a".to_string(), "svc_m".to_string(), 1),
+                ("svc_m".to_string(), "svc_d".to_string(), 1),
+            ]
+        );
+        assert_eq!(delta.total_services, delta.services.len());
+    }
+
+    #[test]
+    fn service_identity_directory_label_does_not_raise_cross_service_risk() {
+        let conn = migrated();
+        let web = insert_file(&conn, "services/web/app.rs", "web");
+        insert_route(&conn, web, "/app");
+        insert_file(&conn, "src/lib.rs", "src");
+        let storage = StorageManager::init_from_conn(conn);
+        let config = enabled_config();
+        assert_eq!(
+            config.coverage.services.cross_service_elevation_threshold,
+            2
+        );
+        let context = context_for(&storage, &config);
+        let mut packet = ImpactPacket {
+            changes: vec![
+                changed("services/web/app.rs", None),
+                changed("src/lib.rs", None),
+            ],
+            ..Default::default()
+        };
+        ServiceProvider.enrich(&context, &mut packet).unwrap();
+        let delta = packet
+            .service_map_delta
+            .as_ref()
+            .expect("the canonical service stays");
+        assert_eq!(delta.affected_services, vec!["web".to_string()]);
+        assert!(delta.services.iter().all(|service| service.name != "src"));
+
+        let impact = crate::impact::analysis::dependencies::DependencyImpactProvider
+            .analyze(&packet, &crate::policy::rules::Rules::default(), &config)
+            .unwrap();
+        assert!(
+            impact
+                .reasons
+                .iter()
+                .all(|reason| !reason.starts_with("Cross-service change affecting")),
+            "{:?}",
+            impact.reasons
+        );
+        assert_eq!(impact.weight, 0);
     }
 
     #[test]
