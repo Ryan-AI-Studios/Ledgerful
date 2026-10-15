@@ -332,15 +332,28 @@ pub(crate) enum RecordOutcome {
     Silent,
 }
 
+/// True when every score is `0.0` or non-finite. An empty list is not this case.
+pub(crate) fn hotspot_scores_unscored(hotspots: &[Hotspot]) -> bool {
+    !hotspots.is_empty()
+        && hotspots
+            .iter()
+            .all(|hotspot| hotspot.score == 0.0 || !hotspot.score.is_finite())
+}
+
 /// `Some` when the walk must not be stored. A non-complete walk is not a
-/// sample, including when the file list is non-empty: complexity was skipped
-/// and every non-docs score is `0.0`.
+/// sample. A finished walk that skipped complexity, or whose scores are all
+/// zero, is not a sample either. An empty list stays `Empty`.
 pub(crate) fn outcome_for_walk(
     stop: HistoryWalkStop,
     hotspots_empty: bool,
+    complexity_skipped: bool,
+    scores_unscored: bool,
 ) -> Option<RecordOutcome> {
     match stop {
         HistoryWalkStop::Complete if hotspots_empty => Some(RecordOutcome::Empty),
+        HistoryWalkStop::Complete if complexity_skipped || scores_unscored => {
+            Some(RecordOutcome::NotRecordedHistoryBudget)
+        }
         HistoryWalkStop::Complete => None,
         HistoryWalkStop::Budget | HistoryWalkStop::Cancelled => {
             Some(RecordOutcome::NotRecordedHistoryBudget)
@@ -450,7 +463,12 @@ pub(crate) fn record_hotspot_trends_with_budget(
         }
     };
 
-    if let Some(outcome) = outcome_for_walk(calculated.walk_stop, calculated.hotspots.is_empty()) {
+    if let Some(outcome) = outcome_for_walk(
+        calculated.walk_stop,
+        calculated.hotspots.is_empty(),
+        calculated.complexity_skipped,
+        hotspot_scores_unscored(&calculated.hotspots),
+    ) {
         if outcome == RecordOutcome::Empty {
             tracing::debug!("Post-commit hook: no hotspots computed for this commit");
         }
@@ -889,14 +907,41 @@ mod tests {
     #[test]
     fn post_commit_budget_stop_with_files_records_nothing() {
         assert_eq!(
-            outcome_for_walk(HistoryWalkStop::Budget, false),
+            outcome_for_walk(HistoryWalkStop::Budget, false, false, false),
             Some(RecordOutcome::NotRecordedHistoryBudget)
         );
         assert_eq!(
-            outcome_for_walk(HistoryWalkStop::Complete, true),
+            outcome_for_walk(HistoryWalkStop::Complete, true, false, false),
             Some(RecordOutcome::Empty)
         );
-        assert_eq!(outcome_for_walk(HistoryWalkStop::Complete, false), None);
+        assert_eq!(
+            outcome_for_walk(HistoryWalkStop::Complete, false, false, false),
+            None
+        );
+    }
+
+    #[test]
+    fn outcome_for_walk_complete_with_complexity_skipped_records_nothing() {
+        assert_eq!(
+            outcome_for_walk(HistoryWalkStop::Complete, false, true, false),
+            Some(RecordOutcome::NotRecordedHistoryBudget)
+        );
+        assert_eq!(
+            outcome_for_walk(HistoryWalkStop::Complete, false, false, true),
+            Some(RecordOutcome::NotRecordedHistoryBudget)
+        );
+        assert_eq!(
+            outcome_for_walk(HistoryWalkStop::Complete, false, false, false),
+            None
+        );
+        assert_eq!(
+            outcome_for_walk(HistoryWalkStop::Budget, false, false, false),
+            Some(RecordOutcome::NotRecordedHistoryBudget)
+        );
+        assert_eq!(
+            outcome_for_walk(HistoryWalkStop::Complete, true, true, false),
+            Some(RecordOutcome::Empty)
+        );
     }
 
     #[test]

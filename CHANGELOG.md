@@ -8,6 +8,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Hotspot history samples (0512):** a complete canonical `hotspots` list records `hotspot_history` when `[hotspots] auto_snapshot` is true (the default) and does not record couplings or `hotspot_trends`. `--snapshot` on that query also records couplings. A finished walk that skipped complexity, or a list whose scores are all zero, is not stored in `hotspot_history` or `hotspot_trends`. `schemaVersion` stays 1.
 - **Hotspot history continuity (0511):** an empty `hotspots trend` window names the last stored sample instead of saying history never existed. The post-commit sample is inserted before indexing, inside the existing 10-second budget. `schemaVersion` stays 1.
 - **Security delta and mounted routes (0509):** bare `security impact` is the git diff. `--inventory` lists every indexed policy and conflicts with `--changed`. A unique product route supplies the mounted path. Ambiguous mounts are not chosen. `schemaVersion` stays 1.
 - **Dead-code test classification (0510):** default dead-code omits `tests.rs` files and exact `#[cfg(test)]` helpers. `--include-tests` restores them without `noTestCoverage`. `schemaVersion` stays 1.

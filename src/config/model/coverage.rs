@@ -223,6 +223,10 @@ pub struct HotspotsConfig {
     /// Overall list/explain emit budget (0349). `0` disables that clock.
     #[serde(default = "default_hotspots_overall_budget_secs")]
     pub overall_budget_secs: u64,
+    /// When true, a canonical `hotspots` list records `hotspot_history`.
+    /// `--snapshot` still persists when this is false.
+    #[serde(default = "default_hotspots_auto_snapshot")]
+    pub auto_snapshot: bool,
     /// Score (0–1) above which `hotspots budget` reports a violation.
     /// Absent key → informational default 0.5. `--fail` requires this or `--threshold`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -237,6 +241,7 @@ impl Default for HotspotsConfig {
             decay_half_life: default_decay_half_life(),
             history_budget_secs: default_history_budget_secs(),
             overall_budget_secs: default_hotspots_overall_budget_secs(),
+            auto_snapshot: default_hotspots_auto_snapshot(),
             budget_threshold: None,
         }
     }
@@ -253,6 +258,9 @@ fn default_history_budget_secs() -> u64 {
 }
 fn default_hotspots_overall_budget_secs() -> u64 {
     25
+}
+fn default_hotspots_auto_snapshot() -> bool {
+    true
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -10,12 +10,14 @@ use crate::impact::packet::Hotspot;
 use crate::impact::temporal::{GixHistoryProvider, TemporalEngine};
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
+use crate::state::storage::hotspot_trends::report_is_database_busy;
 use chrono::{DateTime, Utc};
 use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 
 /// Truncate to `limit`, wrap as the hotspots list envelope, and echo `limit`.
 /// Shared by list and `--semantic` JSON printers so the two arms cannot drift.
@@ -128,6 +130,23 @@ pub(super) fn execute_hotspots_list(
     overall_secs: u64,
     json_out: Option<&mut Vec<u8>>,
 ) -> Result<()> {
+    if let HistoryPersistDecision::Error { message } =
+        history_persist_decision(&HistoryPersistView {
+            args: &args,
+            configured_limit: config.hotspots.limit,
+            configured_max_commits: config.hotspots.max_commits,
+            auto_snapshot: config.hotspots.auto_snapshot,
+            walk_stop: HistoryWalkStop::Complete,
+            complexity_skipped: false,
+            head_present: true,
+            scores: &[],
+            overall_stop: false,
+            cancelled: false,
+        })
+    {
+        return Err(miette::miette!("{message}"));
+    }
+
     if args.semantic {
         if let Some(stop) = poll_overall_stop(overall_deadline, &cancel) {
             let completeness =
@@ -265,48 +284,75 @@ pub(super) fn execute_hotspots_list(
         );
     }
 
+    let snapshot_stop = poll_overall_stop(overall_deadline, &cancel);
+    let cancelled = snapshot_stop == Some(CompletenessStop::Cancelled)
+        || completeness
+            .as_ref()
+            .is_some_and(|stop| stop.stop == CompletenessStop::Cancelled);
     let overall_stop = completeness.as_ref().is_some_and(is_overall_stop);
-    if args.snapshot {
-        if matches!(args.include, Some(HotspotIncludeScope::Docs)) {
-            return Err(miette::miette!(
-                "--snapshot cannot be combined with --include docs (docs lane score is frequency-only; hotspot_history stores f×c)"
-            ));
-        }
-        let snapshot_stop = poll_overall_stop(overall_deadline, &cancel);
-        if overall_stop || snapshot_stop.is_some() {
+    let scores: Vec<f32> = hotspots.iter().map(|hotspot| hotspot.score).collect();
+    let mut written: Option<StorageManager> = None;
+    let decision = history_persist_decision(&HistoryPersistView {
+        args: &args,
+        configured_limit: config.hotspots.limit,
+        configured_max_commits: config.hotspots.max_commits,
+        auto_snapshot: config.hotspots.auto_snapshot,
+        walk_stop: calculated.walk_stop,
+        complexity_skipped: calculated.complexity_skipped,
+        head_present: calculated.head.is_some(),
+        scores: &scores,
+        overall_stop,
+        cancelled,
+    });
+    match decision {
+        HistoryPersistDecision::Error { message } => return Err(miette::miette!("{message}")),
+        HistoryPersistDecision::SnapshotSkip { line } => {
             if !args.json {
-                let cancelled = snapshot_stop == Some(CompletenessStop::Cancelled)
-                    || completeness
-                        .as_ref()
-                        .is_some_and(|c| c.stop == CompletenessStop::Cancelled);
-                let reason = if cancelled {
-                    "cancelled"
-                } else {
-                    "overall budget"
-                };
-                println!("Hotspot snapshot skipped: {reason}.");
+                println!("{line}");
             }
-        } else {
+        }
+        HistoryPersistDecision::SilentSkip => {}
+        HistoryPersistDecision::WriteHistory | HistoryPersistDecision::WriteHistoryAndCouplings => {
+            let write_couplings =
+                matches!(decision, HistoryPersistDecision::WriteHistoryAndCouplings);
             let persist_budget = AnalysisBudget::capped_by_overall(
                 config.hotspots.history_budget_secs,
                 overall_deadline,
                 cancel.clone(),
             );
-            let outcome = persist_hotspots_and_couplings(
-                storage,
-                repo,
-                &hotspots,
-                config,
-                Some(&persist_budget),
-            )?;
-            if !args.json {
-                println!("{}", format_snapshot_persist_message(outcome));
+            let attempt = |target: &StorageManager| {
+                persist_hotspots_and_couplings(
+                    target,
+                    repo,
+                    &hotspots,
+                    config,
+                    Some(&persist_budget),
+                    write_couplings,
+                )
+            };
+            if args.snapshot {
+                if let Some(outcome) = settle_persist_attempt(true, attempt(storage))?
+                    && !args.json
+                {
+                    println!("{}", format_snapshot_persist_message(&outcome));
+                }
+            } else if storage.is_read_only() {
+                match StorageManager::init_with_layout(layout) {
+                    Ok(writable) => {
+                        if settle_persist_attempt(false, attempt(&writable))?.is_some() {
+                            written = Some(writable);
+                        }
+                    }
+                    Err(err) => warn_auto_snapshot(&err),
+                }
+            } else {
+                let _ = settle_persist_attempt(false, attempt(storage))?;
             }
         }
     }
 
     let snapshot_at = if args.json {
-        latest_hotspot_history_timestamp(storage)
+        latest_hotspot_history_timestamp(written.as_ref().unwrap_or(storage))
     } else {
         None
     };
@@ -442,42 +488,299 @@ pub(super) enum CouplingsPersistOutcome {
     Cancelled,
 }
 
-pub(super) fn format_snapshot_persist_message(outcome: CouplingsPersistOutcome) -> &'static str {
-    match outcome {
-        CouplingsPersistOutcome::Persisted => {
+pub(super) fn format_snapshot_persist_message(outcome: &HotspotPersistOutcome) -> &'static str {
+    if outcome.history == HistoryWrite::Unchanged {
+        return "Hotspot snapshot unchanged (same scores).";
+    }
+    match outcome.couplings {
+        Some(CouplingsPersistOutcome::Persisted) | None => {
             "Hotspot and temporal coupling snapshot persisted to SQLite."
         }
-        CouplingsPersistOutcome::InsufficientHistory => {
+        Some(CouplingsPersistOutcome::InsufficientHistory) => {
             "Hotspot snapshot persisted to SQLite (temporal coupling history skipped: repository has fewer than 10 commits)."
         }
-        CouplingsPersistOutcome::BudgetSkipped => {
+        Some(CouplingsPersistOutcome::BudgetSkipped) => {
             "Hotspot snapshot persisted to SQLite (temporal coupling history skipped: persist budget)."
         }
-        CouplingsPersistOutcome::Cancelled => {
+        Some(CouplingsPersistOutcome::Cancelled) => {
             "Hotspot snapshot persisted to SQLite (temporal coupling history skipped: cancelled)."
         }
     }
 }
 
-/// Persists a hotspot snapshot (and, history permitting, the accompanying
-/// temporal-coupling snapshot) to SQLite.
-///
-/// Returns a four-way outcome: couplings inserted (`Persisted`), skipped
-/// because the analyzed window completed with fewer than 10 commits
-/// (`InsufficientHistory`), skipped because the persist budget Instant
-/// elapsed (`BudgetSkipped`), or skipped because cancel was set
-/// (`Cancelled`). Hotspot rows are always persisted regardless of coupling
-/// availability. Truncated coupling walks are never stored as complete.
-pub(super) fn persist_hotspots_and_couplings(
-    storage: &StorageManager,
+const SNAPSHOT_DOCS_ERROR: &str = "--snapshot cannot be combined with --include docs (docs lane score is frequency-only; hotspot_history stores f×c)";
+const SNAPSHOT_TESTS_ERROR: &str = "--snapshot cannot be combined with --include tests (the audit view is not the repository budget series)";
+const SNAPSHOT_SEMANTIC_ERROR: &str = "--snapshot cannot be combined with --semantic (the semantic ranking is not the repository budget series)";
+const SNAPSHOT_FAMILY_ERROR: &str = "--snapshot requires the repository budget query (default filter, configured limit and max_commits, no --days, --entity, --since, or --all-parents)";
+const SKIP_CANCELLED: &str = "Hotspot snapshot skipped: cancelled.";
+const SKIP_OVERALL: &str = "Hotspot snapshot skipped: overall budget.";
+const SKIP_HISTORY: &str = "Hotspot snapshot skipped: history budget.";
+const SKIP_COMPLEXITY: &str = "Hotspot snapshot skipped: complexity was not scored.";
+const SKIP_EMPTY: &str = "Hotspot snapshot skipped: no ranked files.";
+const AUTO_SNAPSHOT_LOCKED_WARNING: &str =
+    "[Ledgerful] WARNING: hotspot snapshot was not recorded (database locked).";
+const AUTO_SNAPSHOT_WARNING: &str = "[Ledgerful] WARNING: hotspot snapshot was not recorded.";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HistoryWrite {
+    Inserted,
+    Unchanged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct HotspotPersistOutcome {
+    pub history: HistoryWrite,
+    pub couplings: Option<CouplingsPersistOutcome>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HistoryPersistDecision {
+    SilentSkip,
+    SnapshotSkip { line: &'static str },
+    Error { message: &'static str },
+    WriteHistory,
+    WriteHistoryAndCouplings,
+}
+
+pub(super) struct HistoryPersistView<'a> {
+    pub args: &'a HotspotArgs,
+    pub configured_limit: usize,
+    pub configured_max_commits: usize,
+    pub auto_snapshot: bool,
+    pub walk_stop: HistoryWalkStop,
+    pub complexity_skipped: bool,
+    pub head_present: bool,
+    pub scores: &'a [f32],
+    pub overall_stop: bool,
+    pub cancelled: bool,
+}
+
+fn scores_unscored(scores: &[f32]) -> bool {
+    !scores.is_empty()
+        && scores
+            .iter()
+            .all(|score| *score == 0.0 || !score.is_finite())
+}
+
+fn query_flags_are_canonical(view: &HistoryPersistView<'_>) -> bool {
+    let args = view.args;
+    let include_ok = args.include.is_none()
+        || (args.snapshot && matches!(args.include, Some(HotspotIncludeScope::Vendor)));
+    let limit_ok = args
+        .limit
+        .is_none_or(|limit| limit == view.configured_limit);
+    let commits_ok = args
+        .commits
+        .is_none_or(|commits| commits == view.configured_max_commits);
+    include_ok
+        && !args.semantic
+        && args.entity.is_none()
+        && args.days.is_none()
+        && args.since.is_none()
+        && !args.all_parents
+        && limit_ok
+        && commits_ok
+}
+
+pub(super) fn history_persist_decision(view: &HistoryPersistView<'_>) -> HistoryPersistDecision {
+    if view.args.snapshot {
+        if matches!(view.args.include, Some(HotspotIncludeScope::Docs)) {
+            return HistoryPersistDecision::Error {
+                message: SNAPSHOT_DOCS_ERROR,
+            };
+        }
+        if matches!(view.args.include, Some(HotspotIncludeScope::Tests)) {
+            return HistoryPersistDecision::Error {
+                message: SNAPSHOT_TESTS_ERROR,
+            };
+        }
+        if view.args.semantic {
+            return HistoryPersistDecision::Error {
+                message: SNAPSHOT_SEMANTIC_ERROR,
+            };
+        }
+        if !query_flags_are_canonical(view) {
+            return HistoryPersistDecision::Error {
+                message: SNAPSHOT_FAMILY_ERROR,
+            };
+        }
+        if view.cancelled {
+            return HistoryPersistDecision::SnapshotSkip {
+                line: SKIP_CANCELLED,
+            };
+        }
+        if view.overall_stop {
+            return HistoryPersistDecision::SnapshotSkip { line: SKIP_OVERALL };
+        }
+        if view.walk_stop == HistoryWalkStop::Budget {
+            return HistoryPersistDecision::SnapshotSkip { line: SKIP_HISTORY };
+        }
+        if view.walk_stop == HistoryWalkStop::Cancelled {
+            return HistoryPersistDecision::SnapshotSkip {
+                line: SKIP_CANCELLED,
+            };
+        }
+        if view.walk_stop == HistoryWalkStop::Complete && view.scores.is_empty() {
+            return HistoryPersistDecision::SnapshotSkip { line: SKIP_EMPTY };
+        }
+        if view.walk_stop == HistoryWalkStop::Complete
+            && (view.complexity_skipped || scores_unscored(view.scores))
+        {
+            return HistoryPersistDecision::SnapshotSkip {
+                line: SKIP_COMPLEXITY,
+            };
+        }
+        if !view.head_present {
+            return HistoryPersistDecision::SilentSkip;
+        }
+        return HistoryPersistDecision::WriteHistoryAndCouplings;
+    }
+
+    if !query_flags_are_canonical(view)
+        || view.cancelled
+        || view.overall_stop
+        || view.walk_stop != HistoryWalkStop::Complete
+        || view.complexity_skipped
+        || view.scores.is_empty()
+        || scores_unscored(view.scores)
+        || !view.head_present
+        || !view.auto_snapshot
+    {
+        return HistoryPersistDecision::SilentSkip;
+    }
+    HistoryPersistDecision::WriteHistory
+}
+
+pub(super) fn auto_snapshot_warning_line(err: &miette::Report) -> &'static str {
+    if report_is_database_busy(err).is_some() {
+        AUTO_SNAPSHOT_LOCKED_WARNING
+    } else {
+        AUTO_SNAPSHOT_WARNING
+    }
+}
+
+fn warn_auto_snapshot(err: &miette::Report) {
+    tracing::debug!("hotspot snapshot was not recorded: {err}");
+    eprintln!("{}", auto_snapshot_warning_line(err));
+}
+
+/// Automatic persist failure warns and continues. Explicit `--snapshot` returns the error.
+pub(super) fn settle_persist_attempt(
+    snapshot: bool,
+    result: Result<HotspotPersistOutcome>,
+) -> Result<Option<HotspotPersistOutcome>> {
+    match result {
+        Ok(outcome) => Ok(Some(outcome)),
+        Err(err) if !snapshot => {
+            warn_auto_snapshot(&err);
+            Ok(None)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+enum PreparedCouplings {
+    HistoryOnly,
+    WithOutcome {
+        outcome: CouplingsPersistOutcome,
+        rows: Vec<crate::impact::packet::TemporalCoupling>,
+    },
+}
+
+fn prepare_couplings(
     repo: &gix::Repository,
-    hotspots: &[crate::impact::packet::Hotspot],
     config: &crate::config::model::Config,
     budget: Option<&AnalysisBudget>,
-) -> Result<CouplingsPersistOutcome> {
-    let conn = storage.get_connection();
-    let timestamp = Utc::now().to_rfc3339();
+    write_couplings: bool,
+) -> Result<PreparedCouplings> {
+    if !write_couplings {
+        return Ok(PreparedCouplings::HistoryOnly);
+    }
+    let history_provider = GixHistoryProvider::new(repo);
+    let engine = TemporalEngine::new(history_provider, config.temporal.clone());
+    match engine.calculate_couplings_budgeted(budget) {
+        Ok(couplings) => {
+            let outcome = match budget.and_then(|b| b.should_stop()) {
+                Some(HistoryWalkStop::Cancelled) => CouplingsPersistOutcome::Cancelled,
+                Some(HistoryWalkStop::Budget) => CouplingsPersistOutcome::BudgetSkipped,
+                Some(HistoryWalkStop::Complete) | None => CouplingsPersistOutcome::Persisted,
+            };
+            let rows = if outcome == CouplingsPersistOutcome::Persisted {
+                couplings
+            } else {
+                Vec::new()
+            };
+            Ok(PreparedCouplings::WithOutcome { outcome, rows })
+        }
+        Err(crate::git::GitError::InsufficientHistory { .. }) => {
+            Ok(PreparedCouplings::WithOutcome {
+                outcome: CouplingsPersistOutcome::InsufficientHistory,
+                rows: Vec::new(),
+            })
+        }
+        Err(err) => Err(miette::miette!(
+            "Failed to calculate temporal couplings: {}",
+            err
+        )),
+    }
+}
 
+fn sqlite_to_report(err: rusqlite::Error) -> miette::Report {
+    match Err::<(), rusqlite::Error>(err).into_diagnostic() {
+        Err(report) => report,
+        Ok(()) => miette::miette!("sqlite error"),
+    }
+}
+
+fn latest_history_tuples(conn: &rusqlite::Connection) -> Result<Vec<(String, f64)>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT file_path, score FROM hotspot_history \
+             WHERE timestamp = (SELECT MAX(timestamp) FROM hotspot_history) \
+             ORDER BY file_path",
+        )
+        .into_diagnostic()?;
+    let mapped = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+        })
+        .into_diagnostic()?;
+    let mut tuples = Vec::new();
+    for row in mapped {
+        tuples.push(row.into_diagnostic()?);
+    }
+    Ok(tuples)
+}
+
+fn current_history_tuples(hotspots: &[Hotspot]) -> Vec<(String, f64)> {
+    let mut tuples: Vec<(String, f64)> = hotspots
+        .iter()
+        .map(|hotspot| {
+            (
+                hotspot.path.to_string_lossy().to_string(),
+                hotspot.score as f64,
+            )
+        })
+        .collect();
+    tuples.sort_by(|left, right| left.0.cmp(&right.0));
+    tuples
+}
+
+fn write_snapshot_rows(
+    conn: &rusqlite::Connection,
+    hotspots: &[Hotspot],
+    prepared: &PreparedCouplings,
+) -> Result<HotspotPersistOutcome> {
+    let previous = latest_history_tuples(conn)?;
+    let current = current_history_tuples(hotspots);
+    if !previous.is_empty() && previous == current {
+        return Ok(HotspotPersistOutcome {
+            history: HistoryWrite::Unchanged,
+            couplings: None,
+        });
+    }
+
+    let timestamp = Utc::now().to_rfc3339();
     let snapshot_id: Option<i64> = conn
         .query_row(
             "SELECT id FROM snapshots ORDER BY id DESC LIMIT 1",
@@ -486,7 +789,6 @@ pub(super) fn persist_hotspots_and_couplings(
         )
         .ok();
 
-    // Insert Hotspots
     for hotspot in hotspots {
         conn.execute(
             "INSERT INTO hotspot_history (snapshot_id, file_path, score, display_score, complexity, frequency, centrality, timestamp) \
@@ -494,30 +796,22 @@ pub(super) fn persist_hotspots_and_couplings(
             rusqlite::params![
                 snapshot_id,
                 hotspot.path.to_string_lossy().to_string(),
-                hotspot.score,
+                hotspot.score as f64,
                 hotspot.display_score,
                 hotspot.complexity,
                 hotspot.frequency,
-                hotspot.centrality.map(|c| c as i64),
+                hotspot.centrality.map(|centrality| centrality as i64),
                 timestamp
             ],
-        ).into_diagnostic()?;
+        )
+        .into_diagnostic()?;
     }
 
-    // Calculate and Insert Temporal Couplings. A repository with fewer than
-    // 10 commits in the analyzed window is a soft degradation, not a hard
-    // failure: the hotspot rows above already succeeded, and the whole point
-    // of `--bootstrap` is to give first-time users on young repos a usable
-    // first snapshot rather than an error (see CG-F30). Any other GitError
-    // still propagates as a hard failure.
-    let history_provider = GixHistoryProvider::new(repo);
-    let engine = TemporalEngine::new(history_provider, config.temporal.clone());
-    let outcome = match engine.calculate_couplings_budgeted(budget) {
-        Ok(couplings) => match budget.and_then(|b| b.should_stop()) {
-            Some(HistoryWalkStop::Cancelled) => CouplingsPersistOutcome::Cancelled,
-            Some(HistoryWalkStop::Budget) => CouplingsPersistOutcome::BudgetSkipped,
-            Some(HistoryWalkStop::Complete) | None => {
-                for coupling in couplings {
+    let couplings = match prepared {
+        PreparedCouplings::HistoryOnly => None,
+        PreparedCouplings::WithOutcome { outcome, rows } => {
+            if *outcome == CouplingsPersistOutcome::Persisted {
+                for coupling in rows {
                     conn.execute(
                         "INSERT INTO temporal_coupling_history (snapshot_id, file_a, file_b, score, timestamp) \
                          VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -531,19 +825,102 @@ pub(super) fn persist_hotspots_and_couplings(
                     )
                     .into_diagnostic()?;
                 }
-                CouplingsPersistOutcome::Persisted
             }
-        },
-        Err(crate::git::GitError::InsufficientHistory { .. }) => {
-            CouplingsPersistOutcome::InsufficientHistory
-        }
-        Err(e) => {
-            return Err(miette::miette!(
-                "Failed to calculate temporal couplings: {}",
-                e
-            ));
+            Some(*outcome)
         }
     };
 
-    Ok(outcome)
+    Ok(HotspotPersistOutcome {
+        history: HistoryWrite::Inserted,
+        couplings,
+    })
+}
+
+fn persist_owned_attempts(
+    conn: &rusqlite::Connection,
+    hotspots: &[Hotspot],
+    prepared: &PreparedCouplings,
+) -> Result<HotspotPersistOutcome> {
+    for attempt in 0..=3 {
+        let began = match conn.execute_batch("BEGIN IMMEDIATE;") {
+            Ok(()) => true,
+            Err(err) => {
+                let report = sqlite_to_report(err);
+                if report_is_database_busy(&report).is_some() && attempt < 3 {
+                    thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+                return Err(report);
+            }
+        };
+        match write_snapshot_rows(conn, hotspots, prepared) {
+            Ok(outcome) => match conn.execute_batch("COMMIT;") {
+                Ok(()) => return Ok(outcome),
+                Err(err) => {
+                    if let Err(rollback_err) = conn.execute_batch("ROLLBACK;") {
+                        return Err(sqlite_to_report(rollback_err));
+                    }
+                    let report = sqlite_to_report(err);
+                    if report_is_database_busy(&report).is_some() && attempt < 3 {
+                        thread::sleep(Duration::from_millis(50));
+                        continue;
+                    }
+                    return Err(report);
+                }
+            },
+            Err(err) => {
+                if began && let Err(rollback_err) = conn.execute_batch("ROLLBACK;") {
+                    return Err(sqlite_to_report(rollback_err));
+                }
+                if report_is_database_busy(&err).is_some() && attempt < 3 {
+                    thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+                return Err(err);
+            }
+        }
+    }
+    Err(miette::miette!(
+        "hotspot snapshot was not recorded (database locked)."
+    ))
+}
+
+fn persist_in_owned_transaction(
+    conn: &rusqlite::Connection,
+    hotspots: &[Hotspot],
+    prepared: &PreparedCouplings,
+) -> Result<HotspotPersistOutcome> {
+    conn.execute_batch("PRAGMA busy_timeout = 0;")
+        .into_diagnostic()?;
+    let work = persist_owned_attempts(conn, hotspots, prepared);
+    let restored = conn.execute_batch("PRAGMA busy_timeout = 5000;");
+    match (work, restored) {
+        (Err(err), _) => Err(err),
+        (Ok(_), Err(err)) => Err(err).into_diagnostic(),
+        (Ok(outcome), Ok(())) => Ok(outcome),
+    }
+}
+
+/// Persists hotspot history and, when `write_couplings` is set, temporal
+/// couplings. Couplings are calculated before an owned transaction. A coupling
+/// error other than `InsufficientHistory` inserts nothing. Dedup compares
+/// sorted `(path, score as f64)` with the latest `hotspot_history` timestamp.
+/// An owned transaction uses `busy_timeout = 0`, retries three times, and
+/// restores `busy_timeout = 5000`. A caller that already holds a transaction
+/// (`is_autocommit()` false) is not begun, committed, or rolled back here.
+pub(super) fn persist_hotspots_and_couplings(
+    storage: &StorageManager,
+    repo: &gix::Repository,
+    hotspots: &[Hotspot],
+    config: &crate::config::model::Config,
+    budget: Option<&AnalysisBudget>,
+    write_couplings: bool,
+) -> Result<HotspotPersistOutcome> {
+    let prepared = prepare_couplings(repo, config, budget, write_couplings)?;
+    let conn = storage.get_connection();
+    if conn.is_autocommit() {
+        persist_in_owned_transaction(conn, hotspots, &prepared)
+    } else {
+        write_snapshot_rows(conn, hotspots, &prepared)
+    }
 }

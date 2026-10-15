@@ -27,6 +27,8 @@ max_commits = 500
 limit = 10
 history_budget_secs = 45
 overall_budget_secs = 25
+# A canonical list records hotspot_history. --snapshot still persists when this is false.
+auto_snapshot = true
 # budget_threshold = 0.5  # informational default when omitted; required for --fail
 
 [verify]
@@ -203,6 +205,7 @@ mod tests {
         assert_eq!(config.audit.overall_budget_secs, 25);
         assert_eq!(config.hotspots.overall_budget_secs, 25);
         assert_eq!(config.hotspots.history_budget_secs, 45);
+        assert!(config.hotspots.auto_snapshot);
         assert_eq!(config.impact.prospective_budget_secs, 25);
         assert_eq!(config.coverage.deploy.overall_budget_secs, 25);
     }

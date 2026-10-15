@@ -25,7 +25,7 @@ mod tests;
 pub use explain::{HotspotExplanation, compute_hotspot_explanation};
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct HotspotRunOpts {
+pub struct HotspotRunOpts {
     /// Test injection. CLI leaves `None`; list/explain install Ctrl-C once.
     pub cancel: Option<Arc<AtomicBool>>,
     /// Test injection. CLI leaves `None`.
@@ -45,7 +45,7 @@ fn is_list_or_explain(args: &HotspotArgs) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn execute_hotspots_with_opts(
+pub fn execute_hotspots_with_opts(
     args: HotspotArgs,
     opts: HotspotRunOpts,
     mut json_out: Option<&mut Vec<u8>>,
@@ -236,6 +236,18 @@ fn emit_overall_skip_open(
             "overall budget"
         };
         println!("Hotspot analysis stopped: {reason} ({stage}).");
+    } else if args.snapshot && args.command.is_none() {
+        let reason = if stop == CompletenessStop::Cancelled {
+            "cancelled"
+        } else {
+            "overall budget"
+        };
+        let line = format!("Hotspot snapshot skipped: {reason}.");
+        println!("{line}");
+        if let Some(buf) = json_out {
+            buf.extend_from_slice(line.as_bytes());
+            buf.extend_from_slice(b"\n");
+        }
     }
     Ok(())
 }

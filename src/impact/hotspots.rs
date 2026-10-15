@@ -156,6 +156,10 @@ pub struct HotspotCalculation {
     pub head: Option<String>,
     /// Eligible non-merge ids for `record_commits_for` (empty unless asked).
     pub contributing_commits: Vec<String>,
+    /// True only when `calculate_hotspots_detailed` skipped complexity because
+    /// the walk was not complete or the history budget had already stopped.
+    /// An empty complexity map from a missing index leaves this false.
+    pub complexity_skipped: bool,
 }
 
 /// Directory components excluded in addition to topology `TEST_PATTERNS`.
@@ -483,6 +487,7 @@ pub fn calculate_hotspots_detailed(
         commits_walked: walk.commits_walked,
         head: walk.head,
         contributing_commits,
+        complexity_skipped: skip_complexity,
     })
 }
 
