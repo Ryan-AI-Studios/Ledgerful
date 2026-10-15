@@ -8,17 +8,24 @@ use miette::{IntoDiagnostic, Result};
 use std::thread;
 use std::time::Duration;
 
+/// Whether a completed hotspot snapshot was stored or skipped by dedup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TrendInsert {
+    Inserted,
+    Deduped,
+}
+
 pub(crate) fn insert_hotspot_trends_with_retry(
     storage: &StorageManager,
     hotspots: &[Hotspot],
     commit_hash: &str,
     timestamp: &str,
-) -> Result<()> {
+) -> Result<TrendInsert> {
     let mut backoff = Duration::from_millis(50);
 
     for attempt in 0..=3 {
         match insert_hotspot_trends(storage, hotspots, commit_hash, timestamp) {
-            Ok(_) => return Ok(()),
+            Ok(kind) => return Ok(kind),
             Err(e) => {
                 let is_busy = report_is_database_busy(&e).is_some();
                 if is_busy && attempt < 3 {
@@ -42,7 +49,7 @@ pub(crate) fn insert_hotspot_trends_with_retry(
     // Unreachable: every loop iteration returns above. Kept as a defensive
     // fallback so the function has a total return path even if the loop
     // bounds ever change.
-    Ok(())
+    Ok(TrendInsert::Inserted)
 }
 
 /// Insert the computed hotspot rows into `hotspot_trends` unless the snapshot
@@ -62,7 +69,7 @@ pub(crate) fn insert_hotspot_trends(
     hotspots: &[Hotspot],
     commit_hash: &str,
     timestamp: &str,
-) -> Result<()> {
+) -> Result<TrendInsert> {
     let conn = storage.get_connection();
 
     let already_exists: bool = conn
@@ -78,7 +85,7 @@ pub(crate) fn insert_hotspot_trends(
             "Post-commit hook: skipping duplicate commit hash {}",
             commit_hash
         );
-        return Ok(());
+        return Ok(TrendInsert::Deduped);
     }
 
     // Score-equality dedup: compare sorted (file_path, score) tuples against
@@ -108,7 +115,7 @@ pub(crate) fn insert_hotspot_trends(
                 "Post-commit hook: skipping identical score snapshot for commit {}",
                 commit_hash
             );
-            return Ok(());
+            return Ok(TrendInsert::Deduped);
         }
     }
 
@@ -128,7 +135,7 @@ pub(crate) fn insert_hotspot_trends(
         .into_diagnostic()?;
     }
 
-    Ok(())
+    Ok(TrendInsert::Inserted)
 }
 
 fn is_database_busy(error: &rusqlite::Error) -> bool {
@@ -153,7 +160,7 @@ fn is_database_busy(error: &rusqlite::Error) -> bool {
 /// Returns the formatted error string when a busy/locked SQLite error is found
 /// so callers can attach it to diagnostics without cloning the underlying
 /// error (rusqlite::Error does not implement Clone).
-fn report_is_database_busy(report: &miette::Report) -> Option<String> {
+pub(crate) fn report_is_database_busy(report: &miette::Report) -> Option<String> {
     for err in report.chain() {
         if let Some(sqlite_err) = err.downcast_ref::<rusqlite::Error>()
             && is_database_busy(sqlite_err)

@@ -529,7 +529,10 @@ fn fetch_trends(layout: &Layout, days: u64) -> Result<TrendsResponse> {
         Err(e) => {
             let db_path = layout.state_subdir().join("ledger.db");
             if !db_path.as_std_path().exists() {
-                return Ok(TrendsResponse { data: Vec::new() });
+                return Ok(TrendsResponse {
+                    data: Vec::new(),
+                    last_day: None,
+                });
             }
             return Err(e);
         }
@@ -560,7 +563,20 @@ fn fetch_trends(layout: &Layout, days: u64) -> Result<TrendsResponse> {
             }
         })
         .collect();
-    Ok(TrendsResponse { data: points })
+    let last_day = if points.is_empty() {
+        let max_day: Option<String> = conn
+            .query_row("SELECT MAX(day) FROM project_trend_days", [], |row| {
+                row.get(0)
+            })
+            .into_diagnostic()?;
+        max_day.filter(|day| !day.is_empty())
+    } else {
+        None
+    };
+    Ok(TrendsResponse {
+        data: points,
+        last_day,
+    })
 }
 
 fn build_date_buckets(days: u64) -> (Vec<String>, usize, NaiveDate) {

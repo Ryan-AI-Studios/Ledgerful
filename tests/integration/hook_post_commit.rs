@@ -336,11 +336,14 @@ fn test_post_commit_hook_records_hotspot_trends() {
         "precondition: no hotspot_trends rows"
     );
 
-    // Invoke the hook bound to the temp repo (synchronous ledger promotion +
-    // background thread). Wait briefly for the background thread to finish
-    // writing.
+    // The hook returns only after the sample is stored (or the 10s deadline).
+    // The poll below is not the only proof.
     let layout = Layout::new(Utf8Path::from_path(root).unwrap());
     execute_hook_post_commit_for_layout(&layout).unwrap();
+    assert!(
+        hotspot_trends_count(root) > 0,
+        "rows must exist when the hook returns; the later poll is not the only proof"
+    );
     wait_for_condition(
         || hotspot_trends_count(root) > 0,
         Duration::from_secs(5),

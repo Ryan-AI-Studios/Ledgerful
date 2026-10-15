@@ -22,7 +22,7 @@ fn insert_hotspot_trends_snapshot(
     let (head_hash, _branch) = crate::git::repo::get_head_info(repo)?;
     let head_hash = head_hash.unwrap_or_default();
     let timestamp = Utc::now().to_rfc3339();
-    insert_hotspot_trends_with_retry(storage, hotspots, &head_hash, &timestamp)?;
+    let _inserted = insert_hotspot_trends_with_retry(storage, hotspots, &head_hash, &timestamp)?;
     Ok(())
 }
 
@@ -233,6 +233,45 @@ fn hotspot_trends_row_count(storage: &StorageManager) -> Result<i64> {
     let conn = storage.get_connection();
     conn.query_row("SELECT COUNT(*) FROM hotspot_trends", [], |row| row.get(0))
         .into_diagnostic()
+}
+
+/// Lifetime `hotspot_trends` rows for `--entity`, or every row when unset.
+fn hotspot_trends_count_for_filter(
+    storage: &StorageManager,
+    entity: &Option<String>,
+) -> Result<i64> {
+    let Some(path) = entity else {
+        return hotspot_trends_row_count(storage);
+    };
+    let conn = storage.get_connection();
+    conn.query_row(
+        "SELECT COUNT(*) FROM hotspot_trends WHERE file_path = ?1",
+        [path.as_str()],
+        |row| row.get(0),
+    )
+    .into_diagnostic()
+}
+
+/// Stored `MAX(recorded_at)` text for the same filter. Empty string is absent.
+fn hotspot_trends_max_recorded_at(
+    storage: &StorageManager,
+    entity: &Option<String>,
+) -> Result<Option<String>> {
+    let conn = storage.get_connection();
+    let recorded_at: Option<String> = if let Some(path) = entity {
+        conn.query_row(
+            "SELECT MAX(recorded_at) FROM hotspot_trends WHERE file_path = ?1",
+            [path.as_str()],
+            |row| row.get(0),
+        )
+        .into_diagnostic()?
+    } else {
+        conn.query_row("SELECT MAX(recorded_at) FROM hotspot_trends", [], |row| {
+            row.get(0)
+        })
+        .into_diagnostic()?
+    };
+    Ok(recorded_at.filter(|value| !value.is_empty()))
 }
 
 /// Clear all rows from `hotspot_trends`. Should only be called after the user
@@ -549,6 +588,118 @@ pub(super) fn compute_history_available(history_known_present: bool, total_entri
     history_known_present || total_entries > 0
 }
 
+struct TrendAbsence {
+    history_available: bool,
+    empty_reason: Option<&'static str>,
+    last_sample_at: Option<String>,
+}
+
+/// Tell an empty window from a repository that has never recorded a sample.
+///
+/// `historyAvailable` is false only when both tables are empty and this call
+/// did not just bootstrap. Lifetime `hotspot_trends` uses the entity filter.
+/// `hotspot_history` and one unfiltered `hotspot_trends` count stay repo-wide.
+fn classify_trend_absence(
+    storage: &StorageManager,
+    entity: &Option<String>,
+    window_empty: bool,
+    bootstrapped: bool,
+) -> Result<TrendAbsence> {
+    let (history_count, trends_unfiltered, trends_filtered) = if window_empty {
+        (
+            hotspot_history_row_count(storage)?,
+            hotspot_trends_row_count(storage)?,
+            hotspot_trends_count_for_filter(storage, entity)?,
+        )
+    } else {
+        (0, 0, 0)
+    };
+    let known = !window_empty || history_count > 0 || trends_unfiltered > 0 || bootstrapped;
+    let history_available = compute_history_available(known, usize::from(!window_empty));
+
+    if !window_empty || !history_available {
+        return Ok(TrendAbsence {
+            history_available,
+            empty_reason: None,
+            last_sample_at: None,
+        });
+    }
+
+    if entity.is_some() && trends_filtered == 0 {
+        return Ok(TrendAbsence {
+            history_available: true,
+            empty_reason: Some("noSeries"),
+            last_sample_at: None,
+        });
+    }
+
+    if trends_filtered > 0 {
+        return Ok(TrendAbsence {
+            history_available: true,
+            empty_reason: Some("windowEmpty"),
+            last_sample_at: hotspot_trends_max_recorded_at(storage, entity)?,
+        });
+    }
+
+    Ok(TrendAbsence {
+        history_available: true,
+        empty_reason: None,
+        last_sample_at: None,
+    })
+}
+
+fn attach_trend_absence(payload: &mut serde_json::Value, absence: &TrendAbsence) {
+    let Some(obj) = payload.as_object_mut() else {
+        return;
+    };
+    obj.insert(
+        "historyAvailable".to_string(),
+        serde_json::Value::Bool(absence.history_available),
+    );
+    obj.insert(
+        "bootstrapHint".to_string(),
+        if absence.history_available {
+            serde_json::Value::Null
+        } else {
+            serde_json::Value::String(BOOTSTRAP_HINT.to_string())
+        },
+    );
+    if let Some(reason) = absence.empty_reason {
+        obj.insert(
+            "emptyReason".to_string(),
+            serde_json::Value::String(reason.to_string()),
+        );
+    }
+    if let Some(ts) = &absence.last_sample_at {
+        obj.insert(
+            "lastSampleAt".to_string(),
+            serde_json::Value::String(ts.clone()),
+        );
+    }
+}
+
+fn print_empty_trend(absence: &TrendAbsence) {
+    match absence.empty_reason {
+        Some("noSeries") => {
+            println!("  No stored trend samples for this path.");
+        }
+        Some("windowEmpty") => {
+            println!("  No trend data in this window.");
+            if let Some(ts) = &absence.last_sample_at {
+                println!("  Last sample recorded at {ts}.");
+            }
+        }
+        _ if absence.history_available => {
+            println!("  No trend data in this window.");
+        }
+        _ => {
+            println!("  No trend history yet for this repository.");
+            println!("  To start tracking, run:");
+            println!("    {BOOTSTRAP_HINT}");
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn execute_hotspots_trend(
     storage: &StorageManager,
@@ -563,18 +714,9 @@ pub(super) fn execute_hotspots_trend(
     samples: Option<usize>,
     force: bool,
 ) -> Result<()> {
-    let existing_rows = hotspot_history_row_count(storage)?;
     let mut bootstrapped = false;
     let mut bootstrap_skipped = false;
     let mut _couplings_persisted = false;
-    // Single source of truth for "does history exist" across the lock
-    // boundary. The unlocked `existing_rows` read above can go stale the
-    // moment another process bootstraps history between that read and the
-    // `BEGIN IMMEDIATE` lock acquisition below; both the `bootstrapped` and
-    // `bootstrap_skipped` branches observe a strictly more current state
-    // under the lock, so both update this flag rather than letting the
-    // post-lock code fall back to the stale pre-lock value.
-    let mut history_known_present = existing_rows > 0;
 
     if bootstrap {
         let samples = samples.unwrap_or(30);
@@ -607,12 +749,9 @@ pub(super) fn execute_hotspots_trend(
         if should_proceed {
             run_historical_bootstrap(storage, repo, config, samples, json)?;
             // The historical bootstrap inserts directly into hotspot_trends, so
-            // the `hotspot_history` table remains untouched. Mark history as
-            // present so the empty-state path below shows the populated data.
-            history_known_present = true;
+            // the `hotspot_history` table remains untouched. The absence
+            // classifier below re-reads both tables.
             bootstrapped = true;
-        } else {
-            history_known_present = existing_trends > 0 || existing_rows > 0;
         }
     }
 
@@ -625,29 +764,31 @@ pub(super) fn execute_hotspots_trend(
     // output below. JSON mode is excluded so it stays machine-readable. The
     // `prompt_yes_no` call is gated by `&&` short-circuit so its stdout side
     // effect only fires when all the preceding empty-state conditions hold.
+    let trends_before_prompt = hotspot_trends_row_count(storage)?;
+    let history_before_prompt = hotspot_history_row_count(storage)?;
     if !bootstrap
         && !json
         && rows.is_empty()
-        && !history_known_present
+        && trends_before_prompt == 0
+        && history_before_prompt == 0
+        && !bootstrapped
         && prompt_yes_no("No trend history found. Would you like to bootstrap it now? [Y/n] ")
     {
         let outcome = run_bootstrap_compute(storage, repo, config)?;
         if outcome.bootstrapped {
             bootstrapped = true;
             _couplings_persisted = outcome.couplings_persisted;
-            history_known_present = true;
             // Re-query so the freshly persisted snapshot is displayed.
             rows = query_trend_rows(storage, &entity, days)?;
         } else if outcome.skipped {
             // History appeared between our unlocked read and the lock;
-            // treat it as available and fall through to display.
-            history_known_present = true;
+            // re-query and fall through to display.
             rows = query_trend_rows(storage, &entity, days)?;
         }
     }
 
     let mode = resolve_trend_mode(&entity, all, limit);
-    let history_available = compute_history_available(history_known_present, rows.len());
+    let absence = classify_trend_absence(storage, &entity, rows.is_empty(), bootstrapped)?;
 
     // C5: stale + single-datapoint hints from full rows before truncation.
     let (latest_hash, current_head_hash) = rows
@@ -674,7 +815,7 @@ pub(super) fn execute_hotspots_trend(
     };
 
     if json {
-        let payload = match mode {
+        let mut payload = match mode {
             TrendMode::Summary { limit } => {
                 let summary = build_trend_summary(&rows, limit);
                 let files_json: Vec<serde_json::Value> =
@@ -686,8 +827,8 @@ pub(super) fn execute_hotspots_trend(
                     "days": days,
                     "limit": summary.limit,
                     "truncated": summary.truncated,
-                    "historyAvailable": history_available,
-                    "bootstrapHint": if history_available {
+                    "historyAvailable": absence.history_available,
+                    "bootstrapHint": if absence.history_available {
                         serde_json::Value::Null
                     } else {
                         serde_json::Value::String(BOOTSTRAP_HINT.to_string())
@@ -708,8 +849,8 @@ pub(super) fn execute_hotspots_trend(
                     "mode": "full",
                     "days": days,
                     "truncated": false,
-                    "historyAvailable": history_available,
-                    "bootstrapHint": if history_available {
+                    "historyAvailable": absence.history_available,
+                    "bootstrapHint": if absence.history_available {
                         serde_json::Value::Null
                     } else {
                         serde_json::Value::String(BOOTSTRAP_HINT.to_string())
@@ -735,8 +876,8 @@ pub(super) fn execute_hotspots_trend(
                     "mode": "entity",
                     "days": days,
                     "truncated": false,
-                    "historyAvailable": history_available,
-                    "bootstrapHint": if history_available {
+                    "historyAvailable": absence.history_available,
+                    "bootstrapHint": if absence.history_available {
                         serde_json::Value::Null
                     } else {
                         serde_json::Value::String(BOOTSTRAP_HINT.to_string())
@@ -750,6 +891,7 @@ pub(super) fn execute_hotspots_trend(
                 payload
             }
         };
+        attach_trend_absence(&mut payload, &absence);
         crate::output::json::emit(&payload)
             .map_err(|e| miette::miette!("Failed to serialize trend data: {}", e))?;
     } else {
@@ -774,13 +916,7 @@ pub(super) fn execute_hotspots_trend(
                     .if_supports_color(Stream::Stdout, |s| s.style(Style::new().blue().bold()))
                 );
                 if rows.is_empty() {
-                    if history_available {
-                        println!("  No trend data in this window.");
-                    } else {
-                        println!("  No trend history yet for this repository.");
-                        println!("  To start tracking, run:");
-                        println!("    {}", BOOTSTRAP_HINT);
-                    }
+                    print_empty_trend(&absence);
                 } else {
                     println!("{}", render_trend_summary_table(&summary));
                     if summary.truncated {
@@ -810,13 +946,7 @@ pub(super) fn execute_hotspots_trend(
                         .if_supports_color(Stream::Stdout, |s| s.style(Style::new().blue().bold()))
                 );
                 if rows.is_empty() {
-                    if history_available {
-                        println!("  No trend data in this window.");
-                    } else {
-                        println!("  No trend history yet for this repository.");
-                        println!("  To start tracking, run:");
-                        println!("    {}", BOOTSTRAP_HINT);
-                    }
+                    print_empty_trend(&absence);
                 } else {
                     println!("{}", render_hotspot_trend_table(&rows));
                     if single_datapoint {
@@ -903,7 +1033,8 @@ fn run_historical_bootstrap(
         }
 
         let commit_hash = commit_id.to_string();
-        insert_hotspot_trends_with_retry(storage, &hotspots, &commit_hash, timestamp)?;
+        let _inserted =
+            insert_hotspot_trends_with_retry(storage, &hotspots, &commit_hash, timestamp)?;
     }
 
     if let Some(s) = spinner {

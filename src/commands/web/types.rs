@@ -528,6 +528,11 @@ pub struct TrendPointDto {
 #[serde(rename_all = "camelCase")]
 pub struct TrendsResponse {
     pub(crate) data: Vec<TrendPointDto>,
+    /// Newest stored day when `data` is empty and `project_trend_days` has a
+    /// day outside the requested window. Omitted when the table is empty or
+    /// `data` is non-empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) last_day: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
