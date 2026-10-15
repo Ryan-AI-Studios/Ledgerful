@@ -23,10 +23,13 @@ pub struct SecurityArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum SecuritySubcommands {
-    /// List indexed Cedar policies (inventory); --changed filters to the current diff
+    /// Policies touched by the current diff. --inventory lists every indexed policy
     Impact {
+        /// List every indexed policy
+        #[arg(long, conflicts_with = "changed")]
+        inventory: bool,
         /// Filter by changed policies only
-        #[arg(long)]
+        #[arg(long, conflicts_with = "inventory")]
         changed: bool,
         /// Output as JSON
         #[arg(long)]
@@ -305,9 +308,69 @@ fn collect_detected_routes(conn: &rusqlite::Connection) -> Result<Vec<(String, S
     Ok(routes)
 }
 
-fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layout) -> Result<()> {
+fn policy_source_in_diff(source: &str, changed_files: &HashSet<String>) -> bool {
+    let Some(rel) = relative_source_file(Some(source)) else {
+        return false;
+    };
+    let key = crate::git::status::normalize_filter_path(std::path::Path::new(&rel));
+    changed_files.contains(&key)
+}
+
+fn route_file_in_diff(files: &[String], changed_files: &HashSet<String>) -> bool {
+    files.iter().any(|file| {
+        let key = crate::git::status::normalize_filter_path(std::path::Path::new(file));
+        changed_files.contains(&key)
+    })
+}
+
+fn change_evidence_token(policy_member: bool, route_member: bool) -> Option<&'static str> {
+    match (policy_member, route_member) {
+        (true, true) => Some("policyFileAndLinkedRoute"),
+        (true, false) => Some("policyFile"),
+        (false, true) => Some("linkedRoute"),
+        (false, false) => None,
+    }
+}
+
+fn apply_impact_route_fields(
+    item: &mut Value,
+    evidence: &crate::commands::endpoints::MountEvidence,
+    policy_member: bool,
+    route_member: bool,
+    source_missing: bool,
+) {
+    let Some(map) = item.as_object_mut() else {
+        return;
+    };
+    map.insert("mountProvenance".to_string(), json!(evidence.provenance));
+    if (evidence.provenance == "nest" || evidence.provenance == "literal")
+        && let Some(path) = &evidence.mounted_path
+    {
+        map.insert("mountedPath".to_string(), json!(path));
+    }
+    if evidence.provenance == "nest"
+        && let Some(prefix) = &evidence.mount_prefix
+    {
+        map.insert("mountPrefix".to_string(), json!(prefix));
+    }
+    if source_missing {
+        map.insert("sourceMissing".to_string(), json!(true));
+    }
+    if (policy_member || route_member)
+        && let Some(token) = change_evidence_token(policy_member, route_member)
+    {
+        map.insert("changeEvidence".to_string(), json!(token));
+    }
+}
+
+fn execute_impact(
+    diff_scope: bool,
+    json: bool,
+    layout: &crate::state::layout::Layout,
+) -> Result<()> {
     let changed_files = collect_changed_files(layout)?;
     let storage = StorageManager::open_read_only(layout)?;
+    let mount_rows = crate::commands::endpoints::load_route_mount_rows(storage.get_connection())?;
     let cozo = storage
         .cozo()
         .ok_or_else(|| miette::miette!("CozoDB not available"))?;
@@ -326,25 +389,46 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
         ) = (row.first(), row.get(1), row.get(2), row.get(3), row.get(4))
         {
             let source_norm = source_file.as_str().replace('\\', "/");
-            let is_changed = changed_files.contains(source_norm.as_str());
+            let evidence = match crate::policy::cedar::parse_action_from_policy_raw(raw) {
+                Some((method, action_path)) => {
+                    crate::commands::endpoints::mount_evidence_for_cedar_action(
+                        &mount_rows,
+                        &method,
+                        &action_path,
+                    )
+                }
+                None => crate::commands::endpoints::MountEvidence::unknown(),
+            };
+            let policy_member = policy_source_in_diff(source_norm.as_str(), &changed_files);
+            let route_member = route_file_in_diff(&evidence.route_files, &changed_files);
+            let is_changed = policy_member || route_member;
             let meta = row.get(5).and_then(datavalue_json);
             let cedar_id = meta
                 .as_ref()
                 .and_then(|m| m.get("cedar_id"))
                 .and_then(|v| v.as_str());
             let annotations_id = meta.as_ref().and_then(|m| annotations_id(m));
-            indexed_rows.push((
-                impact_policy_item(
-                    id,
-                    label,
-                    raw,
-                    effect,
-                    source_norm.as_str(),
-                    is_changed,
-                    (cedar_id, annotations_id),
-                ),
+            let mut item = impact_policy_item(
+                id,
+                label,
+                raw,
+                effect,
+                source_norm.as_str(),
                 is_changed,
-            ));
+                (cedar_id, annotations_id),
+            );
+            let rel = relative_source_file(Some(source_norm.as_str()));
+            let source_missing = rel
+                .as_deref()
+                .is_some_and(|path| !layout.root.join(path).exists());
+            apply_impact_route_fields(
+                &mut item,
+                &evidence,
+                policy_member,
+                route_member,
+                source_missing,
+            );
+            indexed_rows.push((item, is_changed));
         }
     }
     indexed_rows.sort_by(|a, b| {
@@ -362,7 +446,7 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
     let indexed = indexed_rows.len();
     let displayed: Vec<_> = indexed_rows
         .into_iter()
-        .filter(|(_, is_changed)| !changed || *is_changed)
+        .filter(|(_, is_changed)| !diff_scope || *is_changed)
         .map(|(item, _)| item)
         .collect();
 
@@ -370,7 +454,7 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
 
     if displayed.is_empty() {
         let on_disk = crate::commands::surfaces::repo_root_cedar_present(&layout.root);
-        let (reason, message) = if indexed > 0 && changed {
+        let (reason, message) = if indexed > 0 && diff_scope {
             (
                 crate::output::empty::EmptyReason::CleanDiff,
                 "No changed policies found in the current diff.".to_string(),
@@ -403,19 +487,19 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
                 crate::output::empty::format_json_empty_state(displayed, "impacted", || {
                     (reason, message)
                 });
-            inject_impact_envelope(&mut output, changed, indexed, &coverage)?;
+            inject_impact_envelope(&mut output, diff_scope, indexed, &coverage)?;
             crate::output::json::emit(&output)?;
         } else {
             println!(
                 "{}",
-                impact_title(changed)
+                impact_title(diff_scope)
                     .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().red()))
             );
             println!(
                 "{}",
                 format!("  {message}").if_supports_color(Stream::Stdout, |s| s.dimmed())
             );
-            if indexed > 0 && changed {
+            if indexed > 0 && diff_scope {
                 println!(
                     "  {} of {} policies match changed files",
                     displayed
@@ -434,12 +518,12 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
             crate::output::empty::format_json_empty_state(displayed, "impacted", || {
                 (crate::output::empty::EmptyReason::NoMatches, String::new())
             });
-        inject_impact_envelope(&mut output, changed, indexed, &coverage)?;
+        inject_impact_envelope(&mut output, diff_scope, indexed, &coverage)?;
         crate::output::json::emit(&output)?;
     } else {
         println!(
             "{}",
-            impact_title(changed)
+            impact_title(diff_scope)
                 .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().red()))
         );
         println!(
@@ -472,7 +556,7 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
         }
 
         println!("{}", table);
-        if changed {
+        if diff_scope {
             println!(
                 "  {} of {} policies match changed files",
                 displayed
@@ -698,7 +782,12 @@ struct OperatorLinkRow {
     target_label: String,
     target_category: String,
     method: Option<String>,
-    path: Option<String>,
+    /// Indexed path. The sort key uses this value and never the public path.
+    indexed_path: Option<String>,
+    emitted_path: Option<String>,
+    mounted_path: Option<String>,
+    mount_prefix: Option<String>,
+    mount_provenance: Option<String>,
     source_missing: bool,
     target_id: String,
 }
@@ -709,7 +798,7 @@ impl OperatorLinkRow {
             self.id.as_str(),
             self.relation.as_str(),
             self.method.as_deref().unwrap_or(""),
-            self.path.as_deref().unwrap_or(""),
+            self.indexed_path.as_deref().unwrap_or(""),
             self.target_label.as_str(),
             self.target_category.as_str(),
             self.target_id.as_str(),
@@ -733,8 +822,17 @@ impl OperatorLinkRow {
         if let Some(method) = self.method {
             item.insert("method".to_string(), json!(method));
         }
-        if let Some(path) = self.path {
+        if let Some(path) = self.emitted_path {
             item.insert("path".to_string(), json!(path));
+        }
+        if let Some(path) = self.mounted_path {
+            item.insert("mountedPath".to_string(), json!(path));
+        }
+        if let Some(prefix) = self.mount_prefix {
+            item.insert("mountPrefix".to_string(), json!(prefix));
+        }
+        if let Some(provenance) = self.mount_provenance {
+            item.insert("mountProvenance".to_string(), json!(provenance));
         }
         if self.source_missing {
             item.insert("sourceMissing".to_string(), json!(true));
@@ -743,10 +841,72 @@ impl OperatorLinkRow {
     }
 }
 
+struct LinkMountFields {
+    method: Option<String>,
+    indexed_path: Option<String>,
+    emitted_path: Option<String>,
+    mounted_path: Option<String>,
+    mount_prefix: Option<String>,
+    mount_provenance: Option<String>,
+}
+
+fn empty_link_mount() -> LinkMountFields {
+    LinkMountFields {
+        method: None,
+        indexed_path: None,
+        emitted_path: None,
+        mounted_path: None,
+        mount_prefix: None,
+        mount_provenance: None,
+    }
+}
+
+fn link_mount_fields(
+    target_category: &str,
+    target_id: &str,
+    target_label: &str,
+    mounts: &[crate::commands::endpoints::RouteMountRow],
+) -> LinkMountFields {
+    if target_category != "endpoint" {
+        return empty_link_mount();
+    }
+    let Some((method, path)) =
+        crate::policy::cedar::parse_endpoint_method_path(target_id, target_label)
+    else {
+        return empty_link_mount();
+    };
+    let evidence =
+        crate::commands::endpoints::mount_evidence_for_stored_route(mounts, &method, &path);
+    let (emitted_path, mounted_path, mount_prefix) =
+        if evidence.provenance == "nest" || evidence.provenance == "literal" {
+            let prefix = if evidence.provenance == "nest" {
+                evidence.mount_prefix.clone()
+            } else {
+                None
+            };
+            (
+                evidence.mounted_path.clone().or_else(|| Some(path.clone())),
+                evidence.mounted_path.clone(),
+                prefix,
+            )
+        } else {
+            (Some(path.clone()), None, None)
+        };
+    LinkMountFields {
+        method: Some(method),
+        indexed_path: Some(path),
+        emitted_path,
+        mounted_path,
+        mount_prefix,
+        mount_provenance: Some(evidence.provenance.to_string()),
+    }
+}
+
 fn security_boundary_links(
     edges: &[Value],
     policy_meta: &BTreeMap<String, PolicyMeta>,
     repo_root: &Utf8Path,
+    mounts: &[crate::commands::endpoints::RouteMountRow],
 ) -> Vec<Value> {
     let mut rows: Vec<OperatorLinkRow> = edges
         .iter()
@@ -760,12 +920,7 @@ fn security_boundary_links(
             let target_label = edge["target_label"].as_str().unwrap_or("").to_string();
             let target_category = edge["target_category"].as_str().unwrap_or("").to_string();
             let target_id = edge["target_id"].as_str().unwrap_or("").to_string();
-            let (method, path) = if target_category == "endpoint" {
-                crate::policy::cedar::parse_endpoint_method_path(&target_id, &target_label)
-                    .map_or((None, None), |(m, p)| (Some(m), Some(p)))
-            } else {
-                (None, None)
-            };
+            let fields = link_mount_fields(&target_category, &target_id, &target_label, mounts);
             let source_missing = source_file
                 .as_deref()
                 .is_some_and(|rel| !repo_root.join(rel).exists());
@@ -776,8 +931,12 @@ fn security_boundary_links(
                 relation,
                 target_label,
                 target_category,
-                method,
-                path,
+                method: fields.method,
+                indexed_path: fields.indexed_path,
+                emitted_path: fields.emitted_path,
+                mounted_path: fields.mounted_path,
+                mount_prefix: fields.mount_prefix,
+                mount_provenance: fields.mount_provenance,
                 source_missing,
                 target_id,
             }
@@ -785,6 +944,21 @@ fn security_boundary_links(
         .collect();
     rows.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
     rows.into_iter().map(OperatorLinkRow::into_json).collect()
+}
+
+fn boundary_target_cell(link: &Value) -> String {
+    if let Some(mounted) = link.get("mountedPath").and_then(|value| value.as_str()) {
+        let method = link
+            .get("method")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        format!("{method} {mounted}")
+    } else {
+        link.get("targetLabel")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_string()
+    }
 }
 
 fn boundaries_cli_json(
@@ -842,7 +1016,9 @@ fn execute_boundaries(
         .ok_or_else(|| miette::miette!("CozoDB not available"))?;
 
     let (counts, auth_nodes, boundary_edges, policy_meta) = assemble_security_boundaries(cozo)?;
-    let operator_links = security_boundary_links(&boundary_edges, &policy_meta, &layout.root);
+    let mount_rows = crate::commands::endpoints::load_route_mount_rows(storage.get_connection())?;
+    let operator_links =
+        security_boundary_links(&boundary_edges, &policy_meta, &layout.root, &mount_rows);
 
     if json {
         let empty = if auth_nodes.is_empty() {
@@ -981,7 +1157,7 @@ fn execute_boundaries(
                     truncate(link["id"].as_str().unwrap_or_default(), 40),
                     source,
                     link["relation"].as_str().unwrap_or_default().to_string(),
-                    truncate(link["targetLabel"].as_str().unwrap_or_default(), 40),
+                    truncate(&boundary_target_cell(link), 40),
                     "none".to_string(),
                 ]);
             }
@@ -1043,7 +1219,11 @@ pub fn execute_security(args: SecurityArgs) -> Result<()> {
     let layout = get_layout()?;
 
     match args.command {
-        SecuritySubcommands::Impact { changed, json } => execute_impact(changed, json, &layout),
+        SecuritySubcommands::Impact {
+            inventory,
+            changed: _,
+            json,
+        } => execute_impact(!inventory, json, &layout),
         SecuritySubcommands::Boundaries { json, verbose } => {
             execute_boundaries(json, urn_table_from_argv(verbose), &layout)
         }
@@ -1074,13 +1254,9 @@ mod tests {
             .get_about()
             .map(|s| s.to_string())
             .unwrap_or_default();
-        assert!(
-            about.to_lowercase().contains("inventory"),
-            "Impact about must describe inventory, got: {about}"
-        );
-        assert!(
-            about.contains("changed"),
-            "Impact about must mention --changed, got: {about}"
+        assert_eq!(
+            about,
+            "Policies touched by the current diff. --inventory lists every indexed policy"
         );
         assert!(
             !about.contains("Show security impact of recent changes"),
@@ -1393,7 +1569,7 @@ permit (
             "target_label": "GET /config",
             "target_category": "endpoint",
         })];
-        let links = super::security_boundary_links(&edges, &meta, root);
+        let links = super::security_boundary_links(&edges, &meta, root, &[]);
         assert_eq!(links.len(), 1);
         assert_eq!(links[0]["id"], "route_get_api_config");
         assert_eq!(links[0]["sourceFile"], "policies/daemon-api.cedar");
@@ -1406,6 +1582,8 @@ permit (
         assert_eq!(links[0]["linkKind"], "inferred");
         assert_eq!(links[0]["method"], "GET");
         assert_eq!(links[0]["path"], "/config");
+        assert_eq!(links[0]["mountProvenance"], "unknown");
+        assert!(links[0].get("mountedPath").is_none(), "{}", links[0]);
         assert!(
             !links[0]["id"].as_str().unwrap_or_default().contains("urn:"),
             "id must not be a URN"
@@ -1432,9 +1610,11 @@ permit (
             "target_label": "GET /status",
             "target_category": "endpoint",
         })];
-        let links = super::security_boundary_links(&edges, &meta, root);
+        let links = super::security_boundary_links(&edges, &meta, root, &[]);
         assert_eq!(links[0]["sourceFile"], "policies/missing.cedar");
         assert_eq!(links[0]["sourceMissing"], true);
+        assert_eq!(links[0]["mountProvenance"], "unknown");
+        assert!(links[0].get("mountedPath").is_none(), "{}", links[0]);
     }
 
     #[test]
@@ -1457,9 +1637,11 @@ permit (
             "target_label": "GET /ledger",
             "target_category": "endpoint",
         })];
-        let links = super::security_boundary_links(&edges, &meta, root);
+        let links = super::security_boundary_links(&edges, &meta, root, &[]);
         assert!(links[0].get("sourceFile").is_none(), "{}", links[0]);
         assert!(links[0].get("sourceMissing").is_none(), "{}", links[0]);
+        assert_eq!(links[0]["mountProvenance"], "unknown");
+        assert!(links[0].get("mountedPath").is_none(), "{}", links[0]);
     }
 
     #[test]
@@ -1475,10 +1657,13 @@ permit (
             "target_label": "nopath",
             "target_category": "endpoint",
         })];
-        let links = super::security_boundary_links(&edges, &meta, root);
+        let links = super::security_boundary_links(&edges, &meta, root, &[]);
         assert_eq!(links[0]["id"], "route_odd");
         assert!(links[0].get("method").is_none(), "{}", links[0]);
         assert!(links[0].get("path").is_none(), "{}", links[0]);
+        assert!(links[0].get("mountedPath").is_none(), "{}", links[0]);
+        assert!(links[0].get("mountPrefix").is_none(), "{}", links[0]);
+        assert!(links[0].get("mountProvenance").is_none(), "{}", links[0]);
     }
 
     #[test]
@@ -1504,9 +1689,11 @@ permit (
                 "target_category": "endpoint",
             }),
         ];
-        let links = super::security_boundary_links(&edges, &meta, root);
+        let links = super::security_boundary_links(&edges, &meta, root, &[]);
         assert_eq!(links[0]["path"], "/a");
         assert_eq!(links[1]["path"], "/z");
+        assert_eq!(links[0]["mountProvenance"], "unknown");
+        assert_eq!(links[1]["mountProvenance"], "unknown");
     }
 
     #[test]
@@ -1533,5 +1720,321 @@ permit (
         assert_eq!(v["freshness"]["status"], "available");
         assert_eq!(v["freshness"]["source"], "cozoGraph");
         assert!(v.get("emptyReason").is_none());
+    }
+
+    #[test]
+    fn security_impact_inventory_conflicts_with_changed() {
+        let cmd = crate::cli::args::Cli::command();
+        let err = cmd
+            .try_get_matches_from([
+                "ledgerful",
+                "security",
+                "impact",
+                "--inventory",
+                "--changed",
+            ])
+            .expect_err("both flags conflict");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    fn mount_row(
+        method: &str,
+        path: &str,
+        framework: &str,
+        prefix: Option<&str>,
+        file_path: Option<&str>,
+        handler_file: Option<&str>,
+    ) -> crate::commands::endpoints::RouteMountRow {
+        crate::commands::endpoints::RouteMountRow {
+            method: method.to_string(),
+            path_pattern: path.to_string(),
+            framework: framework.to_string(),
+            mount_prefix: prefix.map(str::to_string),
+            file_path: file_path.map(str::to_string),
+            handler_file: handler_file.map(str::to_string),
+            route_source: "DECORATOR".to_string(),
+        }
+    }
+
+    #[test]
+    fn mount_evidence_unique_nest_joins_prefix() {
+        let row = mount_row(
+            "GET",
+            "/config",
+            "Axum",
+            Some("/api"),
+            Some("./src/router.rs"),
+            Some("src/handler.rs"),
+        );
+        let mut fixture = mount_row(
+            "GET",
+            "/config",
+            "Axum",
+            Some("/other"),
+            Some("src/fixture.rs"),
+            None,
+        );
+        fixture.route_source = "TEST".to_string();
+        let evidence = crate::commands::endpoints::mount_evidence_for_stored_route(
+            &[row, fixture],
+            "get",
+            "/config",
+        );
+        assert_eq!(evidence.provenance, "nest");
+        assert_eq!(evidence.mounted_path.as_deref(), Some("/api/config"));
+        assert_eq!(evidence.mount_prefix.as_deref(), Some("/api"));
+        assert_eq!(
+            evidence.route_files,
+            vec!["src/handler.rs".to_string(), "src/router.rs".to_string()]
+        );
+
+        let rejected = mount_row(
+            "GET",
+            "/config",
+            "Axum",
+            Some("/api"),
+            Some("/abs/router.rs"),
+            Some("C:/x.rs"),
+        );
+        let evidence = crate::commands::endpoints::mount_evidence_for_stored_route(
+            std::slice::from_ref(&rejected),
+            "GET",
+            "/config",
+        );
+        assert_eq!(evidence.provenance, "nest");
+        assert!(evidence.route_files.is_empty());
+    }
+
+    #[test]
+    fn mount_evidence_unique_literal_axum_keeps_pattern() {
+        let row = mount_row("GET", "/health", "Axum", None, None, None);
+        let evidence = crate::commands::endpoints::mount_evidence_for_stored_route(
+            std::slice::from_ref(&row),
+            "GET",
+            "/health",
+        );
+        assert_eq!(evidence.provenance, "literal");
+        assert_eq!(evidence.mounted_path.as_deref(), Some("/health"));
+        assert!(evidence.mount_prefix.is_none());
+    }
+
+    #[test]
+    fn mount_evidence_unknown_framework_omits_mounted_path() {
+        let row = mount_row("GET", "/health", "Actix", None, None, None);
+        let evidence = crate::commands::endpoints::mount_evidence_for_stored_route(
+            std::slice::from_ref(&row),
+            "GET",
+            "/health",
+        );
+        assert_eq!(evidence.provenance, "unknown");
+        assert!(evidence.mounted_path.is_none());
+        assert!(evidence.mount_prefix.is_none());
+        assert!(evidence.route_files.is_empty());
+    }
+
+    #[test]
+    fn mount_evidence_no_row_is_unknown() {
+        let evidence =
+            crate::commands::endpoints::mount_evidence_for_stored_route(&[], "GET", "/config");
+        assert_eq!(evidence.provenance, "unknown");
+        assert!(evidence.mounted_path.is_none());
+    }
+
+    #[test]
+    fn mount_evidence_cedar_action_rejects_v1_prefix() {
+        let row = mount_row("GET", "/config", "Axum", Some("/v1"), None, None);
+        let evidence = crate::commands::endpoints::mount_evidence_for_cedar_action(
+            std::slice::from_ref(&row),
+            "GET",
+            "/api/config",
+        );
+        assert_eq!(evidence.provenance, "unknown");
+        assert!(evidence.mounted_path.is_none());
+        assert!(evidence.mount_prefix.is_none());
+    }
+
+    #[test]
+    fn mount_evidence_disagreeing_prefixes_are_ambiguous() {
+        let rows = vec![
+            mount_row(
+                "GET",
+                "/config",
+                "Axum",
+                Some("/api"),
+                Some("src/a.rs"),
+                None,
+            ),
+            mount_row(
+                "GET",
+                "/config",
+                "Actix",
+                Some("/internal"),
+                Some("src/b.rs"),
+                None,
+            ),
+        ];
+        let evidence =
+            crate::commands::endpoints::mount_evidence_for_stored_route(&rows, "GET", "/config");
+        assert_eq!(evidence.provenance, "ambiguous");
+        assert!(evidence.mounted_path.is_none());
+        assert!(evidence.mount_prefix.is_none());
+        assert!(evidence.route_files.is_empty());
+    }
+
+    #[test]
+    fn mount_evidence_cedar_action_disagreeing_triples_are_ambiguous() {
+        let rows = vec![
+            mount_row("GET", "/api/config", "Axum", None, Some("src/lit.rs"), None),
+            mount_row(
+                "GET",
+                "/config",
+                "Axum",
+                Some("/api"),
+                Some("src/nest.rs"),
+                None,
+            ),
+        ];
+        let evidence = crate::commands::endpoints::mount_evidence_for_cedar_action(
+            &rows,
+            "GET",
+            "/api/config",
+        );
+        assert_eq!(evidence.provenance, "ambiguous");
+        assert!(evidence.mounted_path.is_none());
+        assert!(evidence.mount_prefix.is_none());
+        assert!(evidence.route_files.is_empty());
+    }
+
+    #[test]
+    fn security_impact_change_evidence_tokens() {
+        let policy = "policies/daemon-api.cedar";
+        let route = "src/router.rs";
+        let policy_only = std::collections::HashSet::from([policy.to_string()]);
+        assert!(super::policy_source_in_diff(policy, &policy_only));
+        assert!(!super::route_file_in_diff(
+            &[route.to_string()],
+            &policy_only
+        ));
+        assert_eq!(
+            super::change_evidence_token(true, false),
+            Some("policyFile")
+        );
+
+        let route_only = std::collections::HashSet::from([route.to_string()]);
+        assert!(!super::policy_source_in_diff(policy, &route_only));
+        assert!(super::route_file_in_diff(&[route.to_string()], &route_only));
+        assert_eq!(
+            super::change_evidence_token(false, true),
+            Some("linkedRoute")
+        );
+
+        assert_eq!(
+            super::change_evidence_token(true, true),
+            Some("policyFileAndLinkedRoute")
+        );
+        assert!(!super::route_file_in_diff(&[], &route_only));
+        assert_eq!(super::change_evidence_token(false, false), None);
+
+        let readme = std::collections::HashSet::from(["README.md".to_string()]);
+        assert!(!super::policy_source_in_diff(policy, &readme));
+        assert!(!super::route_file_in_diff(&[route.to_string()], &readme));
+        assert!(!super::policy_source_in_diff(
+            r"C:\policies\x.cedar",
+            &policy_only
+        ));
+    }
+
+    #[test]
+    fn security_boundaries_target_cell_uses_mounted_path() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = camino::Utf8Path::from_path(tmp.path()).expect("utf8");
+        let edges = vec![serde_json::json!({
+            "policy_id": "urn:p",
+            "policy_label": "route_get_api_config",
+            "relation": "protected_by",
+            "target_id": "urn:ledgerful:endpoint:GET:/config",
+            "target_label": "GET /config",
+            "target_category": "endpoint",
+        })];
+        let nest = vec![mount_row(
+            "GET",
+            "/config",
+            "Axum",
+            Some("/api"),
+            None,
+            None,
+        )];
+        let links = super::security_boundary_links(&edges, &BTreeMap::new(), root, &nest);
+        assert_eq!(links[0]["mountedPath"], "/api/config");
+        assert_eq!(super::boundary_target_cell(&links[0]), "GET /api/config");
+
+        let ambiguous = vec![
+            mount_row("GET", "/config", "Axum", Some("/api"), None, None),
+            mount_row("GET", "/config", "Axum", Some("/internal"), None, None),
+        ];
+        let links = super::security_boundary_links(&edges, &BTreeMap::new(), root, &ambiguous);
+        assert_eq!(links[0]["path"], "/config");
+        assert_eq!(links[0]["mountProvenance"], "ambiguous");
+        assert!(links[0].get("mountedPath").is_none(), "{}", links[0]);
+        assert_eq!(super::boundary_target_cell(&links[0]), "GET /config");
+    }
+
+    #[test]
+    fn security_boundaries_links_use_loaded_mount() {
+        let conn = rusqlite::Connection::open_in_memory().expect("memory");
+        let mut conn = conn;
+        crate::state::migrations::get_migrations()
+            .to_latest(&mut conn)
+            .expect("migrate");
+        let storage = crate::state::storage::StorageManager::init_from_conn(conn);
+        let conn = storage.get_connection();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            (
+                "src/router.rs",
+                "Rust",
+                "hash_link",
+                20,
+                "2026-05-01T00:00:00Z",
+            ),
+        )
+        .expect("file");
+        let file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO api_routes
+                (method, path_pattern, handler_symbol_name, handler_file_id,
+                 framework, route_source, mount_prefix, is_dynamic, route_confidence, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            rusqlite::params![
+                "GET",
+                "/config",
+                "config_handler",
+                file_id,
+                "Axum",
+                "DECORATOR",
+                "/api",
+                0,
+                1.0,
+                "2026-05-01T00:00:00Z",
+            ],
+        )
+        .expect("route");
+        let rows = crate::commands::endpoints::load_route_mount_rows(conn).expect("rows");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = camino::Utf8Path::from_path(tmp.path()).expect("utf8");
+        let edges = vec![serde_json::json!({
+            "policy_id": "urn:p",
+            "policy_label": "route_get_api_config",
+            "relation": "protected_by",
+            "target_id": "urn:ledgerful:endpoint:GET:/config",
+            "target_label": "GET /config",
+            "target_category": "endpoint",
+        })];
+        let links = super::security_boundary_links(&edges, &BTreeMap::new(), root, &rows);
+        assert_eq!(links[0]["path"], "/api/config");
+        assert_eq!(links[0]["mountedPath"], "/api/config");
+        assert_eq!(links[0]["mountPrefix"], "/api");
+        assert_eq!(links[0]["mountProvenance"], "nest");
     }
 }

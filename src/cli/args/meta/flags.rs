@@ -1534,7 +1534,14 @@ impl Commands {
                 }
             },
             Commands::Security(args) => match &args.command {
-                SecuritySubcommands::Impact { changed, json } => {
+                SecuritySubcommands::Impact {
+                    inventory,
+                    changed,
+                    json,
+                } => {
+                    if *inventory {
+                        f.push("inventory");
+                    }
                     if *changed {
                         f.push("changed");
                     }
