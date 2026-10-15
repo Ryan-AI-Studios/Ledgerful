@@ -1603,10 +1603,12 @@ fn hotspots_list__cancel_after_storage_open__git_gate_stop_cancelled() {
     let repo = open_repo(root_path).expect("repo");
     let config = crate::config::model::Config::default();
     let mut buf = Vec::new();
+    // 0512: `--snapshot` requires the canonical repository-budget query, so a
+    // non-default `--limit` is refused before the walk. The cancel path under
+    // test is independent of the limit, so leave it at the configured default.
     super::list::execute_hotspots_list(
         HotspotArgs {
             json: true,
-            limit: Some(5),
             snapshot: true,
             ..Default::default()
         },
