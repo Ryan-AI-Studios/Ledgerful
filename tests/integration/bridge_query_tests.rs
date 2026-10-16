@@ -85,6 +85,11 @@ fn assert_disabled_json(stdout: &str, stderr: &str, expected_query: &str) {
     assert_eq!(v["status"], "disabled");
     assert_eq!(v["ok"], true);
     assert_eq!(v["query"], expected_query);
+    let project_id = v["projectId"].as_str();
+    assert!(
+        project_id.is_some_and(|s| !s.is_empty()),
+        "disabled envelope projectId must be a non-empty string: {v}"
+    );
     assert!(
         !expected_query.contains("--json"),
         "query must not swallow --json: {expected_query}"

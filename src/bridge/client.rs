@@ -17,8 +17,19 @@ pub fn query_unified(query: &str) -> Result<Vec<BridgeRecord>> {
         return Ok(Vec::new());
     }
 
-    let outcome = query_status(query, &layout, &QueryTransport::production());
-    Ok(outcome.insight_records())
+    Ok(query_unified_inner(
+        query,
+        &layout,
+        &QueryTransport::production(),
+    ))
+}
+
+pub(crate) fn query_unified_inner(
+    query: &str,
+    layout: &Layout,
+    transport: &QueryTransport,
+) -> Vec<BridgeRecord> {
+    query_status(query, layout, transport).insight_records()
 }
 
 pub fn is_bridge_enabled(layout: &Layout) -> bool {
