@@ -1,11 +1,26 @@
 use crate::bridge::model::{BridgePayload, Privacy, calculate_hash, deserialize_record};
+use crate::impact::hotspots::normalize_score;
 use crate::impact::packet::{AiInsight, Hotspot, RelevantDecision, VerificationResult};
+use crate::impact::path_class::normalize_path;
 use crate::state::layout::Layout;
 use miette::{IntoDiagnostic, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+
+/// One `BridgePayload::Hotspot` line. Not a packet row: complexity and
+/// frequency are not on the wire, so this must never be pushed into the packet.
+struct ImportedHotspot {
+    path: String,
+    score: f64,
+}
+
+struct HotspotMergeCounts {
+    updated: usize,
+    skipped: usize,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct BridgeState {
@@ -82,13 +97,9 @@ pub fn execute_import(in_path: String) -> Result<()> {
                         });
                     }
                     BridgePayload::Hotspot { path, score, .. } => {
-                        imported_hotspots.push(Hotspot {
-                            path: PathBuf::from(path),
-                            score: *score as f32,
-                            display_score: 0.0,
-                            complexity: 0,
-                            frequency: 1.0,
-                            centrality: None,
+                        imported_hotspots.push(ImportedHotspot {
+                            path: path.clone(),
+                            score: *score,
                         });
                     }
                     BridgePayload::VerifyOutcome(outcome) => {
@@ -172,14 +183,7 @@ pub fn execute_import(in_path: String) -> Result<()> {
             // Merge insights
             packet.ai_insights.extend(imported_insights);
 
-            // Merge hotspots
-            for hs in imported_hotspots {
-                if let Some(existing) = packet.hotspots.iter_mut().find(|h| h.path == hs.path) {
-                    existing.score = hs.score;
-                } else {
-                    packet.hotspots.push(hs);
-                }
-            }
+            let hotspot_counts = merge_imported_hotspots(&mut packet.hotspots, &imported_hotspots);
 
             // Merge verifications
             packet.verification_results.extend(imported_verifications);
@@ -193,8 +197,14 @@ pub fn execute_import(in_path: String) -> Result<()> {
             fs::write(&impact_path, updated_json).into_diagnostic()?;
 
             println!(
-                "Imported {} insights, {} hotspots, {} verifications, and {} decisions into latest impact report.",
-                insights_len, hotspots_len, verifications_len, decisions_len
+                "{}",
+                format_packet_import_summary(
+                    insights_len,
+                    hotspot_counts.updated,
+                    hotspot_counts.skipped,
+                    verifications_len,
+                    decisions_len
+                )
             );
         }
         Some(crate::state::reports::LatestImpactReport::CleanTree(_)) => {
@@ -242,8 +252,173 @@ fn load_bridge_state(layout: &Layout) -> Result<BridgeState> {
     }
 }
 
+/// Update `score` and `display_score` on rows whose normalized path matches.
+/// Unknown paths are counted and not appended. `hotspot_provenance` is not
+/// read or written by this function.
+fn merge_imported_hotspots(
+    hotspots: &mut [Hotspot],
+    imported: &[ImportedHotspot],
+) -> HotspotMergeCounts {
+    let mut updated_rows = BTreeSet::new();
+    let mut skipped = 0usize;
+    for row in imported {
+        let key = normalize_path(&row.path);
+        if key.is_empty() {
+            skipped += 1;
+            continue;
+        }
+        let mut matched = false;
+        for (index, existing) in hotspots.iter_mut().enumerate() {
+            let existing_key = normalize_path(&existing.path.to_string_lossy());
+            if existing_key != key {
+                continue;
+            }
+            let score = row.score as f32;
+            existing.score = score;
+            existing.display_score = normalize_score(f64::from(score)) as f32;
+            updated_rows.insert(index);
+            matched = true;
+        }
+        if !matched {
+            skipped += 1;
+        }
+    }
+    HotspotMergeCounts {
+        updated: updated_rows.len(),
+        skipped,
+    }
+}
+
+fn format_packet_import_summary(
+    insights: usize,
+    updated: usize,
+    skipped: usize,
+    verifications: usize,
+    decisions: usize,
+) -> String {
+    format!(
+        "Imported {insights} insights, {updated} hotspot scores ({skipped} skipped outside the persisted hotspot list), {verifications} verifications, and {decisions} decisions into latest impact report."
+    )
+}
+
 fn save_bridge_state(layout: &Layout, state: &BridgeState) -> Result<()> {
     let path = layout.bridge_state_file();
     let json = serde_json::to_string_pretty(state).into_diagnostic()?;
     fs::write(path, json).into_diagnostic()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(path: &str, score: f32, complexity: i32) -> Hotspot {
+        Hotspot {
+            path: PathBuf::from(path),
+            score,
+            display_score: 1.25,
+            complexity,
+            frequency: 1.5,
+            centrality: Some(4),
+        }
+    }
+
+    fn imported(path: &str, score: f64) -> ImportedHotspot {
+        ImportedHotspot {
+            path: path.to_string(),
+            score,
+        }
+    }
+
+    #[test]
+    fn merge_skips_path_absent_from_packet() {
+        let mut hotspots = vec![row("src/kept.rs", 0.2, 7)];
+        let counts = merge_imported_hotspots(&mut hotspots, &[imported("src/other.rs", 0.9)]);
+        assert_eq!(counts.updated, 0);
+        assert_eq!(counts.skipped, 1);
+        assert_eq!(hotspots.len(), 1);
+        assert_eq!(hotspots[0].path, PathBuf::from("src/kept.rs"));
+        assert_eq!(hotspots[0].score, 0.2);
+        assert_eq!(hotspots[0].complexity, 7);
+    }
+
+    #[test]
+    fn merge_updates_score_and_display_inside_persisted_list() {
+        let mut hotspots = vec![row("src/kept.rs", 0.2, 7)];
+        let imported_score = 0.55_f64;
+        let counts =
+            merge_imported_hotspots(&mut hotspots, &[imported("src/kept.rs", imported_score)]);
+        let stored = imported_score as f32;
+        assert_eq!(counts.updated, 1);
+        assert_eq!(counts.skipped, 0);
+        assert_eq!(hotspots[0].score, stored);
+        assert_eq!(
+            hotspots[0].display_score,
+            normalize_score(f64::from(stored)) as f32
+        );
+        assert_eq!(hotspots[0].complexity, 7);
+        assert_eq!(hotspots[0].frequency, 1.5);
+        assert_eq!(hotspots[0].centrality, Some(4));
+        assert_eq!(hotspots[0].path, PathBuf::from("src/kept.rs"));
+    }
+
+    #[test]
+    fn merge_matches_backslash_and_dot_slash_without_adding_a_row() {
+        let mut hotspots = vec![row("src/bridge/import.rs", 0.2, 3)];
+        let counts = merge_imported_hotspots(
+            &mut hotspots,
+            &[
+                imported(r"src\bridge\import.rs", 0.4),
+                imported("./src/bridge/import.rs", 0.7),
+            ],
+        );
+        let stored = 0.7_f64 as f32;
+        assert_eq!(counts.updated, 1);
+        assert_eq!(counts.skipped, 0);
+        assert_eq!(hotspots.len(), 1);
+        assert_eq!(hotspots[0].path, PathBuf::from("src/bridge/import.rs"));
+        assert_eq!(hotspots[0].score, stored);
+        assert_eq!(hotspots[0].complexity, 3);
+    }
+
+    #[test]
+    fn merge_counts_one_row_when_two_lines_match_and_skips_empty() {
+        let mut hotspots = vec![row("src/kept.rs", 0.2, 1)];
+        let counts = merge_imported_hotspots(
+            &mut hotspots,
+            &[
+                imported("src/kept.rs", 0.3),
+                imported("src/kept.rs", 0.8),
+                imported("", 0.1),
+                imported("./", 0.1),
+            ],
+        );
+        assert_eq!(counts.updated, 1);
+        assert_eq!(counts.skipped, 2);
+        assert_eq!(hotspots.len(), 1);
+        assert_eq!(hotspots[0].score, 0.8_f64 as f32);
+    }
+
+    #[test]
+    fn merge_updates_every_stored_row_with_the_same_normalized_path() {
+        let mut hotspots = vec![row("src/kept.rs", 0.2, 1), row(r"src\kept.rs", 0.2, 2)];
+        let counts = merge_imported_hotspots(&mut hotspots, &[imported("src/kept.rs", 0.5)]);
+        assert_eq!(counts.updated, 2);
+        assert_eq!(counts.skipped, 0);
+        assert_eq!(hotspots.len(), 2);
+        assert_eq!(hotspots[0].score, 0.5);
+        assert_eq!(hotspots[1].score, 0.5);
+        assert_eq!(hotspots[0].complexity, 1);
+        assert_eq!(hotspots[1].complexity, 2);
+        assert_eq!(hotspots[0].path, PathBuf::from("src/kept.rs"));
+        assert_eq!(hotspots[1].path, PathBuf::from(r"src\kept.rs"));
+    }
+
+    #[test]
+    fn packet_import_summary_names_updated_and_skipped() {
+        let line = format_packet_import_summary(1, 1, 2, 0, 0);
+        assert_eq!(
+            line,
+            "Imported 1 insights, 1 hotspot scores (2 skipped outside the persisted hotspot list), 0 verifications, and 0 decisions into latest impact report."
+        );
+    }
 }

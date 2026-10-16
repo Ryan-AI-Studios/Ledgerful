@@ -34,7 +34,7 @@ pub enum BridgeCommands {
         #[arg(long)]
         timeout: Option<u64>,
     },
-    /// Import external insights (BridgeRecord NDJSON) into Ledgerful
+    /// Import BridgeRecord NDJSON into the persisted impact packet
     Import {
         /// Input path (NDJSON)
         #[arg(long, short)]
