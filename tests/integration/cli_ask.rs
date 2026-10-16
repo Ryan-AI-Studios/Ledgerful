@@ -273,6 +273,134 @@ fn test_ask_respects_cli_timeout_override() {
     );
 }
 
+/// 0515: the Ask per-arm budget is the ureq read timeout inside
+/// `complete_with_hard_deadline`. A 3s server delay with `Some(1)` returns
+/// `timed out` in under 2 seconds. The outer `recv_timeout` is primary plus
+/// the 5-second buffer and is not what fires here.
+#[test]
+#[serial(env, cwd)]
+#[allow(non_snake_case)]
+fn complete_with_hard_deadline__one_second_override_three_second_delay__read_timeout() {
+    use ledgerful::config::model::LocalModelConfig;
+    use ledgerful::local_model::client::{
+        ChatMessage, CompletionOptions, complete_with_hard_deadline,
+    };
+    use std::time::Instant;
+
+    let server = httpmock::MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/chat/completions");
+        then.status(200)
+            .delay(std::time::Duration::from_secs(3))
+            .header("Content-Type", "application/json")
+            .json_body(serde_json::json!({
+                "choices": [{"message": {"content": "too late"}}]
+            }));
+    });
+
+    let tmp = tempdir().unwrap();
+    let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+    let _guard = DirGuard::from_utf8(root);
+
+    let _env_gemini = TempEnv::remove("GEMINI_API_KEY");
+    let _env_openrouter = TempEnv::remove("OPENROUTER_API_KEY");
+    let _env_ollama = TempEnv::remove("OLLAMA_API_KEY");
+    let _env_ollama_cloud = TempEnv::remove("OLLAMA_CLOUD_API_KEY");
+
+    let config = LocalModelConfig {
+        base_url: server.base_url(),
+        embedding_url: None,
+        generation_url: None,
+        ollama_cloud_url: None,
+        ollama_cloud_api_key: None,
+        ollama_cloud_model: None,
+        embedding_model: String::new(),
+        generation_model: "test-model".to_string(),
+        rerank_model: String::new(),
+        dimensions: 0,
+        context_window: 38000,
+        timeout_secs: 60,
+        prefer_local: true,
+        chunk_top_k: 10,
+        chunk_min_similarity: 0.3,
+        chunk_dedup_threshold: 0.95,
+        disable_hnsw: false,
+        concurrency: None,
+    };
+
+    let messages = vec![ChatMessage {
+        role: "user".to_string(),
+        content: "hello".to_string(),
+    }];
+
+    let start = Instant::now();
+    let result =
+        complete_with_hard_deadline(&config, &messages, &CompletionOptions::default(), Some(1));
+    let elapsed = start.elapsed();
+
+    assert!(result.is_err(), "expected timeout error, got: {result:?}");
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("timed out"),
+        "expected 'timed out' in error, got: {err}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "expected <2s, got {elapsed:?}"
+    );
+    assert_eq!(
+        mock.calls(),
+        1,
+        "the mock should have been hit exactly once"
+    );
+}
+
+/// 0515: with cloud fallback absent, the outer deadline is the explicit
+/// per-arm budget plus `HARD_DEADLINE_BUFFER_SECS`. This does not call Ask.
+#[test]
+#[serial(env, cwd)]
+#[allow(non_snake_case)]
+fn hard_deadline_secs__no_cloud_one_second_override__primary_plus_buffer() {
+    use ledgerful::config::model::LocalModelConfig;
+    use ledgerful::local_model::client::{HARD_DEADLINE_BUFFER_SECS, hard_deadline_secs};
+
+    let tmp = tempdir().unwrap();
+    let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+    let _guard = DirGuard::from_utf8(root);
+
+    let _env_gemini = TempEnv::remove("GEMINI_API_KEY");
+    let _env_openrouter = TempEnv::remove("OPENROUTER_API_KEY");
+    let _env_ollama = TempEnv::remove("OLLAMA_API_KEY");
+    let _env_ollama_cloud = TempEnv::remove("OLLAMA_CLOUD_API_KEY");
+
+    let config = LocalModelConfig {
+        base_url: "http://127.0.0.1:9".to_string(),
+        embedding_url: None,
+        generation_url: None,
+        ollama_cloud_url: None,
+        ollama_cloud_api_key: None,
+        ollama_cloud_model: None,
+        embedding_model: String::new(),
+        generation_model: "test-model".to_string(),
+        rerank_model: String::new(),
+        dimensions: 0,
+        context_window: 38000,
+        timeout_secs: 60,
+        prefer_local: true,
+        chunk_top_k: 10,
+        chunk_min_similarity: 0.3,
+        chunk_dedup_threshold: 0.95,
+        disable_hnsw: false,
+        concurrency: None,
+    };
+
+    assert_eq!(
+        hard_deadline_secs(&config, Some(1)),
+        1 + HARD_DEADLINE_BUFFER_SECS
+    );
+}
+
 /// Track DX2: when the configured local completion model is unreachable and no
 /// cloud fallback is available, `ledgerful ask` must gracefully degrade —
 /// exit successfully, emit the spec warning to stderr, and render the retrieved
@@ -968,7 +1096,11 @@ fn ask_meta_trailer_zeros_on_skip_then_answer() {
         "skip-then-answer must still print the model body, got: {stdout}"
     );
     assert!(
-        stdout.contains("[AskMeta] semantic=0 bm25=0 kg=0 snippets=0"),
-        "skip-then-answer must emit a zeros trailer, got: {stdout}"
+        stdout.contains("[AskMeta] semantic=0 bm25=0 kg=0 kgNote=skipped snippets=0"),
+        "skip-then-answer must emit a zeros trailer with kgNote=skipped, got: {stdout}"
+    );
+    assert!(
+        stderr.contains("[Evidence]") && stderr.contains("kg=0 kgNote=skipped"),
+        "skip-then-answer stderr [Evidence] must name kgNote=skipped, got: {stderr}"
     );
 }

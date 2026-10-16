@@ -53,6 +53,7 @@ pub(crate) struct GatherResult {
 }
 
 /// Pinned stderr evidence tokens (0312). `structural` is omit-empty (0395).
+/// `kg_note` is omit-empty and only printed when `kg` is 0 (0515).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct EvidenceCounts {
     pub semantic: usize,
@@ -61,11 +62,44 @@ pub(crate) struct EvidenceCounts {
     pub snippets: usize,
     pub read_failed: usize,
     pub structural: usize,
+    pub kg_note: Option<&'static str>,
+}
+
+/// Closed token for a printed `kg=0`. A positive `kg` omits the note.
+fn kg_note_for_empty_count(
+    kg: usize,
+    chunk_count: usize,
+    is_global: bool,
+    no_kg_fallback: bool,
+    cozo_present: bool,
+) -> Option<&'static str> {
+    if kg > 0 {
+        return None;
+    }
+    Some(if chunk_count > 0 {
+        "not-gathered"
+    } else if !is_global {
+        "no-global-fallback"
+    } else if no_kg_fallback {
+        "fallback-off"
+    } else if !cozo_present {
+        "unavailable"
+    } else {
+        "no-match"
+    })
+}
+
+fn kg_note_inline(counts: &EvidenceCounts) -> String {
+    match counts.kg_note {
+        Some(note) if counts.kg == 0 => format!(" kgNote={note}"),
+        _ => String::new(),
+    }
 }
 
 pub(crate) fn format_evidence_line(counts: &EvidenceCounts) -> String {
+    let kg_note = kg_note_inline(counts);
     let mut line = format!(
-        "[Evidence] semantic={} bm25={} kg={} snippets={}",
+        "[Evidence] semantic={} bm25={} kg={}{kg_note} snippets={}",
         counts.semantic, counts.bm25, counts.kg, counts.snippets
     );
     if counts.structural > 0 {
@@ -103,13 +137,14 @@ pub(crate) fn format_ask_meta_line(
     length_stopped: bool,
 ) -> String {
     let truncated = if length_stopped { "yes" } else { "no" };
+    let kg_note = kg_note_inline(counts);
     let structural = if counts.structural > 0 {
         format!(" structural={}", counts.structural)
     } else {
         String::new()
     };
     format!(
-        "[AskMeta] semantic={} bm25={} kg={} snippets={}{structural} gatherMs={} provider={} truncated={}",
+        "[AskMeta] semantic={} bm25={} kg={}{kg_note} snippets={}{structural} gatherMs={} provider={} truncated={}",
         counts.semantic, counts.bm25, counts.kg, counts.snippets, gather_ms, provider, truncated
     )
 }
@@ -499,7 +534,10 @@ pub(crate) fn gather_semantic_and_kg_with(
     if plan.skip {
         gathered.relevant_chunks.clear();
         gathered.semantic_gather_kind = SemanticGatherKind::Skipped;
-        gathered.evidence = EvidenceCounts::default();
+        gathered.evidence = EvidenceCounts {
+            kg_note: Some("skipped"),
+            ..EvidenceCounts::default()
+        };
         eprintln!("{}", format_evidence_line(&gathered.evidence));
         return;
     }
@@ -673,6 +711,13 @@ pub(crate) fn gather_semantic_and_kg_with(
     }
 
     evidence.snippets = relevant_chunks.len();
+    evidence.kg_note = kg_note_for_empty_count(
+        evidence.kg,
+        relevant_chunks.len(),
+        gathered.is_global,
+        no_kg_fallback,
+        storage.cozo().is_some(),
+    );
     eprintln!("{}", format_evidence_line(&evidence));
     gathered.relevant_chunks = relevant_chunks;
     gathered.semantic_gather_kind = semantic_gather_kind;
@@ -806,6 +851,7 @@ mod tests {
     use super::*;
     use crate::commands::ask::context::{WORKING_TREE_NO_PENDING_CHANGES, build_ask_user_prompt};
     use crate::impact::packet::ChangedFile;
+    use rstest::rstest;
     use std::fs;
     use std::path::Path;
     use std::process::Command;
@@ -916,6 +962,7 @@ mod tests {
             snippets: 4,
             read_failed: 0,
             structural: 0,
+            kg_note: None,
         });
         assert_eq!(line, "[Evidence] semantic=1 bm25=2 kg=3 snippets=4");
     }
@@ -930,6 +977,7 @@ mod tests {
             snippets: 3,
             read_failed: 0,
             structural: 0,
+            kg_note: None,
         });
         assert_eq!(none, "[Evidence] semantic=2 bm25=1 kg=0 snippets=3");
         let some = format_evidence_line(&EvidenceCounts {
@@ -939,6 +987,7 @@ mod tests {
             snippets: 3,
             read_failed: 0,
             structural: 4,
+            kg_note: None,
         });
         assert_eq!(
             some,
@@ -973,6 +1022,7 @@ mod tests {
                 snippets: 4,
                 read_failed: 0,
                 structural: 0,
+                kg_note: None,
             },
             8,
             "gemini",
@@ -990,6 +1040,7 @@ mod tests {
                 snippets: 3,
                 read_failed: 0,
                 structural: 4,
+                kg_note: None,
             },
             5,
             "ollama-cloud",
@@ -1016,6 +1067,7 @@ mod tests {
             snippets: 3,
             read_failed: 0,
             structural: 2,
+            kg_note: None,
         };
         assert!(
             counts.semantic + counts.bm25 + counts.kg + counts.structural > counts.snippets,
@@ -1209,7 +1261,17 @@ mod tests {
         assert!(gathered.gather_skipped_trivial);
         assert!(!gathered.include_kg_neighborhood);
         assert!(gathered.relevant_chunks.is_empty());
-        assert_eq!(gathered.evidence, EvidenceCounts::default());
+        assert_eq!(
+            gathered.evidence,
+            EvidenceCounts {
+                kg_note: Some("skipped"),
+                ..EvidenceCounts::default()
+            }
+        );
+        assert_eq!(
+            format_evidence_line(&gathered.evidence),
+            "[Evidence] semantic=0 bm25=0 kg=0 kgNote=skipped snippets=0"
+        );
         assert!(
             !gathered
                 .relevant_chunks
@@ -1217,6 +1279,191 @@ mod tests {
                 .any(|c| c.source.starts_with("Knowledge Graph"))
         );
         storage.shutdown().expect("shutdown");
+    }
+
+    #[rstest]
+    #[case("skipped")]
+    #[case("not-gathered")]
+    #[case("no-global-fallback")]
+    #[case("fallback-off")]
+    #[case("unavailable")]
+    #[case("no-match")]
+    fn format_lines_kg_zero_prints_kg_note_after_kg(#[case] note: &'static str) {
+        let counts = EvidenceCounts {
+            semantic: 9,
+            bm25: 10,
+            kg: 0,
+            snippets: 10,
+            kg_note: Some(note),
+            ..EvidenceCounts::default()
+        };
+        assert_eq!(
+            format_evidence_line(&counts),
+            format!("[Evidence] semantic=9 bm25=10 kg=0 kgNote={note} snippets=10")
+        );
+        assert_eq!(
+            format_ask_meta_line(&counts, 2700, "local", true),
+            format!(
+                "[AskMeta] semantic=9 bm25=10 kg=0 kgNote={note} snippets=10 gatherMs=2700 provider=local truncated=yes"
+            )
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn format_lines__kg_positive__omits_kg_note() {
+        let counts = EvidenceCounts {
+            semantic: 1,
+            bm25: 2,
+            kg: 3,
+            snippets: 4,
+            kg_note: Some("not-gathered"),
+            ..EvidenceCounts::default()
+        };
+        assert_eq!(
+            format_evidence_line(&counts),
+            "[Evidence] semantic=1 bm25=2 kg=3 snippets=4"
+        );
+        assert_eq!(
+            format_ask_meta_line(&counts, 8, "gemini", true),
+            "[AskMeta] semantic=1 bm25=2 kg=3 snippets=4 gatherMs=8 provider=gemini truncated=yes"
+        );
+    }
+
+    fn quiet_ask_config() -> Config {
+        let mut config = Config::default();
+        config.local_model.base_url.clear();
+        config.local_model.generation_url = None;
+        config
+    }
+
+    fn chunk_mix(chunks: Vec<RankedChunk>) -> GatherMixOpts {
+        GatherMixOpts {
+            semantic_override: Some(SemanticGather::Chunks {
+                chunks,
+                read_failed: 0,
+            }),
+            symbol_rows_override: None,
+        }
+    }
+
+    fn non_kg_chunk() -> RankedChunk {
+        RankedChunk {
+            source: "src/widget.rs::store".into(),
+            content: "fn store() {}".into(),
+            score: 0.8,
+        }
+    }
+
+    /// `fetch_kg_bm25` returns `None` for a script error, zero rows, and a
+    /// formatted context of 40 characters or fewer. Gather maps each of those
+    /// to `no-match`. There is no separate `error` token.
+    fn gather_kg_note(
+        is_global: bool,
+        no_kg_fallback: bool,
+        chunks: Vec<RankedChunk>,
+        clear_cozo: bool,
+    ) -> EvidenceCounts {
+        let dir = tempdir().expect("tempdir");
+        init_repo_with_commit(dir.path());
+        let root = camino::Utf8Path::from_path(dir.path()).expect("utf8");
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().expect("state");
+        let mut storage =
+            StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())
+                .expect("storage");
+        if clear_cozo {
+            storage.set_cozo(None);
+        }
+        let mut gathered = GatherResult {
+            latest_packet: ImpactPacket::default(),
+            is_global,
+            had_real_packet: false,
+            fresh_packet: true,
+            pruned_for_intent: false,
+            live_tree_clean: false,
+            query_string: "how does the widget handle storage".into(),
+            relevant_chunks: Vec::new(),
+            semantic_gather_kind: SemanticGatherKind::Skipped,
+            evidence: EvidenceCounts::default(),
+            gather_skipped_trivial: false,
+            include_kg_neighborhood: false,
+        };
+        gather_semantic_and_kg_with(
+            &mut gathered,
+            &storage,
+            &layout,
+            &quiet_ask_config(),
+            false,
+            false,
+            3,
+            no_kg_fallback,
+            chunk_mix(chunks),
+        );
+        let evidence = gathered.evidence;
+        storage.shutdown().expect("shutdown");
+        evidence
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn gather__global_nonglobal_chunks__kg_note_not_gathered() {
+        let evidence = gather_kg_note(true, false, vec![non_kg_chunk()], false);
+        assert_eq!(evidence.kg, 0);
+        assert!(evidence.snippets > 0);
+        assert_eq!(evidence.kg_note, Some("not-gathered"));
+        assert!(format_evidence_line(&evidence).contains("kg=0 kgNote=not-gathered"));
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn gather__diff_nonglobal_chunks__kg_note_not_gathered() {
+        let evidence = gather_kg_note(false, false, vec![non_kg_chunk()], false);
+        assert_eq!(evidence.kg, 0);
+        assert!(evidence.snippets > 0);
+        assert_eq!(evidence.kg_note, Some("not-gathered"));
+        assert!(format_evidence_line(&evidence).contains("kg=0 kgNote=not-gathered"));
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn gather__diff_empty_fusion__kg_note_no_global_fallback() {
+        let evidence = gather_kg_note(false, false, Vec::new(), false);
+        assert_eq!(evidence.kg, 0);
+        assert_eq!(evidence.snippets, 0);
+        assert_eq!(evidence.kg_note, Some("no-global-fallback"));
+        assert!(format_evidence_line(&evidence).contains("kg=0 kgNote=no-global-fallback"));
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn gather__empty_global_fallback_disabled__kg_note_fallback_off() {
+        let evidence = gather_kg_note(true, true, Vec::new(), false);
+        assert_eq!(evidence.kg, 0);
+        assert_eq!(evidence.snippets, 0);
+        assert_eq!(evidence.kg_note, Some("fallback-off"));
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn gather__empty_global_cozo_absent__kg_note_unavailable() {
+        let evidence = gather_kg_note(true, false, Vec::new(), true);
+        assert_eq!(evidence.kg, 0);
+        assert_eq!(evidence.snippets, 0);
+        assert_eq!(evidence.kg_note, Some("unavailable"));
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn gather__empty_global_bm25_none__kg_note_no_match() {
+        let evidence = gather_kg_note(true, false, Vec::new(), false);
+        assert_eq!(evidence.kg, 0);
+        assert_eq!(evidence.snippets, 0);
+        assert_eq!(
+            evidence.kg_note,
+            Some("no-match"),
+            "script error, zero rows, and a BM25 context of 40 characters or fewer are all None"
+        );
     }
 
     #[test]

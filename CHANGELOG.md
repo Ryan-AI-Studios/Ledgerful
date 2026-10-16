@@ -6,6 +6,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Ask kg note (0515):** a printed `kg=0` on `[Evidence]` and `[AskMeta]` names `kgNote` (`skipped`, `not-gathered`, `no-global-fallback`, `fallback-off`, `unavailable`, `no-match`) immediately after `kg=0`. `kg>0` omits the token. A length stop still exits 1. No `ask --json`. `schemaVersion` stays 1. Package stays `0.2.17`.
+
 ### Fixed
 
 - **Cross-repo packet qualification (0514):** Rust and TypeScript fixtures under `tests/fixtures/qualification` replay docs, handler, and route/policy tasks outside the engine checkout. An exact `#[cfg(test)]` function stays internal, so `dead-code --include-tests` names it. Other `cfg` gates stay public API. `schemaVersion` stays 1. Package stays `0.2.17`.
