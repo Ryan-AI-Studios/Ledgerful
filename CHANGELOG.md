@@ -8,6 +8,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Cross-repo packet qualification (0514):** Rust and TypeScript fixtures under `tests/fixtures/qualification` replay docs, handler, and route/policy tasks outside the engine checkout. An exact `#[cfg(test)]` function stays internal, so `dead-code --include-tests` names it. Other `cfg` gates stay public API. `schemaVersion` stays 1. Package stays `0.2.17`.
 - **CLI help and binary direction (0513):** `status`, `audit`, and `dependencies audit` name the job they run. Doctor recommends `cargo install --path . --force` only when the installed binary is behind this engine worktree. A newer or diverging binary is info, and its remediation is `ledgerful --version`. `schemaVersion` stays 1.
 - **Hotspot history samples (0512):** a complete canonical `hotspots` list records `hotspot_history` when `[hotspots] auto_snapshot` is true (the default) and does not record couplings or `hotspot_trends`. `--snapshot` on that query also records couplings. A finished walk that skipped complexity, or a list whose scores are all zero, is not stored in `hotspot_history` or `hotspot_trends`. `schemaVersion` stays 1.
 - **Hotspot history continuity (0511):** an empty `hotspots trend` window names the last stored sample instead of saying history never existed. The post-commit sample is inserted before indexing, inside the existing 10-second budget. `schemaVersion` stays 1.
