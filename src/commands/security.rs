@@ -363,6 +363,44 @@ fn apply_impact_route_fields(
     }
 }
 
+fn merge_member_mounts(
+    members: &[(&str, &crate::commands::endpoints::MountEvidence)],
+) -> crate::commands::endpoints::MountEvidence {
+    use crate::commands::endpoints::MountEvidence;
+    if members.is_empty() {
+        return MountEvidence::unknown();
+    }
+    let mut route_files = Vec::new();
+    for (_, evidence) in members {
+        route_files.extend(evidence.route_files.iter().cloned());
+    }
+    route_files.sort();
+    route_files.dedup();
+    let first_path = members[0].0;
+    let one_path = members.iter().all(|(path, _)| *path == first_path);
+    let first = members[0].1;
+    let same_triple = members.iter().all(|(_, evidence)| {
+        evidence.provenance == first.provenance
+            && evidence.mount_prefix == first.mount_prefix
+            && evidence.mounted_path == first.mounted_path
+    });
+    if one_path && same_triple {
+        MountEvidence {
+            provenance: first.provenance,
+            mount_prefix: first.mount_prefix.clone(),
+            mounted_path: first.mounted_path.clone(),
+            route_files,
+        }
+    } else {
+        MountEvidence {
+            provenance: "ambiguous",
+            mount_prefix: None,
+            mounted_path: None,
+            route_files,
+        }
+    }
+}
+
 fn execute_impact(
     diff_scope: bool,
     json: bool,
@@ -389,16 +427,23 @@ fn execute_impact(
         ) = (row.first(), row.get(1), row.get(2), row.get(3), row.get(4))
         {
             let source_norm = source_file.as_str().replace('\\', "/");
-            let evidence = match crate::policy::cedar::parse_action_from_policy_raw(raw) {
-                Some((method, action_path)) => {
+            let actions = crate::policy::cedar::parse_actions_from_policy_raw(raw);
+            let member_evidence: Vec<crate::commands::endpoints::MountEvidence> = actions
+                .iter()
+                .map(|(method, action_path)| {
                     crate::commands::endpoints::mount_evidence_for_cedar_action(
                         &mount_rows,
-                        &method,
-                        &action_path,
+                        method,
+                        action_path,
                     )
-                }
-                None => crate::commands::endpoints::MountEvidence::unknown(),
-            };
+                })
+                .collect();
+            let pairs: Vec<(&str, &crate::commands::endpoints::MountEvidence)> = actions
+                .iter()
+                .zip(member_evidence.iter())
+                .map(|((_, action_path), evidence)| (action_path.as_str(), evidence))
+                .collect();
+            let evidence = merge_member_mounts(&pairs);
             let policy_member = policy_source_in_diff(source_norm.as_str(), &changed_files);
             let route_member = route_file_in_diff(&evidence.route_files, &changed_files);
             let is_changed = policy_member || route_member;
@@ -1481,6 +1526,14 @@ permit (
             !body.contains("security_coverage("),
             "execute_impact must not call security_coverage directly"
         );
+        assert!(
+            body.contains("merge_member_mounts("),
+            "execute_impact must call merge_member_mounts: {body}"
+        );
+        assert!(
+            body.contains("parse_actions_from_policy_raw"),
+            "execute_impact must parse every action member: {body}"
+        );
     }
 
     #[test]
@@ -1878,7 +1931,10 @@ permit (
         assert_eq!(evidence.provenance, "ambiguous");
         assert!(evidence.mounted_path.is_none());
         assert!(evidence.mount_prefix.is_none());
-        assert!(evidence.route_files.is_empty());
+        assert_eq!(
+            evidence.route_files,
+            vec!["src/a.rs".to_string(), "src/b.rs".to_string()]
+        );
     }
 
     #[test]
@@ -1902,7 +1958,207 @@ permit (
         assert_eq!(evidence.provenance, "ambiguous");
         assert!(evidence.mounted_path.is_none());
         assert!(evidence.mount_prefix.is_none());
+        assert_eq!(
+            evidence.route_files,
+            vec!["src/lit.rs".to_string(), "src/nest.rs".to_string()]
+        );
+    }
+
+    #[test]
+    fn mount_evidence_cedar_action_unknown_actix_keeps_route_file() {
+        let row = mount_row(
+            "GET",
+            "/health",
+            "Actix",
+            None,
+            Some(r"src\health.rs"),
+            None,
+        );
+        let evidence = crate::commands::endpoints::mount_evidence_for_cedar_action(
+            std::slice::from_ref(&row),
+            "GET",
+            "/health",
+        );
+        assert_eq!(evidence.provenance, "unknown");
+        assert!(evidence.mounted_path.is_none());
+        assert!(evidence.mount_prefix.is_none());
+        assert_eq!(evidence.route_files, vec!["src/health.rs".to_string()]);
+
+        let diff = std::collections::HashSet::from(["src/health.rs".to_string()]);
+        assert!(super::route_file_in_diff(&evidence.route_files, &diff));
+    }
+
+    #[test]
+    fn mount_evidence_cedar_action_unknown_rejects_api_prefix_guess() {
+        let row = mount_row("GET", "/users", "Actix", None, Some("src/users.rs"), None);
+        let evidence = crate::commands::endpoints::mount_evidence_for_cedar_action(
+            std::slice::from_ref(&row),
+            "GET",
+            "/api/users",
+        );
+        assert_eq!(evidence.provenance, "unknown");
         assert!(evidence.route_files.is_empty());
+    }
+
+    #[test]
+    fn mount_evidence_test_rows_contribute_no_route_file() {
+        let mut test_source =
+            mount_row("GET", "/health", "Actix", None, Some("src/health.rs"), None);
+        test_source.route_source = "TEST".to_string();
+        let test_path = mount_row(
+            "GET",
+            "/health",
+            "Actix",
+            None,
+            Some("tests/health.rs"),
+            None,
+        );
+        let evidence = crate::commands::endpoints::mount_evidence_for_cedar_action(
+            &[test_source, test_path],
+            "GET",
+            "/health",
+        );
+        assert_eq!(evidence.provenance, "unknown");
+        assert!(evidence.route_files.is_empty());
+    }
+
+    #[test]
+    fn mount_evidence_literal_and_unknown_overlap_is_ambiguous() {
+        let rows = vec![
+            mount_row(
+                "GET",
+                "/api/config",
+                "Axum",
+                None,
+                Some("src/axum.rs"),
+                None,
+            ),
+            mount_row(
+                "GET",
+                "/api/config",
+                "Actix",
+                None,
+                Some("src/actix.rs"),
+                None,
+            ),
+        ];
+        let evidence = crate::commands::endpoints::mount_evidence_for_cedar_action(
+            &rows,
+            "GET",
+            "/api/config",
+        );
+        assert_eq!(evidence.provenance, "ambiguous");
+        assert!(evidence.mounted_path.is_none());
+        assert!(evidence.mount_prefix.is_none());
+        assert_eq!(
+            evidence.route_files,
+            vec!["src/actix.rs".to_string(), "src/axum.rs".to_string()]
+        );
+    }
+
+    fn evidence_with(
+        provenance: &'static str,
+        mounted_path: Option<&str>,
+        files: &[&str],
+    ) -> crate::commands::endpoints::MountEvidence {
+        crate::commands::endpoints::MountEvidence {
+            provenance,
+            mount_prefix: None,
+            mounted_path: mounted_path.map(str::to_string),
+            route_files: files.iter().map(|file| (*file).to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn merge_member_mounts_unions_files_and_collapses_disagreement() {
+        let health = evidence_with("unknown", None, &[]);
+        let orders = evidence_with("literal", Some("/api/orders"), &["src/orders.rs"]);
+        let merged = super::merge_member_mounts(&[("/health", &health), ("/api/orders", &orders)]);
+        assert_eq!(merged.provenance, "ambiguous");
+        assert!(merged.mounted_path.is_none());
+        assert_eq!(merged.route_files, vec!["src/orders.rs".to_string()]);
+
+        let users = evidence_with("unknown", None, &[]);
+        let admin = evidence_with("unknown", None, &[]);
+        let merged = super::merge_member_mounts(&[("/api/users", &users), ("/api/admin", &admin)]);
+        assert_eq!(merged.provenance, "ambiguous");
+        assert!(merged.route_files.is_empty());
+
+        let get_health = evidence_with("unknown", None, &["src/health_post.rs"]);
+        let post_health = evidence_with("unknown", None, &["src/health_get.rs"]);
+        let merged =
+            super::merge_member_mounts(&[("/health", &get_health), ("/health", &post_health)]);
+        assert_eq!(merged.provenance, "unknown");
+        assert!(merged.mounted_path.is_none());
+        assert_eq!(
+            merged.route_files,
+            vec![
+                "src/health_get.rs".to_string(),
+                "src/health_post.rs".to_string()
+            ]
+        );
+
+        let get_users = evidence_with("literal", Some("/api/users"), &["src/users.rs"]);
+        let post_users = evidence_with("literal", Some("/api/users"), &["src/users_post.rs"]);
+        let merged =
+            super::merge_member_mounts(&[("/api/users", &get_users), ("/api/users", &post_users)]);
+        assert_eq!(merged.provenance, "literal");
+        assert_eq!(merged.mounted_path.as_deref(), Some("/api/users"));
+        assert_eq!(
+            merged.route_files,
+            vec!["src/users.rs".to_string(), "src/users_post.rs".to_string()]
+        );
+
+        let unknown_post = evidence_with("unknown", None, &[]);
+        let merged = super::merge_member_mounts(&[
+            ("/api/users", &get_users),
+            ("/api/users", &unknown_post),
+        ]);
+        assert_eq!(merged.provenance, "ambiguous");
+        assert!(merged.mounted_path.is_none());
+        assert_eq!(merged.route_files, vec!["src/users.rs".to_string()]);
+    }
+
+    #[test]
+    fn merge_member_mounts_linked_route_sets_change_evidence() {
+        let raw = r#"permit (
+    principal,
+    action in [Action::"GET /health", Action::"POST /api/orders"],
+    resource
+);"#;
+        let health = evidence_with("unknown", None, &[]);
+        let orders = evidence_with("literal", Some("/api/orders"), &["src/orders.rs"]);
+        let merged = super::merge_member_mounts(&[("/health", &health), ("/api/orders", &orders)]);
+        let diff = std::collections::HashSet::from(["src/orders.rs".to_string()]);
+        let route_member = super::route_file_in_diff(&merged.route_files, &diff);
+        let policy_member = false;
+        let is_changed = policy_member || route_member;
+        let mut item = super::impact_policy_item(
+            "urn:ledgerful:policy:list",
+            "route_list",
+            raw,
+            "permit",
+            "policies/list.cedar",
+            is_changed,
+            (None, None),
+        );
+        super::apply_impact_route_fields(&mut item, &merged, policy_member, route_member, false);
+        assert_eq!(item["declaredAction"], "GET /health");
+        assert_eq!(item["is_changed"], true);
+        assert_eq!(item["changeEvidence"], "linkedRoute");
+        assert_eq!(item["mountProvenance"], "ambiguous");
+        assert!(item.get("mountedPath").is_none());
+        assert!(item.get("mountPrefix").is_none());
+
+        let health_file = evidence_with("unknown", None, &["src/health.rs"]);
+        let merged =
+            super::merge_member_mounts(&[("/health", &health_file), ("/api/orders", &orders)]);
+        let route_member = super::route_file_in_diff(&merged.route_files, &diff);
+        assert!(route_member);
+        assert_eq!(
+            super::change_evidence_token(false, route_member),
+            Some("linkedRoute")
+        );
     }
 
     #[test]
@@ -1976,7 +2232,30 @@ permit (
         assert_eq!(links[0]["path"], "/config");
         assert_eq!(links[0]["mountProvenance"], "ambiguous");
         assert!(links[0].get("mountedPath").is_none(), "{}", links[0]);
+        assert!(links[0].get("mountPrefix").is_none(), "{}", links[0]);
         assert_eq!(super::boundary_target_cell(&links[0]), "GET /config");
+
+        let health_edges = vec![serde_json::json!({
+            "policy_id": "urn:p",
+            "policy_label": "route_get_health",
+            "relation": "protected_by",
+            "target_id": "urn:ledgerful:endpoint:GET:/health",
+            "target_label": "GET /health",
+            "target_category": "endpoint",
+        })];
+        let actix = vec![mount_row(
+            "GET",
+            "/health",
+            "Actix",
+            None,
+            Some("src/health.rs"),
+            None,
+        )];
+        let links = super::security_boundary_links(&health_edges, &BTreeMap::new(), root, &actix);
+        assert_eq!(links[0]["path"], "/health");
+        assert_eq!(links[0]["mountProvenance"], "unknown");
+        assert!(links[0].get("mountedPath").is_none(), "{}", links[0]);
+        assert!(links[0].get("mountPrefix").is_none(), "{}", links[0]);
     }
 
     #[test]

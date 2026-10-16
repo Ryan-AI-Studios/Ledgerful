@@ -12,6 +12,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Security impact change membership (0526):** a product route file whose mount provenance is unknown or ambiguous can set `is_changed` and `changeEvidence` to `linkedRoute`. `mountedPath` and `mountPrefix` stay omitted for those mounts. A later action member can set that token from its own route file. A list-form policy with more than one action path omits the path fields. `declaredAction` stays the first member. `schemaVersion` stays 1. Package stays `0.2.17`.
 - **Policy status legacy deserialize (0525):** a report that omits `status` and has violations deserializes as `fail`. An explicit `status` is kept. An empty `violations` list stays `idle`. Live `finish()` still writes CLI output. `schemaVersion` stays `1`. Package stays `0.2.17`.
 - **Review overlap residuals (0524):** an entity stored as `./src/foo.rs` overlaps the stripped review key `src/foo.rs`. `--include-mentions` searches a rename `oldPath` stem only when a current path stem left a slot open under the cap of 3. Mentions still cannot outrank a path hit. `schemaVersion` stays `1`. Package stays `0.2.17`.
 - **Service definition root order (0523):** when two service definitions share a name, the chosen definition is the one whose root is smaller after `\` is replaced with `/`. The helper still returns that config definition, including its original root spelling. Equal replaced roots keep the earlier definition. `schemaVersion` stays `"v1"`. Package stays `0.2.17`.

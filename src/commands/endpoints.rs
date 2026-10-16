@@ -595,17 +595,22 @@ fn reduce_product_mounts(rows: Vec<RouteMountRow>) -> MountEvidence {
             && item.mount_prefix == first.mount_prefix
             && item.mounted_path == first.mounted_path
     });
+    let route_files = route_files_from(&rows);
     if same && (first.provenance == "nest" || first.provenance == "literal") {
         MountEvidence {
             provenance: first.provenance,
             mount_prefix: first.mount_prefix.clone(),
             mounted_path: first.mounted_path.clone(),
-            route_files: route_files_from(&rows),
+            route_files,
         }
     } else if same {
-        MountEvidence::unknown()
+        let mut evidence = MountEvidence::unknown();
+        evidence.route_files = route_files;
+        evidence
     } else {
-        MountEvidence::ambiguous()
+        let mut evidence = MountEvidence::ambiguous();
+        evidence.route_files = route_files;
+        evidence
     }
 }
 
@@ -672,10 +677,10 @@ pub(crate) fn mount_evidence_for_cedar_action(
                 return false;
             }
             let public = public_mount_of(row);
-            let Some(public_path) = public.mounted_path.as_deref() else {
-                return false;
-            };
-            public_path == action_path || row.path_pattern == action_path
+            match public.mounted_path.as_deref() {
+                None => row.path_pattern == action_path,
+                Some(public_path) => public_path == action_path || row.path_pattern == action_path,
+            }
         })
         .cloned()
         .collect();

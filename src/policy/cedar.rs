@@ -238,22 +238,34 @@ pub fn parse_cedar_action(action: &str) -> Option<(String, String)> {
     Some((method, path))
 }
 
-/// First `Action::"METHOD path"` in Cedar policy source.
-pub fn parse_action_from_policy_raw(raw: &str) -> Option<(String, String)> {
+/// Every parseable `Action::"METHOD path"` in source order.
+///
+/// A marker with no closing quote stops the scan. A closed quote whose inner
+/// text fails [`parse_cedar_action`] is skipped. Duplicate normalized pairs
+/// are dropped. A `//` comment is not stripped.
+pub fn parse_actions_from_policy_raw(raw: &str) -> Vec<(String, String)> {
     let marker = "Action::\"";
     let mut search = raw;
+    let mut out = Vec::new();
     while let Some(idx) = search.find(marker) {
         let rest = &search[idx + marker.len()..];
         let Some(end) = rest.find('"') else {
             break;
         };
         let inner = &rest[..end];
-        if let Some(parsed) = parse_cedar_action(&format!("Action::\"{inner}\"")) {
-            return Some(parsed);
+        if let Some(parsed) = parse_cedar_action(&format!("Action::\"{inner}\""))
+            && !out.iter().any(|item| item == &parsed)
+        {
+            out.push(parsed);
         }
         search = &rest[end + 1..];
     }
-    None
+    out
+}
+
+/// First `Action::"METHOD path"` in Cedar policy source.
+pub fn parse_action_from_policy_raw(raw: &str) -> Option<(String, String)> {
+    parse_actions_from_policy_raw(raw).into_iter().next()
 }
 
 /// `@id("route_get_api_config")` from policy source.
@@ -740,6 +752,28 @@ permit (
         assert_eq!(
             parse_action_from_policy_raw(mixed),
             Some(("GET".to_string(), "/api/users".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_actions_from_policy_raw_unions_members_and_stops_on_open_quote() {
+        let raw = r#"action in [Action::"get /api/users", Action::"GET /api/users", Action::"POST /api/admin"]
+// Action::"DELETE /api/admin""#;
+        assert_eq!(
+            parse_actions_from_policy_raw(raw),
+            vec![
+                ("GET".to_string(), "/api/users".to_string()),
+                ("POST".to_string(), "/api/admin".to_string()),
+                ("DELETE".to_string(), "/api/admin".to_string()),
+            ]
+        );
+        assert_eq!(
+            parse_action_from_policy_raw(raw),
+            parse_actions_from_policy_raw(raw).into_iter().next()
+        );
+        assert_eq!(
+            parse_actions_from_policy_raw(r#"Action::"GET /api/users"#),
+            Vec::<(String, String)>::new()
         );
     }
 
