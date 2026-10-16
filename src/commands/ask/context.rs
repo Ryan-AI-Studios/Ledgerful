@@ -307,6 +307,22 @@ mod tests {
     use crate::state::layout::Layout;
     use crate::state::storage::StorageManager;
 
+    /// `None` from this function is one gather reason: a script error
+    /// (`run_script().ok()`), zero rows, or a formatted context of 40
+    /// characters or fewer. The header alone is under that floor.
+    #[test]
+    #[allow(non_snake_case)]
+    fn fetch_kg_bm25__zero_rows__returns_none() {
+        let header = "Knowledge Graph (Text Search) Matches:\n";
+        assert!(
+            header.len() <= 40,
+            "header-only BM25 context stays at or under 40 characters, len={}",
+            header.len()
+        );
+        let cozo = crate::state::storage_cozo::CozoStorage::new_in_memory().expect("cozo");
+        assert!(fetch_kg_bm25(&cozo, "zzzz-absent-label", 5).is_none());
+    }
+
     /// 0152: relative semantic keys must open via work_root join, not CWD.
     #[test]
     fn ask_open_path_is_root_joined_not_cwd() {

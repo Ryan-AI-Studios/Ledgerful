@@ -1,5 +1,5 @@
 use crate::commands::ask::gather::{
-    EvidenceCounts, format_gather_elapsed_ms, gather_impact_and_bridge, gather_semantic_and_kg,
+    format_gather_elapsed_ms, gather_impact_and_bridge, gather_semantic_and_kg,
     global_system_prompt,
 };
 use crate::commands::ask::legacy_complete::{LegacyCompleteInputs, execute_legacy_complete};
@@ -162,11 +162,7 @@ pub fn execute_ask(opts: ExecuteAskOpts) -> Result<()> {
         // TA14: If a provider priority list is configured, try each provider
         // in order, falling back to the next on degradable errors. If all
         // providers fail, degrade to context-only output (R4).
-        let trailer_counts = if gathered.gather_skipped_trivial {
-            EvidenceCounts::default()
-        } else {
-            gathered.evidence
-        };
+        let trailer_counts = gathered.evidence;
         if !config.ask.providers.priority.is_empty() {
             let entries =
                 resolve_provider_entries(&config, backend).map_err(|e| miette::miette!("{e}"))?;
