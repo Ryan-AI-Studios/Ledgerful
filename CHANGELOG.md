@@ -12,6 +12,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Bridge query project scope (0518):** `bridge query` default `results` are Insights whose trimmed `project_id` equals this layout id. Foreign and unknown hits are omit-empty counts, not mixed into `results`. Sort is relevance descending then `memoryId`. Negative scores stay valid. Envelope `projectId` is always present. `schemaVersion` stays 1. Package stays `0.2.17`.
 - **Data-model kind honesty (0517):** rusqlite `Row` mapper functions and row-construction closures list as STRUCT at 0.8 (`rowMapper` / `queryMap`). FromRow / Queryable / Insertable stay SCHEMA at 0.9. Token `rustPersistenceDerive` still covers both. `fieldImpact` stays `"unsupported"`. Package stays `0.2.17`.
 - **Ask mode mapping (0516):** `--mode review-patch` (`review` alias) and `--mode narrative` select those GeminiMode system prompts on every Ask backend. A non-global review-patch user prompt carries an escaped diff, a path list, or a dirty-empty sentence. `--narrative` does not change `--mode`. MCP `ask` stays `{query}`. No `ask --json`. `schemaVersion` stays 1. Package stays `0.2.17`.
 - **Cross-repo packet qualification (0514):** Rust and TypeScript fixtures under `tests/fixtures/qualification` replay docs, handler, and route/policy tasks outside the engine checkout. An exact `#[cfg(test)]` function stays internal, so `dead-code --include-tests` names it. Other `cfg` gates stay public API. `schemaVersion` stays 1. Package stays `0.2.17`.

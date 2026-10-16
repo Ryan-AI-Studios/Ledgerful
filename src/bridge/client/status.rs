@@ -65,11 +65,14 @@ impl QuerySource {
     }
 }
 
+const RELEVANCE_NOTE: &str = "Ranked by the provider score, descending. Negative values are valid.";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct InsightHit {
     pub memory_id: String,
     pub relevance: f64,
     pub content: String,
+    pub project_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -81,21 +84,38 @@ pub struct QueryOutcome {
     pub skipped_lines: u64,
     pub message: Option<String>,
     pub next: Option<String>,
+    pub project_id: String,
+    pub foreign_count: u64,
+    pub unknown_count: u64,
     insight_records: Vec<BridgeRecord>,
 }
 
 impl QueryOutcome {
-    fn disabled() -> Self {
+    fn blank(
+        status: QueryStatus,
+        source: Option<QuerySource>,
+        provider_command: Option<String>,
+        project_id: String,
+    ) -> Self {
         Self {
-            status: QueryStatus::Disabled,
-            source: None,
-            provider_command: None,
+            status,
+            source,
+            provider_command,
             insights: Vec::new(),
             skipped_lines: 0,
             message: None,
-            next: Some(BRIDGE_ENABLE_HINT.to_string()),
+            next: None,
+            project_id,
+            foreign_count: 0,
+            unknown_count: 0,
             insight_records: Vec::new(),
         }
+    }
+
+    fn disabled(project_id: String) -> Self {
+        let mut out = Self::blank(QueryStatus::Disabled, None, None, project_id);
+        out.next = Some(BRIDGE_ENABLE_HINT.to_string());
+        out
     }
 
     pub fn insight_records(&self) -> Vec<BridgeRecord> {
@@ -138,8 +158,9 @@ pub(crate) fn query_status_inner(
     transport: &QueryTransport,
     enabled: bool,
 ) -> QueryOutcome {
+    let local_id = layout.get_project_id();
     if !enabled {
-        return QueryOutcome::disabled();
+        return QueryOutcome::disabled(local_id);
     }
 
     let command = provider_command_for(layout);
@@ -149,14 +170,14 @@ pub(crate) fn query_status_inner(
         && let Some(records) = probe_ipc(layout, &sanitized, transport)
         && !records.is_empty()
     {
-        return classify_records(QuerySource::Ipc, None, records, 0);
+        return classify_records(QuerySource::Ipc, None, records, 0, local_id);
     }
 
     let run = match &transport.cli {
         Some(r) => r.clone(),
         None => client_cli::query_external_cli(&sanitized, transport.cli_timeout, &command),
     };
-    cli_run_to_outcome(run)
+    cli_run_to_outcome(run, local_id)
 }
 
 fn probe_ipc(
@@ -194,63 +215,64 @@ fn provider_command_for(layout: &Layout) -> String {
         .unwrap_or_else(|_| "ai-brains".to_string())
 }
 
-fn cli_run_to_outcome(run: CliRun) -> QueryOutcome {
+fn cli_run_to_outcome(run: CliRun, project_id: String) -> QueryOutcome {
     match run {
-        CliRun::AllowlistDenied { command } => QueryOutcome {
-            status: QueryStatus::Failed,
-            source: Some(QuerySource::Cli),
-            provider_command: Some(command),
-            insights: Vec::new(),
-            skipped_lines: 0,
-            message: Some(NEXT_ALLOWLIST.to_string()),
-            next: Some(NEXT_ALLOWLIST.to_string()),
-            insight_records: Vec::new(),
-        },
-        CliRun::SpawnErr { command } => QueryOutcome {
-            status: QueryStatus::Unavailable,
-            source: Some(QuerySource::Cli),
-            provider_command: Some(command),
-            insights: Vec::new(),
-            skipped_lines: 0,
-            message: None,
-            next: Some(NEXT_UNAVAILABLE.to_string()),
-            insight_records: Vec::new(),
-        },
-        CliRun::Timeout { command } => QueryOutcome {
-            status: QueryStatus::Failed,
-            source: Some(QuerySource::Cli),
-            provider_command: Some(command),
-            insights: Vec::new(),
-            skipped_lines: 0,
-            message: Some("Provider query timed out.".to_string()),
-            next: None,
-            insight_records: Vec::new(),
-        },
-        CliRun::NonZero { command, message } => QueryOutcome {
-            status: QueryStatus::Failed,
-            source: Some(QuerySource::Cli),
-            provider_command: Some(command),
-            insights: Vec::new(),
-            skipped_lines: 0,
-            message: Some(truncate_message(&message)),
-            next: None,
-            insight_records: Vec::new(),
-        },
-        CliRun::WaitErr { command, message } => QueryOutcome {
-            status: QueryStatus::Failed,
-            source: Some(QuerySource::Cli),
-            provider_command: Some(command),
-            insights: Vec::new(),
-            skipped_lines: 0,
-            message: Some(truncate_message(&message)),
-            next: None,
-            insight_records: Vec::new(),
-        },
-        CliRun::Stdout { command, stdout } => parse_cli_stdout(command, &stdout),
+        CliRun::AllowlistDenied { command } => {
+            let mut out = QueryOutcome::blank(
+                QueryStatus::Failed,
+                Some(QuerySource::Cli),
+                Some(command),
+                project_id,
+            );
+            out.message = Some(NEXT_ALLOWLIST.to_string());
+            out.next = Some(NEXT_ALLOWLIST.to_string());
+            out
+        }
+        CliRun::SpawnErr { command } => {
+            let mut out = QueryOutcome::blank(
+                QueryStatus::Unavailable,
+                Some(QuerySource::Cli),
+                Some(command),
+                project_id,
+            );
+            out.next = Some(NEXT_UNAVAILABLE.to_string());
+            out
+        }
+        CliRun::Timeout { command } => {
+            let mut out = QueryOutcome::blank(
+                QueryStatus::Failed,
+                Some(QuerySource::Cli),
+                Some(command),
+                project_id,
+            );
+            out.message = Some("Provider query timed out.".to_string());
+            out
+        }
+        CliRun::NonZero { command, message } => {
+            let mut out = QueryOutcome::blank(
+                QueryStatus::Failed,
+                Some(QuerySource::Cli),
+                Some(command),
+                project_id,
+            );
+            out.message = Some(truncate_message(&message));
+            out
+        }
+        CliRun::WaitErr { command, message } => {
+            let mut out = QueryOutcome::blank(
+                QueryStatus::Failed,
+                Some(QuerySource::Cli),
+                Some(command),
+                project_id,
+            );
+            out.message = Some(truncate_message(&message));
+            out
+        }
+        CliRun::Stdout { command, stdout } => parse_cli_stdout(command, &stdout, project_id),
     }
 }
 
-fn parse_cli_stdout(command: String, stdout: &str) -> QueryOutcome {
+fn parse_cli_stdout(command: String, stdout: &str, project_id: String) -> QueryOutcome {
     let mut records = Vec::new();
     let mut unparseable: u64 = 0;
     for line in stdout.lines() {
@@ -263,18 +285,24 @@ fn parse_cli_stdout(command: String, stdout: &str) -> QueryOutcome {
         }
     }
     if records.is_empty() && unparseable > 0 {
-        return QueryOutcome {
-            status: QueryStatus::Failed,
-            source: Some(QuerySource::Cli),
-            provider_command: Some(command),
-            insights: Vec::new(),
-            skipped_lines: unparseable,
-            message: Some(NEXT_MALFORMED.to_string()),
-            next: Some(NEXT_MALFORMED.to_string()),
-            insight_records: Vec::new(),
-        };
+        let mut out = QueryOutcome::blank(
+            QueryStatus::Failed,
+            Some(QuerySource::Cli),
+            Some(command),
+            project_id,
+        );
+        out.skipped_lines = unparseable;
+        out.message = Some(NEXT_MALFORMED.to_string());
+        out.next = Some(NEXT_MALFORMED.to_string());
+        return out;
     }
-    classify_records(QuerySource::Cli, Some(command), records, unparseable)
+    classify_records(
+        QuerySource::Cli,
+        Some(command),
+        records,
+        unparseable,
+        project_id,
+    )
 }
 
 fn classify_records(
@@ -282,10 +310,13 @@ fn classify_records(
     provider_command: Option<String>,
     records: Vec<BridgeRecord>,
     unparseable: u64,
+    local_id: String,
 ) -> QueryOutcome {
     let mut insights = Vec::new();
     let mut insight_records = Vec::new();
     let mut skipped = unparseable;
+    let mut foreign_count = 0u64;
+    let mut unknown_count = 0u64;
     for record in records {
         match &record.payload {
             BridgePayload::Insight {
@@ -293,20 +324,28 @@ fn classify_records(
                 relevance,
                 content,
             } if relevance.is_finite() => {
-                insights.push(InsightHit {
-                    memory_id: memory_id.clone(),
-                    relevance: *relevance,
-                    content: content.clone(),
-                });
-                insight_records.push(record);
+                let pid = record.project_id.trim();
+                if pid == local_id {
+                    insights.push(InsightHit {
+                        memory_id: memory_id.clone(),
+                        relevance: *relevance,
+                        content: content.clone(),
+                        project_id: pid.to_string(),
+                    });
+                    insight_records.push(record);
+                } else if pid.is_empty() {
+                    unknown_count += 1;
+                } else {
+                    foreign_count += 1;
+                }
             }
             _ => skipped += 1,
         }
     }
     insights.sort_by(|a, b| {
-        a.memory_id
-            .cmp(&b.memory_id)
-            .then(a.relevance.total_cmp(&b.relevance))
+        b.relevance
+            .total_cmp(&a.relevance)
+            .then(a.memory_id.cmp(&b.memory_id))
     });
     insight_records.sort_by(|a, b| match (&a.payload, &b.payload) {
         (
@@ -320,33 +359,59 @@ fn classify_records(
                 relevance: rel_b,
                 ..
             },
-        ) => id_a.cmp(id_b).then(rel_a.total_cmp(rel_b)),
+        ) => rel_b.total_cmp(rel_a).then(id_a.cmp(id_b)),
         _ => std::cmp::Ordering::Equal,
     });
 
-    if insights.is_empty() {
-        QueryOutcome {
-            status: QueryStatus::Empty,
-            source: Some(source),
-            provider_command,
-            insights,
-            skipped_lines: skipped,
-            message: None,
-            next: Some(NEXT_EMPTY.to_string()),
-            insight_records,
-        }
+    let status = if insights.is_empty() {
+        QueryStatus::Empty
     } else {
-        QueryOutcome {
-            status: QueryStatus::Populated,
-            source: Some(source),
-            provider_command,
-            insights,
-            skipped_lines: skipped,
-            message: None,
-            next: None,
-            insight_records,
-        }
+        QueryStatus::Populated
+    };
+    let next = if insights.is_empty() && foreign_count == 0 && unknown_count == 0 {
+        Some(NEXT_EMPTY.to_string())
+    } else {
+        None
+    };
+    QueryOutcome {
+        status,
+        source: Some(source),
+        provider_command,
+        insights,
+        skipped_lines: skipped,
+        message: None,
+        next,
+        project_id: local_id,
+        foreign_count,
+        unknown_count,
+        insight_records,
     }
+}
+
+fn scope_note(foreign: u64, unknown: u64) -> Option<String> {
+    let mut parts = Vec::new();
+    if foreign > 0 {
+        parts.push(format!("{foreign} memories were from other projects."));
+    }
+    if unknown > 0 {
+        parts.push(format!("{unknown} memories had no project id."));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" "))
+    }
+}
+
+fn omitted_human_lines(foreign: u64, unknown: u64) -> Vec<String> {
+    let mut lines = Vec::new();
+    if foreign > 0 {
+        lines.push(format!("Omitted {foreign} memories from other projects."));
+    }
+    if unknown > 0 {
+        lines.push(format!("Omitted {unknown} memories with no project id."));
+    }
+    lines
 }
 
 fn truncate_message(raw: &str) -> String {
@@ -366,6 +431,7 @@ struct InsightJson {
     memory_id: String,
     relevance: f64,
     content: String,
+    project_id: String,
 }
 
 #[derive(Serialize)]
@@ -376,6 +442,7 @@ struct BridgeQueryEnvelope {
     ok: bool,
     status: &'static str,
     query: String,
+    project_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     source: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -386,6 +453,14 @@ struct BridgeQueryEnvelope {
     results: Option<Vec<InsightJson>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     skipped_lines: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    foreign_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unknown_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope_note: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    relevance_note: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -400,6 +475,7 @@ fn envelope(query: &str, outcome: &QueryOutcome) -> BridgeQueryEnvelope {
         ok: outcome.status.ok(),
         status: outcome.status.as_str(),
         query: query.to_string(),
+        project_id: outcome.project_id.clone(),
         source: outcome.source.map(QuerySource::as_str),
         provider_command: outcome.provider_command.clone(),
         result_count: populated.then_some(outcome.insights.len()),
@@ -411,10 +487,15 @@ fn envelope(query: &str, outcome: &QueryOutcome) -> BridgeQueryEnvelope {
                     memory_id: h.memory_id.clone(),
                     relevance: h.relevance,
                     content: h.content.clone(),
+                    project_id: h.project_id.clone(),
                 })
                 .collect()
         }),
         skipped_lines: (outcome.skipped_lines > 0).then_some(outcome.skipped_lines),
+        foreign_count: (outcome.foreign_count > 0).then_some(outcome.foreign_count),
+        unknown_count: (outcome.unknown_count > 0).then_some(outcome.unknown_count),
+        scope_note: scope_note(outcome.foreign_count, outcome.unknown_count),
+        relevance_note: populated.then(|| RELEVANCE_NOTE.to_string()),
         message: outcome.message.clone(),
         next: outcome.next.clone(),
     }
@@ -445,6 +526,9 @@ fn finish(json: bool, query: &str, outcome: QueryOutcome) -> Result<()> {
         }
         QueryStatus::Empty => {
             println!("Status: empty");
+            for line in omitted_human_lines(outcome.foreign_count, outcome.unknown_count) {
+                println!("{line}");
+            }
             if let Some(next) = &outcome.next {
                 println!("{next}");
             }
@@ -457,6 +541,9 @@ fn finish(json: bool, query: &str, outcome: QueryOutcome) -> Result<()> {
             );
             for hit in &outcome.insights {
                 println!("- [{:.2}] {}", hit.relevance, hit.content);
+            }
+            for line in omitted_human_lines(outcome.foreign_count, outcome.unknown_count) {
+                println!("{line}");
             }
             Ok(())
         }
@@ -484,18 +571,25 @@ mod tests {
     use camino::Utf8Path;
     use tempfile::tempdir;
 
+    const LOCAL: &str = "local-project";
+
     fn layout() -> (tempfile::TempDir, Layout) {
         let tmp = tempdir().unwrap();
         let root = Utf8Path::from_path(tmp.path()).unwrap();
         let layout = Layout::new(root);
         layout.ensure_state_dir().unwrap();
+        std::fs::write(layout.project_id_file(), LOCAL).unwrap();
         (tmp, layout)
     }
 
     fn insight(id: &str, relevance: f64, content: &str) -> BridgeRecord {
+        insight_for(LOCAL, id, relevance, content)
+    }
+
+    fn insight_for(project_id: &str, id: &str, relevance: f64, content: &str) -> BridgeRecord {
         BridgeRecord::new(
             BridgeDirection::Inbound,
-            "p".to_string(),
+            project_id.to_string(),
             "insight",
             BridgePayload::Insight {
                 memory_id: id.to_string(),
@@ -544,6 +638,7 @@ mod tests {
         assert!(out.status.ok());
         assert!(out.source.is_none());
         assert!(out.provider_command.is_none());
+        assert_eq!(out.project_id, LOCAL);
         assert!(
             out.next
                 .as_deref()
@@ -654,6 +749,9 @@ mod tests {
         assert!(out.status.ok());
         assert_eq!(out.skipped_lines, 0);
         assert_eq!(out.source, Some(QuerySource::Cli));
+        assert_eq!(out.next.as_deref(), Some(NEXT_EMPTY));
+        assert_eq!(out.foreign_count, 0);
+        assert_eq!(out.unknown_count, 0);
     }
 
     #[test]
@@ -697,6 +795,11 @@ mod tests {
         let env = envelope("q", &out);
         assert_eq!(env.result_count, Some(2));
         assert!(env.results.is_some());
+        let v = serde_json::to_value(&env).unwrap();
+        assert_eq!(v["projectId"], LOCAL);
+        assert_eq!(v["results"][0]["projectId"], LOCAL);
+        assert_eq!(v["relevanceNote"], RELEVANCE_NOTE);
+        assert!(v.get("scopeNote").is_none());
     }
 
     #[test]
@@ -736,6 +839,11 @@ mod tests {
         assert_eq!(v["status"], "empty");
         assert_eq!(v["kind"], "bridgeQuery");
         assert_eq!(v["ok"], true);
+        assert_eq!(v["projectId"], LOCAL);
+        assert_eq!(v["next"], NEXT_EMPTY);
+        assert!(v.get("foreignCount").is_none());
+        assert!(v.get("scopeNote").is_none());
+        assert!(v.get("relevanceNote").is_none());
     }
 
     #[test]
@@ -756,5 +864,220 @@ mod tests {
         assert!(v.get("providerCommand").is_none());
         assert_eq!(v["query"], "hello");
         assert_eq!(v["ok"], true);
+        assert_eq!(v["projectId"], LOCAL);
+        assert!(v.get("relevanceNote").is_none());
+    }
+
+    #[test]
+    fn matching_project_id_is_populated_with_item_project_id() {
+        let (_tmp, layout) = layout();
+        let transport = QueryTransport {
+            try_ipc: true,
+            cli_timeout: Duration::from_millis(50),
+            ipc: Some(IpcOverride::Records(vec![insight("m1", 0.4, "here")])),
+            cli: Some(CliRun::SpawnErr {
+                command: "ai-brains".into(),
+            }),
+        };
+        let out = query_status_inner("q", &layout, &transport, true);
+        assert_eq!(out.status, QueryStatus::Populated);
+        assert_eq!(out.insights[0].project_id, LOCAL);
+        let v = serde_json::to_value(envelope("q", &out)).unwrap();
+        assert_eq!(v["results"][0]["projectId"], LOCAL);
+        assert_eq!(v["projectId"], LOCAL);
+    }
+
+    #[test]
+    fn foreign_only_is_empty_with_count_and_no_next() {
+        let (_tmp, layout) = layout();
+        let transport = QueryTransport {
+            try_ipc: true,
+            cli_timeout: Duration::from_millis(50),
+            ipc: Some(IpcOverride::Records(vec![insight_for(
+                "other-project",
+                "f",
+                0.9,
+                "away",
+            )])),
+            cli: Some(CliRun::SpawnErr {
+                command: "ai-brains".into(),
+            }),
+        };
+        let out = query_status_inner("q", &layout, &transport, true);
+        assert_eq!(out.status, QueryStatus::Empty);
+        assert_eq!(out.foreign_count, 1);
+        assert_eq!(out.unknown_count, 0);
+        assert!(out.next.is_none());
+        let v = serde_json::to_value(envelope("q", &out)).unwrap();
+        assert_eq!(v["foreignCount"], 1);
+        assert!(v.get("next").is_none());
+        assert_eq!(v["scopeNote"], "1 memories were from other projects.");
+        assert_eq!(
+            omitted_human_lines(1, 0),
+            vec!["Omitted 1 memories from other projects.".to_string()]
+        );
+    }
+
+    #[test]
+    fn unknown_only_is_empty_with_count_and_no_next() {
+        let (_tmp, layout) = layout();
+        let transport = QueryTransport {
+            try_ipc: true,
+            cli_timeout: Duration::from_millis(50),
+            ipc: Some(IpcOverride::Records(vec![insight_for(
+                "", "u", 0.2, "none",
+            )])),
+            cli: Some(CliRun::SpawnErr {
+                command: "ai-brains".into(),
+            }),
+        };
+        let out = query_status_inner("q", &layout, &transport, true);
+        assert_eq!(out.status, QueryStatus::Empty);
+        assert_eq!(out.unknown_count, 1);
+        assert_eq!(out.foreign_count, 0);
+        assert!(out.next.is_none());
+        let v = serde_json::to_value(envelope("q", &out)).unwrap();
+        assert_eq!(v["unknownCount"], 1);
+        assert!(v.get("next").is_none());
+        assert_eq!(v["scopeNote"], "1 memories had no project id.");
+    }
+
+    #[test]
+    fn mix_keeps_in_scope_and_counts() {
+        let (_tmp, layout) = layout();
+        let transport = QueryTransport {
+            try_ipc: true,
+            cli_timeout: Duration::from_millis(50),
+            ipc: Some(IpcOverride::Records(vec![
+                insight("in", 0.5, "local"),
+                insight_for("other-project", "f", 0.9, "away"),
+                insight_for("", "u", 0.2, "none"),
+                insight_for("  ", "w", 0.1, "ws"),
+            ])),
+            cli: Some(CliRun::SpawnErr {
+                command: "ai-brains".into(),
+            }),
+        };
+        let out = query_status_inner("q", &layout, &transport, true);
+        assert_eq!(out.status, QueryStatus::Populated);
+        assert_eq!(out.insights.len(), 1);
+        assert_eq!(out.insights[0].memory_id, "in");
+        assert_eq!(out.foreign_count, 1);
+        assert_eq!(out.unknown_count, 2);
+        let v = serde_json::to_value(envelope("q", &out)).unwrap();
+        assert_eq!(v["resultCount"], 1);
+        assert_eq!(v["results"][0]["projectId"], LOCAL);
+        assert_eq!(
+            v["scopeNote"],
+            "1 memories were from other projects. 2 memories had no project id."
+        );
+        assert!(v.get("next").is_none());
+    }
+
+    #[test]
+    fn ranking_keeps_negatives_and_sorts_descending() {
+        let (_tmp, layout) = layout();
+        let transport = QueryTransport {
+            try_ipc: true,
+            cli_timeout: Duration::from_millis(50),
+            ipc: Some(IpcOverride::Records(vec![
+                insight("low", 0.1, "low"),
+                insight("neg", -3.6, "neg"),
+                insight_for("other-project", "hot", 9.0, "foreign"),
+            ])),
+            cli: Some(CliRun::SpawnErr {
+                command: "ai-brains".into(),
+            }),
+        };
+        let out = query_status_inner("q", &layout, &transport, true);
+        assert_eq!(out.status, QueryStatus::Populated);
+        assert_eq!(out.insights.len(), 2);
+        assert_eq!(out.insights[0].memory_id, "low");
+        assert_eq!(out.insights[0].relevance, 0.1);
+        assert_eq!(out.insights[1].memory_id, "neg");
+        assert_eq!(out.insights[1].relevance, -3.6);
+        assert_eq!(out.foreign_count, 1);
+        let v = serde_json::to_value(envelope("q", &out)).unwrap();
+        assert_eq!(v["results"].as_array().map(|a| a.len()), Some(2));
+        assert_eq!(v["relevanceNote"], RELEVANCE_NOTE);
+    }
+
+    #[test]
+    fn equal_relevance_sorts_by_memory_id() {
+        let (_tmp, layout) = layout();
+        let transport = QueryTransport {
+            try_ipc: true,
+            cli_timeout: Duration::from_millis(50),
+            ipc: Some(IpcOverride::Records(vec![
+                insight("b", 0.5, "b"),
+                insight("a", 0.5, "a"),
+            ])),
+            cli: Some(CliRun::SpawnErr {
+                command: "ai-brains".into(),
+            }),
+        };
+        let out = query_status_inner("q", &layout, &transport, true);
+        assert_eq!(out.insights[0].memory_id, "a");
+        assert_eq!(out.insights[1].memory_id, "b");
+    }
+
+    #[test]
+    fn ipc_all_foreign_does_not_fall_through_to_cli() {
+        let local =
+            crate::bridge::model::serialize_record(&insight("cli", 0.8, "from-cli")).unwrap();
+        let (_tmp, layout) = layout();
+        let transport = QueryTransport {
+            try_ipc: true,
+            cli_timeout: Duration::from_millis(50),
+            ipc: Some(IpcOverride::Records(vec![insight_for(
+                "other-project",
+                "f",
+                0.9,
+                "away",
+            )])),
+            cli: Some(CliRun::Stdout {
+                command: "ai-brains".into(),
+                stdout: format!("{local}\n"),
+            }),
+        };
+        let out = query_status_inner("q", &layout, &transport, true);
+        assert_eq!(out.status, QueryStatus::Empty);
+        assert_eq!(out.source, Some(QuerySource::Ipc));
+        assert_eq!(out.foreign_count, 1);
+        assert!(out.insights.is_empty());
+        assert!(out.provider_command.is_none());
+    }
+
+    #[serial_test::serial(env)]
+    #[test]
+    fn query_unified_inner_returns_in_scope_only() {
+        mod env_guard {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/integration/common/env_guard.rs"
+            ));
+        }
+        use env_guard::TempEnv;
+
+        let _bridge = TempEnv::set("LEDGERFUL_BRIDGE", "1");
+        let (_tmp, layout) = layout();
+        let transport = QueryTransport {
+            try_ipc: true,
+            cli_timeout: Duration::from_millis(50),
+            ipc: Some(IpcOverride::Records(vec![
+                insight("in", 0.4, "here"),
+                insight_for("other-project", "f", 0.9, "away"),
+            ])),
+            cli: Some(CliRun::SpawnErr {
+                command: "ai-brains".into(),
+            }),
+        };
+        let records = crate::bridge::client::query_unified_inner("q", &layout, &transport);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].project_id, LOCAL);
+        match &records[0].payload {
+            BridgePayload::Insight { memory_id, .. } => assert_eq!(memory_id, "in"),
+            other => panic!("expected Insight, got {other:?}"),
+        }
     }
 }

@@ -57,7 +57,7 @@ contract and follows `LEDGERFUL_TABLE_STYLE`. Purity inventory unchanged
 | `status --json` | yes (0149) | yes | **same payload** as `ledger status --json` |
 | `search --json` | yes | yes | 0136 envelope; empty results OK. Constructor `Err` sets existing `semantic.error` and does not emit Ready+empty readiness (0377). Additive omit-empty `results[].engine` / `previewUnavailableReason` on `--semantic` mix hits (0425). `--json-lines` unchanged. |
 | `search-trigrams --json` | yes (0352) | yes | schemaVersion 1 object `kind: "searchTrigrams"`. Hidden CLI. Count-backed `totalMatching` is **not** an 0136 `search` key. `emptyReason` omit when `resultCount > 0`. `next` omit unless runnable (`ledgerful index` or `ledgerful search {accepted…}`). No `line`/`content`. CLI-only; no MCP. |
-| `bridge query --json` | yes (0366, 0402) | yes (exit 0) | Hidden CLI. schemaVersion 1 object `kind: "bridgeQuery"`. Closed `status`: `disabled` \| `unavailable` \| `failed` \| `empty` \| `populated`. `ok` agrees with process exit (`disabled`/`empty`/`populated` → 0; `unavailable`/`failed` → 1 after JSON). `query` is the joined string (`query.join(" ")`); unquoted multi-word is OK like `search` (flags before or after). Omit-empty `source` (`ipc` \| `cli`), `providerCommand`, `resultCount`, `results`, `skippedLines`, `message`, `next`. `results[]` only on `populated`. Not BridgeRecord NDJSON (0136 `--json-lines`). CLI-only; no MCP. |
+| `bridge query --json` | yes (0366, 0402, 0518) | yes (exit 0) | Hidden CLI. schemaVersion 1 object `kind: "bridgeQuery"`. Closed `status`: `disabled` \| `unavailable` \| `failed` \| `empty` \| `populated`. `ok` agrees with process exit (`disabled`/`empty`/`populated` → 0; `unavailable`/`failed` → 1 after JSON). `query` is the joined string (`query.join(" ")`); unquoted multi-word is OK like `search` (flags before or after). Always-present `projectId` (local layout id). `results[]` only on `populated`, in-scope Insights sorted by relevance descending then `memoryId`, each with `projectId`. Omit-empty `source` (`ipc` \| `cli`), `providerCommand`, `resultCount`, `results`, `skippedLines`, `foreignCount`, `unknownCount`, `scopeNote`, `relevanceNote`, `message`, `next`. Signed provider scores stay signed. Not BridgeRecord NDJSON (0136 `--json-lines`). CLI-only; no MCP. |
 | `bridge export --json` / `--stdout` / `-o -` | yes (0367, 0394) | yes (exit 0) | Hidden CLI. **Not** `kind: bridgeExport`. Body is one BridgeRecord **0.3** Snapshot. Additive camelCase `payload.datasets[]` (always `impact` plus requested `--hotspots`/`--ledger`/`--madr`). `--timeout` is overall emit for `--hotspots` only (ignored otherwise; CLI > env `LEDGERFUL_BRIDGE_EXPORT_OVERALL_BUDGET_SECS` > `[bridge] export_overall_budget_secs` > 25; `0` disables). Skip-open / in-walk budget sets omit-empty `stop` (`budget` \| `cancelled`) and does **not** stamp `emptyReason: noMatches`. `--json` with no `--out` implies stdout (no default `.ledgerful` write). `--json --out <path>` writes the file and leaves stdout empty. `-o -` is stdout. `--stdout` + `--out <path>` errors. `--madr` row is `notWired`. Compact one-line is NDJSON-compatible; pretty `--json` is not importable as NDJSON lines. CLI-only; no MCP. |
 | `verify --json` | yes | yes* | plan-execution payload; see rejected combos |
 | `index --check --json` | yes | yes (0149) | schemaVersion 1 + `kind: "indexCheck"` camelCase DTO (0207); Info suppressed under json; Error still on stderr |
@@ -1294,6 +1294,7 @@ Not BridgeRecord NDJSON (that remains `search --json-lines` / export).
   "ok": true,
   "status": "disabled",
   "query": "configuration provenance",
+  "projectId": "my-project",
   "next": "Bridge is disabled. Enable with `bridge.enabled = true` in config or set LEDGERFUL_BRIDGE=1."
 }
 ```
@@ -1305,13 +1306,18 @@ Not BridgeRecord NDJSON (that remains `search --json-lines` / export).
 | `ok` | bool | `true` iff `status` is `disabled` \| `empty` \| `populated`. Agrees with process exit |
 | `status` | string | Closed: `disabled` \| `unavailable` \| `failed` \| `empty` \| `populated` |
 | `query` | string | Joined query string (`query.join(" ")`). Unquoted multi-word OK like `search`; quoted one-token is unchanged |
+| `projectId` | string | Always present. Local `layout.get_project_id()`. The exception to omit-empty keys |
 | `source` | string \| **omitted** | `ipc` \| `cli` when a provider path ran |
 | `providerCommand` | string \| **omitted** | Config echo when the CLI path was attempted |
-| `resultCount` | number \| **omitted** | Only on `populated` |
-| `results[]` | array \| **omitted** | Only on `populated`. `{memoryId, relevance, content}` sorted by `memoryId` then `relevance` (`f64::total_cmp`). Non-finite `relevance` omitted (not JSON `null`) |
+| `resultCount` | number \| **omitted** | Only on `populated`. In-scope length |
+| `results[]` | array \| **omitted** | Only on `populated`. In-scope Insights `{memoryId, relevance, content, projectId}` sorted by `relevance` descending then `memoryId` (`f64::total_cmp`). Non-finite `relevance` omitted (not JSON `null`). Foreign and unknown provenance are counted, not mixed in |
 | `skippedLines` | number \| **omitted** | Unparseable lines + non-Insight records + non-finite Insights. Omit when 0 |
+| `foreignCount` | number \| **omitted** | Finite Insights whose trimmed `project_id` is non-empty and not the local id. Omit when 0 |
+| `unknownCount` | number \| **omitted** | Finite Insights whose trimmed `project_id` is empty. Omit when 0 |
+| `scopeNote` | string \| **omitted** | Uninflected `memories`. Joint form joins two sentences with one space. Omit when both counts are 0 |
+| `relevanceNote` | string \| **omitted** | Only on `populated`: `Ranked by the provider score, descending. Negative values are valid.` |
 | `message` | string \| **omitted** | Failure detail (no secret, no raw argv) |
-| `next` | string \| **omitted** | Opt-in / allowlist / provider next. Generic; no product name |
+| `next` | string \| **omitted** | Opt-in / allowlist / provider next. Generic; no product name. Foreign/unknown-only `empty` omits `next`. Truly-empty `empty` keeps the daemon-start next |
 
 **`disabled` / `empty`:** exit **0**, omit `results` / `resultCount`. `--json` stderr empty.
 **`unavailable` / `failed`:** JSON then exit **1**.
