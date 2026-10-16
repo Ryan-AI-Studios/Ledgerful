@@ -81,6 +81,7 @@ fn data_models_fromrow_list_and_changed_is_changed__slow() {
         .find(|m| m["name"] == "BillingAccount")
         .expect("BillingAccount row");
     assert_eq!(account["kind"], "SCHEMA");
+    assert_eq!(account["confidence"], 0.9);
     assert_eq!(account["fieldImpact"], "unsupported");
     assert_eq!(account["file_path"], "src/billing.rs");
     assert!(
@@ -138,6 +139,8 @@ pub struct BillingAccount {
     assert_eq!(dirty["resultCount"], 1, "{dirty}");
     let row = &dirty["impacted"][0];
     assert_eq!(row["name"], "BillingAccount");
+    assert_eq!(row["kind"], "SCHEMA");
+    assert_eq!(row["confidence"], 0.9);
     assert_eq!(row["is_changed"], true);
     assert_eq!(row["file_path"], "src/billing.rs");
     assert_eq!(row["fieldImpact"], "unsupported");
@@ -202,7 +205,8 @@ fn data_models_row_mapper_list_and_changed_is_changed__slow() {
         .flatten()
         .find(|m| m["name"] == "LedgerEntry")
         .expect("LedgerEntry row");
-    assert_eq!(entry["kind"], "SCHEMA");
+    assert_eq!(entry["kind"], "STRUCT");
+    assert_eq!(entry["confidence"], 0.8);
     assert_eq!(entry["fieldImpact"], "unsupported");
     assert_eq!(entry["file_path"], "src/ledger.rs");
     assert!(
@@ -257,6 +261,8 @@ fn map_ledger_entry(row: &rusqlite::Row) -> rusqlite::Result<LedgerEntry> {
         .flatten()
         .find(|m| m["name"] == "LedgerEntry")
         .expect("LedgerEntry impacted row");
+    assert_eq!(row["kind"], "STRUCT");
+    assert_eq!(row["confidence"], 0.8);
     assert_eq!(row["is_changed"], true);
     assert_eq!(row["file_path"], "src/ledger.rs");
     assert_eq!(row["fieldImpact"], "unsupported");
