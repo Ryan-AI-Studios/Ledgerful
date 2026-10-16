@@ -1,7 +1,7 @@
 use crate::index::data_models::{ExtractedModel, ModelKind};
 use crate::index::symbols::Symbol;
 use miette::{IntoDiagnostic, Result};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::{Node, Parser};
 
 const PERSISTENCE_IDENTS: &[&str] = &["FromRow", "Queryable", "Insertable"];
@@ -33,16 +33,17 @@ pub fn extract_data_models(
 }
 
 fn unique_models(models: Vec<ExtractedModel>) -> Vec<ExtractedModel> {
-    let mut seen: HashSet<(String, String)> = HashSet::new();
-    let mut out = Vec::new();
+    let mut out: Vec<ExtractedModel> = Vec::new();
+    let mut index_by_name: HashMap<String, usize> = HashMap::new();
     for model in models {
-        let key = (
-            model.model_name.clone(),
-            model.model_kind.as_str().to_string(),
-        );
-        if seen.insert(key) {
-            out.push(model);
+        if let Some(&idx) = index_by_name.get(&model.model_name) {
+            if model.model_kind == ModelKind::Schema && out[idx].model_kind == ModelKind::Struct {
+                out[idx] = model;
+            }
+            continue;
         }
+        index_by_name.insert(model.model_name.clone(), out.len());
+        out.push(model);
     }
     out
 }
@@ -103,7 +104,7 @@ fn collect_row_mapper_model(
     if clap_only.contains(&ok_name) {
         return;
     }
-    push_persistence_model(models, ok_name);
+    push_row_mapper_model(models, ok_name);
 }
 
 fn collect_query_map_struct_models(
@@ -125,20 +126,38 @@ fn collect_query_map_struct_models(
         if clap_only.contains(&name) || SKIP_OK_TYPES.contains(&name.as_str()) {
             return;
         }
-        push_persistence_model(models, name);
+        push_query_map_model(models, name);
     });
 }
 
 fn push_persistence_model(models: &mut Vec<ExtractedModel>, name: String) {
+    push_extracted_model(models, name, ModelKind::Schema, 0.9, "-> <persistence>");
+}
+
+fn push_row_mapper_model(models: &mut Vec<ExtractedModel>, name: String) {
+    push_extracted_model(models, name, ModelKind::Struct, 0.8, "rowMapper");
+}
+
+fn push_query_map_model(models: &mut Vec<ExtractedModel>, name: String) {
+    push_extracted_model(models, name, ModelKind::Struct, 0.8, "queryMap");
+}
+
+fn push_extracted_model(
+    models: &mut Vec<ExtractedModel>,
+    name: String,
+    model_kind: ModelKind,
+    confidence: f64,
+    evidence: &str,
+) {
     if name.is_empty() {
         return;
     }
     models.push(ExtractedModel {
         model_name: name,
         language: "Rust".to_string(),
-        model_kind: ModelKind::Schema,
-        confidence: 0.9,
-        evidence: "-> <persistence>".to_string(),
+        model_kind,
+        confidence,
+        evidence: evidence.to_string(),
     });
 }
 
@@ -390,15 +409,37 @@ mod tests {
             .collect()
     }
 
+    fn models(content: &str) -> Vec<crate::index::data_models::ExtractedModel> {
+        extract_data_models(content, "src/models.rs", &[]).expect("extract")
+    }
+
     fn one(content: &str, expected: &str) -> crate::index::data_models::ExtractedModel {
-        let models = extract_data_models(content, "src/models.rs", &[]).expect("extract");
+        let extracted = models(content);
         assert_eq!(
-            models.len(),
+            extracted.len(),
             1,
-            "expected one model {expected}, got {models:?}"
+            "expected one model {expected}, got {extracted:?}"
         );
-        assert_eq!(models[0].model_name, expected);
-        models.into_iter().next().expect("one")
+        assert_eq!(extracted[0].model_name, expected);
+        extracted.into_iter().next().expect("one")
+    }
+
+    fn assert_schema_persistence(model: &crate::index::data_models::ExtractedModel) {
+        assert_eq!(model.model_kind, ModelKind::Schema);
+        assert!((model.confidence - 0.9).abs() < f64::EPSILON);
+        assert_eq!(model.evidence, "-> <persistence>");
+    }
+
+    fn assert_struct_row_mapper(model: &crate::index::data_models::ExtractedModel) {
+        assert_eq!(model.model_kind, ModelKind::Struct);
+        assert!((model.confidence - 0.8).abs() < f64::EPSILON);
+        assert_eq!(model.evidence, "rowMapper");
+    }
+
+    fn assert_struct_query_map(model: &crate::index::data_models::ExtractedModel) {
+        assert_eq!(model.model_kind, ModelKind::Struct);
+        assert!((model.confidence - 0.8).abs() < f64::EPSILON);
+        assert_eq!(model.evidence, "queryMap");
     }
 
     #[test]
@@ -412,13 +453,7 @@ struct UserRow {
 "#,
             "UserRow",
         );
-        assert_eq!(model.model_kind, ModelKind::Schema);
-        assert!((model.confidence - 0.9).abs() < f64::EPSILON);
-        assert!(
-            model.evidence.contains("-> <persistence>"),
-            "evidence must be extract-internal persistence: {}",
-            model.evidence
-        );
+        assert_schema_persistence(&model);
     }
 
     #[test]
@@ -432,8 +467,7 @@ struct LedgerRow {
 "#,
             "LedgerRow",
         );
-        assert_eq!(model.model_kind, ModelKind::Schema);
-        assert!(model.evidence.contains("-> <persistence>"));
+        assert_schema_persistence(&model);
     }
 
     #[test]
@@ -510,8 +544,7 @@ struct MixedRow {
 "#,
             "MixedRow",
         );
-        assert_eq!(model.model_kind, ModelKind::Schema);
-        assert!(model.evidence.contains("-> <persistence>"));
+        assert_schema_persistence(&model);
     }
 
     #[test]
@@ -562,8 +595,7 @@ fn map_ledger_entry(row: &rusqlite::Row) -> rusqlite::Result<LedgerEntry> {
 "#,
             "LedgerEntry",
         );
-        assert_eq!(model.model_kind, ModelKind::Schema);
-        assert!(model.evidence.contains("-> <persistence>"));
+        assert_struct_row_mapper(&model);
     }
 
     #[test]
@@ -577,7 +609,7 @@ fn mapped_test_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MappedTest>
 "#,
             "MappedTest",
         );
-        assert_eq!(model.model_kind, ModelKind::Schema);
+        assert_struct_row_mapper(&model);
     }
 
     #[test]
@@ -591,7 +623,7 @@ fn map_project_symbol_row(row: &rusqlite::Row) -> std::result::Result<Symbol, ru
 "#,
             "Symbol",
         );
-        assert_eq!(model.model_kind, ModelKind::Schema);
+        assert_struct_row_mapper(&model);
     }
 
     #[test]
@@ -622,7 +654,7 @@ fn load(conn: &rusqlite::Connection) {
 "#,
             "TimingRow",
         );
-        assert_eq!(model.model_kind, ModelKind::Schema);
+        assert_struct_query_map(&model);
     }
 
     #[test]
@@ -638,7 +670,7 @@ fn load(conn: &rusqlite::Connection) {
 "#,
             "DataModelRow",
         );
-        assert_eq!(model.model_kind, ModelKind::Schema);
+        assert_struct_query_map(&model);
     }
 
     #[test]
@@ -654,12 +686,12 @@ fn load(conn: &rusqlite::Connection) {
 "#,
             "UnwrapRow",
         );
-        assert_eq!(model.model_kind, ModelKind::Schema);
+        assert_struct_query_map(&model);
     }
 
     #[test]
     fn rust_two_constructions_in_one_file_dedupe() {
-        let extracted = names(
+        let extracted = models(
             r#"
 struct TimingRow { id: i64 }
 fn a(conn: &rusqlite::Connection) {
@@ -670,12 +702,14 @@ fn b(conn: &rusqlite::Connection) {
 }
 "#,
         );
-        assert_eq!(extracted, vec!["TimingRow".to_string()]);
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].model_name, "TimingRow");
+        assert_struct_query_map(&extracted[0]);
     }
 
     #[test]
     fn rust_cfg_test_mod_struct_is_omitted() {
-        let extracted = names(
+        let extracted = models(
             r#"
 struct Product { id: i64 }
 fn map_product(row: &rusqlite::Row) -> rusqlite::Result<Product> {
@@ -691,6 +725,75 @@ mod tests {
 }
 "#,
         );
-        assert_eq!(extracted, vec!["Product".to_string()]);
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].model_name, "Product");
+        assert_struct_row_mapper(&extracted[0]);
+    }
+
+    #[test]
+    fn rust_same_file_fromrow_then_mapper_keeps_schema() {
+        let model = one(
+            r#"
+#[derive(FromRow)]
+struct Account { id: i64 }
+fn map_account(row: &rusqlite::Row) -> rusqlite::Result<Account> {
+    Ok(Account { id: row.get(0)? })
+}
+"#,
+            "Account",
+        );
+        assert_schema_persistence(&model);
+    }
+
+    #[test]
+    fn rust_same_file_mapper_then_fromrow_keeps_schema() {
+        let model = one(
+            r#"
+struct Account { id: i64 }
+fn map_account(row: &rusqlite::Row) -> rusqlite::Result<Account> {
+    Ok(Account { id: row.get(0)? })
+}
+#[derive(FromRow)]
+struct Account { id: i64 }
+"#,
+            "Account",
+        );
+        assert_schema_persistence(&model);
+    }
+
+    #[test]
+    fn rust_same_file_query_map_then_fromrow_keeps_schema() {
+        let model = one(
+            r#"
+struct Account { id: i64 }
+fn load(conn: &rusqlite::Connection) {
+    let _ = conn.query_map([], |row| Ok(Account { id: row.get(0)? }));
+}
+#[derive(FromRow)]
+struct Account { id: i64 }
+"#,
+            "Account",
+        );
+        assert_schema_persistence(&model);
+    }
+
+    #[test]
+    fn rust_same_file_fromrow_account_and_mapper_ledger_entry() {
+        let extracted = models(
+            r#"
+#[derive(FromRow)]
+struct Account { id: i64 }
+
+struct LedgerEntry { id: i64 }
+fn map_ledger_entry(row: &rusqlite::Row) -> rusqlite::Result<LedgerEntry> {
+    Ok(LedgerEntry { id: row.get(0)? })
+}
+"#,
+        );
+        assert_eq!(extracted.len(), 2, "got {extracted:?}");
+        assert_eq!(extracted[0].model_name, "Account");
+        assert_schema_persistence(&extracted[0]);
+        assert_eq!(extracted[1].model_name, "LedgerEntry");
+        assert_struct_row_mapper(&extracted[1]);
     }
 }
