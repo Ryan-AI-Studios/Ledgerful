@@ -12,6 +12,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Policy status legacy deserialize (0525):** a report that omits `status` and has violations deserializes as `fail`. An explicit `status` is kept. An empty `violations` list stays `idle`. Live `finish()` still writes CLI output. `schemaVersion` stays `1`. Package stays `0.2.17`.
 - **Review overlap residuals (0524):** an entity stored as `./src/foo.rs` overlaps the stripped review key `src/foo.rs`. `--include-mentions` searches a rename `oldPath` stem only when a current path stem left a slot open under the cap of 3. Mentions still cannot outrank a path hit. `schemaVersion` stays `1`. Package stays `0.2.17`.
 - **Service definition root order (0523):** when two service definitions share a name, the chosen definition is the one whose root is smaller after `\` is replaced with `/`. The helper still returns that config definition, including its original root spelling. Equal replaced roots keep the earlier definition. `schemaVersion` stays `"v1"`. Package stays `0.2.17`.
 - **Rename temporal partners (0522):** a change-scoped temporal pair stays when either stored side matches `path_class::normalize_path` of the change path or its `oldPath`. Pair spellings stay historical. Demotion still uses those stored sides. The file-id map stays path-only. `schemaVersion` stays `"v1"`. Package stays `0.2.17`.

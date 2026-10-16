@@ -49,7 +49,7 @@ const REQUIRED_IDLE_FOOTER: &str = "A required rule did not run. This is not a m
 
 /// Versioned machine contract for `policy check --format json`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", from = "PolicyCheckReportDe")]
 pub struct PolicyCheckReport {
     pub schema_version: u32,
     pub violations: Vec<PolicyViolation>,
@@ -71,10 +71,58 @@ pub struct PolicyCheckReport {
     /// does not recurse. Default zeros are the legacy/unknown sentinel.
     #[serde(default)]
     pub evaluation: PolicyEvaluation,
-    /// `pass` | `fail` | `idle`. Always serialized. A missing key reads as `idle`.
-    /// Not `passed`, and not `evaluation.rules[].status`.
-    #[serde(default)]
+    /// `pass` | `fail` | `idle`. Always serialized. A missing key reads as `fail`
+    /// when `violations` is non-empty and as `idle` when `violations` is empty.
+    /// An explicit `status` is kept. Not `passed`, and not `evaluation.rules[].status`.
     pub status: PolicyHeadline,
+}
+
+/// Deserialize shadow. `Serialize` stays on [`PolicyCheckReport`] and always emits `status`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PolicyCheckReportDe {
+    schema_version: u32,
+    violations: Vec<PolicyViolation>,
+    passed: bool,
+    mode: String,
+    policy_source: String,
+    #[serde(default)]
+    notes: Vec<String>,
+    #[serde(default)]
+    idle: bool,
+    #[serde(default)]
+    evaluation: PolicyEvaluation,
+    /// Missing key is `None`. A present JSON null is an error, not a missing key.
+    #[serde(default, deserialize_with = "status_if_present")]
+    status: Option<PolicyHeadline>,
+}
+
+fn status_if_present<'de, D>(deserializer: D) -> Result<Option<PolicyHeadline>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(PolicyHeadline::deserialize(deserializer)?))
+}
+
+impl From<PolicyCheckReportDe> for PolicyCheckReport {
+    fn from(raw: PolicyCheckReportDe) -> Self {
+        let status = match raw.status {
+            Some(status) => status,
+            None if !raw.violations.is_empty() => PolicyHeadline::Fail,
+            None => PolicyHeadline::Idle,
+        };
+        Self {
+            schema_version: raw.schema_version,
+            violations: raw.violations,
+            passed: raw.passed,
+            mode: raw.mode,
+            policy_source: raw.policy_source,
+            notes: raw.notes,
+            idle: raw.idle,
+            evaluation: raw.evaluation,
+            status,
+        }
+    }
 }
 
 /// Count of declared [`PolicyRules`] fields. Independent of `rules.len()`.
@@ -1443,6 +1491,50 @@ mod tests {
         assert_eq!(back.evaluation, PolicyEvaluation::default());
         assert_eq!(back.evaluation.rules_declared, 0);
         assert!(back.evaluation.rules.is_empty());
+    }
+
+    #[test]
+    fn legacy_missing_status_follows_violations() {
+        let violation_error = r#"{"ruleId":"no_pending_tx","file":".ledgerful/state/ledger.db","line":null,"message":"pending","severity":"error"}"#;
+        let violation_warn = r#"{"ruleId":"no_pending_tx","file":".ledgerful/state/ledger.db","line":null,"message":"pending","severity":"warn"}"#;
+
+        let null_status = r#"{"schemaVersion":1,"violations":[],"passed":true,"mode":"observe","policySource":"local","status":null}"#;
+        assert!(serde_json::from_str::<PolicyCheckReport>(null_status).is_err());
+        let unknown_status = r#"{"schemaVersion":1,"violations":[],"passed":true,"mode":"observe","policySource":"local","status":"approved"}"#;
+        assert!(serde_json::from_str::<PolicyCheckReport>(unknown_status).is_err());
+
+        let explicit_idle = format!(
+            r#"{{"schemaVersion":1,"violations":[{violation_error}],"passed":false,"mode":"enforce","policySource":"local","status":"idle"}}"#
+        );
+        let kept_idle: PolicyCheckReport = serde_json::from_str(&explicit_idle).unwrap();
+        assert_eq!(kept_idle.status, PolicyHeadline::Idle);
+
+        let empty_violations = r#"{"schemaVersion":1,"violations":[],"passed":false,"mode":"enforce","policySource":"local"}"#;
+        let empty: PolicyCheckReport = serde_json::from_str(empty_violations).unwrap();
+        assert_eq!(empty.status, PolicyHeadline::Idle);
+
+        let enforce = format!(
+            r#"{{"schemaVersion":1,"violations":[{violation_error}],"passed":false,"mode":"enforce","policySource":"local"}}"#
+        );
+        let observe = format!(
+            r#"{{"schemaVersion":1,"violations":[{violation_warn}],"passed":false,"mode":"observe","policySource":"local"}}"#
+        );
+        let failed: PolicyCheckReport = serde_json::from_str(&enforce).unwrap();
+        let warned: PolicyCheckReport = serde_json::from_str(&observe).unwrap();
+        assert_eq!(
+            (failed.status, warned.status),
+            (PolicyHeadline::Fail, PolicyHeadline::Fail)
+        );
+        assert_eq!(serde_json::to_value(&failed).unwrap()["status"], "fail");
+        assert_eq!(human_result_label(&failed), "FAILED");
+        assert!(!human_chrome_suppressed(&failed));
+        assert!(enforcement_rejects(&failed));
+        assert_eq!(
+            human_result_label(&warned),
+            "WARNINGS (observe — not blocking)"
+        );
+        assert!(!human_chrome_suppressed(&warned));
+        assert!(!enforcement_rejects(&warned));
     }
 
     #[test]
