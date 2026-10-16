@@ -28,7 +28,7 @@ Notes:
   When prefix yields zero matches, file-form resolve applies (unique only):
   X.rs ↔ X/mod.rs, extensionless, unique suffix; ambiguous refuses.
   Class is populated by C++/TS/Java extractors; Interface is populated by TS/Go/Java
-  (this index may have zero Interface rows); Enum is populated by Java.
+  (this index may have zero Interface rows); Enum is populated by Java, Rust, C++, and TypeScript.
   Rust inherent impl methods are Function + Type.method; trait methods are Method.
   --changed includes Deleted paths that are still in the index until re-index
   (use --auto-index to refresh).
@@ -52,7 +52,8 @@ pub struct SymbolsArgs {
 
     /// Filter by symbol kind (case-insensitive; aliases: fn, struct, enum, trait,
     /// mod/module, method, class, type, const, var, interface). Class is populated
-    /// (C++/TS/Java); Interface is populated (TS/Go/Java); Enum is populated (Java).
+    /// (C++/TS/Java); Interface is populated (TS/Go/Java); Enum is populated
+    /// (Java, Rust, C++, TypeScript).
     /// Rust inherent impl methods stay
     /// Function + Type.method; trait methods are Method.
     #[arg(long)]

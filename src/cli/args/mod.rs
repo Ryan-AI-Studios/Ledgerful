@@ -147,7 +147,7 @@ Tips:
         long_about = "List indexed symbols from project_symbols (scoped inventory).\n\n\
 This is a bounded catalog of definitions under a path or change set — not BM25/semantic search.\n\n\
 --path is a path *prefix* (file equals prefix or lives under prefix/), not a substring like endpoints --path.\n\
-Class is populated by C++/TS/Java extractors; Interface is populated by TS/Go/Java (an index may have zero Interface rows); Enum is populated by Java.\n\
+Class is populated by C++/TS/Java extractors; Interface is populated by TS/Go/Java (an index may have zero Interface rows); Enum is populated by Java, Rust, C++, and TypeScript.\n\
 Rust inherent impl methods are Function + Type.method; trait methods are Method.\n\
 --changed includes Deleted paths still present in the index until re-index."
     )]

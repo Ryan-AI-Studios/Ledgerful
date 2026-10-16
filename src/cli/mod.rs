@@ -1689,6 +1689,73 @@ mod tests {
     }
 
     #[test]
+    fn impact_rejects_base_ref_flag() {
+        let result = Cli::try_parse_from(["ledgerful", "impact", "--base-ref", "HEAD"]);
+        assert!(
+            result.is_err(),
+            "impact must clap-reject --base-ref (ScanArgs/ChangeContextArgs own the flag)"
+        );
+    }
+
+    #[test]
+    fn impact_help_does_not_advertise_base_ref() {
+        let help = on_large_stack(|| {
+            Cli::command()
+                .find_subcommand("impact")
+                .expect("impact")
+                .clone()
+                .render_long_help()
+                .to_string()
+        });
+        assert!(
+            !help.contains("--base-ref"),
+            "impact help must not advertise --base-ref:\n{help}"
+        );
+    }
+
+    #[test]
+    fn symbols_help_enum_languages() {
+        let help = on_large_stack(|| {
+            Cli::command()
+                .find_subcommand("symbols")
+                .expect("symbols")
+                .clone()
+                .render_long_help()
+                .to_string()
+        });
+        assert!(
+            !help.contains("Enum is populated (Java).")
+                && !help.contains("Enum is populated by Java."),
+            "Java-only Enum help must be gone:\n{help}"
+        );
+        for needle in ["Java", "Rust", "C++", "TypeScript"] {
+            assert!(
+                help.contains(needle),
+                "symbols help must name Enum language {needle}:\n{help}"
+            );
+        }
+    }
+
+    #[test]
+    fn sync_run_about_is_one_cycle() {
+        let help = on_large_stack(|| {
+            Cli::command()
+                .find_subcommand("sync")
+                .expect("sync")
+                .clone()
+                .find_subcommand("run")
+                .expect("run")
+                .clone()
+                .render_long_help()
+                .to_string()
+        });
+        assert!(
+            !help.contains("sync loop"),
+            "sync run about must not claim a loop:\n{help}"
+        );
+    }
+
+    #[test]
     fn directory_flag_last_wins() {
         let cli = Cli::try_parse_from(["ledgerful", "-C", "first", "-C", "second", "status"])
             .expect("repeated -C should parse");

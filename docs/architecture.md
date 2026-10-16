@@ -36,11 +36,11 @@ CLI
     - `scan` records git change summaries.
     - `impact` builds the main impact packet, runs temporal/hotspot/federated enrichment, redacts secrets, writes JSON, and persists to SQLite.
     - `verify` loads rules and latest packet data, recomputes missing temporal context when possible, scans current imports, predicts additional verification targets, runs commands, and writes `latest-verify.json`.
-    - `ask` loads the latest impact packet, truncates and sanitizes context, then invokes Gemini.
+    - `ask` loads the latest impact packet, truncates and sanitizes context, then invokes the configured backend (local, Gemini, Ollama Cloud, or OpenRouter). Gemini is optional.
     - `hotspots` computes risk density from git history and stored complexity.
 - `federate` exports public interfaces and scans sibling schemas.
 - `audit` (top-level): Ledger velocity and entity churn. Not dependencies audit and not a vulnerability scan.
-- `daemon` is optional and feature-gated behind `--features daemon`.
+- `daemon` is optional and feature-gated behind `--features daemon` (off by default; release `--all-features` includes it). The SPA embed is `embed-spa` (also off by default).
 - `reset` removes derived state without touching files outside `.ledgerful/`.
 - `web` starts the optional local dashboard (feature-gated behind `web`).
   Auth uses an ephemeral Bearer token (auto-generated, or `LEDGERFUL_WEB_TOKEN` /
@@ -54,7 +54,7 @@ CLI
   Host validation is a DNS-rebinding defense only, not a network ACL.
 - `mcp` starts the optional MCP stdio server for AI-agent integration.
 - `search` runs regex/semantic code search over the Tantivy + CozoDB index.
-- `ask` invokes Gemini or a local LLM for analysis, suggestions, and narrative reporting.
+- `ask` invokes the configured backend (local, Gemini, Ollama Cloud, or OpenRouter) for analysis, suggestions, and narrative reporting.
 - `dead-code` reports heuristic high-confidence dead-code *candidates* via graph reachability + git inactivity (not proof of dead code). Default output omits `tests.rs` and exact `#[cfg(test)]` helpers.
 - `viz-server` serves a WebSocket-fed arc diagram of the Knowledge Graph.
 - `ledger` manages the transactional provenance ledger (start, commit, search, audit, re-sign, graph).
@@ -72,7 +72,7 @@ CLI
     - `commands/`: command orchestration only. This layer handles CLI-visible messages, fallback reporting, and composition of lower-level modules.
     - `git/`: repository discovery, status, history, and platform-sensitive git behavior.
     - `index/`: language-aware extraction for symbols, imports/exports, runtime usage, complexity scoring, and orchestrator for Phase 2 data models.
-    - `impact/`: packet assembly, secret redaction, temporal coupling, hotspot ranking, and modular risk scoring via enrichment providers.
+    - `impact/`: packet assembly, secret redaction, temporal coupling, hotspot ranking, enrichment providers, and risk scoring via `AnalysisRegistry`.
     - `verify/`: deterministic verification plan generation, predictive verification (semantic and probability-based), subprocess execution, and explanation generation.
     - `federated/`: sibling schema parsing, path confinement, dependency discovery, and cross-repo impact checks.
     - `gemini/`: mode-specific prompts, narrative prompt construction, prompt sanitization, and subprocess invocation.

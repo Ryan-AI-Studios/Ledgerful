@@ -36,7 +36,7 @@ Understand the "blast radius" of any change before it is committed.
 
 *   **Modular Enrichment**: 20+ specialized providers analyze changes across different dimensions:
     *   **Structural**: Symbol, import, and call-graph impact.
-    *   **Temporal**: Coupling patterns derived from Git history (who changes with whom).
+    *   **Temporal**: Coupling patterns derived from Git history (file-to-file co-change, not authors).
     *   **Complexity**: Cognitive and cyclomatic complexity hotspots.
     *   **Hotspot budget inspectability (0310/0353):** `hotspots budget`
         compares persisted `hotspot_history.score` (0–1) to an explicit
@@ -180,10 +180,25 @@ Ledgerful is "Gemini-ready," providing high-signal, sanitized context to Large L
 Built for the modern developer's environment.
 
 *   **Local-First & Offline**: All core features (including embeddings and search) work without external services.
-*   **LSP Daemon**: Optional background server providing diagnostics, Hover, and CodeLens directly in your IDE. Ships with `--all-features` release builds; it **reads** the existing index and does **not** run as a background indexer (see `docs/index-freshness-policy.md`).
+*   **LSP Daemon**: Optional background server providing diagnostics, Hover, and CodeLens directly in your IDE. Default source install (`cargo install --path .`) omits `daemon` and `embed-spa`. Release `--all-features` embeds the SPA and includes LSP. The daemon **reads** the existing index and does **not** run as a background indexer (see `docs/index-freshness-policy.md`).
 *   **Windows & WSL Resilience**: First-class support for Windows PowerShell and WSL environments.
 *   **Health Diagnostics**: `doctor` command verifies toolchain health and environment readiness, including the active ask backend (Gemini Cloud vs Local). Doctor green ≠ index fresh.
 * **Dead Code Pruning**: `dead-code --prune` interactively removes high-confidence dead-code *candidates* (heuristic evidence, not proof) with `inquire` prompts, wrapped in a pending ledger transaction for verifiable safety. Unresolved trait-impl dispatch (Ambiguous/unresolved method-call edges) is not scored as unreachable. Default `dead-code` omits `tests.rs` files and `#[cfg(test)]` helpers; `--include-tests` restores them without a `noTestCoverage` factor.
 * **Nightly Scheduler**: `schedule setup-nightly` installs a cross-platform nightly task (Windows schtasks / Unix crontab) that runs `git fetch` + `index --analyze-graph` (no `--auto-scip` by default) to keep the search/observability cache warm without workday file-lock contention. Opt-in only — not installed by bare `init`. `init --operator-pack` installs the task if it is missing.
 * **Operator pack (0403)**: opt-in `init --operator-pack` fills product-default coverage/bridge keys and installs nightly only if missing. Bare `init` stays default-off (0186-A). Does not write Ask providers or run SCIP.
 * **PR Scan Surface**: `scan --pr <range> --format json` emits a stable, versioned, deterministic PR diff report for CI integration. See `docs/pr-scan-schema.md` for the schema contract.
+
+## 8. Capability matrix
+
+| Surface | Shipped fact |
+|---|---|
+| Daily 5 | `doctor --json` / `change-context --json` / `ledger status --compact` / `search … --auto-index` / `verify --scope fast`. |
+| `status` | Alias of `ledger status`. Not git status and not doctor. |
+| Prospective / range | `impact --paths` and `change-context --paths`. `--base-ref` on `scan --impact` and `change-context` only. `review` is range-compose, not `--base-ref`. |
+| Score | JSON `score` 0–1. Human tables may show `displayScore`. |
+| Trust / chain | `readyForPublish` is zero block findings. `CRYPTO VALID` is signatures and chain. `verification_status: Verified` is a bound `verify --tx-id`. |
+| Index freshness | Lexical files/symbols: content-hash. embeddings: walk vs stored paths; JSON `source` stays `contentHash` (path-membership honesty is a follow-up). |
+| Languages | Symbol floor: Rust, TS, JS, Go, Python, Java, C/C++. Enum: Java, Rust, C++, TS. Routes: Rust Axum/Actix/Rocket, Go Gin/`net/http`, TS Express/Fastify, Python FastAPI/Flask. Models: `supportedExtractors` + `notWired` `cppWalker` / `javascript` / `sqlMigrations`. Java has no model or observability extract. JS has symbols and bindings; no calls, routes, or models. |
+| Optional | SCIP `--auto-scip` (rust-analyzer). Coverage / bridge / `init --operator-pack`. Bare `init` is not the operator pack. Team sync default-off. |
+| Hidden | `bridge`, `search-trigrams`, `internal` off default `--help`. `services` / `deploy` / `observability` callable and gated. `surfaces` is the catalog. |
+| Features | Default source install: no `embed-spa`, no `daemon`, no `usage-metrics`. Release `--all-features` embeds the SPA and includes LSP. |
