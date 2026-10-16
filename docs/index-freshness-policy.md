@@ -104,15 +104,19 @@ serialize:
 
 **Ban:** `FreshPopulated` with top-level `staleFiles > 0`. Human and JSON agree.
 
-Additive `surfaces[]` (0313) reports derived-table provenance (`mapping` /
-`routes` / `embeddings`) against `index_metadata.head_hash`. It does **not**
-run a second content-hash walk. `surfaces.files` reuses the Full `--check`
-byte walk. Mapping/route lag cannot flip `FreshPopulated`. `--strict`
-exits 1 when any surface is `stale`. `unavailable` does not fail
-`--strict`.
+Additive `surfaces[]` (0313) reports derived-table provenance. `mapping` /
+`routes` compare against `index_metadata.head_hash`. **embeddings** does
+**not** use that HEAD: it classifies stored `semantic_file_hash` and
+`snippet_embedding` paths against the current semantic walk (`contentHash`).
+It does **not** run the lexical content-hash walk. `surfaces.files` reuses
+the Full `--check` byte walk. Mapping/route/embeddings lag cannot flip
+`FreshPopulated`. `--strict` exits 1 when any surface is `stale`.
+`unavailable` does not fail `--strict`. Embeddings `stale` refreshes with
+`ledgerful index --semantic`.
 `symbols.reason` agrees with copied files status (match vs drifted). Empty
-derived rows stay `available` and claim “up to date with index head” only
-when both heads are present and equal.
+mapping/route rows stay `available` and claim “up to date with index head”
+only when both heads are present and equal. Empty embeddings stay
+`available` with reason `0 snippet_embedding rows`.
 
 ## Search `--auto-index` and Tantivy (full-text)
 

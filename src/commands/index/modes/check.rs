@@ -332,7 +332,11 @@ fn classify_check_surfaces(indexer: &ProjectIndexer, files_stale: usize) -> Vec<
         indexed_head: indexed_head.as_deref(),
         mapping: probe_named_table(conn, "test_mapping"),
         routes: probe_named_table(conn, "api_routes"),
-        embeddings: embeddings_probe_from_storage(configured, indexer.storage()),
+        embeddings: embeddings_probe_from_storage(
+            configured,
+            indexer.storage(),
+            indexer.storage().root().as_std_path(),
+        ),
         permission_denied: false,
     })
 }
@@ -628,6 +632,45 @@ mod tests {
         assert_eq!(embeddings.status, SurfaceFreshnessStatus::Unavailable);
         let verdict = decide_check_verdict(&status, false, true, &surfaces);
         assert!(!verdict.exit_strict_stale);
+    }
+
+    #[test]
+    fn index_check_strict_fails_on_embeddings_stale() {
+        let status = fresh_status();
+        let surfaces = classify_surface_freshness(ClassifySurfaceFreshness {
+            files_stale: Some(0),
+            compared_head: Some("96d46c10"),
+            indexed_head: Some("96d46c10"),
+            mapping: SurfaceTableProbe {
+                exists: true,
+                rows: 0,
+                query_failed: false,
+            },
+            routes: SurfaceTableProbe {
+                exists: true,
+                rows: 0,
+                query_failed: false,
+            },
+            embeddings: EmbeddingsProbe::Rows {
+                rows: 2,
+                orphaned_hash_count: 1,
+                orphaned_vector_file_count: 1,
+            },
+            permission_denied: false,
+        });
+        let embeddings = surfaces
+            .iter()
+            .find(|s| s.id == "embeddings")
+            .expect("embeddings");
+        assert_eq!(embeddings.status, SurfaceFreshnessStatus::Stale);
+        let files = surfaces.iter().find(|s| s.id == "files").expect("files");
+        assert_eq!(files.status, SurfaceFreshnessStatus::Available);
+        let verdict = decide_check_verdict(&status, false, true, &surfaces);
+        assert!(verdict.exit_strict_stale);
+        assert_eq!(
+            status.assessment.as_ref().map(|a| a.state.clone()),
+            Some(IndexFreshnessState::FreshPopulated)
+        );
     }
 
     #[test]

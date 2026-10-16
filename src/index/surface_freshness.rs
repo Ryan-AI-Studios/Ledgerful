@@ -1,9 +1,12 @@
 //! Per-surface freshness rows for inspection (`index --check`, change-context).
 //!
 //! File content-hash freshness and derived-graph freshness are different
-//! facts. This module classifies them without walking the tree or writing
-//! state. Callers pass a precomputed `files_stale` (or `None` to omit
-//! `files`/`symbols`) and table/Cozo probes.
+//! facts. Classification does not walk the tree or write state. Callers pass
+//! a precomputed `files_stale` (or `None` to omit `files`/`symbols`) and
+//! table/Cozo probes. Embeddings probe construction uses
+//! [`crate::semantic::provenance`] (walk vs stored paths), not lexical HEAD.
+
+use std::path::Path;
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -25,6 +28,7 @@ pub const SYMBOLS_STALE_REASON: &str =
     "derived from indexed source files; file content-hash drifted";
 
 pub const REFRESH_INDEX_INCREMENTAL: &str = "ledgerful index --incremental";
+pub const REFRESH_INDEX_SEMANTIC: &str = "ledgerful index --semantic";
 pub const REFRESH_SCAN_IMPACT: &str = "ledgerful scan --impact";
 
 const COMPARED_HEAD_UNKNOWN: &str = "compared head unknown; not force-stale";
@@ -131,7 +135,11 @@ pub enum EmbeddingsProbe {
     NotConfigured,
     QueryFailed,
     TableMissing,
-    Rows(usize),
+    Rows {
+        rows: usize,
+        orphaned_hash_count: usize,
+        orphaned_vector_file_count: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -167,12 +175,7 @@ pub fn classify_surface_freshness(input: ClassifySurfaceFreshness<'_>) -> Vec<Su
         input.compared_head,
         input.permission_denied,
     ));
-    rows.push(embeddings_row(
-        input.embeddings,
-        input.indexed_head,
-        input.compared_head,
-        input.permission_denied,
-    ));
+    rows.push(embeddings_row(input.embeddings, input.permission_denied));
     rows
 }
 
@@ -267,6 +270,7 @@ pub fn read_indexed_head(conn: &Connection) -> Option<String> {
 pub fn embeddings_probe_from_storage(
     configured: bool,
     storage: &crate::state::storage::StorageManager,
+    work_root: &Path,
 ) -> EmbeddingsProbe {
     if !configured {
         return EmbeddingsProbe::NotConfigured;
@@ -278,11 +282,19 @@ pub fn embeddings_probe_from_storage(
         Ok(r) => r,
         Err(_) => return EmbeddingsProbe::QueryFailed,
     };
-    if !relations.contains(&"snippet_embedding".to_string()) {
+    if !relations.iter().any(|r| r == "snippet_embedding") {
         return EmbeddingsProbe::TableMissing;
     }
-    match crate::semantic::vector_store::count_snippet_embedding_rows(cozo) {
-        Ok(n) => EmbeddingsProbe::Rows(n),
+    match crate::semantic::provenance::collect_semantic_provenance(
+        work_root,
+        Some(cozo),
+        crate::semantic::provenance::ProvenanceWalk::IfStorePopulated,
+    ) {
+        Ok(p) => EmbeddingsProbe::Rows {
+            rows: p.stored_vector_row_count,
+            orphaned_hash_count: p.orphaned_hash_count,
+            orphaned_vector_file_count: p.orphaned_vector_file_count,
+        },
         Err(_) => EmbeddingsProbe::QueryFailed,
     }
 }
@@ -418,12 +430,7 @@ fn derived_table_row(
     }
 }
 
-fn embeddings_row(
-    probe: EmbeddingsProbe,
-    indexed_head: Option<&str>,
-    compared_head: Option<&str>,
-    permission_denied: bool,
-) -> SurfaceFreshness {
+fn embeddings_row(probe: EmbeddingsProbe, permission_denied: bool) -> SurfaceFreshness {
     match probe {
         EmbeddingsProbe::NotConfigured => SurfaceFreshness {
             id: "embeddings".into(),
@@ -431,39 +438,69 @@ fn embeddings_row(
             source: SurfaceFreshnessSource::NotConfigured,
             reason: "embedding backend not configured".into(),
             refresh: None,
-            indexed_head: omit_head(indexed_head),
-            compared_head: omit_head(compared_head),
+            indexed_head: None,
+            compared_head: None,
         },
         EmbeddingsProbe::QueryFailed => SurfaceFreshness {
             id: "embeddings".into(),
             status: SurfaceFreshnessStatus::Unavailable,
             source: SurfaceFreshnessSource::QueryFailed,
             reason: "embedding store query failed".into(),
-            refresh: refresh_cmd(REFRESH_INDEX_INCREMENTAL, false, permission_denied),
-            indexed_head: omit_head(indexed_head),
-            compared_head: omit_head(compared_head),
+            refresh: refresh_cmd(REFRESH_INDEX_SEMANTIC, false, permission_denied),
+            indexed_head: None,
+            compared_head: None,
         },
         EmbeddingsProbe::TableMissing => SurfaceFreshness {
             id: "embeddings".into(),
             status: SurfaceFreshnessStatus::Unavailable,
             source: SurfaceFreshnessSource::TableMissing,
             reason: "snippet_embedding relation missing".into(),
-            refresh: refresh_cmd(REFRESH_INDEX_INCREMENTAL, false, permission_denied),
-            indexed_head: omit_head(indexed_head),
-            compared_head: omit_head(compared_head),
+            refresh: refresh_cmd(REFRESH_INDEX_SEMANTIC, false, permission_denied),
+            indexed_head: None,
+            compared_head: None,
         },
-        EmbeddingsProbe::Rows(n) => derived_table_row(
-            "embeddings",
-            "embeddings",
-            SurfaceTableProbe {
-                exists: true,
-                rows: n as i64,
-                query_failed: false,
-            },
-            indexed_head,
-            compared_head,
-            permission_denied,
-        ),
+        EmbeddingsProbe::Rows {
+            rows,
+            orphaned_hash_count,
+            orphaned_vector_file_count,
+        } => {
+            let stale = orphaned_hash_count > 0 || orphaned_vector_file_count > 0;
+            if stale {
+                SurfaceFreshness {
+                    id: "embeddings".into(),
+                    status: SurfaceFreshnessStatus::Stale,
+                    source: SurfaceFreshnessSource::ContentHash,
+                    reason: format!(
+                        "{orphaned_hash_count} stored semantic hash path(s) and {orphaned_vector_file_count} vector file path(s) are not in the current walk"
+                    ),
+                    refresh: refresh_cmd(REFRESH_INDEX_SEMANTIC, false, permission_denied),
+                    indexed_head: None,
+                    compared_head: None,
+                }
+            } else if rows == 0 {
+                SurfaceFreshness {
+                    id: "embeddings".into(),
+                    status: SurfaceFreshnessStatus::Available,
+                    source: SurfaceFreshnessSource::ContentHash,
+                    reason: "0 snippet_embedding rows".into(),
+                    refresh: None,
+                    indexed_head: None,
+                    compared_head: None,
+                }
+            } else {
+                SurfaceFreshness {
+                    id: "embeddings".into(),
+                    status: SurfaceFreshnessStatus::Available,
+                    source: SurfaceFreshnessSource::ContentHash,
+                    reason: format!(
+                        "semantic file hashes match the current walk; {rows} vector rows (function-grain chunks)"
+                    ),
+                    refresh: None,
+                    indexed_head: None,
+                    compared_head: None,
+                }
+            }
+        }
     }
 }
 
@@ -595,26 +632,84 @@ mod tests {
     #[test]
     fn surface_freshness_zero_row_embeddings_head_mismatch() {
         let mut input = mapping_stale_input();
-        input.embeddings = EmbeddingsProbe::Rows(0);
+        input.embeddings = EmbeddingsProbe::Rows {
+            rows: 0,
+            orphaned_hash_count: 0,
+            orphaned_vector_file_count: 0,
+        };
         let rows = classify_surface_freshness(input);
         let embeddings = row(&rows, "embeddings");
         assert_eq!(embeddings.status, SurfaceFreshnessStatus::Available);
-        assert_eq!(embeddings.reason, "0 embeddings registered");
-        assert!(!embeddings.reason.contains("up to date"));
+        assert_eq!(embeddings.source, SurfaceFreshnessSource::ContentHash);
+        assert_eq!(embeddings.reason, "0 snippet_embedding rows");
+        assert!(!embeddings.reason.contains("index head"));
+        assert!(embeddings.indexed_head.is_none());
+        assert!(embeddings.compared_head.is_none());
+        assert!(embeddings.refresh.is_none());
     }
 
     #[test]
     fn surface_freshness_zero_row_embeddings_heads_match() {
         let mut input = mapping_stale_input();
         input.compared_head = Some("250c7afe");
-        input.embeddings = EmbeddingsProbe::Rows(0);
+        input.embeddings = EmbeddingsProbe::Rows {
+            rows: 0,
+            orphaned_hash_count: 0,
+            orphaned_vector_file_count: 0,
+        };
         let rows = classify_surface_freshness(input);
         let embeddings = row(&rows, "embeddings");
         assert_eq!(embeddings.status, SurfaceFreshnessStatus::Available);
+        assert_eq!(embeddings.source, SurfaceFreshnessSource::ContentHash);
+        assert_eq!(embeddings.reason, "0 snippet_embedding rows");
+        assert!(!embeddings.reason.contains("up to date"));
+        assert!(!embeddings.reason.contains("index head"));
+        assert!(embeddings.indexed_head.is_none());
+        assert!(embeddings.compared_head.is_none());
+    }
+
+    #[test]
+    fn surface_freshness_embeddings_orphans_are_stale_content_hash() {
+        let mut input = mapping_stale_input();
+        input.files_stale = Some(0);
+        input.embeddings = EmbeddingsProbe::Rows {
+            rows: 4,
+            orphaned_hash_count: 1,
+            orphaned_vector_file_count: 1,
+        };
+        let rows = classify_surface_freshness(input);
+        let embeddings = row(&rows, "embeddings");
+        assert_eq!(embeddings.status, SurfaceFreshnessStatus::Stale);
+        assert_eq!(embeddings.source, SurfaceFreshnessSource::ContentHash);
         assert_eq!(
             embeddings.reason,
-            "0 embeddings registered; up to date with index head"
+            "1 stored semantic hash path(s) and 1 vector file path(s) are not in the current walk"
         );
+        assert_eq!(embeddings.refresh.as_deref(), Some(REFRESH_INDEX_SEMANTIC));
+        assert!(embeddings.indexed_head.is_none());
+        assert!(embeddings.compared_head.is_none());
+        let files = row(&rows, "files");
+        assert_eq!(files.status, SurfaceFreshnessStatus::Available);
+        assert_eq!(files.source, SurfaceFreshnessSource::ContentHash);
+    }
+
+    #[test]
+    fn surface_freshness_embeddings_populated_available_content_hash() {
+        let mut input = mapping_stale_input();
+        input.embeddings = EmbeddingsProbe::Rows {
+            rows: 4,
+            orphaned_hash_count: 0,
+            orphaned_vector_file_count: 0,
+        };
+        let rows = classify_surface_freshness(input);
+        let embeddings = row(&rows, "embeddings");
+        assert_eq!(embeddings.status, SurfaceFreshnessStatus::Available);
+        assert_eq!(embeddings.source, SurfaceFreshnessSource::ContentHash);
+        assert_eq!(
+            embeddings.reason,
+            "semantic file hashes match the current walk; 4 vector rows (function-grain chunks)"
+        );
+        assert!(embeddings.refresh.is_none());
     }
 
     #[test]
@@ -701,6 +796,18 @@ mod tests {
         assert_eq!(embeddings.status, SurfaceFreshnessStatus::Unavailable);
         assert_eq!(embeddings.source, SurfaceFreshnessSource::NotConfigured);
         assert!(embeddings.refresh.is_none());
+        assert!(embeddings.indexed_head.is_none());
+        assert!(embeddings.compared_head.is_none());
+    }
+
+    #[test]
+    fn surface_freshness_embeddings_query_failed_refresh_is_semantic() {
+        let mut input = mapping_stale_input();
+        input.embeddings = EmbeddingsProbe::QueryFailed;
+        let rows = classify_surface_freshness(input);
+        let embeddings = row(&rows, "embeddings");
+        assert_eq!(embeddings.status, SurfaceFreshnessStatus::Unavailable);
+        assert_eq!(embeddings.refresh.as_deref(), Some(REFRESH_INDEX_SEMANTIC));
     }
 
     #[test]

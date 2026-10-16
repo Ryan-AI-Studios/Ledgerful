@@ -1828,3 +1828,72 @@ fn change_context_permission_denied_omits_index_refresh() {
         );
     }
 }
+
+#[test]
+fn change_context_embeddings_orphans_are_stale_content_hash() {
+    use crate::config::model::LocalModelConfig;
+    use crate::index::surface_freshness::{SurfaceFreshnessSource, SurfaceFreshnessStatus};
+    use crate::index::symbols::SymbolKind;
+    use crate::semantic::SemanticDiscovery;
+    use crate::semantic::chunker::AstChunk;
+    use camino::Utf8PathBuf;
+
+    let tmp = tempdir().unwrap();
+    let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+    fs::create_dir_all(tmp.path().join("src")).unwrap();
+    fs::write(tmp.path().join("src/lib.rs"), "fn current() {}\n").unwrap();
+    let layout = Layout::new(&root);
+    layout.ensure_state_dir().unwrap();
+    let storage = StorageManager::init_with_layout(&layout).unwrap();
+    let cozo = storage.cozo().expect("cozo");
+    let lm = LocalModelConfig {
+        dimensions: 3,
+        disable_hnsw: true,
+        base_url: "http://127.0.0.1:9".into(),
+        ..Default::default()
+    };
+    let semantic = SemanticDiscovery::new(lm.clone(), cozo).expect("semantic");
+    semantic.ensure_file_hash_schema().expect("hash schema");
+    semantic
+        .record_file_hash("src/gone.rs", "dead")
+        .expect("hash");
+    semantic
+        .index_chunks_batched(
+            vec![AstChunk {
+                file_path: "src/gone.rs".into(),
+                name: "old".into(),
+                qualified_name: None,
+                kind: SymbolKind::Function,
+                content: "fn old() {}".into(),
+                docstring: None,
+                range: (0, 0),
+                lines: (1, 1),
+                offset: 0,
+            }],
+            vec![vec![1.0_f32, 0.0, 0.0]],
+        )
+        .expect("insert");
+
+    let config = Config {
+        local_model: lm,
+        ..Default::default()
+    };
+    let rows = classify_change_context_freshness(&layout, &storage, &config, false);
+    let embeddings = rows
+        .iter()
+        .find(|r| r.id == "embeddings")
+        .expect("embeddings");
+    assert_eq!(embeddings.status, SurfaceFreshnessStatus::Stale);
+    assert_eq!(embeddings.source, SurfaceFreshnessSource::ContentHash);
+    assert!(
+        embeddings.reason.contains("not in the current walk"),
+        "{}",
+        embeddings.reason
+    );
+    assert_eq!(
+        embeddings.refresh.as_deref(),
+        Some("ledgerful index --semantic")
+    );
+    assert!(embeddings.indexed_head.is_none());
+    assert!(embeddings.compared_head.is_none());
+}

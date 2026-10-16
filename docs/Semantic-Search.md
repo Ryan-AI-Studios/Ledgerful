@@ -30,6 +30,17 @@ This is a **capability that can be off**:
 | Force full rebuild | `ledgerful index --semantic --full` |
 
 There is **no** `--print-semantic-config` flag. Use `--semantic-dry-run`.
+`--semantic-dry-run` is its own clap flag (not `index --semantic --dry-run`).
+It opens Cozo read-only and does not embed, drop, or recreate the store.
+
+**Grain:** `current_vector_count` is `snippet_embedding` **rows** (function-grain
+chunks). `stored_vector_file_count` is distinct vector `file_path` values.
+`current_file_count` is `semantic_file_hash` rows. Those three numbers can
+differ without corruption. `embedding_dimensions` is preferred width
+(configured > probed); `stored_dimensions` is the column width when known.
+`embedding_model` is config-only (not stored identity). Orphaned stored
+paths vs the current semantic walk are named; missing hashes (walk files
+not yet hashed) are named and are not stale.
 
 ## Indexing mode & progress
 

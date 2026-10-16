@@ -505,8 +505,13 @@ pub(crate) fn gather_semantic_and_kg_with(
         && cozo.snippet_embedding_dim().ok().flatten().is_some()
         && let Ok(semantic_engine) =
             crate::semantic::SemanticDiscovery::new(config.local_model.clone(), cozo)
-        && let Ok(readiness) = semantic_engine.check_readiness()
+        && let Ok(mut readiness) = semantic_engine.check_readiness()
     {
+        crate::semantic::overlay_semantic_walk_stale(
+            &mut readiness,
+            layout.root.as_std_path(),
+            cozo,
+        );
         for msg in crate::semantic::semantic_readiness_messages(&readiness) {
             eprintln!(
                 "{} {}",

@@ -2,7 +2,10 @@ pub mod chunker;
 pub mod concurrency;
 pub mod embedder;
 pub mod hotspots;
+pub mod provenance;
 pub mod vector_store;
+
+pub use provenance::walk_repo_for_semantic_files;
 
 use crate::config::model::{LocalModelConfig, SemanticConfig};
 use crate::embed::client::is_embedding_backend_configured;
@@ -54,6 +57,23 @@ pub fn backend_status_from_probe(
     }
 }
 
+/// Overlay walk-vs-store staleness onto readiness using `layout.root`.
+/// Skips the walk when both semantic relations are empty. Never uses `current_dir()`.
+pub fn overlay_semantic_walk_stale(
+    readiness: &mut SemanticReadiness,
+    work_root: &Path,
+    storage: &CozoStorage,
+) {
+    match provenance::collect_semantic_provenance(
+        work_root,
+        Some(storage),
+        provenance::ProvenanceWalk::IfStorePopulated,
+    ) {
+        Ok(p) => readiness.is_stale = p.is_stale(),
+        Err(e) => tracing::warn!("semantic walk overlay failed: {e}"),
+    }
+}
+
 /// User-facing readiness messages for `search --semantic` (DoD-4).
 /// Distinct wording per state; never recommends `index --semantic` when
 /// the backend is not configured.
@@ -82,6 +102,14 @@ pub fn semantic_readiness_messages(readiness: &SemanticReadiness) -> Vec<String>
     if readiness.dimension_mismatch {
         msgs.push(
             "Model/Index dimension mismatch (preferred vs stored width). The stored index was not modified. Set `local_model.dimensions` to match the stored embeddings or re-index after confirming the embedding model."
+                .to_string(),
+        );
+    }
+    if readiness.is_stale {
+        msgs.push(
+            "Semantic records include paths that are not in the current walk. \
+             Query ranking was not modified. After the embedding backend is Ready, \
+             re-index with `ledgerful index --semantic`."
                 .to_string(),
         );
     }
@@ -378,7 +406,7 @@ impl<'a> SemanticDiscovery<'a> {
             dimensions: self.config.dimensions,
             vector_count,
             zero_vector_count,
-            is_stale: false, // Stale check handled at command level
+            is_stale: false, // Overlay at search/Ask with layout.root; this method does not walk.
             dimension_mismatch,
         })
     }
@@ -1556,5 +1584,65 @@ mod tests {
                 .expect("same width");
         assert!(!recreated);
         assert!(again.is_file_hash_current("src/keep.rs", "keep-hash"));
+    }
+
+    #[test]
+    fn check_readiness_stays_not_stale_when_store_has_orphans() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("src")).expect("mkdir");
+        std::fs::write(dir.path().join("src/lib.rs"), "fn f() {}\n").expect("write");
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let config = LocalModelConfig {
+            dimensions: 3,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let semantic = SemanticDiscovery::new(config, &storage).expect("semantic");
+        semantic.ensure_file_hash_schema().expect("hash schema");
+        semantic
+            .record_file_hash("src/gone.rs", "dead")
+            .expect("hash");
+        semantic
+            .index_chunks_batched(
+                vec![sample_chunk("src/gone.rs")],
+                vec![vec![1.0_f32, 0.0, 0.0]],
+            )
+            .expect("insert");
+        let readiness = semantic.check_readiness().expect("readiness");
+        assert!(!readiness.is_stale);
+
+        let mut overlay = readiness;
+        overlay_semantic_walk_stale(&mut overlay, dir.path(), &storage);
+        assert!(overlay.is_stale);
+        let msgs = semantic_readiness_messages(&overlay);
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("not in the current walk") && m.contains("index --semantic")),
+            "stale overlay message: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().all(|m| !m.to_lowercase().contains("no matches")
+                && !m.to_lowercase().contains("no relevant")),
+            "stale message must not claim no matches: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn overlay_skips_walk_when_store_empty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("src")).expect("mkdir");
+        std::fs::write(dir.path().join("src/lib.rs"), "fn f() {}\n").expect("write");
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let mut readiness = SemanticReadiness {
+            backend_status: BackendStatus::Ready,
+            model_name: "nomic".into(),
+            dimensions: 3,
+            vector_count: 0,
+            zero_vector_count: 0,
+            is_stale: false,
+            dimension_mismatch: false,
+        };
+        overlay_semantic_walk_stale(&mut readiness, dir.path(), &storage);
+        assert!(!readiness.is_stale);
     }
 }
