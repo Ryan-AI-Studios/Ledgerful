@@ -66,8 +66,12 @@ pub fn detect_rust_entrypoints(content: &str, symbols: &[Symbol]) -> Vec<SymbolC
             continue;
         }
 
-        // Check for feature gates
-        if let Some(cfg) = symbol.metadata.get("cfg") {
+        // Feature gates are public API. Exact `#[cfg(test)]` is a test
+        // helper (0510), not a feature gate, so dead-code can omit it until
+        // `--include-tests`. Other `cfg` predicates stay public API.
+        if let Some(cfg) = symbol.metadata.get("cfg")
+            && !crate::index::languages::rust::symbols::cfg_attr_is_exact_test(cfg)
+        {
             results.push(SymbolClassification {
                 symbol_name: symbol.name.clone(),
                 kind: EntrypointKind::PublicApi,
@@ -442,6 +446,74 @@ async fn get_users() -> HttpResponse {
                 .iter()
                 .any(|r| r.kind == EntrypointKind::Handler && r.symbol_name == "get_users")
         );
+    }
+
+    #[test]
+    fn exact_cfg_test_is_not_a_feature_gated_public_api() {
+        // The file carries an entry point: the "no entry point found" post-pass
+        // rewrites the evidence of every PublicApi row, so the "Feature gated"
+        // evidence asserted below only survives when that pass does not fire.
+        let content = "#[cfg(test)]\nfn cfg_test_helper() {}\nfn main() {}\n";
+        let mut cfg_test = BTreeMap::new();
+        cfg_test.insert("cfg".to_string(), "#[cfg(test)]".to_string());
+        let mut feature = BTreeMap::new();
+        feature.insert("cfg".to_string(), "#[cfg(feature = \"extra\")]".to_string());
+        let symbols = vec![
+            Symbol {
+                name: "cfg_test_helper".to_string(),
+                kind: SymbolKind::Function,
+                is_public: false,
+                cognitive_complexity: None,
+                cyclomatic_complexity: None,
+                line_start: None,
+                line_end: None,
+                qualified_name: None,
+                byte_start: None,
+                byte_end: None,
+                entrypoint_kind: None,
+                metadata: cfg_test,
+            },
+            Symbol {
+                name: "gated".to_string(),
+                kind: SymbolKind::Function,
+                is_public: false,
+                cognitive_complexity: None,
+                cyclomatic_complexity: None,
+                line_start: None,
+                line_end: None,
+                qualified_name: None,
+                byte_start: None,
+                byte_end: None,
+                entrypoint_kind: None,
+                metadata: feature,
+            },
+            Symbol {
+                name: "main".to_string(),
+                kind: SymbolKind::Function,
+                is_public: false,
+                cognitive_complexity: None,
+                cyclomatic_complexity: None,
+                line_start: None,
+                line_end: None,
+                qualified_name: None,
+                byte_start: None,
+                byte_end: None,
+                entrypoint_kind: None,
+                metadata: BTreeMap::new(),
+            },
+        ];
+        let results = detect_rust_entrypoints(content, &symbols);
+        let helper = results
+            .iter()
+            .find(|row| row.symbol_name == "cfg_test_helper")
+            .expect("cfg_test_helper");
+        assert_eq!(helper.kind, EntrypointKind::Internal);
+        let gated = results
+            .iter()
+            .find(|row| row.symbol_name == "gated")
+            .expect("gated");
+        assert_eq!(gated.kind, EntrypointKind::PublicApi);
+        assert!(gated.evidence.contains("Feature gated"));
     }
 
     #[test]
