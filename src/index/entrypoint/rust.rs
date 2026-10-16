@@ -517,6 +517,46 @@ async fn get_users() -> HttpResponse {
     }
 
     #[test]
+    fn stacked_cfg_private_fn_is_internal() {
+        let content = r#"
+            #[cfg(feature = "x")]
+            #[cfg(test)]
+            fn helper() {}
+
+            #[cfg(feature = "extra")]
+            fn gated() {}
+
+            #[cfg(feature = "x")]
+            #[cfg(test)]
+            pub fn shown() {}
+
+            fn main() {}
+        "#;
+        let symbols = crate::index::languages::rust::symbols::extract_symbols(content)
+            .expect("extract")
+            .expect("symbols");
+        let results = detect_rust_entrypoints(content, &symbols);
+        let helper = results
+            .iter()
+            .find(|row| row.symbol_name == "helper")
+            .expect("helper");
+        assert_eq!(helper.kind, EntrypointKind::Internal);
+        let gated = results
+            .iter()
+            .find(|row| row.symbol_name == "gated")
+            .expect("gated");
+        assert_eq!(gated.kind, EntrypointKind::PublicApi);
+        assert!(gated.evidence.contains("Feature gated"));
+        let shown = results
+            .iter()
+            .find(|row| row.symbol_name == "shown")
+            .expect("shown");
+        assert_eq!(shown.kind, EntrypointKind::PublicApi);
+        assert_eq!(shown.evidence, "Public function");
+        assert!(!shown.evidence.contains("Feature gated"));
+    }
+
+    #[test]
     fn test_extract_rust_attr_path() {
         assert_eq!(extract_rust_attr_path("#[test]"), "test");
         assert_eq!(extract_rust_attr_path("#[tokio::test]"), "tokio::test");

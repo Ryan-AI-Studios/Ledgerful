@@ -2420,6 +2420,97 @@ mod tests {
     }
 
     #[test]
+    fn stacked_cfg_stale_feature_module_does_not_enclose() {
+        let (storage, _cozo) = in_memory_storage_with_cozo();
+        let conn = storage.get_connection();
+        seed_rs_edge_and_mapping(conn);
+        let file_id = insert_project_file(conn, "src/stale_feature.rs");
+        insert_project_symbol(
+            conn,
+            file_id,
+            "tests",
+            "Module",
+            Some(100),
+            Some(300),
+            Some("{\"cfg\":\"#[cfg(feature = \\\"expensive\\\")]\"}"),
+        );
+        insert_project_symbol(
+            conn,
+            file_id,
+            "helper",
+            "Function",
+            Some(120),
+            Some(160),
+            None,
+        );
+        let config = default_config();
+        let repo = tempfile::tempdir().unwrap();
+        let path = Path::new("src/stale_feature.rs");
+        let default = ConfidenceScorer::new(None, &storage, &config, repo.path(), false);
+        let file_findings = default.score_file(path).unwrap();
+        let helper = finding_named(&file_findings, "helper").expect("helper finding");
+        assert!(has_no_test_coverage(helper));
+        let scanned = default.scan_repo(50).unwrap();
+        let scanned_helper = finding_named(&scanned, "helper").expect("scan helper");
+        assert!(has_no_test_coverage(scanned_helper));
+    }
+
+    #[test]
+    fn stacked_cfg_private_fn_omitted_until_include_tests() {
+        let (storage, _cozo) = in_memory_storage_with_cozo();
+        let conn = storage.get_connection();
+        seed_rs_edge_and_mapping(conn);
+        let file_id = insert_project_file(conn, "src/stacked_fn.rs");
+        insert_project_symbol(
+            conn,
+            file_id,
+            "helper",
+            "Function",
+            Some(10),
+            Some(40),
+            Some("{\"cfg\":\"#[cfg(test)]\"}"),
+        );
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, byte_start, byte_end, metadata, last_indexed_at) VALUES (?1, 'crate::public_helper', 'public_helper', 'Function', 'PUBLIC_API', 50, 80, ?2, '2026-01-01')",
+            rusqlite::params![file_id, "{\"cfg\":\"#[cfg(test)]\"}"],
+        )
+        .unwrap();
+        let config = default_config();
+        let repo = tempfile::tempdir().unwrap();
+        let path = Path::new("src/stacked_fn.rs");
+        let default = ConfidenceScorer::new(None, &storage, &config, repo.path(), false);
+        let file_findings = default.score_file(path).unwrap();
+        assert!(finding_named(&file_findings, "helper").is_none());
+        assert!(finding_named(&file_findings, "public_helper").is_none());
+        let scanned = default.scan_repo(50).unwrap();
+        assert!(finding_named(&scanned, "helper").is_none());
+        assert!(finding_named(&scanned, "public_helper").is_none());
+
+        let included = ConfidenceScorer::new(None, &storage, &config, repo.path(), false)
+            .with_path_include(true, false);
+        let restored = included.score_file(path).unwrap();
+        let helper = finding_named(&restored, "helper").expect("restored helper");
+        assert!(!has_no_test_coverage(helper));
+        assert!(finding_named(&restored, "public_helper").is_none());
+        let included_scan = included.scan_repo(50).unwrap();
+        assert!(finding_named(&included_scan, "public_helper").is_none());
+
+        let mut explainer = ConfidenceScorer::new(None, &storage, &config, repo.path(), false);
+        let explanation = explainer.explain_file(path).unwrap();
+        let explained_helper = explanation
+            .symbols
+            .iter()
+            .find(|symbol| symbol.symbol_name == "helper")
+            .expect("explain helper");
+        assert!(
+            !explained_helper
+                .factors
+                .iter()
+                .any(|factor| matches!(factor.kind, ConfidenceFactor::NoTestCoverage))
+        );
+    }
+
+    #[test]
     fn dead_code_include_tests_partial_git_moves_both_ways() {
         let (storage, _cozo) = in_memory_storage_with_cozo();
         let conn = storage.get_connection();

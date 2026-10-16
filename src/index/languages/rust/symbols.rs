@@ -39,6 +39,9 @@ pub fn extract_symbols(content: &str) -> Result<Option<Vec<Symbol>>> {
         let mut is_public = false;
         let mut kind = SymbolKind::Function;
         let mut metadata = BTreeMap::new();
+        // Per match. Hoisting this above the match loop would freeze cfg
+        // for every later symbol.
+        let mut exact_test_stored = false;
         let mut symbol_node: Option<tree_sitter::Node> = None;
         let mut skip = false;
         for capture in m.captures {
@@ -147,7 +150,10 @@ pub fn extract_symbols(content: &str) -> Result<Option<Vec<Symbol>>> {
                                 let sibling = siblings[i];
                                 if sibling.kind() == "attribute_item" {
                                     if let Ok(attr_text) = sibling.utf8_text(content.as_bytes()) {
-                                        if attr_text.contains("#[cfg(") {
+                                        if attr_text.contains("#[cfg(") && !exact_test_stored {
+                                            if cfg_attr_is_exact_test(attr_text) {
+                                                exact_test_stored = true;
+                                            }
                                             metadata
                                                 .insert("cfg".to_string(), attr_text.to_string());
                                         }
@@ -1308,5 +1314,254 @@ mod tests {
         let (mod_start, mod_end) = (tests_mod.byte_start.unwrap(), tests_mod.byte_end.unwrap());
         assert!(helper_start >= mod_start && helper_end <= mod_end);
         assert!(helper_start != mod_start || helper_end != mod_end);
+    }
+
+    fn bytes_strictly_inside(inner: &Symbol, outer: &Symbol) -> bool {
+        match (
+            inner.byte_start,
+            inner.byte_end,
+            outer.byte_start,
+            outer.byte_end,
+        ) {
+            (Some(start), Some(end), Some(outer_start), Some(outer_end)) => {
+                start >= outer_start
+                    && end <= outer_end
+                    && (start != outer_start || end != outer_end)
+            }
+            _ => false,
+        }
+    }
+
+    fn enclosed_named<'a>(symbols: &'a [Symbol], name: &str, container: &Symbol) -> &'a Symbol {
+        symbols
+            .iter()
+            .find(|symbol| symbol.name == name && bytes_strictly_inside(symbol, container))
+            .unwrap_or_else(|| panic!("{name} inside {}", container.name))
+    }
+
+    fn assert_exact_cfg(symbol: &Symbol) {
+        let cfg = symbol.metadata.get("cfg").map(String::as_str);
+        assert!(cfg.is_some_and(cfg_attr_is_exact_test), "cfg={cfg:?}");
+    }
+
+    #[test]
+    fn stacked_cfg_exact_test_wins_over_feature() {
+        let content = r#"
+            #[cfg(feature = "expensive")]
+            #[cfg(test)]
+            mod tests {
+                fn helper() {}
+            }
+
+            #[cfg(test)]
+            #[cfg(feature = "expensive")]
+            mod tests {
+                fn helper() {}
+            }
+
+            #[cfg(feature = "expensive")]
+            #[cfg(test)]
+            impl Widget {
+                fn helper() {}
+            }
+
+            #[cfg(feature = "expensive")]
+            // note
+            #[allow(dead_code)]
+            #[cfg(test)]
+            mod tests {
+                fn helper() {}
+            }
+
+            #[cfg(feature = "x")]
+            #[cfg(test)]
+            fn helper() {}
+
+            #[cfg(feature = "expensive")]
+            #[cfg(test)]
+            mod tests {
+                mod inner {
+                    fn deeper() {}
+                }
+            }
+
+            #[derive(Debug)]
+            #[cfg(feature = "expensive")]
+            #[cfg(test)]
+            struct OnlyTests;
+
+            #[cfg(feature = "expensive")]
+            #[cfg(feature = "other")]
+            mod later {}
+        "#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        let mut test_mods: Vec<&Symbol> = symbols
+            .iter()
+            .filter(|symbol| symbol.name == "tests" && symbol.kind == SymbolKind::Module)
+            .collect();
+        test_mods.sort_by_key(|symbol| symbol.byte_start);
+        assert_eq!(test_mods.len(), 4, "test mods={test_mods:?}");
+        let feature_above = test_mods[0];
+        let test_above = test_mods[1];
+        let commented = test_mods[2];
+        let nested = test_mods[3];
+
+        assert_exact_cfg(feature_above);
+        let feature_helper = enclosed_named(&symbols, "helper", feature_above);
+        assert!(!feature_helper.metadata.contains_key("cfg"));
+        assert_eq!(feature_helper.kind, SymbolKind::Function);
+
+        assert_exact_cfg(test_above);
+        let test_helper = enclosed_named(&symbols, "helper", test_above);
+        assert!(!test_helper.metadata.contains_key("cfg"));
+
+        let widget = symbols
+            .iter()
+            .find(|symbol| symbol.name == "Widget" && symbol.kind == SymbolKind::Type)
+            .expect("Widget");
+        assert_exact_cfg(widget);
+        let method = enclosed_named(&symbols, "helper", widget);
+        assert!(!method.metadata.contains_key("cfg"));
+        assert_eq!(method.kind, SymbolKind::Function);
+
+        assert_exact_cfg(commented);
+        let commented_helper = enclosed_named(&symbols, "helper", commented);
+        assert!(!commented_helper.metadata.contains_key("cfg"));
+
+        let private_helper = symbols
+            .iter()
+            .find(|symbol| {
+                symbol.name == "helper"
+                    && symbol.kind == SymbolKind::Function
+                    && !bytes_strictly_inside(symbol, feature_above)
+                    && !bytes_strictly_inside(symbol, test_above)
+                    && !bytes_strictly_inside(symbol, commented)
+                    && !bytes_strictly_inside(symbol, nested)
+                    && !bytes_strictly_inside(symbol, widget)
+            })
+            .expect("private helper");
+        assert_exact_cfg(private_helper);
+        assert!(!private_helper.is_public);
+
+        assert_exact_cfg(nested);
+        let inner = enclosed_named(&symbols, "inner", nested);
+        assert_eq!(inner.kind, SymbolKind::Module);
+        assert!(!inner.metadata.contains_key("cfg"));
+        let deeper = enclosed_named(&symbols, "deeper", nested);
+        assert!(!deeper.metadata.contains_key("cfg"));
+        assert_eq!(deeper.kind, SymbolKind::Function);
+        assert!(bytes_strictly_inside(deeper, inner));
+
+        let only_tests = symbols
+            .iter()
+            .find(|symbol| symbol.name == "OnlyTests" && symbol.kind == SymbolKind::Struct)
+            .expect("OnlyTests");
+        assert_exact_cfg(only_tests);
+        let derived = only_tests
+            .metadata
+            .get("derived_traits")
+            .map(String::as_str);
+        assert!(
+            derived.is_some_and(|traits| traits.split(',').any(|trait_name| trait_name == "Debug")),
+            "derived={derived:?}"
+        );
+
+        let later = symbols
+            .iter()
+            .find(|symbol| symbol.name == "later" && symbol.kind == SymbolKind::Module)
+            .expect("later");
+        let later_cfg = later.metadata.get("cfg").map(String::as_str);
+        assert!(
+            later_cfg.is_some_and(|cfg| cfg.contains("expensive") && !cfg.contains("other")),
+            "later cfg={later_cfg:?}"
+        );
+        assert!(!later_cfg.is_some_and(cfg_attr_is_exact_test));
+    }
+
+    #[test]
+    fn stacked_cfg_non_exact_predicates_stay_feature_order() {
+        let content = r#"
+            #[cfg(feature = "expensive")]
+            #[cfg(feature = "other")]
+            mod tests {}
+
+            #[cfg(not(test))]
+            #[cfg(feature = "expensive")]
+            fn not_above() {}
+
+            #[cfg(feature = "expensive")]
+            #[cfg(not(test))]
+            fn feature_above_not() {}
+
+            #[cfg(all(test))]
+            #[cfg(feature = "expensive")]
+            fn all_above() {}
+
+            #[cfg(feature = "x")]
+            mod tests {
+                #[cfg(test)]
+                fn helper() {}
+                fn prod() {}
+            }
+        "#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        let mut test_mods: Vec<&Symbol> = symbols
+            .iter()
+            .filter(|symbol| symbol.name == "tests" && symbol.kind == SymbolKind::Module)
+            .collect();
+        test_mods.sort_by_key(|symbol| symbol.byte_start);
+        assert_eq!(test_mods.len(), 2);
+        let feature_pair = test_mods[0];
+        let feature_cfg = feature_pair.metadata.get("cfg").map(String::as_str);
+        assert!(
+            feature_cfg.is_some_and(|cfg| cfg.contains("expensive") && !cfg.contains("other")),
+            "feature pair cfg={feature_cfg:?}"
+        );
+        assert!(!feature_cfg.is_some_and(cfg_attr_is_exact_test));
+
+        let not_above = symbols
+            .iter()
+            .find(|symbol| symbol.name == "not_above")
+            .expect("not_above");
+        let not_cfg = not_above.metadata.get("cfg").map(String::as_str);
+        assert!(
+            not_cfg.is_some_and(|cfg| cfg.contains("not(test)")),
+            "not_above cfg={not_cfg:?}"
+        );
+        assert!(!not_cfg.is_some_and(cfg_attr_is_exact_test));
+
+        let feature_above_not = symbols
+            .iter()
+            .find(|symbol| symbol.name == "feature_above_not")
+            .expect("feature_above_not");
+        let reverse_cfg = feature_above_not.metadata.get("cfg").map(String::as_str);
+        assert!(
+            reverse_cfg.is_some_and(|cfg| cfg.contains("expensive") && !cfg.contains("not(test)")),
+            "reverse cfg={reverse_cfg:?}"
+        );
+        assert!(!reverse_cfg.is_some_and(cfg_attr_is_exact_test));
+
+        let all_above = symbols
+            .iter()
+            .find(|symbol| symbol.name == "all_above")
+            .expect("all_above");
+        let all_cfg = all_above.metadata.get("cfg").map(String::as_str);
+        assert!(
+            all_cfg.is_some_and(|cfg| cfg.contains("all(test)")),
+            "all cfg={all_cfg:?}"
+        );
+        assert!(!all_cfg.is_some_and(cfg_attr_is_exact_test));
+
+        let gated_mod = test_mods[1];
+        let gated_cfg = gated_mod.metadata.get("cfg").map(String::as_str);
+        assert!(
+            gated_cfg.is_some_and(|cfg| cfg.contains("feature = \"x\"")),
+            "gated mod cfg={gated_cfg:?}"
+        );
+        assert!(!gated_cfg.is_some_and(cfg_attr_is_exact_test));
+        let helper = enclosed_named(&symbols, "helper", gated_mod);
+        assert_exact_cfg(helper);
+        let prod = enclosed_named(&symbols, "prod", gated_mod);
+        assert!(!prod.metadata.contains_key("cfg"));
     }
 }
