@@ -117,7 +117,7 @@ Always-present `status` is `pass`, `fail`, or `idle` (not
 `evaluation.rules[].status`). `fail` if any violation; else `idle` if any rule
 is `idle` or `fail_on` / `max_risk_without_adr` is `skipped`; else `pass`,
 including an all-inapplicable policy (every boolean false, both thresholds
-off), which required nothing. A missing `status` key reads as `idle`. Exit 0
+off), which required nothing. A missing `status` key reads as `fail` when `violations` is non-empty and as `idle` when `violations` is empty. An explicit `status` is kept. Exit 0
 is not `status: pass`. Synthesized + idle (no bound verify) is human
 `IDLE (synthesized; not a merge gate)` with JSON `idle: true`; it is not a
 merge-gate pass. A non-synthesized idle report is not `PASSED` and is

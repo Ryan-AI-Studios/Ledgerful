@@ -6,7 +6,7 @@
 use ledgerful::commands::init::execute_init;
 use ledgerful::commands::policy_check::{
     POLICY_CHECK_SCHEMA_VERSION, PolicyCheckReport, PolicyHeadline, PolicyRuleEvalStatus,
-    VERIFICATION_MUST_PASS_IDLE_NOTE, evaluate_policy_check, execute_policy_check,
+    PolicyViolation, VERIFICATION_MUST_PASS_IDLE_NOTE, evaluate_policy_check, execute_policy_check,
     parse_policy_toml,
 };
 use ledgerful::config::model::Config;
@@ -2212,4 +2212,30 @@ fn policy_check_report_roundtrip() {
     let legacy = r#"{"schemaVersion":1,"violations":[],"passed":true,"mode":"observe","policySource":"local"}"#;
     let from_legacy: PolicyCheckReport = serde_json::from_str(legacy).unwrap();
     assert!(!from_legacy.idle);
+    assert_eq!(from_legacy.status, PolicyHeadline::Idle);
+
+    let live_fail = PolicyCheckReport {
+        schema_version: POLICY_CHECK_SCHEMA_VERSION,
+        violations: vec![PolicyViolation {
+            rule_id: "no_pending_tx".into(),
+            file: ".ledgerful/state/ledger.db".into(),
+            line: None,
+            message: "pending".into(),
+            severity: "error".into(),
+        }],
+        passed: false,
+        mode: "enforce".into(),
+        policy_source: "local".into(),
+        notes: vec![],
+        idle: false,
+        evaluation: Default::default(),
+        status: PolicyHeadline::Fail,
+    };
+    let live_json = serde_json::to_string(&live_fail).unwrap();
+    let live_back: PolicyCheckReport = serde_json::from_str(&live_json).unwrap();
+    assert_eq!(live_fail, live_back);
+
+    let legacy_fail = r#"{"schemaVersion":1,"violations":[{"ruleId":"no_pending_tx","file":".ledgerful/state/ledger.db","line":null,"message":"pending","severity":"error"}],"passed":false,"mode":"enforce","policySource":"local"}"#;
+    let from_fail: PolicyCheckReport = serde_json::from_str(legacy_fail).unwrap();
+    assert_eq!(from_fail.status, PolicyHeadline::Fail);
 }
