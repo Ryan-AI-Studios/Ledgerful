@@ -224,8 +224,8 @@ pub struct AskArgs {
     /// Maximum number of code snippets to include in context
     #[arg(long, short, default_value_t = 10)]
     pub limit: usize,
-    /// Gemini interaction mode
-    #[arg(long, short, default_value = "analyze")]
+    /// Interaction mode for every Ask backend (`analyze`, `suggest`, `review-patch`, `narrative`)
+    #[arg(long, short, value_enum, default_value = "analyze")]
     pub mode: crate::gemini::modes::GeminiMode,
     /// Enable narrative mode (Senior Architect summary)
     #[arg(long)]

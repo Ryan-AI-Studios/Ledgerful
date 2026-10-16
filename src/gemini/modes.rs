@@ -6,6 +6,7 @@ pub enum GeminiMode {
     #[default]
     Analyze,
     Suggest,
+    #[value(alias = "review")]
     ReviewPatch,
     Narrative,
 }
@@ -120,6 +121,7 @@ mod tests {
         assert_eq!(GeminiMode::Analyze.to_string(), "analyze");
         assert_eq!(GeminiMode::Suggest.to_string(), "suggest");
         assert_eq!(GeminiMode::ReviewPatch.to_string(), "review-patch");
+        assert_eq!(GeminiMode::Narrative.to_string(), "narrative");
     }
 
     #[test]
@@ -138,6 +140,15 @@ mod tests {
     fn test_review_patch_system_prompt() {
         let prompt = build_system_prompt(GeminiMode::ReviewPatch);
         assert!(prompt.contains("code reviewer"));
+        assert_eq!(GeminiMode::ReviewPatch.to_string(), "review-patch");
+        assert!(!prompt.contains("impact and risk"));
+    }
+
+    #[test]
+    fn test_narrative_system_prompt() {
+        let prompt = build_system_prompt(GeminiMode::Narrative);
+        assert!(prompt.contains("Senior Software Architect"));
+        assert!(prompt.contains("Butterfly Effect"));
     }
 
     #[test]
@@ -145,9 +156,13 @@ mod tests {
         let analyze = build_system_prompt(GeminiMode::Analyze);
         let suggest = build_system_prompt(GeminiMode::Suggest);
         let review = build_system_prompt(GeminiMode::ReviewPatch);
+        let narrative = build_system_prompt(GeminiMode::Narrative);
         assert_ne!(analyze, suggest);
         assert_ne!(suggest, review);
         assert_ne!(analyze, review);
+        assert_ne!(analyze, narrative);
+        assert_ne!(review, narrative);
+        assert_ne!(suggest, narrative);
     }
 
     #[test]

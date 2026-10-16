@@ -1700,6 +1700,8 @@ mod tests {
             false,
             &gathered.latest_packet,
             gathered.live_tree_clean,
+            crate::gemini::modes::GeminiMode::Analyze,
+            None,
         );
         assert!(
             !prompt.contains(WORKING_TREE_NO_PENDING_CHANGES),

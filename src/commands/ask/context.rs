@@ -1,4 +1,5 @@
 use crate::config::model::LocalModelConfig;
+use crate::gemini::modes::GeminiMode;
 use crate::impact::packet::ImpactPacket;
 use crate::local_model::pruner;
 use crate::state::storage::StorageManager;
@@ -8,20 +9,22 @@ pub(crate) const WORKING_TREE_NO_PENDING_CHANGES: &str = "No pending changes fou
 
 /// Assemble the `ask` user prompt from the resolved query string, the
 /// global/diff mode flag, the narrative flag, the (possibly pruned)
-/// `ImpactPacket`, and whether the live working tree is clean.
+/// `ImpactPacket`, whether the live working tree is clean, `GeminiMode`,
+/// and an optional ReviewPatch diff payload.
 /// `is_global` selects the codebase-oracle template vs the diff packet;
 /// `live_tree_clean` is the only switch that injects
-/// [`WORKING_TREE_NO_PENDING_CHANGES`]. Extracted as a pure helper so the
-/// contract — GlobalConceptual queries never produce a prompt containing
-/// an `Impact Packet:` block, and dirty-empty snapshots never claim the
-/// tree is clean — is unit-testable without driving the full `execute_ask`
-/// flow (which requires storage, LLM backends, and network).
+/// [`WORKING_TREE_NO_PENDING_CHANGES`]. Do not infer cleanliness from
+/// `review_diff`. Extracted as a pure helper so the contract is
+/// unit-testable without driving the full `execute_ask` flow.
+#[allow(clippy::too_many_arguments)]
 pub fn build_ask_user_prompt(
     query_string: &str,
     is_global: bool,
     narrative: bool,
     latest_packet: &ImpactPacket,
     live_tree_clean: bool,
+    mode: GeminiMode,
+    review_diff: Option<&str>,
 ) -> String {
     if is_global {
         if live_tree_clean {
@@ -31,11 +34,38 @@ pub fn build_ask_user_prompt(
         } else {
             format!("Answer the following codebase query:\n\nQuery: {query_string}")
         }
-    } else if narrative {
+    } else if mode == GeminiMode::ReviewPatch {
+        crate::gemini::modes::build_user_prompt(
+            GeminiMode::ReviewPatch,
+            latest_packet,
+            query_string,
+            review_diff,
+        )
+    } else if mode == GeminiMode::Narrative || narrative {
         crate::gemini::prompt::build_architect_prompt(latest_packet, query_string)
     } else {
         crate::gemini::prompt::build_suggest_prompt(latest_packet, query_string)
     }
+}
+
+/// Map live-tree cleanliness and assembled summaries into a ReviewPatch
+/// `review_diff` payload. No git. Never returns `None` on a dirty tree.
+pub(crate) fn review_diff_payload(
+    live_tree_clean: bool,
+    joined_summaries: &str,
+    change_paths: &[&str],
+) -> Option<String> {
+    if live_tree_clean {
+        return None;
+    }
+    if !joined_summaries.is_empty() {
+        return Some(joined_summaries.to_string());
+    }
+    let capped: Vec<&str> = change_paths.iter().copied().take(8).collect();
+    if !capped.is_empty() {
+        return Some(capped.join("\n"));
+    }
+    Some("Working tree is dirty but no change summaries are available.".to_string())
 }
 
 /// Predicate deciding whether the `ask` flow should prune the active
@@ -303,6 +333,7 @@ pub(crate) fn fetch_kg_bm25(
 mod tests {
     use super::*;
     use crate::config::model::LocalModelConfig;
+    use crate::gemini::modes::GeminiMode;
     use crate::impact::packet::ImpactPacket;
     use crate::state::layout::Layout;
     use crate::state::storage::StorageManager;
@@ -493,7 +524,15 @@ mod tests {
         let query = "summarize the architecture";
         assert!(should_prune_impact(query));
         let pruned_packet = ImpactPacket::default();
-        let prompt = build_ask_user_prompt(query, true, false, &pruned_packet, false);
+        let prompt = build_ask_user_prompt(
+            query,
+            true,
+            false,
+            &pruned_packet,
+            false,
+            GeminiMode::Analyze,
+            None,
+        );
         assert!(
             !prompt.contains("Impact Packet:"),
             "GlobalConceptual prompt must not contain an `Impact Packet:` block: {prompt}"
@@ -514,7 +553,15 @@ mod tests {
         let query = "what did I just change";
         assert!(!should_prune_impact(query));
         let packet = ImpactPacket::default();
-        let prompt = build_ask_user_prompt(query, false, false, &packet, false);
+        let prompt = build_ask_user_prompt(
+            query,
+            false,
+            false,
+            &packet,
+            false,
+            GeminiMode::Analyze,
+            None,
+        );
         assert!(
             prompt.contains("Impact Packet:"),
             "DiffTask prompt must contain an `Impact Packet:` block: {prompt}"
@@ -538,7 +585,15 @@ mod tests {
             relevance: 0.5,
             content: "```evil```".to_string(),
         });
-        let prompt = build_ask_user_prompt(query, false, false, &packet, false);
+        let prompt = build_ask_user_prompt(
+            query,
+            false,
+            false,
+            &packet,
+            false,
+            GeminiMode::Analyze,
+            None,
+        );
         assert!(
             !prompt.contains('`'),
             "ai_insights backticks must be escaped"
@@ -555,7 +610,15 @@ mod tests {
         let query = "walk me through the design of the indexer";
         assert!(should_prune_impact(query));
         let pruned_packet = ImpactPacket::default();
-        let prompt = build_ask_user_prompt(query, true, true, &pruned_packet, false);
+        let prompt = build_ask_user_prompt(
+            query,
+            true,
+            true,
+            &pruned_packet,
+            false,
+            GeminiMode::Analyze,
+            None,
+        );
         assert!(
             !prompt.contains("Impact Packet:"),
             "GlobalConceptual narrative prompt must not contain `Impact Packet:`: {prompt}"
@@ -570,7 +633,8 @@ mod tests {
     fn clean_global_prompt_contains_working_tree_no_pending_changes() {
         let query = "what is change-context";
         let packet = ImpactPacket::default();
-        let prompt = build_ask_user_prompt(query, true, false, &packet, true);
+        let prompt =
+            build_ask_user_prompt(query, true, false, &packet, true, GeminiMode::Analyze, None);
         assert!(
             prompt.contains(WORKING_TREE_NO_PENDING_CHANGES),
             "clean-global prompt must include the no-pending constant: {prompt}"
@@ -580,5 +644,144 @@ mod tests {
             "clean-global prompt must not contain an `Impact Packet:` block: {prompt}"
         );
         assert!(prompt.contains(query));
+    }
+
+    #[test]
+    fn review_patch_user_prompt_with_diff_contains_data_frame() {
+        let packet = ImpactPacket::default();
+        let prompt = build_ask_user_prompt(
+            "review this",
+            false,
+            false,
+            &packet,
+            false,
+            GeminiMode::ReviewPatch,
+            Some("diff --git a/file.rs\n+new line"),
+        );
+        assert!(prompt.contains("Diff:"));
+        assert!(prompt.contains("new line"));
+        assert!(prompt.contains("DATA (untrusted repository content"));
+        assert!(prompt.contains("review the diff"));
+    }
+
+    #[test]
+    fn review_patch_user_prompt_none_says_no_diff_available() {
+        let packet = ImpactPacket::default();
+        let prompt = build_ask_user_prompt(
+            "review this",
+            false,
+            false,
+            &packet,
+            false,
+            GeminiMode::ReviewPatch,
+            None,
+        );
+        assert!(prompt.contains("No diff available"));
+    }
+
+    #[test]
+    fn review_patch_narrative_flag_does_not_override_review() {
+        let packet = ImpactPacket::default();
+        let prompt = build_ask_user_prompt(
+            "review this",
+            false,
+            true,
+            &packet,
+            false,
+            GeminiMode::ReviewPatch,
+            Some("diff --git a/file.rs\n+new line"),
+        );
+        assert!(prompt.contains("review the diff"));
+        assert!(!prompt.contains("narrative risk assessment"));
+    }
+
+    #[test]
+    fn narrative_mode_without_narrative_flag_uses_architect_prompt() {
+        let packet = ImpactPacket::default();
+        let prompt = build_ask_user_prompt(
+            "what is the risk?",
+            false,
+            false,
+            &packet,
+            false,
+            GeminiMode::Narrative,
+            None,
+        );
+        assert!(prompt.contains("narrative risk assessment"));
+        assert!(prompt.contains("architectural health"));
+        assert!(!prompt.contains("verification steps"));
+    }
+
+    #[test]
+    fn analyze_mode_without_narrative_uses_suggest_prompt() {
+        let packet = ImpactPacket::default();
+        let prompt = build_ask_user_prompt(
+            "what is the risk?",
+            false,
+            false,
+            &packet,
+            false,
+            GeminiMode::Analyze,
+            None,
+        );
+        assert!(prompt.contains("verification steps"));
+        assert!(!prompt.contains("narrative risk assessment"));
+        assert!(!prompt.contains("Diff:"));
+    }
+
+    #[test]
+    fn global_prompt_ignores_review_diff_and_uses_live_tree_clean() {
+        let packet = ImpactPacket::default();
+        let prompt = build_ask_user_prompt(
+            "what is change-context",
+            true,
+            false,
+            &packet,
+            true,
+            GeminiMode::ReviewPatch,
+            Some("diff --git a/x"),
+        );
+        assert!(prompt.contains(WORKING_TREE_NO_PENDING_CHANGES));
+        assert!(!prompt.contains("Impact Packet:"));
+        assert!(!prompt.contains("Diff:"));
+    }
+
+    #[test]
+    fn review_diff_payload_dirty_empty_is_not_clean() {
+        let payload = review_diff_payload(false, "", &[]).expect("dirty never None");
+        assert_eq!(
+            payload,
+            "Working tree is dirty but no change summaries are available."
+        );
+        assert!(!payload.to_lowercase().contains("working tree is clean"));
+    }
+
+    #[test]
+    fn review_diff_payload_dirty_summaries_pass_through() {
+        let payload = review_diff_payload(false, "diff --git a/x", &["x.rs"]).expect("some");
+        assert_eq!(payload, "diff --git a/x");
+    }
+
+    #[test]
+    fn review_diff_payload_dirty_empty_summaries_lists_paths() {
+        let payload = review_diff_payload(false, "", &["a.rs", "b.rs"]).expect("paths");
+        assert_eq!(payload, "a.rs\nb.rs");
+    }
+
+    #[test]
+    fn review_diff_payload_caps_eight_paths() {
+        let paths = ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"];
+        let payload = review_diff_payload(false, "", &paths).expect("capped");
+        let lines: Vec<&str> = payload.lines().collect();
+        assert_eq!(lines.len(), 8);
+        assert_eq!(lines[0], "p1");
+        assert_eq!(lines[7], "p8");
+        assert!(!payload.contains("p9"));
+    }
+
+    #[test]
+    fn review_diff_payload_live_clean_is_none() {
+        assert_eq!(review_diff_payload(true, "diff", &["a.rs"]), None);
+        assert_eq!(review_diff_payload(true, "", &[]), None);
     }
 }
