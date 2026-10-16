@@ -12,6 +12,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Post-commit unscored hotspot sample (0528):** a completed walk that skipped complexity, or whose scores are all zero, still does not enter hotspot_trends and no longer warns that the history budget stopped the sample. A real budget or cancel stop still warns with the history-budget sentence. schemaVersion stays 1. Package stays 0.2.17.
 - **Stacked cfg(test) enclosure (0527):** a preceding exact `#[cfg(test)]` is the stored `metadata.cfg`. Default dead-code omits the enclosed helper and a private stacked function. `--include-tests` restores them without `noTestCoverage`. A feature-only cfg stays a public API. `schemaVersion` stays 1. Package stays `0.2.17`.
 - **Security impact change membership (0526):** a product route file whose mount provenance is unknown or ambiguous can set `is_changed` and `changeEvidence` to `linkedRoute`. `mountedPath` and `mountPrefix` stay omitted for those mounts. A later action member can set that token from its own route file. A list-form policy with more than one action path omits the path fields. `declaredAction` stays the first member. `schemaVersion` stays 1. Package stays `0.2.17`.
 - **Policy status legacy deserialize (0525):** a report that omits `status` and has violations deserializes as `fail`. An explicit `status` is kept. An empty `violations` list stays `idle`. Live `finish()` still writes CLI output. `schemaVersion` stays `1`. Package stays `0.2.17`.
