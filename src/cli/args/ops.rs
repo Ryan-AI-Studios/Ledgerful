@@ -205,9 +205,9 @@ pub enum SyncSubcommands {
         #[arg(long)]
         force: bool,
     },
-    /// Run the sync loop [Available — opt-in; never default-on]
+    /// Run one sync cycle [Available — opt-in; never default-on]
     Run {
-        /// Run only once and exit
+        /// Accepted and unused; the engine is already one cycle
         #[arg(long)]
         once: bool,
     },

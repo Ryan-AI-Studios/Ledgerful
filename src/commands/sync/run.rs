@@ -24,7 +24,7 @@ See docs/team-sync.md."
         println!("  1. ledgerful sync init");
         println!("  2. ledgerful sync setup          # readiness checklist");
         println!("  3. Set [sync].target, then ledgerful sync setup --enable");
-        println!("  4. ledgerful sync run --once");
+        println!("  4. ledgerful sync run");
         return Ok(());
     }
 

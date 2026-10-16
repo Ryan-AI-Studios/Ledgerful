@@ -24,8 +24,9 @@
 //!    - **Coupling** — structural, temporal, and data-flow coupling
 //!    - **Services** — service map derivation and cross-service edges
 //!    - **Infrastructure** — topology and deployment manifest detection
-//!    - **Risk** — final risk scoring and elevation
-//!    - ...and others.
+//!    - ...and others registered by `with_builtins` (KG, ADR, hotspots, …).
+//!      Knowledge enrichment is implemented and unregistered. Risk scoring is
+//!      `analysis_registry` (`AnalysisRegistry`), not an enrichment provider.
 //!
 //!    Each provider implements the `EnrichmentProvider` trait. Failures are isolated:
 //!    if one provider fails, the orchestrator logs a warning and continues with the
@@ -67,3 +68,47 @@ pub mod path_class;
 pub mod redact;
 pub mod scope;
 pub mod temporal;
+
+#[cfg(test)]
+mod docs_honesty {
+    #[test]
+    fn rustdoc_risk_is_analysis_registry_not_enrichment() {
+        let source = include_str!("mod.rs");
+        let rustdoc = source
+            .split("pub mod analysis")
+            .next()
+            .expect("module rustdoc precedes pub mod analysis");
+        let risk_bullet = format!("- **{}** —", "Risk");
+        assert!(
+            !rustdoc.contains(&risk_bullet),
+            "Risk must not be an enrichment-provider bullet"
+        );
+        assert!(
+            rustdoc.contains("analysis_registry") || rustdoc.contains("AnalysisRegistry"),
+            "rustdoc must name analysis_registry as the risk-scoring owner"
+        );
+    }
+
+    #[test]
+    fn contract_escalate_omits_impact_agent_summary() {
+        let contract = include_str!("../../docs/agent-output-contract.md");
+        let idx = contract
+            .find("scan --impact --json")
+            .expect("escalate sentence names scan --impact --json");
+        let end = (idx + 280).min(contract.len());
+        let neighborhood = &contract[idx..end];
+        assert!(
+            !neighborhood.contains("risk/blast/agentSummary"),
+            "escalate must not put agentSummary on the impact packet: {neighborhood}"
+        );
+        let cc = contract
+            .find("`change-context --json`")
+            .expect("change-context table row");
+        let row_end = (cc + 900).min(contract.len());
+        let row = &contract[cc..row_end];
+        assert!(
+            row.contains("base-ref") || row.contains("base_ref"),
+            "change-context timeout row must name --base-ref: {row}"
+        );
+    }
+}

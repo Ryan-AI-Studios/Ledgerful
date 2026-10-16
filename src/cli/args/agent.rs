@@ -71,7 +71,7 @@ pub struct ImpactArgs {
     /// Output a concise summary
     #[arg(short, long)]
     pub summary: bool,
-    /// Enable telemetry coverage analysis
+    /// Accepted and unused. Observability still fills telemetryCoverageDelta from source patterns.
     #[arg(long)]
     pub telemetry: bool,
     /// Run dead-code analysis on affected files
@@ -96,8 +96,8 @@ pub struct ImpactArgs {
     #[arg(long)]
     pub include_governance: bool,
     /// Overall analysis wall-clock seconds (not the history-walk budget).
-    /// Working-tree, `--base-ref`, and prospective `--paths` default to 25s
-    /// when omitted. `0` disables the clock (unbounded; may hang).
+    /// Working-tree and prospective `--paths` default to 25s when omitted.
+    /// `0` disables the clock (unbounded; may hang).
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
 }

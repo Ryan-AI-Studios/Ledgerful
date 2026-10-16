@@ -326,13 +326,13 @@ fn compute_next_action(
     }
     if !secret_env_set {
         if crate::util::term::is_interactive() {
-            return "ledgerful sync run --once  # will prompt for team secret (or set LEDGERFUL_SYNC_SECRET)"
+            return "ledgerful sync run  # will prompt for team secret (or set LEDGERFUL_SYNC_SECRET)"
                 .to_string();
         }
-        return "set LEDGERFUL_SYNC_SECRET for non-interactive execution, then ledgerful sync run --once"
+        return "set LEDGERFUL_SYNC_SECRET for non-interactive execution, then ledgerful sync run"
             .to_string();
     }
-    "ledgerful sync run --once".to_string()
+    "ledgerful sync run".to_string()
 }
 
 /// Run `work` on a helper thread with a hard wall-clock deadline.
@@ -678,7 +678,7 @@ mod tests {
         assert!(r.target_parse_ok);
         assert_eq!(r.target_reachable, TargetReachable::Yes);
         assert_eq!(r.readiness, ReadinessKind::Ready);
-        assert!(r.next_action.contains("run --once") || r.next_action.contains("LEDGERFUL_SYNC"));
+        assert!(r.next_action.contains("sync run") || r.next_action.contains("LEDGERFUL_SYNC"));
     }
 
     #[test]

@@ -64,7 +64,7 @@ pub struct UpdateArgs {
     /// Force unlock CozoDB by terminating other running Ledgerful processes
     #[arg(long = "force-unlock")]
     pub force_unlock: bool,
-    /// Use fast semantic index bypass (skip LLM semantic extraction during migration)
+    /// Accepted on `update --migrate` and unused (`IndexArgs.fast` stays false). Index `--fast` is a different command.
     #[arg(long)]
     pub fast: bool,
     /// Show what update actions would be performed without executing them.

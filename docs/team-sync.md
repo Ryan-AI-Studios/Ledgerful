@@ -130,7 +130,7 @@ ledgerful sync setup --enable
 
 ```bash
 # Both devices (exporter then importer order is fine for a first one-way pass)
-ledgerful sync run --once
+ledgerful sync run
 ```
 
 Importer ledger rows for foreign `tx_id`s appear with `origin='PEER'`. Local SoT
@@ -194,7 +194,7 @@ Team sync encrypts **drop-folder bundles** only. Local `.ledgerful/` (keys, ledg
 
 1. Keep the secret in a password manager / OS secret store.
 2. Create an OS scheduled task that **injects** the env var at runtime (secret-manager CLI, Windows Credential Manager, systemd `LoadCredential`, etc.).
-3. Run `ledgerful sync run --once` from that task.
+3. Run `ledgerful sync run` from that task.
 4. Do **not** put the raw secret in the task definition if you can avoid it.
 
 Word collision: `ledgerful schedule setup-nightly` is the **index** nightly job — **not** team sync.
@@ -268,7 +268,7 @@ ledgerful sync pair '<invite>'      # accept; never enables
 ledgerful sync pair --list
 ledgerful sync pair --revoke <device_id>
 ledgerful sync pair --force '<invite>'
-ledgerful sync run --once           # clear message when disabled; no secret prompt if disabled
+ledgerful sync run           # clear message when disabled; no secret prompt if disabled
 ledgerful sync verify <path>        # decrypt + Ed25519 verify; failures print `{verdict}:` on stderr
 ledgerful sync verify <path> --json # schemaVersion 1; closed verdict; ok agrees with exit
 ledgerful sync cursor               # extract/apply HLC watermarks; Lag is unknown (`reason`). Next: …
