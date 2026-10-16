@@ -328,6 +328,7 @@ pub(crate) enum RecordOutcome {
     Deduped,
     Empty,
     NotRecordedHistoryBudget,
+    NotRecordedUnscored,
     NotRecordedDatabaseLocked,
     Silent,
 }
@@ -352,7 +353,7 @@ pub(crate) fn outcome_for_walk(
     match stop {
         HistoryWalkStop::Complete if hotspots_empty => Some(RecordOutcome::Empty),
         HistoryWalkStop::Complete if complexity_skipped || scores_unscored => {
-            Some(RecordOutcome::NotRecordedHistoryBudget)
+            Some(RecordOutcome::NotRecordedUnscored)
         }
         HistoryWalkStop::Complete => None,
         HistoryWalkStop::Budget | HistoryWalkStop::Cancelled => {
@@ -368,6 +369,7 @@ pub(crate) fn warning_line(outcome: RecordOutcome) -> Option<&'static str> {
         | RecordOutcome::Empty
         | RecordOutcome::Silent => None,
         RecordOutcome::NotRecordedHistoryBudget => Some(HISTORY_BUDGET_WARNING),
+        RecordOutcome::NotRecordedUnscored => None,
         RecordOutcome::NotRecordedDatabaseLocked => Some(DATABASE_LOCKED_WARNING),
     }
 }
@@ -471,6 +473,11 @@ pub(crate) fn record_hotspot_trends_with_budget(
     ) {
         if outcome == RecordOutcome::Empty {
             tracing::debug!("Post-commit hook: no hotspots computed for this commit");
+        }
+        if outcome == RecordOutcome::NotRecordedUnscored {
+            tracing::debug!(
+                "Post-commit hook: hotspot trend sample withheld (complexity skipped or unscored)"
+            );
         }
         return outcome;
     }
@@ -924,23 +931,39 @@ mod tests {
     fn outcome_for_walk_complete_with_complexity_skipped_records_nothing() {
         assert_eq!(
             outcome_for_walk(HistoryWalkStop::Complete, false, true, false),
-            Some(RecordOutcome::NotRecordedHistoryBudget)
+            Some(RecordOutcome::NotRecordedUnscored)
         );
         assert_eq!(
             outcome_for_walk(HistoryWalkStop::Complete, false, false, true),
-            Some(RecordOutcome::NotRecordedHistoryBudget)
+            Some(RecordOutcome::NotRecordedUnscored)
+        );
+        assert_eq!(
+            outcome_for_walk(HistoryWalkStop::Complete, false, true, true),
+            Some(RecordOutcome::NotRecordedUnscored)
+        );
+        assert_eq!(
+            outcome_for_walk(HistoryWalkStop::Complete, true, true, false),
+            Some(RecordOutcome::Empty)
+        );
+        assert_eq!(
+            outcome_for_walk(HistoryWalkStop::Complete, true, false, true),
+            Some(RecordOutcome::Empty)
         );
         assert_eq!(
             outcome_for_walk(HistoryWalkStop::Complete, false, false, false),
             None
         );
         assert_eq!(
-            outcome_for_walk(HistoryWalkStop::Budget, false, false, false),
+            outcome_for_walk(HistoryWalkStop::Budget, false, true, true),
             Some(RecordOutcome::NotRecordedHistoryBudget)
         );
         assert_eq!(
-            outcome_for_walk(HistoryWalkStop::Complete, true, true, false),
-            Some(RecordOutcome::Empty)
+            outcome_for_walk(HistoryWalkStop::Cancelled, false, true, true),
+            Some(RecordOutcome::NotRecordedHistoryBudget)
+        );
+        assert_eq!(
+            outcome_for_walk(HistoryWalkStop::Cancelled, false, false, false),
+            Some(RecordOutcome::NotRecordedHistoryBudget)
         );
     }
 
@@ -955,6 +978,7 @@ mod tests {
             warning_line(RecordOutcome::NotRecordedDatabaseLocked),
             Some(DEADLINE_WARNING)
         );
+        assert_eq!(warning_line(RecordOutcome::NotRecordedUnscored), None);
         assert_eq!(
             warning_line(RecordOutcome::NotRecordedHistoryBudget),
             Some(HISTORY_BUDGET_WARNING)
@@ -1023,5 +1047,90 @@ mod tests {
             })
             .unwrap();
         assert_eq!(days, 0);
+    }
+
+    #[test]
+    fn hotspot_scores_unscored_cases() {
+        assert!(!hotspot_scores_unscored(&[]));
+        assert!(hotspot_scores_unscored(&[make_hotspot("a.rs", 0.0)]));
+        assert!(hotspot_scores_unscored(&[make_hotspot("a.rs", f32::NAN)]));
+        assert!(hotspot_scores_unscored(&[make_hotspot(
+            "a.rs",
+            f32::INFINITY
+        )]));
+        assert!(!hotspot_scores_unscored(&[make_hotspot("a.rs", 0.1)]));
+        assert!(!hotspot_scores_unscored(&[
+            make_hotspot("a.rs", 0.0),
+            make_hotspot("b.rs", 0.1),
+        ]));
+    }
+
+    #[test]
+    fn post_commit_unscored_complete_walk_records_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        git(&["init"]);
+        git(&["config", "user.email", "ledgerful-test@example.com"]);
+        git(&["config", "user.name", "ledgerful-test"]);
+        std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
+        git(&["add", "a.rs"]);
+        git(&["commit", "--no-gpg-sign", "-m", "init"]);
+
+        let repo_root = camino::Utf8PathBuf::from_path_buf(root.to_path_buf()).unwrap();
+        let layout = crate::state::layout::Layout::new(repo_root.clone());
+        layout.ensure_state_dir().unwrap();
+        let db_path = layout.state_subdir().join("ledger.db");
+        let storage = StorageManager::init(db_path.as_std_path()).unwrap();
+        drop(storage);
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let budget = AnalysisBudget::unlimited(cancel);
+        let outcome = record_hotspot_trends_with_budget(&repo_root, db_path.as_std_path(), &budget);
+        assert_eq!(outcome, RecordOutcome::NotRecordedUnscored);
+        assert_eq!(warning_line(outcome), None);
+
+        let storage = StorageManager::init(db_path.as_std_path()).unwrap();
+        let count: i64 = storage
+            .get_connection()
+            .query_row("SELECT COUNT(*) FROM hotspot_trends", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        let days: i64 = storage
+            .get_connection()
+            .query_row("SELECT COUNT(*) FROM project_trend_days", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(days, 0);
+    }
+
+    #[test]
+    fn post_commit_unscored_debug_is_not_cli_summary() {
+        let src = include_str!("hook_post_commit.rs");
+        let start = src
+            .find("fn record_hotspot_trends_with_budget")
+            .expect("record function");
+        let rest = &src[start..];
+        let end = rest
+            .find("\nfn project_score_from_hotspots")
+            .expect("next function");
+        let body = &rest[..end];
+        let needle =
+            "Post-commit hook: hotspot trend sample withheld (complexity skipped or unscored)";
+        let pos = body.find(needle).expect("debug sentence");
+        let head = body[..pos].rfind("tracing::debug!(").expect("debug macro");
+        let tail = body[pos..].find(");").expect("macro end");
+        let invocation = &body[head..pos + tail + 2];
+        assert!(invocation.contains("tracing::debug!"));
+        assert!(!invocation.contains("cli_summary"));
+        assert!(!invocation.contains("tracing::warn"));
     }
 }
