@@ -450,7 +450,10 @@ async fn get_users() -> HttpResponse {
 
     #[test]
     fn exact_cfg_test_is_not_a_feature_gated_public_api() {
-        let content = "#[cfg(test)]\nfn cfg_test_helper() {}\n";
+        // The file carries an entry point: the "no entry point found" post-pass
+        // rewrites the evidence of every PublicApi row, so the "Feature gated"
+        // evidence asserted below only survives when that pass does not fire.
+        let content = "#[cfg(test)]\nfn cfg_test_helper() {}\nfn main() {}\n";
         let mut cfg_test = BTreeMap::new();
         cfg_test.insert("cfg".to_string(), "#[cfg(test)]".to_string());
         let mut feature = BTreeMap::new();
@@ -483,6 +486,20 @@ async fn get_users() -> HttpResponse {
                 byte_end: None,
                 entrypoint_kind: None,
                 metadata: feature,
+            },
+            Symbol {
+                name: "main".to_string(),
+                kind: SymbolKind::Function,
+                is_public: false,
+                cognitive_complexity: None,
+                cyclomatic_complexity: None,
+                line_start: None,
+                line_end: None,
+                qualified_name: None,
+                byte_start: None,
+                byte_end: None,
+                entrypoint_kind: None,
+                metadata: BTreeMap::new(),
             },
         ];
         let results = detect_rust_entrypoints(content, &symbols);
