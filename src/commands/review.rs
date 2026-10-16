@@ -991,13 +991,15 @@ fn search_ledger_overlap(
                 Err(_) => partial = true,
             }
         }
-        match db.find_ledger_entries_by_exact_entity_path(key) {
-            Ok(entries) => {
-                for entry in entries {
-                    record_overlap_hit(&mut hits, &entry, key);
+        for param in &params {
+            match db.find_ledger_entries_by_exact_entity_path(param) {
+                Ok(entries) => {
+                    for entry in entries {
+                        record_overlap_hit(&mut hits, &entry, key);
+                    }
                 }
+                Err(_) => partial = true,
             }
-            Err(_) => partial = true,
         }
     }
 
@@ -1101,13 +1103,26 @@ fn mention_hits(
     path_ids: &BTreeSet<String>,
     partial: &mut bool,
 ) -> Vec<OverlapAccum> {
-    let mut stems: Vec<String> = files
+    // Path stems fill the cap. An old-path stem is searched only in a slot
+    // those path stems left open, so it cannot evict a current stem.
+    let mut path_stems: Vec<String> = files
         .iter()
         .filter_map(|file| path_stem(&file.path))
         .collect();
-    stems.sort();
-    stems.dedup();
-    stems.truncate(MAX_SEARCH_STEMS);
+    path_stems.sort();
+    path_stems.dedup();
+    let mut old_stems: Vec<String> = files
+        .iter()
+        .filter_map(|file| file.old_path.as_deref().and_then(path_stem))
+        .collect();
+    old_stems.sort();
+    old_stems.dedup();
+    old_stems.retain(|stem| !path_stems.contains(stem));
+    path_stems.truncate(MAX_SEARCH_STEMS);
+    let room = MAX_SEARCH_STEMS.saturating_sub(path_stems.len());
+    old_stems.truncate(room);
+    path_stems.extend(old_stems);
+    let stems = path_stems;
     let mut found: BTreeMap<String, OverlapAccum> = BTreeMap::new();
     for stem in &stems {
         match db.search_ledger(stem, None, None, false, Some(20), 0, false) {
@@ -4715,6 +4730,51 @@ mod tests {
     }
 
     #[test]
+    fn review_path_overlap_entity_stored_dot_slash_matches_stripped_key() {
+        let (_tmp, _layout, _work, _config, mut storage) = overlap_repo();
+        insert_rows(
+            &mut storage,
+            &[
+                row(
+                    "tx-dot",
+                    "./src/foo.rs",
+                    "src/foo.rs",
+                    "dot entity",
+                    "SECRET-REASON",
+                    "2026-02-01T00:00:00Z",
+                    &[],
+                ),
+                row(
+                    "tx-norm-only",
+                    "notes/other.rs",
+                    "./src/foo.rs",
+                    "normalized only",
+                    "no",
+                    "2026-02-02T00:00:00Z",
+                    &[],
+                ),
+                row(
+                    "tx-extra",
+                    "./src/foo.rs.extra",
+                    "./src/foo.rs.extra",
+                    "prefix entity",
+                    "no",
+                    "2026-02-03T00:00:00Z",
+                    &[],
+                ),
+            ],
+        );
+        let (_result, json) = rank_json(&storage, &[file("./src/foo.rs", None)], false);
+        assert_eq!(ids_of(&json), vec!["tx-dot".to_string()]);
+        assert_eq!(
+            json["priorDecisions"][0]["overlappingPaths"],
+            serde_json::json!(["src/foo.rs"])
+        );
+        assert!(json["priorDecisions"][0].get("mentionOnly").is_none());
+        assert!(!json.to_string().contains("SECRET-REASON"));
+    }
+
+    #[test]
     fn review_path_overlap_total_count_breaks_substantive_tie() {
         let (_tmp, _layout, _work, _config, mut storage) = overlap_repo();
         let at = "2026-05-01T00:00:00Z";
@@ -4953,6 +5013,97 @@ mod tests {
             "{json}"
         );
         assert_arrays_match(&json);
+    }
+
+    #[test]
+    fn review_include_mentions_old_path_stem_fills_remaining_slot() {
+        let (_tmp, _layout, _work, _config, mut storage) = overlap_repo();
+        insert_rows(
+            &mut storage,
+            &[
+                row(
+                    "tx-path",
+                    "src/alpha.rs",
+                    "src/alpha.rs",
+                    "path hit",
+                    "no",
+                    "2026-01-01T00:00:00Z",
+                    &["src/alpha.rs"],
+                ),
+                row(
+                    "tx-old",
+                    "notes/old.md",
+                    "notes/old.md",
+                    "zzzold",
+                    "no",
+                    "2026-06-01T00:00:00Z",
+                    &["notes/old.md"],
+                ),
+            ],
+        );
+        let files = [
+            file("src/alpha.rs", Some("lib/alpha.rs")),
+            file("src/bravo.rs", Some("src/zzzold.rs")),
+        ];
+        let (_off, off_json) = rank_json(&storage, &files, false);
+        assert_eq!(ids_of(&off_json), vec!["tx-path".to_string()]);
+        let (_on, on_json) = rank_json(&storage, &files, true);
+        assert_eq!(
+            ids_of(&on_json),
+            vec!["tx-path".to_string(), "tx-old".to_string()]
+        );
+        assert_eq!(on_json["priorDecisions"][1]["mentionOnly"], true);
+        assert!(
+            on_json["priorDecisions"][1]
+                .get("overlappingPaths")
+                .is_none()
+        );
+        assert!(on_json["priorDecisions"][0].get("mentionOnly").is_none());
+    }
+
+    #[test]
+    fn review_include_mentions_path_stems_fill_cap_before_old_path() {
+        let (_tmp, _layout, _work, _config, mut storage) = overlap_repo();
+        insert_rows(
+            &mut storage,
+            &[
+                row(
+                    "tx-charlie",
+                    "notes/charlie.md",
+                    "notes/charlie.md",
+                    "charlie",
+                    "no",
+                    "2026-03-01T00:00:00Z",
+                    &["notes/charlie.md"],
+                ),
+                row(
+                    "tx-aaa",
+                    "notes/aaa.md",
+                    "notes/aaa.md",
+                    "aaaold",
+                    "no",
+                    "2026-04-01T00:00:00Z",
+                    &["notes/aaa.md"],
+                ),
+                row(
+                    "tx-delta",
+                    "notes/delta.md",
+                    "notes/delta.md",
+                    "delta",
+                    "no",
+                    "2026-05-01T00:00:00Z",
+                    &["notes/delta.md"],
+                ),
+            ],
+        );
+        let files = [
+            file("src/alpha.rs", None),
+            file("src/bravo.rs", None),
+            file("src/charlie.rs", None),
+            file("src/delta.rs", Some("src/aaaold.rs")),
+        ];
+        let (_result, json) = rank_json(&storage, &files, true);
+        assert_eq!(ids_of(&json), vec!["tx-charlie".to_string()]);
     }
 
     #[test]
