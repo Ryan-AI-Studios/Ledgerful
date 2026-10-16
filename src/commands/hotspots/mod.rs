@@ -2,8 +2,8 @@ use crate::cli::{HotspotArgs, HotspotSubcommands};
 use crate::commands::helpers::get_layout;
 use crate::git::repo::open_repo;
 use crate::impact::budget::{
-    CompletenessStop, HOTSPOTS_BUDGET_WARN, completeness_for_overall, install_cancel_flag,
-    is_overall_stop, poll_overall_stop, resolve_hotspots_overall_budget_secs,
+    CompletenessStop, HOTSPOTS_BUDGET_WARN, HistoryWalkStop, completeness_for_overall,
+    install_cancel_flag, is_overall_stop, poll_overall_stop, resolve_hotspots_overall_budget_secs,
 };
 use crate::index::warn_if_stale;
 use crate::state::storage::StorageManager;
@@ -80,6 +80,24 @@ pub fn execute_hotspots_with_opts(
     };
 
     if list_or_explain && let Some(stop) = poll_overall_stop(overall_deadline, &cancel) {
+        if args.snapshot
+            && args.command.is_none()
+            && let list::HistoryPersistDecision::Error { message } =
+                list::history_persist_decision(&list::HistoryPersistView {
+                    args: &args,
+                    configured_limit: config.hotspots.limit,
+                    configured_max_commits: config.hotspots.max_commits,
+                    auto_snapshot: config.hotspots.auto_snapshot,
+                    walk_stop: HistoryWalkStop::Complete,
+                    complexity_skipped: false,
+                    head_present: true,
+                    scores: &[],
+                    overall_stop: false,
+                    cancelled: false,
+                })
+        {
+            return Err(miette::miette!("{message}"));
+        }
         let stage = if args.semantic { "semantic" } else { "storage" };
         return emit_overall_skip_open(&args, overall_secs, stage, stop, json_out.as_deref_mut());
     }
