@@ -201,7 +201,10 @@ impl CouplingProvider {
 
 /// Change-filter both lists, derive tree paths from the filtered audit pairs,
 /// drop code-mode demotions from the file list, then cap each coupling list.
-/// `discarded` is not truncated and is not re-filtered after the cap.
+/// A pair hits when `path_class::normalize_path` of either side equals the
+/// same normalization of `change.path` or `change.old_path`. Pair spellings
+/// stay as stored. `discarded` is not truncated and is not re-filtered after
+/// the cap.
 pub(crate) fn apply_temporal_presentation(
     mut file_couplings: Vec<crate::impact::packet::TemporalCoupling>,
     mut audit_couplings: Vec<crate::impact::packet::TemporalCoupling>,
@@ -214,9 +217,24 @@ pub(crate) fn apply_temporal_presentation(
     Vec<crate::impact::packet::TemporalCoupling>,
     Vec<std::path::PathBuf>,
 ) {
-    let change_paths: std::collections::HashSet<_> = changes.iter().map(|c| &c.path).collect();
-    let hits_change = |c: &crate::impact::packet::TemporalCoupling| {
-        change_paths.contains(&c.file_a) || change_paths.contains(&c.file_b)
+    let mut change_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for change in changes {
+        let key = crate::impact::path_class::normalize_path(&change.path.to_string_lossy());
+        if !key.is_empty() {
+            change_keys.insert(key);
+        }
+        if let Some(old) = &change.old_path {
+            let key = crate::impact::path_class::normalize_path(&old.to_string_lossy());
+            if !key.is_empty() {
+                change_keys.insert(key);
+            }
+        }
+    }
+    let hits_change = |coupling: &crate::impact::packet::TemporalCoupling| {
+        let file_a = crate::impact::path_class::normalize_path(&coupling.file_a.to_string_lossy());
+        let file_b = crate::impact::path_class::normalize_path(&coupling.file_b.to_string_lossy());
+        (!file_a.is_empty() && change_keys.contains(&file_a))
+            || (!file_b.is_empty() && change_keys.contains(&file_b))
     };
     file_couplings.retain(&hits_change);
     audit_couplings.retain(&hits_change);
@@ -761,6 +779,265 @@ mod tests {
 
         // Temporal engine needs a real git repo; filter/cap logic is covered
         // when git history is available. Structural path is the DoD surface.
+    }
+
+    fn temporal_pair(
+        file_a: &str,
+        file_b: &str,
+        score: f32,
+    ) -> crate::impact::packet::TemporalCoupling {
+        crate::impact::packet::TemporalCoupling {
+            file_a: PathBuf::from(file_a),
+            file_b: PathBuf::from(file_b),
+            score,
+        }
+    }
+
+    fn renamed_change(path: &str, old_path: &str) -> ChangedFile {
+        ChangedFile {
+            path: PathBuf::from(path),
+            status: "Renamed".to_string(),
+            old_path: Some(PathBuf::from(old_path)),
+            ..ChangedFile::default()
+        }
+    }
+
+    fn present(
+        pairs: Vec<crate::impact::packet::TemporalCoupling>,
+        changes: &[ChangedFile],
+        path_mode: &str,
+        limit: usize,
+    ) -> (
+        Vec<crate::impact::packet::TemporalCoupling>,
+        Vec<crate::impact::packet::TemporalCoupling>,
+        Vec<PathBuf>,
+    ) {
+        apply_temporal_presentation(pairs.clone(), pairs, &[], changes, path_mode, limit)
+    }
+
+    #[test]
+    fn rename_old_path_keeps_partner_and_spellings() {
+        let stored = temporal_pair("src/old.rs", "src/partner.rs", 0.77);
+        let (files, audit, _) = present(
+            vec![stored.clone()],
+            &[renamed_change("src/new.rs", "src/old.rs")],
+            "code",
+            10,
+        );
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].file_a.to_string_lossy(), "src/old.rs");
+        assert_eq!(files[0].file_b.to_string_lossy(), "src/partner.rs");
+        assert_eq!(files[0].score, 0.77);
+        assert_eq!(audit, files);
+        assert_ne!(files[0].file_a.to_string_lossy(), "src/new.rs");
+    }
+
+    #[test]
+    fn rename_old_path_matches_backslash_and_dot_slash() {
+        let stored = temporal_pair("src/old.rs", "src/partner.rs", 0.7);
+        let (backslash_files, _, _) = present(
+            vec![stored.clone()],
+            &[renamed_change("src/new.rs", r"src\old.rs")],
+            "code",
+            10,
+        );
+        assert_eq!(backslash_files.len(), 1);
+        assert_eq!(backslash_files[0].file_a.to_string_lossy(), "src/old.rs");
+        assert_eq!(
+            backslash_files[0].file_b.to_string_lossy(),
+            "src/partner.rs"
+        );
+
+        let (dot_files, _, _) = present(
+            vec![stored],
+            &[renamed_change("src/new.rs", "./src/old.rs")],
+            "code",
+            10,
+        );
+        assert_eq!(dot_files.len(), 1);
+        assert_eq!(dot_files[0].file_a.to_string_lossy(), "src/old.rs");
+        assert_eq!(dot_files[0].file_b.to_string_lossy(), "src/partner.rs");
+    }
+
+    #[test]
+    fn new_path_pair_still_kept_and_unrelated_pair_dropped() {
+        let kept = temporal_pair("src/lib.rs", "src/neighbor.rs", 0.6);
+        let dropped = temporal_pair("src/nope.rs", "src/other.rs", 0.95);
+        let (files, audit, _) = present(
+            vec![kept.clone(), dropped],
+            &[renamed_change("src/lib.rs", "src/old.rs")],
+            "code",
+            10,
+        );
+        assert_eq!(files, vec![kept.clone()]);
+        assert_eq!(audit, vec![kept]);
+    }
+
+    #[test]
+    fn empty_normalized_old_path_matches_nothing() {
+        let empty_side = temporal_pair("", "src/other.rs", 0.7);
+        let dot_side = temporal_pair("./", "src/other.rs", 0.7);
+        let kept = temporal_pair("src/new.rs", "src/keep.rs", 0.6);
+        for old in ["", "./"] {
+            let (files, _, _) = present(
+                vec![empty_side.clone(), dot_side.clone(), kept.clone()],
+                &[renamed_change("src/new.rs", old)],
+                "code",
+                10,
+            );
+            assert_eq!(files, vec![kept.clone()], "old_path {old:?}");
+        }
+    }
+
+    #[test]
+    fn governance_old_path_demotes_on_stored_paths() {
+        let stored = temporal_pair("docs/guide.md", "src/partner.rs", 0.88);
+        let change = renamed_change("src/guide.rs", "docs/guide.md");
+        let (code_files, code_audit, _) = present(
+            vec![stored.clone()],
+            std::slice::from_ref(&change),
+            "code",
+            10,
+        );
+        assert!(code_files.is_empty(), "{code_files:?}");
+        assert_eq!(code_audit.len(), 1);
+        assert_eq!(code_audit[0].file_a.to_string_lossy(), "docs/guide.md");
+        assert_eq!(code_audit[0].file_b.to_string_lossy(), "src/partner.rs");
+
+        let (all_files, _, _) = present(vec![stored], &[change], "all", 10);
+        assert_eq!(all_files.len(), 1);
+        assert_eq!(all_files[0].file_a.to_string_lossy(), "docs/guide.md");
+        assert_eq!(all_files[0].file_b.to_string_lossy(), "src/partner.rs");
+    }
+
+    #[test]
+    fn audit_old_path_keeps_tree_partner_in_discarded() {
+        use camino::Utf8PathBuf;
+
+        let leaf = temporal_pair("src/old.rs", "src/partner.rs", 0.9);
+        let tree_pair = temporal_pair("src/old.rs", "crates", 0.85);
+        let changes = [renamed_change("src/new.rs", "src/old.rs")];
+        let trees = [Utf8PathBuf::from("crates")];
+        let (files, audit, discarded) = apply_temporal_presentation(
+            vec![leaf.clone()],
+            vec![leaf, tree_pair],
+            &trees,
+            &changes,
+            "code",
+            10,
+        );
+        assert!(
+            files.iter().all(|coupling| {
+                coupling.file_a.to_string_lossy() != "crates"
+                    && coupling.file_b.to_string_lossy() != "crates"
+            }),
+            "{files:?}"
+        );
+        assert!(
+            audit
+                .iter()
+                .any(|coupling| coupling.file_b.to_string_lossy() == "crates"),
+            "{audit:?}"
+        );
+        assert_eq!(discarded, vec![PathBuf::from("crates")]);
+    }
+
+    #[test]
+    fn cap_keeps_input_order_and_does_not_prefer_old_path() {
+        let first = temporal_pair("src/new.rs", "src/first.rs", 0.4);
+        let later = temporal_pair("src/old.rs", "src/later.rs", 0.99);
+        let (files, audit, _) = present(
+            vec![first.clone(), later],
+            &[renamed_change("src/new.rs", "src/old.rs")],
+            "code",
+            1,
+        );
+        assert_eq!(files, vec![first.clone()]);
+        assert_eq!(audit, vec![first]);
+    }
+
+    #[test]
+    fn presentation_is_deterministic() {
+        let pairs = vec![
+            temporal_pair("src/old.rs", "src/partner.rs", 0.8),
+            temporal_pair("src/new.rs", "src/neighbor.rs", 0.5),
+            temporal_pair("src/nope.rs", "src/other.rs", 0.99),
+        ];
+        let changes = [renamed_change("src/new.rs", "src/old.rs")];
+        let once = present(pairs.clone(), &changes, "code", 10);
+        let twice = present(pairs, &changes, "code", 10);
+        assert_eq!(once, twice);
+        assert_eq!(once.0.len(), 2);
+    }
+
+    #[test]
+    fn affected_paths_and_scoped_hotspots_follow_old_path_partner() {
+        use crate::impact::budget::{HotspotProvenance, HotspotProvenanceSource};
+        use crate::impact::packet::Hotspot;
+        use crate::impact::scope::{affected_paths, retain_scoped_hotspots, seed_paths};
+
+        let change = renamed_change("src/new.rs", "src/old.rs");
+        let partner = temporal_pair("src/old.rs", "src/partner.rs", 0.81);
+        let (files, _, _) = apply_temporal_presentation(
+            vec![partner],
+            vec![],
+            &[],
+            std::slice::from_ref(&change),
+            "code",
+            10,
+        );
+        assert_eq!(files.len(), 1);
+
+        let provenance = HotspotProvenance {
+            source: HotspotProvenanceSource::Trends,
+            head: Some("0522-fixture".to_string()),
+            ..HotspotProvenance::default()
+        };
+        let packet = ImpactPacket {
+            changes: vec![change],
+            temporal_couplings: files,
+            hotspot_provenance: Some(provenance.clone()),
+            ..ImpactPacket::default()
+        };
+        let seeds = seed_paths(&packet);
+        assert!(seeds.contains("src/new.rs"));
+        assert!(seeds.contains("src/old.rs"));
+        assert!(!seeds.contains("src/partner.rs"));
+        let affected = affected_paths(&packet, &seeds);
+        assert!(affected.contains("src/partner.rs"));
+        assert!(!affected.contains("src/old.rs"));
+        assert!(!affected.contains("src/new.rs"));
+
+        let hotspot = |path: &str, score: f32| Hotspot {
+            path: PathBuf::from(path),
+            score,
+            display_score: score,
+            complexity: 1,
+            frequency: 1.0,
+            centrality: None,
+        };
+        let kept = retain_scoped_hotspots(
+            vec![
+                hotspot("src/partner.rs", 3.0),
+                hotspot("src/outsider.rs", 9.0),
+                hotspot("src/new.rs", 1.0),
+            ],
+            &packet,
+            10,
+        );
+        let paths: Vec<String> = kept
+            .iter()
+            .map(|row| row.path.to_string_lossy().to_string())
+            .collect();
+        assert!(
+            paths.iter().any(|path| path == "src/partner.rs"),
+            "{paths:?}"
+        );
+        assert!(
+            paths.iter().all(|path| path != "src/outsider.rs"),
+            "{paths:?}"
+        );
+        assert_eq!(packet.hotspot_provenance.as_ref(), Some(&provenance));
     }
 
     #[test]
