@@ -3081,3 +3081,348 @@ fn snapshot_busy_returns_error() {
     assert!(settle_persist_attempt(true, Err(err)).is_err());
     let _ = storage.shutdown();
 }
+
+fn init_early_snapshot_repo(root: &std::path::Path) {
+    use std::fs;
+    use std::process::Command;
+
+    assert!(
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    for args in [
+        ["config", "user.email", "t@t.com"],
+        ["config", "user.name", "t"],
+        ["config", "commit.gpgsign", "false"],
+        ["config", "core.hooksPath", ""],
+    ] {
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success(),
+            "git {args:?}"
+        );
+    }
+    fs::write(root.join("README.md"), "one\n").unwrap();
+    assert!(
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["commit", "-m", "first"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+fn expired_overall_deadline() -> std::time::Instant {
+    std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(1))
+        .unwrap_or_else(std::time::Instant::now)
+}
+
+fn early_snapshot_repo() -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().unwrap();
+    init_early_snapshot_repo(tmp.path());
+    tmp
+}
+
+const DOCS_SNAPSHOT_ERROR: &str = "--snapshot cannot be combined with --include docs (docs lane score is frequency-only; hotspot_history stores f×c)";
+const TESTS_SNAPSHOT_ERROR: &str = "--snapshot cannot be combined with --include tests (the audit view is not the repository budget series)";
+const SEMANTIC_SNAPSHOT_ERROR: &str = "--snapshot cannot be combined with --semantic (the semantic ranking is not the repository budget series)";
+const FAMILY_SNAPSHOT_ERROR: &str = "--snapshot requires the repository budget query (default filter, configured limit and max_commits, no --days, --entity, --since, or --all-parents)";
+
+#[test]
+#[allow(non_snake_case)]
+#[serial_test::serial(cwd)]
+fn hotspots_snapshot__early_overall_docs__returns_docs_error() {
+    use super::{HotspotRunOpts, execute_hotspots_with_opts};
+    use crate::cli::{HotspotArgs, HotspotIncludeScope};
+    use crate::tests::DirGuard;
+
+    let tmp = early_snapshot_repo();
+    let _guard = DirGuard::new(tmp.path());
+    let mut buf = Vec::new();
+    let err = execute_hotspots_with_opts(
+        HotspotArgs {
+            snapshot: true,
+            include: Some(HotspotIncludeScope::Docs),
+            ..Default::default()
+        },
+        HotspotRunOpts {
+            overall_deadline_override: Some(expired_overall_deadline()),
+            ..Default::default()
+        },
+        Some(&mut buf),
+    )
+    .expect_err("docs snapshot");
+    let display = err.to_string();
+    assert!(display.contains(DOCS_SNAPSHOT_ERROR), "{display}");
+    assert!(buf.is_empty(), "{}", String::from_utf8_lossy(&buf));
+    assert!(!tmp.path().join(".ledgerful/state/ledger.db").exists());
+}
+
+#[test]
+#[allow(non_snake_case)]
+#[serial_test::serial(cwd)]
+fn hotspots_snapshot__early_overall_tests__returns_tests_error() {
+    use super::{HotspotRunOpts, execute_hotspots_with_opts};
+    use crate::cli::{HotspotArgs, HotspotIncludeScope};
+    use crate::tests::DirGuard;
+
+    let tmp = early_snapshot_repo();
+    let _guard = DirGuard::new(tmp.path());
+    let mut buf = Vec::new();
+    let err = execute_hotspots_with_opts(
+        HotspotArgs {
+            snapshot: true,
+            include: Some(HotspotIncludeScope::Tests),
+            ..Default::default()
+        },
+        HotspotRunOpts {
+            overall_deadline_override: Some(expired_overall_deadline()),
+            ..Default::default()
+        },
+        Some(&mut buf),
+    )
+    .expect_err("tests snapshot");
+    let display = err.to_string();
+    assert!(display.contains(TESTS_SNAPSHOT_ERROR), "{display}");
+    assert!(buf.is_empty(), "{}", String::from_utf8_lossy(&buf));
+}
+
+#[test]
+#[allow(non_snake_case)]
+#[serial_test::serial(cwd)]
+fn hotspots_snapshot__early_overall_semantic__returns_semantic_error() {
+    use super::{HotspotRunOpts, execute_hotspots_with_opts};
+    use crate::cli::HotspotArgs;
+    use crate::tests::DirGuard;
+
+    let tmp = early_snapshot_repo();
+    let _guard = DirGuard::new(tmp.path());
+    let mut buf = Vec::new();
+    let err = execute_hotspots_with_opts(
+        HotspotArgs {
+            snapshot: true,
+            semantic: true,
+            ..Default::default()
+        },
+        HotspotRunOpts {
+            overall_deadline_override: Some(expired_overall_deadline()),
+            ..Default::default()
+        },
+        Some(&mut buf),
+    )
+    .expect_err("semantic snapshot");
+    let display = err.to_string();
+    assert!(display.contains(SEMANTIC_SNAPSHOT_ERROR), "{display}");
+    assert!(buf.is_empty(), "{}", String::from_utf8_lossy(&buf));
+}
+
+#[test]
+#[allow(non_snake_case)]
+#[serial_test::serial(cwd)]
+fn hotspots_snapshot__early_overall_narrow_limit__returns_family_error() {
+    use super::{HotspotRunOpts, execute_hotspots_with_opts};
+    use crate::cli::HotspotArgs;
+    use crate::tests::DirGuard;
+
+    let tmp = early_snapshot_repo();
+    let _guard = DirGuard::new(tmp.path());
+    let mut buf = Vec::new();
+    let err = execute_hotspots_with_opts(
+        HotspotArgs {
+            snapshot: true,
+            limit: Some(5),
+            ..Default::default()
+        },
+        HotspotRunOpts {
+            overall_deadline_override: Some(expired_overall_deadline()),
+            ..Default::default()
+        },
+        Some(&mut buf),
+    )
+    .expect_err("narrow snapshot");
+    let display = err.to_string();
+    assert!(display.contains(FAMILY_SNAPSHOT_ERROR), "{display}");
+    assert!(buf.is_empty(), "{}", String::from_utf8_lossy(&buf));
+}
+
+#[test]
+#[allow(non_snake_case)]
+#[serial_test::serial(cwd)]
+fn hotspots_snapshot__early_overall_docs_json__returns_docs_error() {
+    use super::{HotspotRunOpts, execute_hotspots_with_opts};
+    use crate::cli::{HotspotArgs, HotspotIncludeScope};
+    use crate::tests::DirGuard;
+
+    let tmp = early_snapshot_repo();
+    let _guard = DirGuard::new(tmp.path());
+    let mut buf = Vec::new();
+    let err = execute_hotspots_with_opts(
+        HotspotArgs {
+            snapshot: true,
+            json: true,
+            include: Some(HotspotIncludeScope::Docs),
+            ..Default::default()
+        },
+        HotspotRunOpts {
+            overall_deadline_override: Some(expired_overall_deadline()),
+            ..Default::default()
+        },
+        Some(&mut buf),
+    )
+    .expect_err("docs json snapshot");
+    let display = err.to_string();
+    assert!(display.contains(DOCS_SNAPSHOT_ERROR), "{display}");
+    assert!(buf.is_empty(), "{}", String::from_utf8_lossy(&buf));
+}
+
+#[test]
+#[allow(non_snake_case)]
+#[serial_test::serial(cwd)]
+fn hotspots_snapshot__early_cancel_docs__returns_docs_error() {
+    use super::{HotspotRunOpts, execute_hotspots_with_opts};
+    use crate::cli::{HotspotArgs, HotspotIncludeScope};
+    use crate::tests::DirGuard;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::time::{Duration, Instant};
+
+    let tmp = early_snapshot_repo();
+    let _guard = DirGuard::new(tmp.path());
+    let mut buf = Vec::new();
+    let err = execute_hotspots_with_opts(
+        HotspotArgs {
+            snapshot: true,
+            include: Some(HotspotIncludeScope::Docs),
+            ..Default::default()
+        },
+        HotspotRunOpts {
+            cancel: Some(Arc::new(AtomicBool::new(true))),
+            overall_deadline_override: Some(Instant::now() + Duration::from_secs(60)),
+        },
+        Some(&mut buf),
+    )
+    .expect_err("cancel docs snapshot");
+    let display = err.to_string();
+    assert!(display.contains(DOCS_SNAPSHOT_ERROR), "{display}");
+    assert!(
+        !String::from_utf8_lossy(&buf).contains("Hotspot snapshot skipped:"),
+        "{}",
+        String::from_utf8_lossy(&buf)
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+#[serial_test::serial(cwd)]
+fn hotspots_snapshot__early_overall_vendor__prints_overall_skip() {
+    use super::{HotspotRunOpts, execute_hotspots_with_opts};
+    use crate::cli::{HotspotArgs, HotspotIncludeScope};
+    use crate::tests::DirGuard;
+
+    let tmp = early_snapshot_repo();
+    let _guard = DirGuard::new(tmp.path());
+    let mut buf = Vec::new();
+    execute_hotspots_with_opts(
+        HotspotArgs {
+            snapshot: true,
+            include: Some(HotspotIncludeScope::Vendor),
+            ..Default::default()
+        },
+        HotspotRunOpts {
+            overall_deadline_override: Some(expired_overall_deadline()),
+            ..Default::default()
+        },
+        Some(&mut buf),
+    )
+    .expect("vendor snapshot skip");
+    let stdout = String::from_utf8_lossy(&buf);
+    assert!(
+        stdout.contains("Hotspot snapshot skipped: overall budget."),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("no ranked files"), "{stdout}");
+}
+
+#[test]
+#[allow(non_snake_case)]
+#[serial_test::serial(cwd)]
+fn hotspots_snapshot__early_overall_configured_limit__prints_overall_skip() {
+    use super::{HotspotRunOpts, execute_hotspots_with_opts};
+    use crate::cli::HotspotArgs;
+    use crate::tests::DirGuard;
+
+    let tmp = early_snapshot_repo();
+    let _guard = DirGuard::new(tmp.path());
+    let mut buf = Vec::new();
+    execute_hotspots_with_opts(
+        HotspotArgs {
+            snapshot: true,
+            limit: Some(10),
+            ..Default::default()
+        },
+        HotspotRunOpts {
+            overall_deadline_override: Some(expired_overall_deadline()),
+            ..Default::default()
+        },
+        Some(&mut buf),
+    )
+    .expect("configured limit snapshot skip");
+    let stdout = String::from_utf8_lossy(&buf);
+    assert!(
+        stdout.contains("Hotspot snapshot skipped: overall budget."),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("no ranked files"), "{stdout}");
+}
+
+#[test]
+#[allow(non_snake_case)]
+#[serial_test::serial(cwd)]
+fn hotspots_snapshot__early_cancel_canonical__prints_cancelled_skip() {
+    use super::{HotspotRunOpts, execute_hotspots_with_opts};
+    use crate::cli::HotspotArgs;
+    use crate::tests::DirGuard;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::time::{Duration, Instant};
+
+    let tmp = early_snapshot_repo();
+    let _guard = DirGuard::new(tmp.path());
+    let mut buf = Vec::new();
+    execute_hotspots_with_opts(
+        HotspotArgs {
+            snapshot: true,
+            ..Default::default()
+        },
+        HotspotRunOpts {
+            cancel: Some(Arc::new(AtomicBool::new(true))),
+            overall_deadline_override: Some(Instant::now() + Duration::from_secs(60)),
+        },
+        Some(&mut buf),
+    )
+    .expect("canonical cancel skip");
+    let stdout = String::from_utf8_lossy(&buf);
+    assert!(
+        stdout.contains("Hotspot snapshot skipped: cancelled."),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("no ranked files"), "{stdout}");
+}
