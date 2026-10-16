@@ -417,7 +417,9 @@ pub fn is_canonical_service_name(name: &str, declared: bool, api_route_count: i6
 }
 
 /// The definition impact and `declared_root` both copy.
-/// Equal roots keep the earlier config definition (`min_by` is stable that way).
+/// Roots compare after `\` is replaced with `/`.
+/// Equal replaced roots keep the earlier config definition.
+/// Callers that emit a path replace separators themselves.
 pub fn selected_service_definition<'a>(
     name: &str,
     definitions: &'a [crate::config::model::ServiceDefinition],
@@ -425,7 +427,11 @@ pub fn selected_service_definition<'a>(
     definitions
         .iter()
         .filter(|definition| definition.name == name)
-        .min_by(|left, right| left.root.cmp(&right.root))
+        .min_by(|left, right| {
+            let left_root = left.root.replace('\\', "/");
+            let right_root = right.root.replace('\\', "/");
+            left_root.cmp(&right_root)
+        })
 }
 
 /// Infer service boundaries from routes, call graph, and directory topology.
@@ -1045,6 +1051,67 @@ mod tests {
         let selected = selected_service_definition("web", &definitions)
             .expect("equal roots still select one definition");
         assert_eq!(selected.owners, vec!["first".to_string()]);
+    }
+
+    #[test]
+    fn selected_service_definition_picks_normalized_smaller_root() {
+        let beta = crate::config::model::ServiceDefinition {
+            name: "web".to_string(),
+            root: "services/beta".to_string(),
+            owners: vec!["from-beta".to_string()],
+            runtime_name: None,
+            queues: Vec::new(),
+            topics: Vec::new(),
+            rpc_endpoints: Vec::new(),
+        };
+        let alpha = crate::config::model::ServiceDefinition {
+            name: "web".to_string(),
+            root: r"services\alpha".to_string(),
+            owners: vec!["from-alpha".to_string()],
+            runtime_name: None,
+            queues: Vec::new(),
+            topics: Vec::new(),
+            rpc_endpoints: Vec::new(),
+        };
+        let slash_then_backslash = vec![beta.clone(), alpha.clone()];
+        let selected = selected_service_definition("web", &slash_then_backslash)
+            .expect("two definitions share the name");
+        assert_eq!(selected.root, r"services\alpha");
+        assert_eq!(selected.owners, vec!["from-alpha".to_string()]);
+
+        let backslash_then_slash = vec![alpha, beta];
+        let selected = selected_service_definition("web", &backslash_then_slash)
+            .expect("two definitions share the name");
+        assert_eq!(selected.root, r"services\alpha");
+        assert_eq!(selected.owners, vec!["from-alpha".to_string()]);
+    }
+
+    #[test]
+    fn selected_service_definition_keeps_earlier_definition_when_replaced_roots_match() {
+        let definitions = vec![
+            crate::config::model::ServiceDefinition {
+                name: "web".to_string(),
+                root: r"services\alpha".to_string(),
+                owners: vec!["first".to_string()],
+                runtime_name: None,
+                queues: Vec::new(),
+                topics: Vec::new(),
+                rpc_endpoints: Vec::new(),
+            },
+            crate::config::model::ServiceDefinition {
+                name: "web".to_string(),
+                root: "services/alpha".to_string(),
+                owners: vec!["second".to_string()],
+                runtime_name: None,
+                queues: Vec::new(),
+                topics: Vec::new(),
+                rpc_endpoints: Vec::new(),
+            },
+        ];
+        let selected = selected_service_definition("web", &definitions)
+            .expect("replaced roots still select one definition");
+        assert_eq!(selected.owners, vec!["first".to_string()]);
+        assert_eq!(selected.root, r"services\alpha");
     }
 
     fn sample_route(route_source: &str, handler: &str) -> ApiRoute {

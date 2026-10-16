@@ -12,6 +12,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Service definition root order (0523):** when two service definitions share a name, the chosen definition is the one whose root is smaller after `\` is replaced with `/`. The helper still returns that config definition, including its original root spelling. Equal replaced roots keep the earlier definition. `schemaVersion` stays `"v1"`. Package stays `0.2.17`.
 - **Rename temporal partners (0522):** a change-scoped temporal pair stays when either stored side matches `path_class::normalize_path` of the change path or its `oldPath`. Pair spellings stay historical. Demotion still uses those stored sides. The file-id map stays path-only. `schemaVersion` stays `"v1"`. Package stays `0.2.17`.
 - **Bridge import hotspot scope (0521):** a `Hotspot` NDJSON row updates `score` and recomputes `displayScore` only when that path is already in the persisted packet. Other hotspot paths are skipped, so the path set does not grow. `hotspotProvenance` is left unchanged, including when it is absent. A `bridge export --hotspots` Snapshot stays unpacked. `schemaVersion` stays `"v1"`. Package stays `0.2.17`.
 - **Documentation contract alignment (0520):** clap help, rustdoc, and agent docs match the shipped CLI. `impact` has no `--base-ref`. Risk scoring is analysis-registry, not an enrichment bullet. Enum help names Java, Rust, C++, and TypeScript. Ignored flags (`update --migrate --fast`, `sync run --once`, `impact --telemetry`) are named unused. Package stays `0.2.17`.

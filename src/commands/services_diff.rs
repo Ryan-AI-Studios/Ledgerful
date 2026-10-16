@@ -954,4 +954,21 @@ mod services_diff_unit_tests {
             Some("services/gamma")
         );
     }
+
+    #[test]
+    fn declared_root_emits_slash_form_of_normalized_smaller_root() {
+        let mut config = Config::default();
+        config
+            .services
+            .definitions
+            .push(sample_def("web", "services/beta"));
+        config
+            .services
+            .definitions
+            .push(sample_def("web", r"services\alpha"));
+        assert_eq!(
+            declared_root("web", &config).as_deref(),
+            Some("services/alpha")
+        );
+    }
 }
