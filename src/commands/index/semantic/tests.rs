@@ -296,6 +296,135 @@ fn skip_warm_incremental_file_reprocesses_stale_raw_hash() {
 }
 
 #[test]
+fn semantic_dry_run_labels_orphans_and_does_not_mutate_store() {
+    use crate::config::model::LocalModelConfig;
+    use crate::semantic::SemanticDiscovery;
+    use crate::semantic::vector_store::count_snippet_embedding_rows;
+    use crate::state::layout::Layout;
+    use crate::state::storage_cozo::CozoStorage;
+    use camino::Utf8PathBuf;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8");
+    std::fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+    std::fs::write(tmp.path().join("src/lib.rs"), "fn current() {}\n").expect("write");
+    let layout = Layout::new(&root);
+    layout.ensure_state_dir().expect("state");
+    let cozo_path = layout.state_subdir().join("ledger.cozo");
+    {
+        let storage = CozoStorage::new(cozo_path.as_std_path()).expect("cozo");
+        let config = LocalModelConfig {
+            dimensions: 3,
+            disable_hnsw: true,
+            embedding_model: "fixture-model".into(),
+            ..Default::default()
+        };
+        let semantic = SemanticDiscovery::new(config, &storage).expect("semantic");
+        semantic.ensure_file_hash_schema().expect("hash schema");
+        semantic
+            .record_file_hash("src/gone.rs", "dead")
+            .expect("hash");
+        let mut gone = chunk("old");
+        gone.file_path = "src/gone.rs".to_string();
+        semantic
+            .index_chunks_batched(vec![gone], vec![vec![1.0_f32, 0.0, 0.0]])
+            .expect("insert");
+        let rows_before = count_snippet_embedding_rows(&storage).expect("count");
+        assert_eq!(rows_before, 1);
+        storage.shutdown();
+    }
+
+    let dump = tmp.path().join("dry-run.json");
+    let config = Config {
+        local_model: LocalModelConfig {
+            dimensions: 3,
+            embedding_model: "other-model".into(),
+            disable_hnsw: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    execute_semantic_dry_run(&layout, &config, None, Some(dump.clone())).expect("dry-run");
+    let raw = std::fs::read_to_string(&dump).expect("read dump");
+    let v: serde_json::Value = serde_json::from_str(&raw).expect("json");
+    assert_eq!(v["embedding_model_source"], "config");
+    assert_eq!(v["embedding_model"], "other-model");
+    assert_eq!(v["dimension_mismatch"], false);
+    assert_eq!(v["current_vector_count"], 1);
+    assert_eq!(v["stored_vector_file_count"], 1);
+    assert!(v["orphaned_hash_count"].as_u64().unwrap() >= 1);
+    assert!(v["orphaned_vector_file_count"].as_u64().unwrap() >= 1);
+    assert!(v.get("kind").is_none());
+    assert!(v.get("schemaVersion").is_none());
+    assert!(v.get("stored_dimensions").is_some());
+
+    let ro = CozoStorage::new_read_only(cozo_path.as_std_path()).expect("ro");
+    assert_eq!(
+        count_snippet_embedding_rows(&ro).expect("after"),
+        1,
+        "dry-run must not drop snippet_embedding"
+    );
+    let relations = ro.get_relations().expect("relations");
+    assert!(relations.iter().any(|r| r == "semantic_file_hash"));
+}
+
+#[test]
+fn semantic_dry_run_dimension_mismatch_does_not_recreate() {
+    use crate::config::model::LocalModelConfig;
+    use crate::semantic::SemanticDiscovery;
+    use crate::semantic::vector_store::count_snippet_embedding_rows;
+    use crate::state::layout::Layout;
+    use crate::state::storage_cozo::CozoStorage;
+    use camino::Utf8PathBuf;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8");
+    std::fs::create_dir_all(tmp.path().join("src")).expect("mkdir");
+    std::fs::write(tmp.path().join("src/lib.rs"), "fn current() {}\n").expect("write");
+    let layout = Layout::new(&root);
+    layout.ensure_state_dir().expect("state");
+    let cozo_path = layout.state_subdir().join("ledger.cozo");
+    {
+        let storage = CozoStorage::new(cozo_path.as_std_path()).expect("cozo");
+        let config = LocalModelConfig {
+            dimensions: 3,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let semantic = SemanticDiscovery::new(config, &storage).expect("semantic");
+        semantic.ensure_file_hash_schema().expect("hash schema");
+        semantic
+            .record_file_hash("src/lib.rs", "hash")
+            .expect("hash");
+        semantic
+            .index_chunks_batched(vec![chunk("f")], vec![vec![1.0_f32, 0.0, 0.0]])
+            .expect("insert");
+        storage.shutdown();
+    }
+
+    let dump = tmp.path().join("dry-run.json");
+    let config = Config {
+        local_model: LocalModelConfig {
+            dimensions: 384,
+            disable_hnsw: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    execute_semantic_dry_run(&layout, &config, None, Some(dump.clone())).expect("dry-run");
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&dump).expect("read")).expect("json");
+    assert_eq!(v["dimension_mismatch"], true);
+    assert_eq!(v["embedding_dimensions"], 384);
+    assert_eq!(v["stored_dimensions"], 3);
+    assert_eq!(v["current_vector_count"], 1);
+
+    let ro = CozoStorage::new_read_only(cozo_path.as_std_path()).expect("ro");
+    assert_eq!(count_snippet_embedding_rows(&ro).expect("after"), 1);
+    assert_eq!(ro.snippet_embedding_dim().expect("dim"), Some(3));
+}
+
+#[test]
 fn semantic_json_result_omits_zero_purge_and_false_hnsw() {
     let result = SemanticIndexJsonResult {
         schema_version: 1,

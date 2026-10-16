@@ -5,6 +5,7 @@ use crate::config::model::Config;
 use crate::semantic::SemanticDiscovery;
 use crate::semantic::chunker::{AstChunker, semantic_file_content_hash};
 use crate::semantic::concurrency::EmbedSemaphore;
+use crate::semantic::walk_repo_for_semantic_files;
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use crate::util::path::{path_is_under_work_root, resolve_under_work_root, semantic_path_key};
@@ -98,63 +99,6 @@ pub(crate) fn resolve_semantic_concurrency(
         config.local_model.concurrency,
         resolve_opts,
     )
-}
-
-/// Walk the repository for candidate semantic-index files.
-///
-/// Uses `ignore::WalkBuilder` with `git_ignore(true)` (same class as
-/// `RepoWalker`) so gitignored deps/headers do not flood the embed set (D3).
-/// Fixed directory name skips remain for non-git noise.
-pub(crate) fn walk_repo_for_semantic_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    const SKIP_DIRS: &[&str] = &[
-        ".git",
-        ".ledgerful",
-        "target",
-        "node_modules",
-        ".agents",
-        ".claude",
-        ".codex",
-        ".opencode",
-    ];
-    const SEMANTIC_EXTS: &[&str] = &[
-        "rs", "ts", "tsx", "js", "jsx", "py", "go", //
-        "c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "h++",
-    ];
-
-    let mut out = Vec::new();
-    let walker = ignore::WalkBuilder::new(root)
-        .hidden(true)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
-        .filter_entry(|entry| {
-            if entry.file_type().is_some_and(|ft| ft.is_dir()) {
-                let name = entry.file_name().to_string_lossy();
-                return !SKIP_DIRS.iter().any(|s| *s == name);
-            }
-            true
-        })
-        .build();
-
-    for entry in walker {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::warn!("Error walking directory for semantic files: {e}");
-                continue;
-            }
-        };
-        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-            continue;
-        }
-        let path = entry.path();
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if SEMANTIC_EXTS.contains(&ext) {
-            out.push(path.to_path_buf());
-        }
-    }
-    out.sort();
-    out
 }
 
 pub(crate) fn execute_semantic_index(
@@ -459,27 +403,37 @@ pub(crate) fn execute_semantic_dry_run(
     }
     let estimated_chunk_count = total_lines / 30;
 
-    let current_vector_count = cozo
-        .as_ref()
-        .map(|db| crate::semantic::vector_store::count_snippet_embedding_rows(db).unwrap_or(0))
-        .unwrap_or(0);
-
-    let current_file_count = cozo
-        .as_ref()
-        .map(|db| {
-            let relations = db.get_relations().unwrap_or_default();
-            if !relations.contains(&"semantic_file_hash".to_string()) {
-                return 0;
+    let provenance = match crate::semantic::provenance::collect_semantic_provenance(
+        layout.root.as_std_path(),
+        cozo.as_ref(),
+        crate::semantic::provenance::ProvenanceWalk::Always,
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("semantic dry-run provenance query failed: {e}");
+            crate::semantic::provenance::SemanticProvenance {
+                candidate_file_count: candidate_paths.len(),
+                stored_hash_file_count: 0,
+                stored_vector_row_count: 0,
+                stored_vector_file_count: 0,
+                orphaned_hash_count: 0,
+                orphaned_vector_file_count: 0,
+                missing_hash_count: 0,
+                stored_dimensions: None,
+                walked: true,
             }
-            let script = "?[file_path] := *semantic_file_hash{file_path}";
-            db.run_script(script).map(|res| res.rows.len()).unwrap_or(0)
-        })
-        .unwrap_or(0);
+        }
+    };
 
     let hnsw_rebuild_threshold = config.semantic.hnsw_rebuild_threshold();
     let would_trigger_hnsw_rebuild = estimated_chunk_count > hnsw_rebuild_threshold;
 
     let embedding_dimensions = preferred_embedding_dimensions(&config.local_model);
+    let stored_dimensions = provenance.stored_dimensions;
+    let dimension_mismatch = match (embedding_dimensions, stored_dimensions) {
+        (preferred, Some(stored)) if preferred > 0 => preferred != stored,
+        _ => false,
+    };
 
     let report = SemanticDryRunReport {
         parse_threads: resolved.parse_threads.get(),
@@ -492,11 +446,18 @@ pub(crate) fn execute_semantic_dry_run(
         candidate_file_count: candidate_paths.len(),
         estimated_chunk_count,
         embedding_model: config.local_model.embedding_model.clone(),
+        embedding_model_source: "config".to_string(),
         embedding_dimensions,
+        stored_dimensions,
+        dimension_mismatch,
         hnsw_rebuild_threshold,
         would_trigger_hnsw_rebuild,
-        current_vector_count,
-        current_file_count,
+        current_vector_count: provenance.stored_vector_row_count,
+        stored_vector_file_count: provenance.stored_vector_file_count,
+        current_file_count: provenance.stored_hash_file_count,
+        orphaned_hash_count: provenance.orphaned_hash_count,
+        orphaned_vector_file_count: provenance.orphaned_vector_file_count,
+        missing_hash_count: provenance.missing_hash_count,
     };
 
     if let Some(path) = output_path {
@@ -538,23 +499,32 @@ pub(crate) fn execute_semantic_dry_run(
         table.add_row(vec![
             "Candidate Files",
             &report.candidate_file_count.to_string(),
-            "File walk of repository",
+            "File walk of repository (semantic extensions; not the lexical Tantivy set)",
         ]);
         table.add_row(vec![
             "Estimated Chunks",
             &report.estimated_chunk_count.to_string(),
-            "Lines count / 30 approximation",
+            "Lines count / 30 approximation (not AST function grain)",
         ]);
         table.add_row(vec![
             "Embedding Model",
             &report.embedding_model,
-            "config.local_model.embedding_model",
+            "config.local_model.embedding_model (not stored)",
         ]);
         let dims_str = format_dimensions_label(report.embedding_dimensions);
         table.add_row(vec![
             "Embedding Dimensions",
             &dims_str,
-            "configured > probed (preferred)",
+            "configured > probed (preferred); stored width is a separate row",
+        ]);
+        let stored_dims_str = report
+            .stored_dimensions
+            .map(format_dimensions_label)
+            .unwrap_or_else(|| "unset".to_string());
+        table.add_row(vec![
+            "Stored Dimensions",
+            &stored_dims_str,
+            "snippet_embedding column; unset when missing",
         ]);
         table.add_row(vec![
             "HNSW Rebuild Threshold",
@@ -569,12 +539,32 @@ pub(crate) fn execute_semantic_dry_run(
         table.add_row(vec![
             "Current Vectors in DB",
             &report.current_vector_count.to_string(),
-            "CozoDB vector store",
+            "snippet_embedding rows (function-grain chunks, not distinct files)",
+        ]);
+        table.add_row(vec![
+            "Current Vector Files in DB",
+            &report.stored_vector_file_count.to_string(),
+            "distinct snippet_embedding paths",
         ]);
         table.add_row(vec![
             "Current Files in DB",
             &report.current_file_count.to_string(),
-            "CozoDB vector store",
+            "semantic_file_hash relation (not vector-store files)",
+        ]);
+        table.add_row(vec![
+            "Orphaned hash files",
+            &report.orphaned_hash_count.to_string(),
+            "stored hashes whose path is not in the current walk",
+        ]);
+        table.add_row(vec![
+            "Orphaned vector files",
+            &report.orphaned_vector_file_count.to_string(),
+            "distinct snippet_embedding paths not in the current walk",
+        ]);
+        table.add_row(vec![
+            "Missing hash files",
+            &report.missing_hash_count.to_string(),
+            "current-walk files with no semantic_file_hash row",
         ]);
         println!("{table}");
     }
@@ -620,11 +610,19 @@ struct SemanticDryRunReport {
     pub candidate_file_count: usize,
     pub estimated_chunk_count: usize,
     pub embedding_model: String,
+    pub embedding_model_source: String,
     pub embedding_dimensions: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stored_dimensions: Option<usize>,
+    pub dimension_mismatch: bool,
     pub hnsw_rebuild_threshold: usize,
     pub would_trigger_hnsw_rebuild: bool,
     pub current_vector_count: usize,
+    pub stored_vector_file_count: usize,
     pub current_file_count: usize,
+    pub orphaned_hash_count: usize,
+    pub orphaned_vector_file_count: usize,
+    pub missing_hash_count: usize,
 }
 
 #[cfg(test)]

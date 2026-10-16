@@ -231,9 +231,14 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
             let _stage = stage_span!("semantic_ready").entered();
             crate::semantic::SemanticDiscovery::new(config.local_model.clone(), cozo).and_then(
                 |engine| {
-                    engine
-                        .check_readiness()
-                        .map(|readiness| (engine, readiness))
+                    engine.check_readiness().map(|mut readiness| {
+                        crate::semantic::overlay_semantic_walk_stale(
+                            &mut readiness,
+                            layout.root.as_std_path(),
+                            cozo,
+                        );
+                        (engine, readiness)
+                    })
                 },
             )
         };

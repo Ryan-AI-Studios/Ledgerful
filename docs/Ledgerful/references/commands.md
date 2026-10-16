@@ -62,7 +62,7 @@ Isolated no-write preview (human path + block id; `--json` is `kind: hookRefresh
 
 ## `ledgerful index --check`
 
-`--json` is schemaVersion 1 `kind: indexCheck`. `--strict` exits 1 when any `surfaces[].status` is `stale`. `unavailable` does not fail `--strict`. Non-strict mixed output may print both `Index is up to date.` **and** `Surface …: stale` when surfaces lag HEAD. Not Daily 5.
+`--json` is schemaVersion 1 `kind: indexCheck`. `--strict` exits 1 when any `surfaces[].status` is `stale`. `unavailable` does not fail `--strict`. Non-strict mixed output may print both `Index is up to date.` **and** `Surface …: stale` when surfaces lag. `files` / `symbols` stay content-hash. `mapping` / `routes` stay index-head. **embeddings** is independent of lexical HEAD (`contentHash` vs the current semantic walk); embeddings `stale` refreshes with `ledgerful index --semantic` and does fail `--strict`. Not Daily 5.
 
 ## `ledgerful index --repair-metadata --dry-run --json`
 

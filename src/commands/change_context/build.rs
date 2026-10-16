@@ -337,7 +337,7 @@ pub(crate) fn classify_change_context_freshness(
         indexed_head: indexed_head.as_deref(),
         mapping: probe_named_table(conn, "test_mapping"),
         routes: probe_named_table(conn, "api_routes"),
-        embeddings: embeddings_probe_from_storage(configured, storage),
+        embeddings: embeddings_probe_from_storage(configured, storage, layout.root.as_std_path()),
         permission_denied,
     });
     if let Some(impact) =
