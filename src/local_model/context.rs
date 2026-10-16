@@ -1,4 +1,3 @@
-use crate::gemini::modes::{GeminiMode, build_system_prompt};
 use crate::local_model::client::ChatMessage;
 use crate::local_model::pruner::RankedChunk;
 
@@ -129,19 +128,6 @@ pub fn assemble_context(
     });
 
     messages
-}
-
-pub fn get_system_prompt(mode: &str) -> String {
-    let gemini_mode = match mode {
-        "analyze" => GeminiMode::Analyze,
-        "suggest" => GeminiMode::Suggest,
-        "review" => GeminiMode::ReviewPatch,
-        _ => {
-            tracing::warn!("Unknown mode '{mode}', defaulting to analyze");
-            GeminiMode::Analyze
-        }
-    };
-    build_system_prompt(gemini_mode)
 }
 
 #[cfg(test)]
@@ -351,29 +337,5 @@ mod tests {
         assert_eq!(messages[0].content, "sys");
         assert!(messages[1].content.contains("big.md"));
         assert_eq!(messages[2].content, "query");
-    }
-
-    #[test]
-    fn get_system_prompt_analyze() {
-        let prompt = get_system_prompt("analyze");
-        assert!(prompt.contains("impact and risk"));
-    }
-
-    #[test]
-    fn get_system_prompt_suggest() {
-        let prompt = get_system_prompt("suggest");
-        assert!(prompt.contains("verification"));
-    }
-
-    #[test]
-    fn get_system_prompt_review() {
-        let prompt = get_system_prompt("review");
-        assert!(prompt.contains("code reviewer"));
-    }
-
-    #[test]
-    fn get_system_prompt_unknown_defaults_to_analyze() {
-        let prompt = get_system_prompt("nonexistent");
-        assert!(prompt.contains("impact and risk"));
     }
 }

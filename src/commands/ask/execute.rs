@@ -124,12 +124,22 @@ pub fn execute_ask(opts: ExecuteAskOpts) -> Result<()> {
     let char_limit = (budget_tokens as u64 * 4 * 80 / 100).max(MIN_CONTEXT_CHARS as u64) as usize;
     let truncated = gathered.latest_packet.truncate_for_context(char_limit);
 
+    let review_diff = review_diff_for_ask(
+        mode,
+        gathered.is_global,
+        gathered.live_tree_clean,
+        &gathered.latest_packet,
+        &layout,
+    );
+
     let user_prompt = build_ask_user_prompt(
         &gathered.query_string,
         gathered.is_global,
         narrative,
         &gathered.latest_packet,
         gathered.live_tree_clean,
+        mode,
+        review_diff.as_deref(),
     );
 
     let base_system_prompt = if gathered.is_global {
@@ -139,7 +149,7 @@ pub fn execute_ask(opts: ExecuteAskOpts) -> Result<()> {
         )
         .to_string()
     } else {
-        crate::local_model::context::get_system_prompt(&mode.to_string())
+        crate::gemini::modes::build_system_prompt(mode)
     };
 
     // 0158: backend-aware timeout. Prefer explicit CLI --backend for kind
@@ -200,6 +210,42 @@ pub fn execute_ask(opts: ExecuteAskOpts) -> Result<()> {
             gather_ms,
         })
     }
+}
+
+/// Assemble ReviewPatch diffs only for a non-global dirty tree. Other modes
+/// skip git. `open_repo` failure yields empty summaries and still runs the
+/// dirty payload helper — Ask must not hard-fail or claim the tree is clean.
+fn review_diff_for_ask(
+    mode: GeminiMode,
+    is_global: bool,
+    live_tree_clean: bool,
+    packet: &crate::impact::packet::ImpactPacket,
+    layout: &Layout,
+) -> Option<String> {
+    if mode != GeminiMode::ReviewPatch || is_global || live_tree_clean {
+        return None;
+    }
+    let mut path_owned: Vec<String> = Vec::new();
+    let joined = match crate::git::repo::open_repo(layout.root.as_std_path()) {
+        Ok(repo) => {
+            let mut parts = Vec::new();
+            for change in packet.changes.iter().take(8) {
+                path_owned.push(change.path.to_string_lossy().into_owned());
+                if let Some(summary) = crate::git::diff::get_diff_summary(&repo, &change.path) {
+                    parts.push(summary);
+                }
+            }
+            parts.join("\n")
+        }
+        Err(_) => {
+            for change in packet.changes.iter().take(8) {
+                path_owned.push(change.path.to_string_lossy().into_owned());
+            }
+            String::new()
+        }
+    };
+    let path_refs: Vec<&str> = path_owned.iter().map(String::as_str).collect();
+    crate::commands::ask::context::review_diff_payload(live_tree_clean, &joined, &path_refs)
 }
 
 fn prepare_ask_storage(
@@ -432,6 +478,20 @@ fn validate_backend_configured(
 #[cfg(test)]
 mod tests {
     use crate::config::model::Config;
+
+    #[test]
+    fn execute_ask_passes_gemini_mode_into_build_system_prompt() {
+        let src = include_str!("execute.rs");
+        let production = src.split("#[cfg(test)]").next().expect("production");
+        assert!(
+            production.contains("build_system_prompt(mode)"),
+            "non-global Ask must pass GeminiMode into build_system_prompt"
+        );
+        assert!(
+            !production.contains("get_system_prompt"),
+            "string mapper get_system_prompt must stay deleted"
+        );
+    }
 
     #[test]
     fn ask_completion_options_are_bounded() {

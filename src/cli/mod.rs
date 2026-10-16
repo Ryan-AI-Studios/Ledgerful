@@ -50,6 +50,7 @@ mod resolve_quiet_tests {
 mod tests {
     use super::*;
     use crate::commands::bridge::BridgeCommands;
+    use crate::gemini::modes::GeminiMode;
     use clap::{CommandFactory, Parser};
 
     /// Run clap Command-tree work on a 32 MiB stack thread.
@@ -1184,6 +1185,101 @@ mod tests {
                 assert_eq!(query, vec!["what", "is", "X", "--semantic"]);
             }
             _ => panic!("expected Ask command"),
+        }
+    }
+
+    #[test]
+    fn ask_mode_review_patch_parses() {
+        let cli = Cli::try_parse_from(["ledgerful", "ask", "--mode", "review-patch", "q"]).unwrap();
+        match cli.command {
+            Commands::Ask(AskArgs {
+                mode, narrative, ..
+            }) => {
+                assert_eq!(mode, GeminiMode::ReviewPatch);
+                assert!(!narrative);
+            }
+            _ => panic!("expected Ask command"),
+        }
+    }
+
+    #[test]
+    fn ask_mode_review_alias_parses() {
+        let cli = Cli::try_parse_from(["ledgerful", "ask", "--mode", "review", "q"]).unwrap();
+        match cli.command {
+            Commands::Ask(AskArgs { mode, .. }) => {
+                assert_eq!(mode, GeminiMode::ReviewPatch);
+            }
+            _ => panic!("expected Ask command"),
+        }
+    }
+
+    #[test]
+    fn ask_mode_short_m_review_parses() {
+        let cli = Cli::try_parse_from(["ledgerful", "ask", "-m", "review", "q"]).unwrap();
+        match cli.command {
+            Commands::Ask(AskArgs { mode, .. }) => {
+                assert_eq!(mode, GeminiMode::ReviewPatch);
+            }
+            _ => panic!("expected Ask command"),
+        }
+    }
+
+    #[test]
+    fn ask_mode_narrative_parses() {
+        let cli = Cli::try_parse_from(["ledgerful", "ask", "--mode", "narrative", "q"]).unwrap();
+        match cli.command {
+            Commands::Ask(AskArgs {
+                mode, narrative, ..
+            }) => {
+                assert_eq!(mode, GeminiMode::Narrative);
+                assert!(!narrative, "--mode narrative must not set --narrative");
+            }
+            _ => panic!("expected Ask command"),
+        }
+    }
+
+    #[test]
+    fn ask_mode_unknown_is_clap_rejected() {
+        let err = Cli::try_parse_from(["ledgerful", "ask", "--mode", "leftover", "q"]);
+        assert!(err.is_err(), "unknown --mode must be clap-rejected");
+    }
+
+    #[test]
+    fn ask_mode_narrative_flag_does_not_mutate_mode() {
+        let cli = Cli::try_parse_from(["ledgerful", "ask", "--narrative", "q"]).unwrap();
+        match cli.command {
+            Commands::Ask(AskArgs {
+                mode, narrative, ..
+            }) => {
+                assert_eq!(mode, GeminiMode::Analyze);
+                assert!(narrative);
+            }
+            _ => panic!("expected Ask command"),
+        }
+    }
+
+    #[test]
+    fn ask_mode_help_lists_review_patch() {
+        let help = on_large_stack(|| {
+            Cli::command()
+                .find_subcommand("ask")
+                .expect("ask")
+                .clone()
+                .render_long_help()
+                .to_string()
+        });
+        assert!(
+            help.contains("review-patch"),
+            "canonical help value stays review-patch:\n{help}"
+        );
+    }
+
+    #[test]
+    fn ask_mode_top_level_review_is_commands_review() {
+        let cli = Cli::try_parse_from(["ledgerful", "review", "HEAD~1..HEAD"]).unwrap();
+        match cli.command {
+            Commands::Review(_) => {}
+            other => panic!("ledgerful review must stay Commands::Review, got {other:?}"),
         }
     }
 
