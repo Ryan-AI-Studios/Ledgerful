@@ -1547,7 +1547,8 @@ weight/reasons and from `readSet` priority-3. **0202** also demotes
 `CHANGELOG.md` temporal pairs (CHANGELOG stays **Contract** / p1-when-changed)
 and ancestor-path (directory-prefix) pairs such as `packaging` ↔
 `packaging/homebrew/ledgerful.rb`. `temporalCouplings` is the path-mode file
-list. Omit-empty `temporalCouplingsAudit` remains on `impact --json` for audit
+list. A side may be a rename `oldPath` and need not be the current worktree
+path. History spelling stays. Omit-empty `temporalCouplingsAudit` remains on `impact --json` for audit
 (leaves, governance files, and directory partners). Omit-empty
 `discardedTreePaths` names directory partners present on a change-filtered
 audit pair before that list is truncated. `demotedTemporalCount` counts demoted
@@ -1611,7 +1612,7 @@ couplings / test-gap rows instead of crate co-change trivia:
 | `schemaVersion` | string **`"v1"`** (unchanged; not numeric 1) |
 | `actionableLead` | Additive array, cap 5, **sorted**. Omitted when empty (non-docs runs). Items: `kind` `coupling` \| `test_gap`; coupling rows have `fileA`/`fileB`/`score`; test-gap rows have `status` / `mappedCount` / `explain` |
 | `glossary` | Object with `no_source_seeds` and `mapped=0` explanations. Present in docs mode. Omitted otherwise |
-| `temporalCouplings` | Path-mode file list. `code` drops governance and changelog pairs; `all` restores those file pairs. Directory partners are never in this list. Trivia is out of the lead only |
+| `temporalCouplings` | Path-mode file list. `code` drops governance and changelog pairs; `all` restores those file pairs. Directory partners are never in this list. A side may be a rename `oldPath` and need not be the current worktree path. History spelling stays. Trivia is out of the lead only |
 | `temporalCouplingsAudit` | Omit-empty honesty list: change-filtered audit pairs (leaves, governance, directory partners). Not truncated together with `discardedTreePaths` |
 | `discardedTreePaths` | Omit-empty sorted directory paths that appear on a change-filtered audit pair before the audit cap. A path can remain after its pair is cut |
 | `agentSummary` | **Not** on `ImpactPacket` — change-context only |
