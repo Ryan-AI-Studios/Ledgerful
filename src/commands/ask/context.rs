@@ -68,6 +68,99 @@ pub(crate) fn review_diff_payload(
     Some("Working tree is dirty but no change summaries are available.".to_string())
 }
 
+/// Per-file byte ceiling for a ReviewPatch diff summary (the 50-line cap in
+/// `get_diff_summary` does not bound minified one-line files).
+pub(crate) const REVIEW_DIFF_FILE_MAX_BYTES: usize = 8_192;
+/// Total byte ceiling for the joined ReviewPatch diff before the
+/// `char_limit / 4` window share is applied.
+pub(crate) const REVIEW_DIFF_TOTAL_MAX_BYTES: usize = 65_536;
+
+/// Cut `s` to at most `max` bytes on a char boundary.
+fn cut_at_char_boundary(s: &str, max: usize) -> &str {
+    let mut end = max.min(s.len());
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// Bound the joined per-file diff summaries by bytes. Each file gets
+/// `min(REVIEW_DIFF_FILE_MAX_BYTES, remaining)`; cut bodies carry an explicit
+/// marker and files past the budget are counted in a trailing marker.
+/// Markers are not charged against `total_budget`. Pure and deterministic.
+pub(crate) fn cap_review_diffs(summaries: &[String], total_budget: usize) -> String {
+    if total_budget == 0 {
+        return String::new();
+    }
+    let mut remaining = total_budget;
+    let mut chunks: Vec<String> = Vec::new();
+    let mut visited = 0usize;
+    for summary in summaries {
+        visited += 1;
+        if summary.is_empty() {
+            continue;
+        }
+        let cap = REVIEW_DIFF_FILE_MAX_BYTES.min(remaining);
+        let cut_by_remaining = summary.len() > cap && cap == remaining;
+        let body = cut_at_char_boundary(summary, cap);
+        let mut chunk = body.to_string();
+        if body.len() < summary.len() {
+            let marker = format!(
+                "[... diff truncated: {} bytes omitted ...]",
+                summary.len() - body.len()
+            );
+            if !body.is_empty() && !body.ends_with('\n') {
+                chunk.push('\n');
+            }
+            chunk.push_str(&marker);
+        }
+        chunks.push(chunk);
+        remaining = remaining.saturating_sub(body.len());
+        if remaining == 0 || cut_by_remaining {
+            break;
+        }
+    }
+    let omitted = summaries
+        .iter()
+        .skip(visited)
+        .filter(|s| !s.is_empty())
+        .count();
+    let mut out = chunks.join("\n");
+    if omitted > 0 {
+        let marker = format!("[... {omitted} more file diff(s) omitted: byte budget ...]");
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&marker);
+    }
+    out
+}
+
+/// Compose the byte-capped ReviewPatch diff payload: clean tree -> `None`,
+/// otherwise cap to `min(REVIEW_DIFF_TOTAL_MAX_BYTES, char_limit / 4)` and
+/// defer to the unchanged [`review_diff_payload`].
+pub(crate) fn assemble_review_diff(
+    summaries: &[String],
+    change_paths: &[&str],
+    live_tree_clean: bool,
+    char_limit: usize,
+) -> Option<String> {
+    if live_tree_clean {
+        return None;
+    }
+    let budget = REVIEW_DIFF_TOTAL_MAX_BYTES.min(char_limit / 4);
+    let capped = cap_review_diffs(summaries, budget);
+    review_diff_payload(live_tree_clean, &capped, change_paths)
+}
+
+/// Packet `truncate_for_context` target after charging the escaped diff
+/// (`escape_code_chunk` turns each backtick into 2 bytes). Never below
+/// `char_limit / 2`.
+pub(crate) fn packet_target_after_diff(char_limit: usize, review_diff: Option<&str>) -> usize {
+    let charge = review_diff.map_or(0, |d| d.len() + d.bytes().filter(|&b| b == b'`').count());
+    char_limit.saturating_sub(charge).max(char_limit / 2)
+}
+
 /// Predicate deciding whether the `ask` flow should prune the active
 /// `ImpactPacket` from the LLM context for the given query. Backed by
 /// `classify_query`; returns `true` only for `GlobalConceptual` intents.
@@ -783,5 +876,161 @@ mod tests {
     fn review_diff_payload_live_clean_is_none() {
         assert_eq!(review_diff_payload(true, "diff", &["a.rs"]), None);
         assert_eq!(review_diff_payload(true, "", &[]), None);
+    }
+
+    fn one_mib() -> String {
+        "x".repeat(1024 * 1024)
+    }
+
+    #[test]
+    fn cap_review_diffs_one_mib_single_line_is_bounded_with_marker() {
+        let out = cap_review_diffs(&[one_mib()], 65_536);
+        assert!(
+            out.len() <= REVIEW_DIFF_FILE_MAX_BYTES + 80,
+            "len={}",
+            out.len()
+        );
+        assert!(out.contains("[... diff truncated: "));
+        assert!(out.starts_with(&"x".repeat(REVIEW_DIFF_FILE_MAX_BYTES)));
+    }
+
+    #[test]
+    fn cap_review_diffs_exactly_at_cap_has_no_marker() {
+        let s = "y".repeat(REVIEW_DIFF_FILE_MAX_BYTES);
+        let out = cap_review_diffs(std::slice::from_ref(&s), 65_536);
+        assert_eq!(out, s);
+    }
+
+    #[test]
+    fn cap_review_diffs_multibyte_straddling_cap_cuts_on_boundary() {
+        let mut s = "a".repeat(REVIEW_DIFF_FILE_MAX_BYTES - 1);
+        s.push('\u{20AC}');
+        let out = cap_review_diffs(&[s], 65_536);
+        assert!(out.starts_with(&"a".repeat(REVIEW_DIFF_FILE_MAX_BYTES - 1)));
+        assert!(!out.contains('\u{20AC}'));
+        assert!(out.contains("diff truncated: 3 bytes omitted"));
+    }
+
+    #[test]
+    fn cap_review_diffs_partial_last_file_and_omitted_marker() {
+        let files: Vec<String> = (0..5).map(|_| "z".repeat(8_192)).collect();
+        let out = cap_review_diffs(&files, 30_400);
+        let marker_at = out.find("[... diff truncated: ").expect("per-file marker");
+        assert!(out[marker_at..].contains("2368 bytes omitted"));
+        assert!(out.ends_with("\n[... 1 more file diff(s) omitted: byte budget ...]"));
+        assert_eq!(out.matches('z').count(), 30_400);
+    }
+
+    #[test]
+    fn cap_review_diffs_total_exhaustion_omits_rest() {
+        let files: Vec<String> = (0..3).map(|_| "q".repeat(8_192)).collect();
+        let out = cap_review_diffs(&files, 8_192);
+        assert!(out.ends_with("\n[... 2 more file diff(s) omitted: byte budget ...]"));
+        assert!(!out.contains("diff truncated"));
+    }
+
+    #[test]
+    fn cap_review_diffs_empty_and_zero_budget() {
+        assert_eq!(cap_review_diffs(&[], 100), "");
+        assert_eq!(cap_review_diffs(&["abc".to_string()], 0), "");
+    }
+
+    #[test]
+    fn cap_review_diffs_empty_bodies_report_no_omission() {
+        let out = cap_review_diffs(&[String::new(), String::new()], 100);
+        assert_eq!(out, "");
+        let out = cap_review_diffs(&[String::new(), "ab".to_string()], 100);
+        assert_eq!(out, "ab");
+    }
+
+    #[test]
+    fn cap_review_diffs_multibyte_walkback_still_stops() {
+        // remaining 5: body 4 ASCII bytes, then a 3-byte char cannot fit.
+        let first = format!("abcd{}", '\u{20AC}');
+        let out = cap_review_diffs(&[first, "SECOND".to_string()], 5);
+        assert!(out.starts_with("abcd\n[... diff truncated: 3 bytes omitted ...]"));
+        assert!(!out.contains("SECOND"));
+        assert!(out.ends_with("\n[... 1 more file diff(s) omitted: byte budget ...]"));
+    }
+
+    #[test]
+    fn cap_review_diffs_body_ending_in_newline_has_no_blank_line() {
+        let mut s = "a".repeat(REVIEW_DIFF_FILE_MAX_BYTES - 1);
+        s.push('\n');
+        s.push_str("tail");
+        let out = cap_review_diffs(&[s], 65_536);
+        assert!(!out.contains("\n\n"));
+        assert!(out.contains("a\n[... diff truncated: 4 bytes omitted ...]"));
+    }
+
+    #[test]
+    fn cap_review_diffs_is_deterministic() {
+        let files = vec!["m".repeat(20_000), "n".repeat(3), "o".repeat(9_000)];
+        assert_eq!(
+            cap_review_diffs(&files, 12_000),
+            cap_review_diffs(&files, 12_000)
+        );
+    }
+
+    #[test]
+    fn assemble_review_diff_clean_tree_is_none() {
+        assert_eq!(
+            assemble_review_diff(&[one_mib()], &["a.rs"], true, 38_000),
+            None
+        );
+    }
+
+    #[test]
+    fn assemble_review_diff_small_window_uses_quarter_char_limit() {
+        let out = assemble_review_diff(&[one_mib()], &["a.rs"], false, 38_000).expect("some");
+        assert!(out.matches('x').count() <= REVIEW_DIFF_FILE_MAX_BYTES);
+        assert!(out.contains("diff truncated"));
+    }
+
+    #[test]
+    fn assemble_review_diff_char_limit_zero_falls_back_to_paths() {
+        let out = assemble_review_diff(&["abc".to_string()], &["a.rs", "b.rs"], false, 0);
+        assert_eq!(out, Some("a.rs\nb.rs".to_string()));
+    }
+
+    #[test]
+    fn review_patch_prompt_growth_is_bounded_for_one_mib_line() {
+        let packet = ImpactPacket::default();
+        let char_limit = 38_000;
+        let diff = assemble_review_diff(&[one_mib()], &["a.rs"], false, char_limit);
+        let with = build_ask_user_prompt(
+            "review",
+            false,
+            false,
+            &packet,
+            false,
+            GeminiMode::ReviewPatch,
+            diff.as_deref(),
+        );
+        let without = build_ask_user_prompt(
+            "review",
+            false,
+            false,
+            &packet,
+            false,
+            GeminiMode::ReviewPatch,
+            None,
+        );
+        assert!(
+            with.len() < without.len() + char_limit / 4 + 300,
+            "{}",
+            with.len()
+        );
+        assert!(with.contains("diff truncated"));
+    }
+
+    #[test]
+    fn packet_target_after_diff_charges_escaped_len_and_clamps() {
+        assert_eq!(packet_target_after_diff(32_768, None), 32_768);
+        assert_eq!(packet_target_after_diff(32_768, Some("abcd")), 32_764);
+        assert_eq!(packet_target_after_diff(32_768, Some("``")), 32_764);
+        let big = "`".repeat(20_000);
+        assert_eq!(packet_target_after_diff(32_768, Some(&big)), 16_384);
+        assert_eq!(packet_target_after_diff(10, Some(&big)), 5);
     }
 }

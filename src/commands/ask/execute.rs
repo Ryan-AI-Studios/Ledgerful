@@ -122,15 +122,19 @@ pub fn execute_ask(opts: ExecuteAskOpts) -> Result<()> {
         }
     };
     let char_limit = (budget_tokens as u64 * 4 * 80 / 100).max(MIN_CONTEXT_CHARS as u64) as usize;
-    let truncated = gathered.latest_packet.truncate_for_context(char_limit);
-
+    // `truncate_for_context` never clears `packet.changes`, so computing the
+    // diff first sees the same `take(8)` change set as before the reorder.
     let review_diff = review_diff_for_ask(
         mode,
         gathered.is_global,
         gathered.live_tree_clean,
         &gathered.latest_packet,
         &layout,
+        char_limit,
     );
+    let packet_target =
+        crate::commands::ask::context::packet_target_after_diff(char_limit, review_diff.as_deref());
+    let truncated = gathered.latest_packet.truncate_for_context(packet_target);
 
     let user_prompt = build_ask_user_prompt(
         &gathered.query_string,
@@ -221,31 +225,35 @@ fn review_diff_for_ask(
     live_tree_clean: bool,
     packet: &crate::impact::packet::ImpactPacket,
     layout: &Layout,
+    char_limit: usize,
 ) -> Option<String> {
     if mode != GeminiMode::ReviewPatch || is_global || live_tree_clean {
         return None;
     }
     let mut path_owned: Vec<String> = Vec::new();
-    let joined = match crate::git::repo::open_repo(layout.root.as_std_path()) {
+    let mut parts: Vec<String> = Vec::new();
+    match crate::git::repo::open_repo(layout.root.as_std_path()) {
         Ok(repo) => {
-            let mut parts = Vec::new();
             for change in packet.changes.iter().take(8) {
                 path_owned.push(change.path.to_string_lossy().into_owned());
                 if let Some(summary) = crate::git::diff::get_diff_summary(&repo, &change.path) {
                     parts.push(summary);
                 }
             }
-            parts.join("\n")
         }
         Err(_) => {
             for change in packet.changes.iter().take(8) {
                 path_owned.push(change.path.to_string_lossy().into_owned());
             }
-            String::new()
         }
-    };
+    }
     let path_refs: Vec<&str> = path_owned.iter().map(String::as_str).collect();
-    crate::commands::ask::context::review_diff_payload(live_tree_clean, &joined, &path_refs)
+    crate::commands::ask::context::assemble_review_diff(
+        &parts,
+        &path_refs,
+        live_tree_clean,
+        char_limit,
+    )
 }
 
 fn prepare_ask_storage(
@@ -478,6 +486,39 @@ fn validate_backend_configured(
 #[cfg(test)]
 mod tests {
     use crate::config::model::Config;
+
+    #[test]
+    fn execute_ask_charges_review_diff_before_packet_truncation() {
+        let src = include_str!("execute.rs");
+        let production = src.split("#[cfg(test)]").next().expect("production");
+        let start = production.find("fn execute_ask(").expect("execute_ask");
+        let rest = &production[start..];
+        let end = rest[1..]
+            .find(
+                "
+fn ",
+            )
+            .map_or(rest.len(), |i| i + 1);
+        let body = &rest[..end];
+        let diff_at = body.find("review_diff_for_ask(").expect("diff call");
+        let trunc_at = body.find("truncate_for_context(").expect("truncate call");
+        assert!(diff_at < trunc_at, "diff must be computed first");
+        assert!(body.contains("packet_target_after_diff("));
+        assert!(body.contains("truncate_for_context(packet_target)"));
+        assert!(!body.contains("truncate_for_context(char_limit)"));
+
+        let fstart = production.find("fn review_diff_for_ask(").expect("helper");
+        let fbody = &production[fstart..];
+        let fend = fbody[1..]
+            .find(
+                "
+fn ",
+            )
+            .map_or(fbody.len(), |i| i + 1);
+        let fbody = &fbody[..fend];
+        assert!(fbody.contains("assemble_review_diff("));
+        assert!(!fbody.contains("parts.join"));
+    }
 
     #[test]
     fn execute_ask_passes_gemini_mode_into_build_system_prompt() {
