@@ -43,6 +43,9 @@ pub(crate) fn execute_ask_with_providers(
 
         match entry.backend {
             Provider::Local | Provider::OllamaCloud | Provider::OpenRouter => {
+                // Cloud egress is sanitized once inside `complete_with_options` (RT-A1,
+                // 0534) before any Ollama Cloud / OpenRouter / Gemini-fallback call. The
+                // Local arm stays raw by design (local-first). Do not sanitize again here.
                 // Apply per-provider overrides from ProviderEntry (TA14 R1)
                 let mut provider_config = config.local_model.clone();
                 if let Some(ref model) = entry.model {

@@ -53,6 +53,9 @@ pub(crate) fn execute_legacy_complete(inputs: LegacyCompleteInputs<'_>) -> Resul
 
     match resolved_backend {
         Backend::Local | Backend::OllamaCloud | Backend::OpenRouter => {
+            // Cloud egress is sanitized once inside `complete_with_options` (RT-A1,
+            // 0534) before any Ollama Cloud / OpenRouter / Gemini-fallback call. The
+            // Local arm stays raw by design (local-first). Do not sanitize again here.
             let max_tokens = config.local_model.context_window;
 
             // B2: skip fixed 5s Local HTTP probe — status classification
