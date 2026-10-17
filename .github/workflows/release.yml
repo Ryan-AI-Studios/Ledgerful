@@ -830,8 +830,24 @@ jobs:
             ( cd "${overlay}/engine" && "${bin}" release --json )
           }
           set +e
-          run_pins
-          rc=$?
+          # The pins check diffs live remotes (incl. npm) against the just-cut
+          # release. npm registry propagation lags the publish by ~1-3 min
+          # (v0.2.17: check ran 19:52:36Z, 0.1.26 visible 19:54:23Z), so a
+          # first-attempt drift is usually the npm surface, not real drift.
+          attempts=0
+          max_attempts=4
+          while [ "${attempts}" -lt "${max_attempts}" ]; do
+            attempts=$((attempts + 1))
+            run_pins
+            rc=$?
+            if [ "${rc}" -ne 1 ]; then
+              break
+            fi
+            if [ "${attempts}" -lt "${max_attempts}" ]; then
+              echo "::warning::overlay release pins reported drift (attempt ${attempts}/${max_attempts}); retrying in 90s for npm propagation" >&2
+              sleep 90
+            fi
+          done
           if [ "${rc}" -eq 2 ]; then
             echo "::warning::release pins unverified (exit 2); retrying once"
             run_pins
