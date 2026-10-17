@@ -89,23 +89,79 @@ mod docs_honesty {
         );
     }
 
+    /// Text from `marker` through the line before the first blank line
+    /// (`trim().is_empty()`), or to end of input. `find` offsets are char
+    /// boundaries and `lines()` strips `\n` and `\r\n`, so no byte-offset
+    /// arithmetic can split a character or leave a stray `\r`.
+    fn paragraph_from<'a>(text: &'a str, marker: &str) -> Option<Vec<&'a str>> {
+        let start = text.find(marker)?;
+        Some(
+            text[start..]
+                .lines()
+                .take_while(|line| !line.trim().is_empty())
+                .collect(),
+        )
+    }
+
+    #[rstest::rstest]
+    #[case::lf("pre\n**M** a → b\n… c\n\nafter")]
+    #[case::crlf("pre\r\n**M** a → b\r\n… c\r\n\r\nafter")]
+    #[case::whitespace("pre\r\n**M** a → b\r\n… c\r\n  \r\nafter")]
+    fn paragraph_from_cuts_at_blank_lines(#[case] text: &str) {
+        let lines = paragraph_from(text, "**M**").expect("marker present");
+        assert_eq!(lines, vec!["**M** a → b", "… c"]);
+    }
+
+    #[test]
+    fn paragraph_from_handles_eof_and_missing_marker() {
+        assert_eq!(
+            paragraph_from("**M** → …", "**M**").expect("eof"),
+            vec!["**M** → …"],
+            "eof without a blank line"
+        );
+        assert!(paragraph_from("none", "**M**").is_none());
+    }
+
     #[test]
     fn contract_escalate_omits_impact_agent_summary() {
         let contract = include_str!("../../docs/agent-output-contract.md");
-        let idx = contract
-            .find("scan --impact --json")
-            .expect("escalate sentence names scan --impact --json");
-        let end = (idx + 280).min(contract.len());
-        let neighborhood = &contract[idx..end];
-        assert!(
-            !neighborhood.contains("risk/blast/agentSummary"),
-            "escalate must not put agentSummary on the impact packet: {neighborhood}"
+
+        // Escalate sentence: anchored on its own marker, not the first
+        // `scan --impact --json` mention (that is a table row).
+        const MARKER: &str = "**Escalate:**";
+        assert_eq!(
+            contract.matches(MARKER).count(),
+            1,
+            "{MARKER} must appear exactly once; update this test if a second Escalate paragraph is intended"
         );
-        let cc = contract
-            .find("`change-context --json`")
-            .expect("change-context table row");
-        let row_end = (cc + 900).min(contract.len());
-        let row = &contract[cc..row_end];
+        let paragraph = paragraph_from(contract, MARKER)
+            .expect("escalate marker present")
+            .join("\n");
+        assert!(
+            paragraph.contains("`scan --impact --json`"),
+            "escalate paragraph must name scan --impact --json: {paragraph}"
+        );
+        assert!(
+            paragraph.contains("`agentSummary` is change-context only"),
+            "escalate paragraph must say agentSummary is change-context only: {paragraph}"
+        );
+        assert!(
+            !paragraph.contains("risk/blast/agentSummary"),
+            "escalate must not put agentSummary on the impact packet: {paragraph}"
+        );
+
+        // Independent contract check: the change-context table row names
+        // --base-ref. Anchored on the row syntax; the bare backticked string
+        // also matches the schema heading.
+        const ROW: &str = "| `change-context --json` |";
+        assert_eq!(
+            contract.matches(ROW).count(),
+            1,
+            "{ROW} table row must appear exactly once"
+        );
+        let row = paragraph_from(contract, ROW)
+            .and_then(|lines| lines.first().copied())
+            .expect("change-context table row present");
         assert!(
             row.contains("base-ref") || row.contains("base_ref"),
             "change-context timeout row must name --base-ref: {row}"
