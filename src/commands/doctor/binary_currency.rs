@@ -686,6 +686,16 @@ mod tests {
     }
 
     #[test]
+    fn needs_ancestry_returns_false_for_prefix_equal_usable_shas() {
+        assert!(!needs_ancestry(
+            "0.2.17",
+            Some("0.2.17"),
+            "abcdef012345",
+            Some("abcdef0123456789abcdef0123456789abcdef01"),
+        ));
+    }
+
+    #[test]
     fn same_version_same_commit_ancestry_yields_no_finding() {
         // Inject ancestry with deliberately non-prefix-equal SHAs to reach its match arm.
         assert_eq!(
