@@ -599,7 +599,6 @@ pub(crate) fn gather_semantic_and_kg_with(
         });
     }
     evidence.semantic = vector_items.len();
-    evidence.kg = kg_chunks.len();
 
     let engine = TantivySearchEngine::open_or_create(layout.search_index_dir().as_std_path()).ok();
     let fts_chunks = match engine.as_ref() {
@@ -687,7 +686,6 @@ pub(crate) fn gather_semantic_and_kg_with(
                 content: kg_bm25_context,
                 score: 1.0,
             });
-            evidence.kg += 1;
         }
 
         if plan.include_kg_neighborhood
@@ -705,17 +703,18 @@ pub(crate) fn gather_semantic_and_kg_with(
                     content: kg_ctx,
                     score: 0.0,
                 });
-                evidence.kg += 1;
             }
         }
-    } else if gathered.is_global {
-        for mut kg in kg_chunks {
-            kg.score = 0.0;
-            relevant_chunks.push(kg);
-        }
+    }
+    if gathered.is_global {
+        append_kg_chunks_once(&mut relevant_chunks, kg_chunks);
     }
 
     evidence.snippets = relevant_chunks.len();
+    evidence.kg = relevant_chunks
+        .iter()
+        .filter(|chunk| is_kg_source(&chunk.source))
+        .count();
     evidence.kg_note = kg_note_for_empty_count(
         evidence.kg,
         relevant_chunks.len(),
@@ -727,6 +726,19 @@ pub(crate) fn gather_semantic_and_kg_with(
     gathered.relevant_chunks = relevant_chunks;
     gathered.semantic_gather_kind = semantic_gather_kind;
     gathered.evidence = evidence;
+}
+
+fn append_kg_chunks_once(relevant: &mut Vec<RankedChunk>, kg_chunks: Vec<RankedChunk>) {
+    for mut chunk in kg_chunks {
+        if relevant
+            .iter()
+            .any(|kept| kept.source == chunk.source && kept.content == chunk.content)
+        {
+            continue;
+        }
+        chunk.score = 0.0;
+        relevant.push(chunk);
+    }
 }
 
 fn keep_max_ranked_chunk(
@@ -1076,7 +1088,7 @@ mod tests {
         };
         assert!(
             counts.semantic + counts.bm25 + counts.kg + counts.structural > counts.snippets,
-            "pre-fusion list sizes may exceed post-fusion snippets"
+            "semantic, BM25, and structural list sizes may overlap; KG and snippets are post-fusion"
         );
         let line = format_evidence_line(&counts);
         assert!(line.contains("structural=2"));
@@ -1360,6 +1372,14 @@ mod tests {
         }
     }
 
+    fn kg_chunk() -> RankedChunk {
+        RankedChunk {
+            source: "Knowledge Graph".into(),
+            content: "widget stores data in the local graph".into(),
+            score: 1.0,
+        }
+    }
+
     /// `fetch_kg_bm25` returns `None` for a script error, zero rows, and a
     /// formatted context of 40 characters or fewer. Gather maps each of those
     /// to `no-match`. There is no separate `error` token.
@@ -1369,6 +1389,15 @@ mod tests {
         chunks: Vec<RankedChunk>,
         clear_cozo: bool,
     ) -> EvidenceCounts {
+        gather_with_chunks(is_global, no_kg_fallback, chunks, clear_cozo).0
+    }
+
+    fn gather_with_chunks(
+        is_global: bool,
+        no_kg_fallback: bool,
+        chunks: Vec<RankedChunk>,
+        clear_cozo: bool,
+    ) -> (EvidenceCounts, Vec<RankedChunk>) {
         let dir = tempdir().expect("tempdir");
         init_repo_with_commit(dir.path());
         let root = camino::Utf8Path::from_path(dir.path()).expect("utf8");
@@ -1407,7 +1436,134 @@ mod tests {
         );
         let evidence = gathered.evidence;
         storage.shutdown().expect("shutdown");
-        evidence
+        (evidence, gathered.relevant_chunks)
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn gather__empty_fusion_global_kg_chunk__kept_and_counted() {
+        let (evidence, chunks) = gather_with_chunks(true, true, vec![kg_chunk()], true);
+        assert_eq!(evidence.kg, 1);
+        assert_eq!(evidence.snippets, 1);
+        assert_eq!(evidence.kg_note, None);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].source, kg_chunk().source);
+        assert_eq!(chunks[0].content, kg_chunk().content);
+        assert_eq!(chunks[0].score, 0.0);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn gather__nonempty_fusion_global_kg_chunk__kept_and_counted() {
+        let (evidence, chunks) =
+            gather_with_chunks(true, true, vec![non_kg_chunk(), kg_chunk()], true);
+        assert_eq!(evidence.snippets, 2);
+        assert_eq!(evidence.kg, 1);
+        assert_eq!(evidence.kg_note, None);
+        let kg = chunks
+            .iter()
+            .find(|chunk| is_kg_source(&chunk.source))
+            .expect("kept KG chunk");
+        assert_eq!(kg.content, kg_chunk().content);
+        assert_eq!(kg.score, 0.0);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn gather__nonglobal_empty_fusion_kg_chunk__not_kept_not_counted() {
+        let (evidence, chunks) = gather_with_chunks(false, false, vec![kg_chunk()], true);
+        assert_eq!(evidence.kg, 0);
+        assert_eq!(evidence.snippets, 0);
+        assert_eq!(evidence.kg_note, Some("no-global-fallback"));
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn gather__nonglobal_nonempty_fusion_kg_chunk__not_kept_not_counted() {
+        let (evidence, chunks) =
+            gather_with_chunks(false, false, vec![non_kg_chunk(), kg_chunk()], true);
+        assert_eq!(evidence.kg, 0);
+        assert_eq!(evidence.snippets, 1);
+        assert_eq!(evidence.kg_note, Some("not-gathered"));
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].source, non_kg_chunk().source);
+        assert_eq!(chunks[0].content, non_kg_chunk().content);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn gather__empty_fusion_duplicate_kg_chunks__deduped() {
+        let (evidence, chunks) = gather_with_chunks(true, true, vec![kg_chunk(), kg_chunk()], true);
+        assert_eq!(evidence.snippets, 1);
+        assert_eq!(evidence.kg, 1);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].content, kg_chunk().content);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn append_kg_chunks_once__identical_existing_and_supplied_chunks__deduped() {
+        let mut relevant = vec![kg_chunk()];
+        append_kg_chunks_once(&mut relevant, vec![kg_chunk(), kg_chunk()]);
+        assert_eq!(relevant.len(), 1);
+        assert_eq!(relevant[0].source, kg_chunk().source);
+        assert_eq!(relevant[0].content, kg_chunk().content);
+        assert_eq!(relevant[0].score, 1.0, "existing chunks stay unchanged");
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn append_kg_chunks_once__same_source_different_content__keeps_order_and_zeroes_scores() {
+        let mut second = kg_chunk();
+        second.content = "widget links to the cache".into();
+        let mut relevant = vec![non_kg_chunk()];
+        append_kg_chunks_once(&mut relevant, vec![kg_chunk(), second.clone(), kg_chunk()]);
+        assert_eq!(relevant.len(), 3);
+        assert_eq!(relevant[0].source, non_kg_chunk().source);
+        assert_eq!(relevant[0].score, non_kg_chunk().score);
+        assert_eq!(relevant[1].source, kg_chunk().source);
+        assert_eq!(relevant[1].content, kg_chunk().content);
+        assert_eq!(relevant[1].score, 0.0);
+        assert_eq!(relevant[2].source, second.source);
+        assert_eq!(relevant[2].content, second.content);
+        assert_eq!(relevant[2].score, 0.0);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn append_kg_chunks_once__same_content_different_kg_sources__both_kept() {
+        let mut bm25 = kg_chunk();
+        bm25.source = "Knowledge Graph (BM25)".into();
+        let mut relevant = Vec::new();
+        append_kg_chunks_once(&mut relevant, vec![kg_chunk(), bm25.clone()]);
+        assert_eq!(relevant.len(), 2);
+        assert_eq!(relevant[0].source, kg_chunk().source);
+        assert_eq!(relevant[1].source, bm25.source);
+        assert_eq!(relevant[0].content, relevant[1].content);
+        assert_eq!(relevant[0].score, 0.0);
+        assert_eq!(relevant[1].score, 0.0);
+    }
+
+    #[test]
+    fn append_kg_chunk_site_follows_bm25_and_neighborhood_fallbacks() {
+        let src = include_str!("gather.rs");
+        let fn_at = src
+            .find("fn gather_semantic_and_kg_with")
+            .expect("gather_semantic_and_kg_with");
+        let after_start = &src[fn_at..];
+        let fn_end = after_start.find("\nfn ").expect("next function");
+        let body = &after_start[..fn_end];
+        let append_at = body.find("append_kg_chunks_once(").expect("append call");
+        assert_eq!(body.matches("append_kg_chunks_once(").count(), 1);
+        assert!(append_at > body.find("fetch_kg_bm25(").expect("BM25 fallback"));
+        assert!(
+            append_at
+                > body
+                    .find("fetch_kg_neighborhood(")
+                    .expect("neighborhood fallback"),
+            "supplied KG chunks must not suppress the existing fallback chain"
+        );
     }
 
     #[test]
