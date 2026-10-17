@@ -655,6 +655,7 @@ mod tests {
                 rows: 2,
                 orphaned_hash_count: 1,
                 orphaned_vector_file_count: 1,
+                drifted_hash_count: 0,
             },
             permission_denied: false,
         });
@@ -671,6 +672,40 @@ mod tests {
             status.assessment.as_ref().map(|a| a.state.clone()),
             Some(IndexFreshnessState::FreshPopulated)
         );
+    }
+
+    #[test]
+    fn index_check_strict_fails_on_embeddings_drift_only() {
+        let status = fresh_status();
+        let surfaces = classify_surface_freshness(ClassifySurfaceFreshness {
+            files_stale: Some(0),
+            compared_head: Some("96d46c10"),
+            indexed_head: Some("96d46c10"),
+            mapping: SurfaceTableProbe {
+                exists: true,
+                rows: 0,
+                query_failed: false,
+            },
+            routes: SurfaceTableProbe {
+                exists: true,
+                rows: 0,
+                query_failed: false,
+            },
+            embeddings: EmbeddingsProbe::Rows {
+                rows: 2,
+                orphaned_hash_count: 0,
+                orphaned_vector_file_count: 0,
+                drifted_hash_count: 1,
+            },
+            permission_denied: false,
+        });
+        let embeddings = surfaces
+            .iter()
+            .find(|s| s.id == "embeddings")
+            .expect("embeddings");
+        assert_eq!(embeddings.status, SurfaceFreshnessStatus::Stale);
+        let verdict = decide_check_verdict(&status, false, true, &surfaces);
+        assert!(verdict.exit_strict_stale);
     }
 
     #[test]

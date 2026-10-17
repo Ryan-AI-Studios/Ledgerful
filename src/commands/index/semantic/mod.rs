@@ -419,6 +419,7 @@ pub(crate) fn execute_semantic_dry_run(
                 orphaned_hash_count: 0,
                 orphaned_vector_file_count: 0,
                 missing_hash_count: 0,
+                drifted_hash_count: 0,
                 stored_dimensions: None,
                 walked: true,
             }

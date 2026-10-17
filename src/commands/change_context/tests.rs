@@ -1897,3 +1897,77 @@ fn change_context_embeddings_orphans_are_stale_content_hash() {
     assert!(embeddings.indexed_head.is_none());
     assert!(embeddings.compared_head.is_none());
 }
+
+#[test]
+fn change_context_embeddings_edited_file_is_stale_content_hash() {
+    use crate::config::model::LocalModelConfig;
+    use crate::index::surface_freshness::{SurfaceFreshnessSource, SurfaceFreshnessStatus};
+    use crate::index::symbols::SymbolKind;
+    use crate::semantic::SemanticDiscovery;
+    use crate::semantic::chunker::{AstChunk, semantic_file_content_hash};
+    use camino::Utf8PathBuf;
+
+    let tmp = tempdir().unwrap();
+    let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+    fs::create_dir_all(tmp.path().join("src")).unwrap();
+    fs::write(tmp.path().join("src/lib.rs"), "fn current() {}\n").unwrap();
+    let layout = Layout::new(&root);
+    layout.ensure_state_dir().unwrap();
+    let storage = StorageManager::init_with_layout(&layout).unwrap();
+    let cozo = storage.cozo().expect("cozo");
+    let lm = LocalModelConfig {
+        dimensions: 3,
+        disable_hnsw: true,
+        base_url: "http://127.0.0.1:9".into(),
+        ..Default::default()
+    };
+    let semantic = SemanticDiscovery::new(lm.clone(), cozo).expect("semantic");
+    semantic.ensure_file_hash_schema().expect("hash schema");
+    semantic
+        .record_file_hash(
+            "src/lib.rs",
+            &semantic_file_content_hash("fn current() {}\n"),
+        )
+        .expect("hash");
+    semantic
+        .index_chunks_batched(
+            vec![AstChunk {
+                file_path: "src/lib.rs".into(),
+                name: "current".into(),
+                qualified_name: None,
+                kind: SymbolKind::Function,
+                content: "fn current() {}".into(),
+                docstring: None,
+                range: (0, 0),
+                lines: (1, 1),
+                offset: 0,
+            }],
+            vec![vec![1.0_f32, 0.0, 0.0]],
+        )
+        .expect("insert");
+    let config = Config {
+        local_model: lm,
+        ..Default::default()
+    };
+
+    let rows = classify_change_context_freshness(&layout, &storage, &config, false);
+    let embeddings = rows
+        .iter()
+        .find(|r| r.id == "embeddings")
+        .expect("embeddings");
+    assert_eq!(embeddings.status, SurfaceFreshnessStatus::Available);
+
+    // Edited after index, no re-index: same path, different content.
+    fs::write(tmp.path().join("src/lib.rs"), "fn current() { 1; }\n").unwrap();
+    let rows = classify_change_context_freshness(&layout, &storage, &config, false);
+    let embeddings = rows
+        .iter()
+        .find(|r| r.id == "embeddings")
+        .expect("embeddings");
+    assert_eq!(embeddings.status, SurfaceFreshnessStatus::Stale);
+    assert_eq!(embeddings.source, SurfaceFreshnessSource::ContentHash);
+    assert_eq!(
+        embeddings.reason,
+        "1 file(s) drifted from the stored semantic hash"
+    );
+}
