@@ -1044,7 +1044,7 @@ fn rewrite_zip_member(zip_bytes: &[u8], name: &str, new_bytes: &[u8]) -> Vec<u8>
         let options = zip::write::SimpleFileOptions::default();
         for i in 0..src.len() {
             let mut file = src.by_index(i).unwrap();
-            let file_name = file.name().to_string();
+            let file_name = file.name().unwrap().to_string();
             let mut buf = Vec::new();
             file.read_to_end(&mut buf).unwrap();
             writer.start_file(&file_name, options).unwrap();

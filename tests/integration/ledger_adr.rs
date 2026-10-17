@@ -337,7 +337,7 @@ fn soc2_zip_adr_md__uses_lifecycle_status() {
     let mut found = false;
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).unwrap();
-        let name = file.name().to_string();
+        let name = file.name().unwrap().to_string();
         if name.starts_with("adr/") && name.ends_with(".md") {
             let mut body = String::new();
             file.read_to_string(&mut body).unwrap();
