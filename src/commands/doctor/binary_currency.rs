@@ -155,6 +155,7 @@ fn direction_for(
             return None;
         }
         return match ancestry {
+            CommitAncestry::SameCommit => None,
             CommitAncestry::RunningIsAncestor => Some(BinaryCurrencyDirection::BehindTree),
             CommitAncestry::HeadIsAncestor => Some(BinaryCurrencyDirection::AheadOfTree),
             CommitAncestry::Divergent | CommitAncestry::Unknown => {
@@ -169,6 +170,7 @@ fn direction_for(
     }
     if usable {
         return match ancestry {
+            CommitAncestry::SameCommit => None,
             CommitAncestry::RunningIsAncestor => Some(BinaryCurrencyDirection::BehindTree),
             CommitAncestry::HeadIsAncestor => Some(BinaryCurrencyDirection::AheadOfTree),
             CommitAncestry::Divergent | CommitAncestry::Unknown => {
@@ -680,6 +682,38 @@ mod tests {
         assert_eq!(
             f.remediation.as_deref(),
             Some(BINARY_BEHIND_TREE_REMEDIATION)
+        );
+    }
+
+    #[test]
+    fn same_version_same_commit_ancestry_yields_no_finding() {
+        // Inject ancestry with deliberately non-prefix-equal SHAs to reach its match arm.
+        assert_eq!(
+            classify(
+                "0.2.17",
+                Some("0.2.17"),
+                "aaaaaaaaaaaa",
+                Some("bbbbbbbbbbbb"),
+                true,
+                CommitAncestry::SameCommit,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn unparsed_version_same_commit_ancestry_yields_no_finding() {
+        // Inject ancestry with deliberately non-prefix-equal SHAs to reach its match arm.
+        assert_eq!(
+            classify(
+                "not-a-version",
+                Some("0.2.17"),
+                "aaaaaaaaaaaa",
+                Some("bbbbbbbbbbbb"),
+                true,
+                CommitAncestry::SameCommit,
+            ),
+            None
         );
     }
 
