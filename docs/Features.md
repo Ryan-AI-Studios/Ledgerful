@@ -197,7 +197,7 @@ Built for the modern developer's environment.
 | Prospective / range | `impact --paths` and `change-context --paths`. `--base-ref` on `scan --impact` and `change-context` only. `review` is range-compose, not `--base-ref`. |
 | Score | JSON `score` 0–1. Human tables may show `displayScore`. |
 | Trust / chain | `readyForPublish` is zero block findings. `CRYPTO VALID` is signatures and chain. `verification_status: Verified` is a bound `verify --tx-id`. |
-| Index freshness | Lexical files/symbols: content-hash. embeddings: walk vs stored paths plus stored semantic file hashes compared with current content (`contentHash`); the search/Ask overlay stays path-only. |
+| Index freshness | Lexical files/symbols: content-hash. embeddings: walk vs stored paths plus stored semantic file hashes compared with current content (`contentHash`); the search/Ask overlay only stats stored paths (stale means a stored file is gone; no tree walk, 0537). |
 | Languages | Symbol floor: Rust, TS, JS, Go, Python, Java, C/C++. Enum: Java, Rust, C++, TS. Routes: Rust Axum/Actix/Rocket, Go Gin/`net/http`, TS Express/Fastify, Python FastAPI/Flask. Models: `supportedExtractors` + `notWired` `cppWalker` / `javascript` / `sqlMigrations`. Java has no model or observability extract. JS has symbols and bindings; no calls, routes, or models. |
 | Optional | SCIP `--auto-scip` (rust-analyzer). Coverage / bridge / `init --operator-pack`. Bare `init` is not the operator pack. Team sync default-off. |
 | Hidden | `bridge`, `search-trigrams`, `internal` off default `--help`. `services` / `deploy` / `observability` callable and gated. `surfaces` is the catalog. |

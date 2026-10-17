@@ -1,8 +1,9 @@
 //! Semantic-index provenance: current walk vs stored hashes vs vector paths.
 //!
 //! Classification is independent of lexical `index_metadata.head_hash`.
-//! Callers in dry-run, `index --check`, change-context, and search/Ask overlay
-//! share this helper so the Cozo scripts cannot diverge.
+//! Callers in dry-run, `index --check`, and change-context share this helper so
+//! the Cozo scripts cannot diverge. The search/Ask overlay uses the cheaper
+//! [`collect_stored_path_orphans`] (no tree walk).
 //! `src/index/surface_freshness.rs` stays a pure classifier over [`EmbeddingsProbe`].
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,18 +13,18 @@ use cozo::DataValue;
 use miette::Result;
 
 use crate::state::storage_cozo::CozoStorage;
-use crate::util::path::semantic_path_key;
+use crate::util::path::{path_is_under_work_root, semantic_path_key};
 
 /// When to walk the tree for candidate files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProvenanceWalk {
     /// Always walk (dry-run inspect of candidate files).
     Always,
-    /// Walk only when stored hashes or vectors exist (check / overlay cost bound).
-    IfStorePopulated,
-    /// Same walk policy as [`Self::IfStorePopulated`], and additionally compare each
-    /// stored `semantic_file_hash` against the current file content (0536).
-    /// Used by `index --check` and change-context, which claim `contentHash`.
+    /// Walk only when stored hashes or vectors exist (check cost bound), and
+    /// additionally compare each stored `semantic_file_hash` against the current
+    /// file content (0536). Used by `index --check` and change-context, which claim
+    /// `contentHash`. The search/Ask overlay does not walk
+    /// ([`collect_stored_path_orphans`], 0537).
     IfStorePopulatedHashed,
 }
 
@@ -154,9 +155,7 @@ pub fn collect_semantic_provenance(
         || stored_vector_row_count > 0;
     let should_walk = match walk {
         ProvenanceWalk::Always => true,
-        ProvenanceWalk::IfStorePopulated | ProvenanceWalk::IfStorePopulatedHashed => {
-            store_populated
-        }
+        ProvenanceWalk::IfStorePopulatedHashed => store_populated,
     };
 
     let walk_files: Vec<(String, PathBuf)> = if should_walk {
@@ -210,6 +209,78 @@ pub fn collect_semantic_provenance(
         stored_dimensions,
         walked: should_walk,
     })
+}
+
+/// Orphan counts for stored semantic paths whose file is gone from disk.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StoredPathOrphans {
+    pub orphaned_hash_count: usize,
+    pub orphaned_vector_file_count: usize,
+}
+
+impl StoredPathOrphans {
+    pub fn is_stale(&self) -> bool {
+        self.orphaned_hash_count > 0 || self.orphaned_vector_file_count > 0
+    }
+}
+
+/// Count stored semantic paths that no longer exist on disk (0537).
+///
+/// Unlike [`collect_semantic_provenance`] this never walks the repository: it
+/// stats each distinct stored path once, so cost is `O(stored files)`, not
+/// `O(repo files)`. A stored file that still exists but fell out of the walk set
+/// (newly gitignored, under a skip dir) is **not** an orphan here; `index --check`
+/// and change-context keep the exact walk-membership answer.
+///
+/// A key outside the work root (absolute escape, `..`, unparseable) is an orphan
+/// without any filesystem call, so a host file cannot make it look present.
+/// Missing relations yield zero counts. Metadata errors other than not-found
+/// count as present and are logged.
+pub fn collect_stored_path_orphans(
+    work_root: &Path,
+    cozo: Option<&CozoStorage>,
+) -> Result<StoredPathOrphans> {
+    let Some(db) = cozo else {
+        return Ok(StoredPathOrphans::default());
+    };
+    let relations = db.get_relations()?;
+    let hash_keys = if relations.iter().any(|r| r == "semantic_file_hash") {
+        path_keys_from_relation(db, RelationKind::SemanticFileHash, work_root)?
+    } else {
+        BTreeSet::new()
+    };
+    let vector_keys = if relations.iter().any(|r| r == "snippet_embedding") {
+        path_keys_from_relation(db, RelationKind::SnippetEmbedding, work_root)?
+    } else {
+        BTreeSet::new()
+    };
+
+    let missing: BTreeSet<&String> = hash_keys
+        .union(&vector_keys)
+        .filter(|key| !stored_path_is_present(work_root, key))
+        .collect();
+    Ok(StoredPathOrphans {
+        orphaned_hash_count: hash_keys.iter().filter(|k| missing.contains(k)).count(),
+        orphaned_vector_file_count: vector_keys.iter().filter(|k| missing.contains(k)).count(),
+    })
+}
+
+fn stored_path_is_present(work_root: &Path, key: &str) -> bool {
+    if !path_is_under_work_root(work_root, key) {
+        return false;
+    }
+    let path = work_root.join(key);
+    match std::fs::metadata(&path) {
+        Ok(meta) => meta.is_file(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => {
+            tracing::warn!(
+                "semantic overlay could not stat {}: {e}; treating as present",
+                path.display()
+            );
+            true
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -448,7 +519,7 @@ mod tests {
         let prov = collect_semantic_provenance(
             dir.path(),
             Some(&storage),
-            ProvenanceWalk::IfStorePopulated,
+            ProvenanceWalk::IfStorePopulatedHashed,
         )
         .expect("prov");
         assert!(!prov.walked);
@@ -555,11 +626,10 @@ mod tests {
         seed_hashed(dir.path(), &storage, "src/lib.rs", "fn f() {}\n");
         write_rs(dir.path(), "src/lib.rs", "fn f() { 1; }\n");
 
-        for walk in [ProvenanceWalk::Always, ProvenanceWalk::IfStorePopulated] {
-            let prov = collect_semantic_provenance(dir.path(), Some(&storage), walk).expect("prov");
-            assert_eq!(prov.drifted_hash_count, 0);
-            assert!(!prov.is_content_stale());
-        }
+        let prov = collect_semantic_provenance(dir.path(), Some(&storage), ProvenanceWalk::Always)
+            .expect("prov");
+        assert_eq!(prov.drifted_hash_count, 0);
+        assert!(!prov.is_content_stale());
     }
 
     #[test]
@@ -571,5 +641,179 @@ mod tests {
         assert_eq!(prov.stored_vector_row_count, 0);
         assert_eq!(prov.stored_hash_file_count, 0);
         assert!(prov.stored_dimensions.is_none());
+    }
+
+    fn seed_stored_paths(storage: &CozoStorage, hashes: &[&str], vectors: &[&str]) {
+        let semantic = seed_engine(storage, 3);
+        for (i, p) in hashes.iter().enumerate() {
+            semantic
+                .record_file_hash(p, &format!("hash{i}"))
+                .expect("hash");
+        }
+        for p in vectors {
+            put_snippet(&semantic, p, "f", 0, 3);
+        }
+    }
+
+    #[test]
+    fn stored_orphans_deleted_file_counts_and_present_file_does_not() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_rs(dir.path(), "src/lib.rs", "fn f() {}\n");
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        seed_stored_paths(
+            &storage,
+            &["src/lib.rs", "src/gone.rs"],
+            &["src/lib.rs", "src/gone.rs"],
+        );
+        let o = collect_stored_path_orphans(dir.path(), Some(&storage)).expect("orphans");
+        assert_eq!(o.orphaned_hash_count, 1);
+        assert_eq!(o.orphaned_vector_file_count, 1);
+        assert!(o.is_stale());
+    }
+
+    #[test]
+    fn stored_orphans_all_present_is_not_stale() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_rs(dir.path(), "src/lib.rs", "fn f() {}\n");
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        seed_stored_paths(&storage, &["src/lib.rs"], &["src/lib.rs"]);
+        let o = collect_stored_path_orphans(dir.path(), Some(&storage)).expect("orphans");
+        assert_eq!(o, StoredPathOrphans::default());
+        assert!(!o.is_stale());
+    }
+
+    #[test]
+    fn stored_orphans_empty_store_and_missing_relations_are_zero() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_rs(dir.path(), "src/lib.rs", "fn f() {}\n");
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let o = collect_stored_path_orphans(dir.path(), Some(&storage)).expect("missing relations");
+        assert_eq!(o, StoredPathOrphans::default());
+        let none = collect_stored_path_orphans(dir.path(), None).expect("no store");
+        assert_eq!(none, StoredPathOrphans::default());
+    }
+
+    #[test]
+    fn stored_orphans_backslash_key_matches_present_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_rs(dir.path(), "src/nested/lib.rs", "fn f() {}\n");
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        seed_stored_paths(&storage, &[r"src\nested\lib.rs"], &[]);
+        let o = collect_stored_path_orphans(dir.path(), Some(&storage)).expect("orphans");
+        assert_eq!(o.orphaned_hash_count, 0);
+    }
+
+    #[test]
+    fn stored_orphans_absolute_outside_root_is_orphan_even_if_host_file_exists() {
+        let root = tempfile::tempdir().expect("root");
+        let outside = tempfile::tempdir().expect("outside");
+        write_rs(outside.path(), "foreign.rs", "fn f() {}\n");
+        let foreign = outside.path().join("foreign.rs");
+        assert!(foreign.is_file());
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        seed_stored_paths(
+            &storage,
+            &[&foreign.to_string_lossy()],
+            &[&foreign.to_string_lossy()],
+        );
+        let o = collect_stored_path_orphans(root.path(), Some(&storage)).expect("orphans");
+        assert_eq!(o.orphaned_hash_count, 1);
+        assert_eq!(o.orphaned_vector_file_count, 1);
+    }
+
+    #[test]
+    fn stored_orphans_dotdot_escape_is_orphan_even_if_host_file_exists() {
+        let parent = tempfile::tempdir().expect("parent");
+        write_rs(parent.path(), "sibling.rs", "fn f() {}\n");
+        let root = parent.path().join("repo");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        seed_stored_paths(&storage, &["../sibling.rs"], &[]);
+        let o = collect_stored_path_orphans(&root, Some(&storage)).expect("orphans");
+        assert_eq!(o.orphaned_hash_count, 1);
+    }
+
+    #[test]
+    fn stored_orphans_directory_at_stored_path_is_orphan() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("src/dir.rs")).expect("mkdir");
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        seed_stored_paths(&storage, &["src/dir.rs"], &[]);
+        let o = collect_stored_path_orphans(dir.path(), Some(&storage)).expect("orphans");
+        assert_eq!(o.orphaned_hash_count, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stored_orphans_symlink_to_file_present_dangling_orphan() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_rs(dir.path(), "src/real.rs", "fn f() {}\n");
+        std::os::unix::fs::symlink(
+            dir.path().join("src/real.rs"),
+            dir.path().join("src/link.rs"),
+        )
+        .expect("symlink");
+        std::os::unix::fs::symlink(
+            dir.path().join("src/none.rs"),
+            dir.path().join("src/dangling.rs"),
+        )
+        .expect("dangling");
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        seed_stored_paths(&storage, &["src/link.rs", "src/dangling.rs"], &[]);
+        let o = collect_stored_path_orphans(dir.path(), Some(&storage)).expect("orphans");
+        assert_eq!(o.orphaned_hash_count, 1);
+    }
+
+    /// 0537 discriminator: a stored file that still exists but is outside the walk
+    /// set (skip dir) is an orphan to the walk and present to the stat overlay.
+    #[test]
+    fn stored_orphans_skip_dir_file_is_present_while_walk_reports_orphan() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_rs(dir.path(), "src/lib.rs", "fn f() {}\n");
+        write_rs(dir.path(), ".agents/skill.rs", "fn g() {}\n");
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        seed_stored_paths(&storage, &["src/lib.rs", ".agents/skill.rs"], &[]);
+
+        let o = collect_stored_path_orphans(dir.path(), Some(&storage)).expect("orphans");
+        assert_eq!(o, StoredPathOrphans::default());
+
+        let walked =
+            collect_semantic_provenance(dir.path(), Some(&storage), ProvenanceWalk::Always)
+                .expect("walk");
+        assert_eq!(walked.orphaned_hash_count, 1);
+    }
+
+    /// Manual timing harness (0537): `LEDGERFUL_BENCH_ROOT=<repo> cargo test -- --ignored bench_overlay`.
+    #[test]
+    #[ignore = "manual timing harness for 0537; needs LEDGERFUL_BENCH_ROOT (owner: semantic)"]
+    fn bench_overlay_walk_cost() {
+        let Ok(root) = std::env::var("LEDGERFUL_BENCH_ROOT") else {
+            return;
+        };
+        let root = std::path::PathBuf::from(root);
+        let storage =
+            CozoStorage::new_read_only(&root.join(".ledgerful/state/ledger.cozo")).expect("open");
+        let mut times = Vec::new();
+        for _ in 0..7 {
+            let mut readiness = crate::semantic::SemanticReadiness {
+                backend_status: crate::semantic::BackendStatus::Ready,
+                model_name: "bench".into(),
+                dimensions: 3,
+                vector_count: 1,
+                zero_vector_count: 0,
+                is_stale: false,
+                dimension_mismatch: false,
+            };
+            let t = std::time::Instant::now();
+            crate::semantic::overlay_semantic_walk_stale(&mut readiness, &root, &storage);
+            times.push(t.elapsed().as_millis());
+        }
+        times.sort_unstable();
+        let prov =
+            collect_semantic_provenance(&root, Some(&storage), ProvenanceWalk::Always).expect("p");
+        eprintln!(
+            "BENCH overlay ms={times:?} median={} stored_hash_files={} candidates={}",
+            times[3], prov.stored_hash_file_count, prov.candidate_file_count
+        );
     }
 }

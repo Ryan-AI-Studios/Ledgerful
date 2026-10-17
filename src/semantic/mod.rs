@@ -57,19 +57,20 @@ pub fn backend_status_from_probe(
     }
 }
 
-/// Overlay walk-vs-store staleness onto readiness using `layout.root`.
-/// Skips the walk when both semantic relations are empty. Never uses `current_dir()`.
+/// Overlay stored-path staleness onto readiness using `layout.root` (0537).
+///
+/// Stats each distinct stored semantic path instead of walking the repository, so
+/// per-query cost is `O(stored files)`. `is_stale` means a stored path no longer
+/// exists on disk; a stored file that still exists but left the walk set (newly
+/// ignored) is reported only by `index --check` / change-context. Never uses
+/// `current_dir()`.
 pub fn overlay_semantic_walk_stale(
     readiness: &mut SemanticReadiness,
     work_root: &Path,
     storage: &CozoStorage,
 ) {
-    match provenance::collect_semantic_provenance(
-        work_root,
-        Some(storage),
-        provenance::ProvenanceWalk::IfStorePopulated,
-    ) {
-        Ok(p) => readiness.is_stale = p.is_stale(),
+    match provenance::collect_stored_path_orphans(work_root, Some(storage)) {
+        Ok(o) => readiness.is_stale = o.is_stale(),
         Err(e) => tracing::warn!("semantic walk overlay failed: {e}"),
     }
 }
@@ -107,7 +108,7 @@ pub fn semantic_readiness_messages(readiness: &SemanticReadiness) -> Vec<String>
     }
     if readiness.is_stale {
         msgs.push(
-            "Semantic records include paths that are not in the current walk. \
+            "Semantic records include stored paths that no longer exist on disk. \
              Query ranking was not modified. After the embedding backend is Ready, \
              re-index with `ledgerful index --semantic`."
                 .to_string(),
@@ -1617,7 +1618,7 @@ mod tests {
         let msgs = semantic_readiness_messages(&overlay);
         assert!(
             msgs.iter()
-                .any(|m| m.contains("not in the current walk") && m.contains("index --semantic")),
+                .any(|m| m.contains("no longer exist on disk") && m.contains("index --semantic")),
             "stale overlay message: {msgs:?}"
         );
         assert!(
@@ -1644,5 +1645,43 @@ mod tests {
         };
         overlay_semantic_walk_stale(&mut readiness, dir.path(), &storage);
         assert!(!readiness.is_stale);
+    }
+
+    /// 0537 discriminator: a stored file under a walk-skip dir still exists, so the
+    /// stat overlay is not stale, while the walk would call it an orphan.
+    #[test]
+    fn overlay_stats_stored_paths_and_does_not_walk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("src")).expect("mkdir");
+        std::fs::create_dir_all(dir.path().join(".agents")).expect("mkdir");
+        std::fs::write(dir.path().join("src/lib.rs"), "fn f() {}\n").expect("write");
+        std::fs::write(dir.path().join(".agents/skill.rs"), "fn g() {}\n").expect("write");
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let config = LocalModelConfig {
+            dimensions: 3,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let semantic = SemanticDiscovery::new(config, &storage).expect("semantic");
+        semantic.ensure_file_hash_schema().expect("hash schema");
+        semantic.record_file_hash("src/lib.rs", "h1").expect("hash");
+        semantic
+            .record_file_hash(".agents/skill.rs", "h2")
+            .expect("hash");
+        let mut readiness = SemanticReadiness {
+            backend_status: BackendStatus::Ready,
+            model_name: "nomic".into(),
+            dimensions: 3,
+            vector_count: 0,
+            zero_vector_count: 0,
+            is_stale: false,
+            dimension_mismatch: false,
+        };
+        overlay_semantic_walk_stale(&mut readiness, dir.path(), &storage);
+        assert!(!readiness.is_stale);
+
+        std::fs::remove_file(dir.path().join(".agents/skill.rs")).expect("rm");
+        overlay_semantic_walk_stale(&mut readiness, dir.path(), &storage);
+        assert!(readiness.is_stale);
     }
 }
