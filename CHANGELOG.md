@@ -12,6 +12,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Ask KG fusion (0532):** `kg=` now counts only Knowledge Graph chunks present in the prompt; an empty-fusion global Ask keeps its KG neighborhood chunk.
 - **Same-commit ancestry (0531):** identical resolved OIDs return `CommitAncestry::SameCommit` and read as no lag. This is a latent contract fix with no runtime change through the current doctor probe, which skips prefix-equal SHAs.
 - **Late hotspot budget persist (0530):** a Budget result from the poll after the hotspot walk does not write hotspot_history or couplings. An explicit --snapshot prints the existing overall-budget skip line. A canonical list that finishes inside the budget still records the sample. schemaVersion stays 1. Package stays 0.2.17.
 - **Early hotspot snapshot refusal (0529):** an overall or cancel stop that fires before the list still refuses --snapshot for docs, tests, semantic, and a non-canonical query. A canonical --snapshot, including --include vendor and a limit equal to the configured value, still reports the overall-budget or cancelled skip. schemaVersion stays 1. Package stays 0.2.17.
