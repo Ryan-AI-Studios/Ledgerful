@@ -1826,3 +1826,251 @@ fn hard_deadline_forbidden_policy_does_not_expand_for_creds() {
         "must not expand for cloud arms when policy forbids cascade"
     );
 }
+
+// --- 0534 ReviewPatch egress sanitize (cloud arms) ---
+
+const REVIEW_PATCH_AWS_SECRET: &str = "AKIAIOSFODNN7EXAMPLE";
+const REVIEW_PATCH_GENERIC_SECRET: &str = "abcdef1234567890abcdef1234567890";
+
+/// Messages shaped like the real ReviewPatch Ask path: `build_ask_user_prompt`
+/// (non-global, dirty tree, `ReviewPatch`, diff present) then `assemble_context`.
+/// `is_global: true` or a clean tree would drop the diff and make leak checks vacuous.
+fn review_patch_messages() -> Vec<ChatMessage> {
+    let diff = format!(
+        "diff --git a/cfg.toml b/cfg.toml\n+api_key = \"{REVIEW_PATCH_AWS_SECRET}\"\n+endpoint = \"https://x.example/v1?token={REVIEW_PATCH_GENERIC_SECRET}\"\n"
+    );
+    let packet = crate::impact::packet::ImpactPacket::default();
+    let user_prompt = crate::commands::ask::build_ask_user_prompt(
+        "review this patch",
+        false,
+        false,
+        &packet,
+        false,
+        crate::gemini::modes::GeminiMode::ReviewPatch,
+        Some(&diff),
+    );
+    assert!(
+        user_prompt.contains(REVIEW_PATCH_AWS_SECRET)
+            && user_prompt.contains(REVIEW_PATCH_GENERIC_SECRET),
+        "fixture must carry both secrets into the ReviewPatch prompt: {user_prompt}"
+    );
+    crate::local_model::context::assemble_context(
+        "You are Ledgerful.",
+        &user_prompt,
+        &[],
+        32_768,
+        crate::local_model::context::AdaptiveMode::ChangesFocus,
+    )
+}
+
+#[test]
+#[serial_test::serial(env)]
+fn review_patch_egress_ollama_cloud_redacts_diff_secrets() {
+    let _iso = isolate_cloud_env();
+    let dir = tempfile::tempdir().expect("hermetic cwd");
+    let _cwd = crate::tests::DirGuard::new(dir.path());
+    let server = MockServer::start();
+    let aws_leak = server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/api/chat")
+            .body_includes(REVIEW_PATCH_AWS_SECRET);
+        then.status(500).body("aws secret leaked");
+    });
+    let generic_leak = server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/api/chat")
+            .body_includes(REVIEW_PATCH_GENERIC_SECRET);
+        then.status(500).body("generic secret leaked");
+    });
+    let ok = server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/api/chat")
+            .body_includes("[REDACTED");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .json_body(serde_json::json!({ "message": { "content": "ok" } }));
+    });
+
+    // `detect_endpoint_kind` only selects native /api/chat for a URL ending `/api`.
+    let native_url = format!("{}/api", server.base_url().trim_end_matches('/'));
+    let config = LocalModelConfig {
+        base_url: "http://127.0.0.1:1".to_string(),
+        generation_url: None,
+        generation_model: "test".to_string(),
+        timeout_secs: 10,
+        ollama_cloud_url: Some(native_url),
+        ollama_cloud_api_key: Some("test-token".to_string()),
+        ollama_cloud_model: Some("test-model".to_string()),
+        ..LocalModelConfig::default()
+    };
+    let result = complete_with_hard_deadline(
+        &config,
+        &review_patch_messages(),
+        &CompletionOptions::default(),
+        Some(5),
+    );
+    assert!(result.is_ok(), "Ollama Cloud mock must succeed: {result:?}");
+    assert_eq!(
+        aws_leak.calls(),
+        0,
+        "AWS-shaped secret reached Ollama Cloud"
+    );
+    assert_eq!(
+        generic_leak.calls(),
+        0,
+        "generic token= secret reached Ollama Cloud"
+    );
+    assert!(ok.calls() >= 1, "expected a redacted Ollama Cloud request");
+}
+
+#[test]
+#[serial_test::serial(env)]
+fn review_patch_egress_openrouter_redacts_diff_secrets() {
+    let _iso = isolate_cloud_env();
+    let dir = tempfile::tempdir().expect("hermetic cwd");
+    let _cwd = crate::tests::DirGuard::new(dir.path());
+    let server = MockServer::start();
+    let aws_leak = server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/chat/completions")
+            .body_includes(REVIEW_PATCH_AWS_SECRET);
+        then.status(500).body("aws secret leaked");
+    });
+    let generic_leak = server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/chat/completions")
+            .body_includes(REVIEW_PATCH_GENERIC_SECRET);
+        then.status(500).body("generic secret leaked");
+    });
+    let ok = server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/chat/completions")
+            .body_includes("[REDACTED");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .json_body(serde_json::json!({
+                "choices": [{ "message": { "content": "ok" } }]
+            }));
+    });
+
+    let _key = TempEnv::set("OPENROUTER_API_KEY", "sk-or-v1-test-key-not-real");
+    let _url = TempEnv::set("OPENROUTER_BASE_URL", &server.base_url());
+    let config = LocalModelConfig {
+        base_url: "http://127.0.0.1:1".to_string(),
+        generation_model: "test".to_string(),
+        timeout_secs: 10,
+        ..LocalModelConfig::default()
+    };
+    let result = complete_with_hard_deadline(
+        &config,
+        &review_patch_messages(),
+        &CompletionOptions::default(),
+        Some(5),
+    );
+    assert!(result.is_ok(), "OpenRouter mock must succeed: {result:?}");
+    assert_eq!(aws_leak.calls(), 0, "AWS-shaped secret reached OpenRouter");
+    assert_eq!(
+        generic_leak.calls(),
+        0,
+        "generic token= secret reached OpenRouter"
+    );
+    assert!(ok.calls() >= 1, "expected a redacted OpenRouter request");
+}
+
+/// Control: the Local arm is raw by design (local-first; RT-A1 covers cloud arms).
+#[test]
+#[serial_test::serial(env)]
+fn review_patch_egress_local_arm_stays_raw_by_design() {
+    let _iso = isolate_cloud_env();
+    let dir = tempfile::tempdir().expect("hermetic cwd");
+    let _cwd = crate::tests::DirGuard::new(dir.path());
+    let server = MockServer::start();
+    let raw = server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/chat/completions")
+            .body_includes(REVIEW_PATCH_AWS_SECRET);
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .json_body(serde_json::json!({
+                "choices": [{ "message": { "content": "ok" } }]
+            }));
+    });
+    let config = LocalModelConfig {
+        base_url: server.base_url(),
+        generation_model: "test".to_string(),
+        timeout_secs: 10,
+        ..LocalModelConfig::default()
+    };
+    let result = complete_with_hard_deadline(
+        &config,
+        &review_patch_messages(),
+        &CompletionOptions::default(),
+        Some(5),
+    );
+    assert!(result.is_ok(), "Local mock must succeed: {result:?}");
+    assert_eq!(
+        raw.calls(),
+        1,
+        "Local arm is expected to receive the raw diff"
+    );
+}
+
+/// Structural pin: Ask's non-Gemini arms reach cloud only through the
+/// sanitizing completion choke point, and sanitize precedes the cloud arms.
+#[test]
+fn review_patch_egress_choke_point_is_structurally_pinned() {
+    fn body_of<'a>(src: &'a str, sig: &str) -> &'a str {
+        let start = src.find(sig).unwrap_or_else(|| panic!("missing {sig}"));
+        let rest = &src[start..];
+        let tail = &rest[sig.len()..];
+        let end = ["\nfn ", "\npub(crate) fn ", "\npub fn "]
+            .iter()
+            .filter_map(|m| tail.find(m))
+            .min()
+            .map_or(rest.len(), |i| i + sig.len());
+        &rest[..end]
+    }
+    let legacy = include_str!("../../commands/ask/legacy_complete.rs");
+    let render = include_str!("../../commands/ask/render.rs");
+    let complete = include_str!("complete.rs");
+
+    let legacy_body = body_of(legacy, "pub(crate) fn execute_legacy_complete(");
+    let providers_body = body_of(render, "pub(crate) fn execute_ask_with_providers(");
+    for (name, body) in [("legacy", legacy_body), ("providers", providers_body)] {
+        assert!(
+            body.contains("complete_with_hard_deadline("),
+            "{name} path must reach cloud via complete_with_hard_deadline"
+        );
+        for banned in [
+            "ureq::",
+            "complete_with_endpoint(",
+            "gemini_complete_unsanitized(",
+        ] {
+            assert!(
+                !body.contains(banned),
+                "{name} path must not call {banned} directly"
+            );
+        }
+    }
+
+    let opts = body_of(complete, "fn complete_with_options(");
+    let sanitize = opts
+        .find("sanitize_messages_for_egress(messages)")
+        .expect("complete_with_options must sanitize messages");
+    let ollama = opts
+        .find("ollama_cloud_endpoint(config)")
+        .expect("ollama cloud arm");
+    let openrouter = opts.find("OPENROUTER_API_KEY").expect("openrouter arm");
+    assert!(sanitize < ollama && sanitize < openrouter);
+    // The Local arm's earlier complete_with_endpoint is expected; every call after
+    // the sanitize must take the sanitized copy.
+    let cloud_part = &opts[sanitize..];
+    assert!(
+        cloud_part.matches("&sanitized_messages").count() >= 3,
+        "Ollama Cloud, OpenRouter and Gemini fallback must take the sanitized copy"
+    );
+    assert!(
+        !cloud_part.contains("&messages,"),
+        "no cloud arm may take the raw messages after the sanitize"
+    );
+}
