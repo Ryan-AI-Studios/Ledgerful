@@ -477,7 +477,13 @@ fn extract_zip_root_exe(bytes: &[u8]) -> Result<Vec<u8>> {
             latest_page_url()
         )
     })?;
-    if file.name() != "ledgerful.exe" {
+    let entry_name = file.name().map_err(|e| {
+        miette!(
+            "Latest zip entry has no readable name: {e}\nSee {}",
+            latest_page_url()
+        )
+    })?;
+    if entry_name != "ledgerful.exe" {
         return Err(miette!(
             "Latest zip must contain ledgerful.exe at the archive root.\nSee {}",
             latest_page_url()

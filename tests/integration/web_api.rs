@@ -3263,7 +3263,7 @@ fn list_zip_files(body: &[u8]) -> Vec<String> {
     (0..archive.len())
         .map(|i| {
             let file = archive.by_index(i).unwrap();
-            file.name().to_string()
+            file.name().unwrap().to_string()
         })
         .collect()
 }
@@ -3505,7 +3505,7 @@ async fn test_soc2_export_tamper_detection() {
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&body[..])).unwrap();
         for i in 0..archive.len() {
             let mut file = archive.by_index(i).unwrap();
-            let name = file.name().to_string();
+            let name = file.name().unwrap().to_string();
             let mut buf = Vec::new();
             file.read_to_end(&mut buf).unwrap();
             entries.push((name, buf));

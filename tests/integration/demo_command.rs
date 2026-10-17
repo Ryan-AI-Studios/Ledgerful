@@ -29,7 +29,12 @@ fn extract_zip_members(zip_bytes: &[u8]) -> BTreeMap<String, Vec<u8>> {
         let mut buf = Vec::new();
         std::io::Read::read_to_end(&mut file, &mut buf)
             .expect("zip entry bytes should be readable");
-        out.insert(file.name().to_string(), buf);
+        out.insert(
+            file.name()
+                .expect("zip entry should have a name")
+                .to_string(),
+            buf,
+        );
     }
     out
 }
