@@ -56,19 +56,25 @@ fn normalize_sha_hex(s: &str) -> String {
 
 /// Where the running commit sits relative to worktree HEAD.
 ///
-/// `NotConsulted` means the caller did not ask. The other variants are the
-/// result of `merge_base` after both ids resolve.
+/// `NotConsulted` means the caller did not ask. After both ids resolve,
+/// `SameCommit` is decided before `merge_base`; otherwise the merge base
+/// determines their relationship. Resolution or merge-base failure is `Unknown`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommitAncestry {
     NotConsulted,
+    /// Both ids resolved to the same OID.
+    SameCommit,
     RunningIsAncestor,
     HeadIsAncestor,
     Divergent,
     Unknown,
 }
 
-/// Resolve both SHAs and compare their merge base.
+/// Resolve both ids, check for the same commit, then compare their merge base.
 ///
+/// Equal resolved OIDs return [`CommitAncestry::SameCommit`] before `merge_base`.
+/// Inputs are expected to resolve to commits or branch refs; annotated tags are
+/// not peeled.
 /// A missing, ambiguous, or unresolvable id is [`CommitAncestry::Unknown`].
 /// This function does not create commits and does not spawn `git`.
 pub fn commit_ancestry(repo: &Repository, running_sha: &str, head_sha: &str) -> CommitAncestry {
@@ -80,6 +86,9 @@ pub fn commit_ancestry(repo: &Repository, running_sha: &str, head_sha: &str) -> 
         Ok(id) => id.detach(),
         Err(_) => return CommitAncestry::Unknown,
     };
+    if running == head {
+        return CommitAncestry::SameCommit;
+    }
     let base = match repo.merge_base(running, head) {
         Ok(id) => id.detach(),
         Err(_) => return CommitAncestry::Unknown,
@@ -210,6 +219,57 @@ mod tests {
                 "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
                 &child_sha
             ),
+            CommitAncestry::Unknown
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::full_sha("full")]
+    #[case::short_sha("short")]
+    #[case::full_branch_ref("refs/heads/main")]
+    #[case::short_branch_ref("main")]
+    fn commit_ancestry_same_commit(#[case] revision: &str, #[values(false, true)] reverse: bool) {
+        let dir = tempdir().unwrap();
+        let repo = gix::init(dir.path()).unwrap();
+        let author = gix::actor::SignatureRef {
+            name: "Ledgerful Test".into(),
+            email: "test@example.com".into(),
+            time: "0 +0000",
+        };
+        let commit = repo
+            .commit_as(
+                author,
+                author,
+                "refs/heads/main",
+                "same commit",
+                repo.empty_tree().id,
+                std::iter::empty::<gix::ObjectId>(),
+            )
+            .unwrap();
+        let full_sha = commit.to_string();
+        let revision = match revision {
+            "full" => full_sha.as_str(),
+            "short" => &full_sha[..7],
+            reference => reference,
+        };
+        let (running, head) = if reverse {
+            (full_sha.as_str(), revision)
+        } else {
+            (revision, full_sha.as_str())
+        };
+        assert_eq!(
+            commit_ancestry(&repo, running, head),
+            CommitAncestry::SameCommit
+        );
+    }
+
+    #[test]
+    fn commit_ancestry_identical_unresolvable_ids_are_unknown() {
+        let dir = tempdir().unwrap();
+        let repo = gix::init(dir.path()).unwrap();
+        let missing = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+        assert_eq!(
+            commit_ancestry(&repo, missing, missing),
             CommitAncestry::Unknown
         );
     }
