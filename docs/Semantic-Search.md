@@ -39,7 +39,7 @@ chunks). `stored_vector_file_count` is distinct vector `file_path` values.
 differ without corruption. `embedding_dimensions` is preferred width
 (configured > probed); `stored_dimensions` is the column width when known.
 `embedding_model` is config-only (not stored identity). Orphaned stored
-paths vs the current semantic walk are named; missing hashes (walk files
+paths vs the current semantic walk are named on `index --check`; the search/Ask readiness overlay only stats stored paths (stale means a stored file no longer exists, 0537); missing hashes (walk files
 not yet hashed) are named and are not stale.
 
 ## Indexing mode & progress
