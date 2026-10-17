@@ -325,7 +325,11 @@ fn classify_records(
                 content,
             } if relevance.is_finite() => {
                 let pid = record.project_id.trim();
-                if pid == local_id {
+                // 0535: empty provenance is unknown (0518 table) even when the local
+                // id is also empty, so test it before the local-id match.
+                if pid.is_empty() {
+                    unknown_count += 1;
+                } else if pid == local_id {
                     insights.push(InsightHit {
                         memory_id: memory_id.clone(),
                         relevance: *relevance,
@@ -333,8 +337,6 @@ fn classify_records(
                         project_id: pid.to_string(),
                     });
                     insight_records.push(record);
-                } else if pid.is_empty() {
-                    unknown_count += 1;
                 } else {
                     foreign_count += 1;
                 }
@@ -1078,6 +1080,159 @@ mod tests {
         match &records[0].payload {
             BridgePayload::Insight { memory_id, .. } => assert_eq!(memory_id, "in"),
             other => panic!("expected Insight, got {other:?}"),
+        }
+    }
+
+    // 0535: an empty or whitespace project_id file yields local_id "". Empty record
+    // provenance is unknown (0518 table), never in scope, whatever the local id is.
+    fn layout_with_project_id(contents: &str) -> (tempfile::TempDir, Layout) {
+        let (tmp, layout) = layout();
+        std::fs::write(layout.project_id_file(), contents).unwrap();
+        (tmp, layout)
+    }
+
+    fn cli_stdout_for(records: &[BridgeRecord]) -> String {
+        records
+            .iter()
+            .map(|r| crate::bridge::model::serialize_record(r).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn empty_local_id_counts_empty_provenance_as_unknown_cli() {
+        for contents in ["", "  \n"] {
+            let (_tmp, layout) = layout_with_project_id(contents);
+            assert_eq!(layout.get_project_id(), "");
+            let stdout = cli_stdout_for(&[insight_for("", "u", 0.9, "no provenance")]);
+            let out = query_status_inner(
+                "q",
+                &layout,
+                &transport_cli(CliRun::Stdout {
+                    command: "ai-brains".into(),
+                    stdout,
+                }),
+                true,
+            );
+            assert_eq!(out.status, QueryStatus::Empty, "file {contents:?}");
+            assert!(out.status.ok());
+            assert!(out.insights.is_empty());
+            assert!(out.insight_records.is_empty());
+            assert_eq!(out.unknown_count, 1);
+            assert_eq!(out.foreign_count, 0);
+            let v = serde_json::to_value(envelope("q", &out)).unwrap();
+            assert_eq!(v["status"], "empty");
+            assert_eq!(v["projectId"], "");
+            assert_eq!(v["unknownCount"], 1);
+            assert!(v.get("results").is_none());
+            assert!(v.get("resultCount").is_none());
+            assert!(v.get("next").is_none());
+            assert_eq!(v["scopeNote"], "1 memories had no project id.");
+        }
+    }
+
+    #[test]
+    fn empty_local_id_counts_empty_provenance_as_unknown_ipc() {
+        let (_tmp, layout) = layout_with_project_id("");
+        let transport = QueryTransport {
+            try_ipc: true,
+            cli_timeout: Duration::from_millis(50),
+            ipc: Some(IpcOverride::Records(vec![
+                insight_for("", "u", 0.9, "no provenance"),
+                insight_for("   ", "w", 0.8, "blank provenance"),
+            ])),
+            cli: Some(CliRun::SpawnErr {
+                command: "ai-brains".into(),
+            }),
+        };
+        let out = query_status_inner("q", &layout, &transport, true);
+        assert_eq!(out.status, QueryStatus::Empty);
+        assert_eq!(out.source, Some(QuerySource::Ipc));
+        assert!(out.insights.is_empty());
+        assert_eq!(out.unknown_count, 2);
+        assert_eq!(out.foreign_count, 0);
+    }
+
+    #[test]
+    fn empty_local_id_counts_non_empty_record_id_as_foreign() {
+        let (_tmp, layout) = layout_with_project_id("");
+        let transport = QueryTransport {
+            try_ipc: true,
+            cli_timeout: Duration::from_millis(50),
+            ipc: Some(IpcOverride::Records(vec![insight_for(
+                "other-project",
+                "f",
+                0.9,
+                "away",
+            )])),
+            cli: Some(CliRun::SpawnErr {
+                command: "ai-brains".into(),
+            }),
+        };
+        let out = query_status_inner("q", &layout, &transport, true);
+        assert_eq!(out.status, QueryStatus::Empty);
+        assert!(out.insights.is_empty());
+        assert_eq!(out.foreign_count, 1);
+        assert_eq!(out.unknown_count, 0);
+    }
+
+    #[test]
+    fn non_empty_local_id_still_buckets_match_foreign_unknown() {
+        let (_tmp, layout) = layout();
+        let transport = QueryTransport {
+            try_ipc: true,
+            cli_timeout: Duration::from_millis(50),
+            ipc: Some(IpcOverride::Records(vec![
+                insight("in", 0.4, "here"),
+                insight_for("other-project", "f", 0.9, "away"),
+                insight_for("", "u", 0.7, "unknown"),
+            ])),
+            cli: Some(CliRun::SpawnErr {
+                command: "ai-brains".into(),
+            }),
+        };
+        let out = query_status_inner("q", &layout, &transport, true);
+        assert_eq!(out.status, QueryStatus::Populated);
+        assert_eq!(out.insights.len(), 1);
+        assert_eq!(out.insights[0].memory_id, "in");
+        assert_eq!(out.foreign_count, 1);
+        assert_eq!(out.unknown_count, 1);
+    }
+
+    #[test]
+    fn empty_local_id_human_omitted_line() {
+        assert_eq!(
+            omitted_human_lines(0, 1),
+            vec!["Omitted 1 memories with no project id.".to_string()]
+        );
+    }
+
+    #[serial_test::serial(env)]
+    #[test]
+    fn query_unified_inner_empty_local_id_returns_no_unknown_provenance() {
+        mod env_guard {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/integration/common/env_guard.rs"
+            ));
+        }
+        use env_guard::TempEnv;
+
+        let _bridge = TempEnv::set("LEDGERFUL_BRIDGE", "1");
+        for contents in ["", "  \n"] {
+            let (_tmp, layout) = layout_with_project_id(contents);
+            let transport = QueryTransport {
+                try_ipc: true,
+                cli_timeout: Duration::from_millis(50),
+                ipc: Some(IpcOverride::Records(vec![insight_for(
+                    "", "u", 0.9, "unknown",
+                )])),
+                cli: Some(CliRun::SpawnErr {
+                    command: "ai-brains".into(),
+                }),
+            };
+            let records = crate::bridge::client::query_unified_inner("q", &layout, &transport);
+            assert!(records.is_empty(), "file {contents:?}");
         }
     }
 }
