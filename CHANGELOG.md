@@ -12,6 +12,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Same-commit ancestry (0531):** identical resolved OIDs return `CommitAncestry::SameCommit` and read as no lag. This is a latent contract fix with no runtime change through the current doctor probe, which skips prefix-equal SHAs.
+- **Late hotspot budget persist (0530):** a Budget result from the poll after the hotspot walk does not write hotspot_history or couplings. An explicit --snapshot prints the existing overall-budget skip line. A canonical list that finishes inside the budget still records the sample. schemaVersion stays 1. Package stays 0.2.17.
 - **Early hotspot snapshot refusal (0529):** an overall or cancel stop that fires before the list still refuses --snapshot for docs, tests, semantic, and a non-canonical query. A canonical --snapshot, including --include vendor and a limit equal to the configured value, still reports the overall-budget or cancelled skip. schemaVersion stays 1. Package stays 0.2.17.
 - **Post-commit unscored hotspot sample (0528):** a completed walk that skipped complexity, or whose scores are all zero, still does not enter hotspot_trends and no longer warns that the history budget stopped the sample. A real budget or cancel stop still warns with the history-budget sentence. schemaVersion stays 1. Package stays 0.2.17.
 - **Stacked cfg(test) enclosure (0527):** a preceding exact `#[cfg(test)]` is the stored `metadata.cfg`. Default dead-code omits the enclosed helper and a private stacked function. `--include-tests` restores them without `noTestCoverage`. A feature-only cfg stays a public API. `schemaVersion` stays 1. Package stays `0.2.17`.
