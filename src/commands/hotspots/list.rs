@@ -1,9 +1,9 @@
 use crate::cli::{HotspotArgs, HotspotIncludeScope};
 use crate::git::blob::head_path_exists;
 use crate::impact::budget::{
-    AnalysisBudget, CompletenessStop, HistoryWalkStop, HotspotProvenance, HotspotProvenanceSource,
-    completeness_for_overall, completeness_for_walk, eprint_walk_stop, filter_for_cli_include,
-    format_provenance_footer, is_overall_stop, poll_overall_stop,
+    AnalysisBudget, AnalysisCompleteness, CompletenessStop, HistoryWalkStop, HotspotProvenance,
+    HotspotProvenanceSource, completeness_for_overall, completeness_for_walk, eprint_walk_stop,
+    filter_for_cli_include, format_provenance_footer, is_overall_stop, poll_overall_stop,
 };
 use crate::impact::hotspots::{HotspotQuery, calculate_hotspots_detailed};
 use crate::impact::packet::Hotspot;
@@ -285,11 +285,10 @@ pub(super) fn execute_hotspots_list(
     }
 
     let snapshot_stop = poll_overall_stop(overall_deadline, &cancel);
-    let cancelled = snapshot_stop == Some(CompletenessStop::Cancelled)
-        || completeness
-            .as_ref()
-            .is_some_and(|stop| stop.stop == CompletenessStop::Cancelled);
-    let overall_stop = completeness.as_ref().is_some_and(is_overall_stop);
+    let gate = post_walk_snapshot_gate(snapshot_stop, completeness.as_ref());
+    if gate.eprint_budget {
+        super::eprint_hotspots_overall_stop();
+    }
     let scores: Vec<f32> = hotspots.iter().map(|hotspot| hotspot.score).collect();
     let mut written: Option<StorageManager> = None;
     let decision = history_persist_decision(&HistoryPersistView {
@@ -301,8 +300,8 @@ pub(super) fn execute_hotspots_list(
         complexity_skipped: calculated.complexity_skipped,
         head_present: calculated.head.is_some(),
         scores: &scores,
-        overall_stop,
-        cancelled,
+        overall_stop: gate.overall_stop,
+        cancelled: gate.cancelled,
     });
     match decision {
         HistoryPersistDecision::Error { message } => return Err(miette::miette!("{message}")),
@@ -580,6 +579,28 @@ fn query_flags_are_canonical(view: &HistoryPersistView<'_>) -> bool {
         && !args.all_parents
         && limit_ok
         && commits_ok
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PostWalkSnapshotGate {
+    pub overall_stop: bool,
+    pub cancelled: bool,
+    pub eprint_budget: bool,
+}
+
+pub(super) fn post_walk_snapshot_gate(
+    snapshot_stop: Option<CompletenessStop>,
+    completeness: Option<&AnalysisCompleteness>,
+) -> PostWalkSnapshotGate {
+    let cancelled = snapshot_stop == Some(CompletenessStop::Cancelled)
+        || completeness.is_some_and(|stop| stop.stop == CompletenessStop::Cancelled);
+    let already_overall = completeness.is_some_and(is_overall_stop);
+    let late_budget = snapshot_stop == Some(CompletenessStop::Budget);
+    PostWalkSnapshotGate {
+        overall_stop: already_overall || late_budget,
+        cancelled,
+        eprint_budget: late_budget && !already_overall && !cancelled,
+    }
 }
 
 pub(super) fn history_persist_decision(view: &HistoryPersistView<'_>) -> HistoryPersistDecision {
