@@ -20,6 +20,15 @@ struct ImportedHotspot {
 struct HotspotMergeCounts {
     updated: usize,
     skipped: usize,
+    /// Lines ignored because the score was negative or not finite as an `f32` (0538).
+    invalid_score: usize,
+}
+
+/// A wire score is usable only when it is non-negative and survives the `f32` cast
+/// finite. Checked on the `f64` so a tiny negative that underflows to `-0.0_f32` is
+/// still rejected. `0.0` and `-0.0` are valid. Native scores are 0 to 1.
+fn valid_imported_score(score: f64) -> bool {
+    score >= 0.0 && (score as f32).is_finite()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -203,7 +212,8 @@ pub fn execute_import(in_path: String) -> Result<()> {
                     hotspot_counts.updated,
                     hotspot_counts.skipped,
                     verifications_len,
-                    decisions_len
+                    decisions_len,
+                    hotspot_counts.invalid_score
                 )
             );
         }
@@ -253,6 +263,7 @@ fn load_bridge_state(layout: &Layout) -> Result<BridgeState> {
 }
 
 /// Update `score` and `display_score` on rows whose normalized path matches.
+/// A negative or non-finite score is ignored and counted in `invalid_score`.
 /// Unknown paths are counted and not appended. `hotspot_provenance` is not
 /// read or written by this function.
 fn merge_imported_hotspots(
@@ -261,10 +272,19 @@ fn merge_imported_hotspots(
 ) -> HotspotMergeCounts {
     let mut updated_rows = BTreeSet::new();
     let mut skipped = 0usize;
+    let mut invalid_score = 0usize;
     for row in imported {
         let key = normalize_path(&row.path);
         if key.is_empty() {
             skipped += 1;
+            continue;
+        }
+        if !valid_imported_score(row.score) {
+            invalid_score += 1;
+            tracing::warn!(
+                "Bridge hotspot ignored: score {} for {key} is negative or not finite",
+                row.score
+            );
             continue;
         }
         let mut matched = false;
@@ -286,6 +306,7 @@ fn merge_imported_hotspots(
     HotspotMergeCounts {
         updated: updated_rows.len(),
         skipped,
+        invalid_score,
     }
 }
 
@@ -295,10 +316,16 @@ fn format_packet_import_summary(
     skipped: usize,
     verifications: usize,
     decisions: usize,
+    invalid: usize,
 ) -> String {
-    format!(
+    let base = format!(
         "Imported {insights} insights, {updated} hotspot scores ({skipped} skipped outside the persisted hotspot list), {verifications} verifications, and {decisions} decisions into latest impact report."
-    )
+    );
+    if invalid == 0 {
+        base
+    } else {
+        format!("{base} Ignored {invalid} hotspot score(s) that were negative or not finite.")
+    }
 }
 
 fn save_bridge_state(layout: &Layout, state: &BridgeState) -> Result<()> {
@@ -415,10 +442,103 @@ mod tests {
 
     #[test]
     fn packet_import_summary_names_updated_and_skipped() {
-        let line = format_packet_import_summary(1, 1, 2, 0, 0);
+        let line = format_packet_import_summary(1, 1, 2, 0, 0, 0);
         assert_eq!(
             line,
             "Imported 1 insights, 1 hotspot scores (2 skipped outside the persisted hotspot list), 0 verifications, and 0 decisions into latest impact report."
         );
+    }
+
+    #[test]
+    fn packet_import_summary_appends_invalid_sentence_only_when_nonzero() {
+        let line = format_packet_import_summary(1, 1, 2, 0, 0, 3);
+        assert_eq!(
+            line,
+            "Imported 1 insights, 1 hotspot scores (2 skipped outside the persisted hotspot list), 0 verifications, and 0 decisions into latest impact report. Ignored 3 hotspot score(s) that were negative or not finite."
+        );
+        assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn valid_imported_score_rejects_negative_underflow_and_overflow() {
+        for bad in [
+            -0.001,
+            -0.0005,
+            -0.5,
+            -1e-50,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            1e300,
+            3.5e38,
+        ] {
+            assert!(!valid_imported_score(bad), "{bad} must be invalid");
+        }
+        for good in [0.0, -0.0, 1e-50, 0.5, 1.0, f64::from(f32::MAX)] {
+            assert!(valid_imported_score(good), "{good} must be valid");
+        }
+    }
+
+    #[test]
+    fn merge_ignores_invalid_scores_and_keeps_row_values() {
+        let mut hotspots = vec![row("src/kept.rs", 0.2, 7)];
+        let counts = merge_imported_hotspots(
+            &mut hotspots,
+            &[
+                imported("src/kept.rs", -0.001),
+                imported("src/kept.rs", -1e-50),
+                imported("src/kept.rs", 1e300),
+            ],
+        );
+        assert_eq!(counts.invalid_score, 3);
+        assert_eq!(counts.updated, 0);
+        assert_eq!(counts.skipped, 0);
+        assert_eq!(hotspots[0].score, 0.2);
+        assert_eq!(hotspots[0].display_score, 1.25);
+    }
+
+    #[test]
+    fn merge_counts_invalid_for_absent_path_as_invalid_not_skipped() {
+        let mut hotspots = vec![row("src/kept.rs", 0.2, 7)];
+        let counts = merge_imported_hotspots(
+            &mut hotspots,
+            &[
+                imported("src/other.rs", -0.5),
+                imported("", -0.5),
+                imported("src/other.rs", 0.5),
+            ],
+        );
+        assert_eq!(counts.invalid_score, 1);
+        assert_eq!(counts.skipped, 2);
+        assert_eq!(counts.updated, 0);
+    }
+
+    #[test]
+    fn merge_applies_valid_lines_alongside_invalid_ones() {
+        let mut hotspots = vec![row("src/kept.rs", 0.2, 1)];
+        let counts = merge_imported_hotspots(
+            &mut hotspots,
+            &[imported("src/kept.rs", -0.5), imported("src/kept.rs", 0.55)],
+        );
+        assert_eq!(counts.invalid_score, 1);
+        assert_eq!(counts.updated, 1);
+        let stored = 0.55_f64 as f32;
+        assert_eq!(hotspots[0].score, stored);
+        assert_eq!(
+            hotspots[0].display_score,
+            normalize_score(f64::from(stored)) as f32
+        );
+    }
+
+    #[test]
+    fn deserialize_record_rejects_nan_and_out_of_range_scores() {
+        let base = |score: &str| {
+            format!(
+                r#"{{"bridge_version":"0.3","direction":"inbound","timestamp":"2026-05-19T12:00:00Z","project_id":"p","record_kind":"hotspot","payload":{{"type":"Hotspot","path":"a.rs","score":{score},"reason":"r"}},"privacy":"Public"}}"#
+            )
+        };
+        assert!(deserialize_record(&base("0.5")).is_ok());
+        assert!(deserialize_record(&base("NaN")).is_err());
+        assert!(deserialize_record(&base("1e999")).is_err());
     }
 }

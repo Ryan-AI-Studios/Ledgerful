@@ -382,3 +382,97 @@ fn test_bridge_import_snapshot_hotspots_stay_unmerged() {
             .any(|row| row.path.as_path() == Path::new("src/from-snapshot.rs"))
     );
 }
+
+fn packet_with_rows(rows: &[(&str, f32)]) -> ImpactPacket {
+    ImpactPacket {
+        tree_clean: false,
+        hotspots: rows
+            .iter()
+            .map(|(path, score)| local_hotspot(path, *score, 3))
+            .collect(),
+        ..ImpactPacket::default()
+    }
+}
+
+#[test]
+fn test_bridge_import_hotspot_ignores_negative_and_overflow_scores() {
+    let (_tmp, layout, _guard) = temp_layout();
+    let rows = [
+        ("src/a.rs", 0.2_f32),
+        ("src/b.rs", 0.3),
+        ("src/c.rs", 0.4),
+        ("src/d.rs", 0.5),
+        ("src/e.rs", 0.6),
+        ("src/f.rs", 0.7),
+    ];
+    let path = write_packet(&layout, &packet_with_rows(&rows));
+    let ndjson = [
+        hotspot_line("src/a.rs", -0.001),
+        hotspot_line("src/b.rs", -0.5),
+        hotspot_line("src/c.rs", -0.0005),
+        hotspot_line("src/d.rs", -1e-50),
+        hotspot_line("src/e.rs", 1e300),
+        hotspot_line("src/f.rs", 0.9),
+    ]
+    .join("\n");
+    let in_path = layout.root.join("import.ndjson");
+    fs::write(&in_path, ndjson).unwrap();
+
+    execute_import(in_path.to_string()).unwrap();
+
+    // The packet must read back (a non-finite displayScore is written as null).
+    let packet = read_packet(&path);
+    assert_eq!(packet.hotspots.len(), 6);
+    // `finalize` re-sorts rows, so look each one up by path.
+    let by_path = |p: &str| {
+        packet
+            .hotspots
+            .iter()
+            .find(|h| h.path.as_path() == Path::new(p))
+            .unwrap()
+    };
+    for (p, original) in rows.iter().take(5) {
+        assert_eq!(by_path(p).score, *original, "{p} score");
+        assert_eq!(by_path(p).display_score, 1.25, "{p} display");
+    }
+    let stored = 0.9_f64 as f32;
+    assert_eq!(by_path("src/f.rs").score, stored);
+    assert_eq!(
+        by_path("src/f.rs").display_score,
+        normalize_score(f64::from(stored)) as f32
+    );
+    assert!(packet.hotspots.iter().all(|h| h.display_score.is_finite()));
+}
+
+#[test]
+fn test_bridge_import_hotspot_accepts_zero_and_negative_zero() {
+    let (_tmp, layout, _guard) = temp_layout();
+    let path = write_packet(
+        &layout,
+        &packet_with_rows(&[("src/a.rs", 0.2), ("src/b.rs", 0.3)]),
+    );
+    let ndjson = format!(
+        "{}\n{}\n",
+        hotspot_line("src/a.rs", 0.0),
+        hotspot_line("src/b.rs", -0.0)
+    );
+    let in_path = layout.root.join("import.ndjson");
+    fs::write(&in_path, ndjson).unwrap();
+
+    execute_import(in_path.to_string()).unwrap();
+
+    let packet = read_packet(&path);
+    for h in &packet.hotspots {
+        assert_eq!(h.score, 0.0);
+        assert_eq!(h.display_score, 0.0);
+    }
+}
+
+#[test]
+fn test_bridge_packet_with_null_display_score_does_not_read_back() {
+    let packet = packet_with_rows(&[("src/a.rs", f32::INFINITY)]);
+    let mut value = serde_json::to_value(&packet).unwrap();
+    value["hotspots"][0]["displayScore"] = serde_json::Value::Null;
+    let err = serde_json::from_value::<ImpactPacket>(value).unwrap_err();
+    assert!(err.to_string().contains("expected f32"), "{err}");
+}
