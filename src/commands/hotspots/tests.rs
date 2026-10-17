@@ -1,11 +1,12 @@
 use super::explain::complexity_for_entity_path;
 use super::list::{
     CouplingsPersistOutcome, HistoryPersistDecision, HistoryPersistView, HistoryWrite,
-    HotspotPersistOutcome, auto_snapshot_warning_line, format_snapshot_persist_message,
-    history_persist_decision as decide_history_persist, latest_hotspot_history_timestamp,
-    list_hotspot_json, live_list_provenance, omitted_docs_footer, omitted_hotspots_footer,
-    omitted_vendor_hotspots_footer, persist_hotspots_and_couplings, settle_persist_attempt,
-    wrap_hotspots_list_json, wrap_hotspots_list_json_with_completeness,
+    HotspotPersistOutcome, PostWalkSnapshotGate, auto_snapshot_warning_line,
+    format_snapshot_persist_message, history_persist_decision as decide_history_persist,
+    latest_hotspot_history_timestamp, list_hotspot_json, live_list_provenance, omitted_docs_footer,
+    omitted_hotspots_footer, omitted_vendor_hotspots_footer, persist_hotspots_and_couplings,
+    post_walk_snapshot_gate, settle_persist_attempt, wrap_hotspots_list_json,
+    wrap_hotspots_list_json_with_completeness,
 };
 use super::trend::{
     TrendMode, TrendRow, build_trend_summary, compute_history_available, format_trend_ts,
@@ -13,7 +14,9 @@ use super::trend::{
     trend_entries_provenance, trend_file_json, trend_summary_provenance,
 };
 use crate::impact::budget::{
-    CompletenessFilter, HotspotProvenance, HotspotProvenanceSource, format_provenance_footer,
+    CompletenessFilter, CompletenessStop, HistoryWalkStop, HotspotProvenance,
+    HotspotProvenanceSource, completeness_for_overall, completeness_for_walk,
+    format_provenance_footer,
 };
 use crate::impact::hotspots::normalize_score;
 
@@ -2675,6 +2678,275 @@ fn persist_view<'a>(
         overall_stop,
         cancelled,
     }
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn hotspots_list__post_walk_budget__sets_overall_stop() {
+    assert_eq!(
+        post_walk_snapshot_gate(Some(CompletenessStop::Budget), None),
+        PostWalkSnapshotGate {
+            overall_stop: true,
+            cancelled: false,
+            eprint_budget: true,
+        }
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn hotspots_list__post_walk_budget_snapshot__skips_overall() {
+    let gate = post_walk_snapshot_gate(Some(CompletenessStop::Budget), None);
+    let scores = [0.4_f32];
+    let snapshot = crate::cli::HotspotArgs {
+        snapshot: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        decide_history_persist(&persist_view(
+            &snapshot,
+            &scores,
+            HistoryWalkStop::Complete,
+            false,
+            true,
+            gate.overall_stop,
+            gate.cancelled,
+            true,
+        )),
+        HistoryPersistDecision::SnapshotSkip {
+            line: "Hotspot snapshot skipped: overall budget.",
+        }
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn hotspots_list__post_walk_budget_auto__silent_skip() {
+    let gate = post_walk_snapshot_gate(Some(CompletenessStop::Budget), None);
+    let scores = [0.4_f32];
+    let args = crate::cli::HotspotArgs::default();
+    assert_eq!(
+        decide_history_persist(&persist_view(
+            &args,
+            &scores,
+            HistoryWalkStop::Complete,
+            false,
+            true,
+            gate.overall_stop,
+            gate.cancelled,
+            true,
+        )),
+        HistoryPersistDecision::SilentSkip
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn hotspots_list__post_walk_none__keeps_write() {
+    let gate = post_walk_snapshot_gate(None, None);
+    assert_eq!(
+        gate,
+        PostWalkSnapshotGate {
+            overall_stop: false,
+            cancelled: false,
+            eprint_budget: false,
+        }
+    );
+    let scores = [0.4_f32];
+    let snapshot = crate::cli::HotspotArgs {
+        snapshot: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        decide_history_persist(&persist_view(
+            &snapshot,
+            &scores,
+            HistoryWalkStop::Complete,
+            false,
+            true,
+            gate.overall_stop,
+            gate.cancelled,
+            true,
+        )),
+        HistoryPersistDecision::WriteHistoryAndCouplings
+    );
+    let args = crate::cli::HotspotArgs::default();
+    assert_eq!(
+        decide_history_persist(&persist_view(
+            &args,
+            &scores,
+            HistoryWalkStop::Complete,
+            false,
+            true,
+            gate.overall_stop,
+            gate.cancelled,
+            true,
+        )),
+        HistoryPersistDecision::WriteHistory
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn hotspots_list__post_walk_cancel__stays_cancelled() {
+    let gate = post_walk_snapshot_gate(Some(CompletenessStop::Cancelled), None);
+    assert_eq!(
+        gate,
+        PostWalkSnapshotGate {
+            overall_stop: false,
+            cancelled: true,
+            eprint_budget: false,
+        }
+    );
+    let scores = [0.4_f32];
+    let snapshot = crate::cli::HotspotArgs {
+        snapshot: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        decide_history_persist(&persist_view(
+            &snapshot,
+            &scores,
+            HistoryWalkStop::Complete,
+            false,
+            true,
+            gate.overall_stop,
+            gate.cancelled,
+            true,
+        )),
+        HistoryPersistDecision::SnapshotSkip {
+            line: "Hotspot snapshot skipped: cancelled.",
+        }
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn hotspots_list__post_walk_budget_when_already_overall__skips_second_eprint() {
+    let completeness = completeness_for_overall(CompletenessStop::Budget, Some(25), "hotspots");
+    let gate = post_walk_snapshot_gate(Some(CompletenessStop::Budget), Some(&completeness));
+    assert!(gate.overall_stop);
+    assert!(!gate.eprint_budget);
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn hotspots_list__post_walk_budget_after_history_stop__skip_line_is_overall() {
+    let completeness = completeness_for_walk(
+        HistoryWalkStop::Budget,
+        500,
+        10,
+        None,
+        CompletenessFilter::Default,
+        Some("abc".to_string()),
+        Some(45),
+    )
+    .expect("history budget emits completeness");
+    assert!(completeness.scope.is_none());
+    let gate = post_walk_snapshot_gate(Some(CompletenessStop::Budget), Some(&completeness));
+    assert_eq!(
+        gate,
+        PostWalkSnapshotGate {
+            overall_stop: true,
+            cancelled: false,
+            eprint_budget: true,
+        }
+    );
+    let scores = [0.4_f32];
+    let snapshot = crate::cli::HotspotArgs {
+        snapshot: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        decide_history_persist(&persist_view(
+            &snapshot,
+            &scores,
+            HistoryWalkStop::Budget,
+            false,
+            true,
+            gate.overall_stop,
+            gate.cancelled,
+            true,
+        )),
+        HistoryPersistDecision::SnapshotSkip {
+            line: "Hotspot snapshot skipped: overall budget.",
+        }
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn hotspots_list__post_walk_budget_after_cancel__stays_cancelled() {
+    let completeness = completeness_for_overall(CompletenessStop::Cancelled, Some(25), "hotspots");
+    let gate = post_walk_snapshot_gate(Some(CompletenessStop::Budget), Some(&completeness));
+    assert!(gate.cancelled);
+    assert!(!gate.eprint_budget);
+    let scores = [0.4_f32];
+    let snapshot = crate::cli::HotspotArgs {
+        snapshot: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        decide_history_persist(&persist_view(
+            &snapshot,
+            &scores,
+            HistoryWalkStop::Complete,
+            false,
+            true,
+            gate.overall_stop,
+            gate.cancelled,
+            true,
+        )),
+        HistoryPersistDecision::SnapshotSkip {
+            line: "Hotspot snapshot skipped: cancelled.",
+        }
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn hotspots_list__post_walk_budget_after_walk_cancel__stays_cancelled_and_no_eprint() {
+    let completeness = completeness_for_walk(
+        HistoryWalkStop::Cancelled,
+        500,
+        10,
+        None,
+        CompletenessFilter::Default,
+        Some("abc".to_string()),
+        Some(45),
+    )
+    .expect("history cancel emits completeness");
+    assert!(completeness.scope.is_none());
+    assert_eq!(completeness.stop, CompletenessStop::Cancelled);
+    let gate = post_walk_snapshot_gate(Some(CompletenessStop::Budget), Some(&completeness));
+    assert_eq!(
+        gate,
+        PostWalkSnapshotGate {
+            overall_stop: true,
+            cancelled: true,
+            eprint_budget: false,
+        }
+    );
+    let scores = [0.4_f32];
+    let snapshot = crate::cli::HotspotArgs {
+        snapshot: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        decide_history_persist(&persist_view(
+            &snapshot,
+            &scores,
+            HistoryWalkStop::Cancelled,
+            false,
+            true,
+            gate.overall_stop,
+            gate.cancelled,
+            true,
+        )),
+        HistoryPersistDecision::SnapshotSkip {
+            line: "Hotspot snapshot skipped: cancelled.",
+        }
+    );
 }
 
 #[test]
