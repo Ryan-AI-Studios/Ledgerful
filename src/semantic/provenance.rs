@@ -5,7 +5,7 @@
 //! share this helper so the Cozo scripts cannot diverge.
 //! `src/index/surface_freshness.rs` stays a pure classifier over [`EmbeddingsProbe`].
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use cozo::DataValue;
@@ -21,6 +21,10 @@ pub enum ProvenanceWalk {
     Always,
     /// Walk only when stored hashes or vectors exist (check / overlay cost bound).
     IfStorePopulated,
+    /// Same walk policy as [`Self::IfStorePopulated`], and additionally compare each
+    /// stored `semantic_file_hash` against the current file content (0536).
+    /// Used by `index --check` and change-context, which claim `contentHash`.
+    IfStorePopulatedHashed,
 }
 
 /// Counts comparing the current semantic walk to stored hash and vector keys.
@@ -33,6 +37,9 @@ pub struct SemanticProvenance {
     pub orphaned_hash_count: usize,
     pub orphaned_vector_file_count: usize,
     pub missing_hash_count: usize,
+    /// Walk files whose stored hash differs from the current content. Always `0`
+    /// unless the walk mode compares hashes ([`ProvenanceWalk::IfStorePopulatedHashed`]).
+    pub drifted_hash_count: usize,
     pub stored_dimensions: Option<usize>,
     pub walked: bool,
 }
@@ -42,6 +49,11 @@ impl SemanticProvenance {
     /// Missing hashes and row-vs-file grain do not stale.
     pub fn is_stale(&self) -> bool {
         self.orphaned_hash_count > 0 || self.orphaned_vector_file_count > 0
+    }
+
+    /// [`Self::is_stale`] or a stored hash that no longer matches the file content.
+    pub fn is_content_stale(&self) -> bool {
+        self.is_stale() || self.drifted_hash_count > 0
     }
 }
 
@@ -112,6 +124,7 @@ pub fn collect_semantic_provenance(
     walk: ProvenanceWalk,
 ) -> Result<SemanticProvenance> {
     let mut stored_hash_keys = BTreeSet::new();
+    let mut stored_hashes: BTreeMap<String, String> = BTreeMap::new();
     let mut stored_vector_keys = BTreeSet::new();
     let mut stored_vector_row_count = 0usize;
     let mut stored_dimensions = None;
@@ -130,6 +143,9 @@ pub fn collect_semantic_provenance(
         if has_hash {
             stored_hash_keys =
                 path_keys_from_relation(db, RelationKind::SemanticFileHash, work_root)?;
+            if walk == ProvenanceWalk::IfStorePopulatedHashed {
+                stored_hashes = stored_hashes_from_relation(db, work_root)?;
+            }
         }
     }
 
@@ -138,17 +154,45 @@ pub fn collect_semantic_provenance(
         || stored_vector_row_count > 0;
     let should_walk = match walk {
         ProvenanceWalk::Always => true,
-        ProvenanceWalk::IfStorePopulated => store_populated,
+        ProvenanceWalk::IfStorePopulated | ProvenanceWalk::IfStorePopulatedHashed => {
+            store_populated
+        }
     };
 
-    let walk_keys = if should_walk {
+    let walk_files: Vec<(String, PathBuf)> = if should_walk {
         walk_repo_for_semantic_files(work_root)
             .into_iter()
-            .filter_map(|path| semantic_path_key(work_root, &path).ok())
-            .collect::<BTreeSet<_>>()
+            .filter_map(|path| semantic_path_key(work_root, &path).ok().map(|k| (k, path)))
+            .collect()
     } else {
-        BTreeSet::new()
+        Vec::new()
     };
+    let walk_keys = walk_files
+        .iter()
+        .map(|(k, _)| k.clone())
+        .collect::<BTreeSet<_>>();
+
+    let mut drifted_hash_count = 0usize;
+    if should_walk && walk == ProvenanceWalk::IfStorePopulatedHashed {
+        // Same recipe as the indexer: encoding-aware read, then grain-mixed blake3.
+        // A file that cannot be read is skipped (not stale), but logged.
+        for (key, path) in &walk_files {
+            let Some(stored) = stored_hashes.get(key) else {
+                continue;
+            };
+            match crate::util::fs::read_to_string_with_encoding(path) {
+                Ok(content) => {
+                    if crate::semantic::chunker::semantic_file_content_hash(&content) != *stored {
+                        drifted_hash_count += 1;
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    "semantic hash compare skipped unreadable file {}: {e}",
+                    path.display()
+                ),
+            }
+        }
+    }
 
     let orphaned_hash_count = stored_hash_keys.difference(&walk_keys).count();
     let orphaned_vector_file_count = stored_vector_keys.difference(&walk_keys).count();
@@ -162,6 +206,7 @@ pub fn collect_semantic_provenance(
         orphaned_hash_count,
         orphaned_vector_file_count,
         missing_hash_count,
+        drifted_hash_count,
         stored_dimensions,
         walked: should_walk,
     })
@@ -191,6 +236,26 @@ fn path_keys_from_relation(
         keys.insert(normalize_stored_semantic_key(work_root, raw));
     }
     Ok(keys)
+}
+
+/// Stored `(normalized path key => content_hash)` pairs from `semantic_file_hash`.
+fn stored_hashes_from_relation(
+    db: &CozoStorage,
+    work_root: &Path,
+) -> Result<BTreeMap<String, String>> {
+    let res = db
+        .run_script("?[file_path, content_hash] := *semantic_file_hash{file_path, content_hash}")?;
+    let mut out = BTreeMap::new();
+    for row in res.rows {
+        if let (Some(DataValue::Str(path)), Some(DataValue::Str(hash))) = (row.first(), row.get(1))
+        {
+            out.insert(
+                normalize_stored_semantic_key(work_root, path),
+                hash.to_string(),
+            );
+        }
+    }
+    Ok(out)
 }
 
 /// Slash-normalize a stored key. Foreign or unparseable keys stay comparable
@@ -389,6 +454,112 @@ mod tests {
         assert!(!prov.walked);
         assert_eq!(prov.candidate_file_count, 0);
         assert!(!prov.is_stale());
+    }
+
+    fn seed_hashed(dir: &Path, storage: &CozoStorage, rel: &str, body: &str) {
+        write_rs(dir, rel, body);
+        let semantic = seed_engine(storage, 3);
+        semantic
+            .record_file_hash(
+                rel,
+                &crate::semantic::chunker::semantic_file_content_hash(body),
+            )
+            .expect("hash");
+        put_snippet(&semantic, rel, "f", 0, 3);
+    }
+
+    #[test]
+    fn hashed_edited_file_without_reindex_drifts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        seed_hashed(dir.path(), &storage, "src/lib.rs", "fn f() {}\n");
+        write_rs(dir.path(), "src/lib.rs", "fn f() { 1; }\n");
+
+        let prov = collect_semantic_provenance(
+            dir.path(),
+            Some(&storage),
+            ProvenanceWalk::IfStorePopulatedHashed,
+        )
+        .expect("prov");
+        assert_eq!(prov.drifted_hash_count, 1);
+        assert_eq!(prov.orphaned_hash_count, 0);
+        assert!(prov.is_content_stale());
+        assert!(!prov.is_stale(), "is_stale stays orphan-only");
+    }
+
+    #[test]
+    fn hashed_unchanged_file_has_no_drift() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        seed_hashed(dir.path(), &storage, "src/lib.rs", "fn f() {}\n");
+
+        let prov = collect_semantic_provenance(
+            dir.path(),
+            Some(&storage),
+            ProvenanceWalk::IfStorePopulatedHashed,
+        )
+        .expect("prov");
+        assert_eq!(prov.drifted_hash_count, 0);
+        assert!(!prov.is_content_stale());
+    }
+
+    #[test]
+    fn hashed_missing_hash_is_not_drift_and_orphan_is_stale() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        seed_hashed(dir.path(), &storage, "src/lib.rs", "fn f() {}\n");
+        write_rs(dir.path(), "src/new.rs", "fn n() {}\n");
+        let semantic = seed_engine(&storage, 3);
+        semantic.record_file_hash("src/gone.rs", "x").expect("hash");
+
+        let prov = collect_semantic_provenance(
+            dir.path(),
+            Some(&storage),
+            ProvenanceWalk::IfStorePopulatedHashed,
+        )
+        .expect("prov");
+        assert_eq!(prov.drifted_hash_count, 0);
+        assert_eq!(prov.missing_hash_count, 1);
+        assert_eq!(prov.orphaned_hash_count, 1);
+        assert!(prov.is_content_stale());
+    }
+
+    #[test]
+    fn hashed_backslash_stored_key_matches_walk_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let body = "fn f() {}\n";
+        write_rs(dir.path(), "src/nested/lib.rs", body);
+        let semantic = seed_engine(&storage, 3);
+        semantic
+            .record_file_hash(
+                "src\\nested\\lib.rs",
+                &crate::semantic::chunker::semantic_file_content_hash(body),
+            )
+            .expect("hash");
+
+        let prov = collect_semantic_provenance(
+            dir.path(),
+            Some(&storage),
+            ProvenanceWalk::IfStorePopulatedHashed,
+        )
+        .expect("prov");
+        assert_eq!(prov.drifted_hash_count, 0);
+        assert_eq!(prov.orphaned_hash_count, 0);
+    }
+
+    #[test]
+    fn non_hashed_modes_do_not_compare_content() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        seed_hashed(dir.path(), &storage, "src/lib.rs", "fn f() {}\n");
+        write_rs(dir.path(), "src/lib.rs", "fn f() { 1; }\n");
+
+        for walk in [ProvenanceWalk::Always, ProvenanceWalk::IfStorePopulated] {
+            let prov = collect_semantic_provenance(dir.path(), Some(&storage), walk).expect("prov");
+            assert_eq!(prov.drifted_hash_count, 0);
+            assert!(!prov.is_content_stale());
+        }
     }
 
     #[test]

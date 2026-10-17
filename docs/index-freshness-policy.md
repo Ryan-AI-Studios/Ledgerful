@@ -107,7 +107,9 @@ serialize:
 Additive `surfaces[]` (0313) reports derived-table provenance. `mapping` /
 `routes` compare against `index_metadata.head_hash`. **embeddings** does
 **not** use that HEAD: it classifies stored `semantic_file_hash` and
-`snippet_embedding` paths against the current semantic walk (`contentHash`).
+`snippet_embedding` paths against the current semantic walk, and compares each
+stored `semantic_file_hash` with the current file content (`contentHash`, 0536).
+A file edited after indexing is `stale`. The search/Ask overlay stays path-only.
 It does **not** run the lexical content-hash walk. `surfaces.files` reuses
 the Full `--check` byte walk. Mapping/route/embeddings lag cannot flip
 `FreshPopulated`. `--strict` exits 1 when any surface is `stale`.

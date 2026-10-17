@@ -139,6 +139,7 @@ pub enum EmbeddingsProbe {
         rows: usize,
         orphaned_hash_count: usize,
         orphaned_vector_file_count: usize,
+        drifted_hash_count: usize,
     },
 }
 
@@ -288,12 +289,13 @@ pub fn embeddings_probe_from_storage(
     match crate::semantic::provenance::collect_semantic_provenance(
         work_root,
         Some(cozo),
-        crate::semantic::provenance::ProvenanceWalk::IfStorePopulated,
+        crate::semantic::provenance::ProvenanceWalk::IfStorePopulatedHashed,
     ) {
         Ok(p) => EmbeddingsProbe::Rows {
             rows: p.stored_vector_row_count,
             orphaned_hash_count: p.orphaned_hash_count,
             orphaned_vector_file_count: p.orphaned_vector_file_count,
+            drifted_hash_count: p.drifted_hash_count,
         },
         Err(_) => EmbeddingsProbe::QueryFailed,
     }
@@ -463,16 +465,27 @@ fn embeddings_row(probe: EmbeddingsProbe, permission_denied: bool) -> SurfaceFre
             rows,
             orphaned_hash_count,
             orphaned_vector_file_count,
+            drifted_hash_count,
         } => {
-            let stale = orphaned_hash_count > 0 || orphaned_vector_file_count > 0;
+            let orphaned = orphaned_hash_count > 0 || orphaned_vector_file_count > 0;
+            let stale = orphaned || drifted_hash_count > 0;
             if stale {
+                // 0536: drift is a stored hash compared against current content.
+                let orphan_reason = format!(
+                    "{orphaned_hash_count} stored semantic hash path(s) and {orphaned_vector_file_count} vector file path(s) are not in the current walk"
+                );
+                let drift_reason =
+                    format!("{drifted_hash_count} file(s) drifted from the stored semantic hash");
+                let reason = match (orphaned, drifted_hash_count > 0) {
+                    (true, true) => format!("{orphan_reason}; {drift_reason}"),
+                    (true, false) => orphan_reason,
+                    _ => drift_reason,
+                };
                 SurfaceFreshness {
                     id: "embeddings".into(),
                     status: SurfaceFreshnessStatus::Stale,
                     source: SurfaceFreshnessSource::ContentHash,
-                    reason: format!(
-                        "{orphaned_hash_count} stored semantic hash path(s) and {orphaned_vector_file_count} vector file path(s) are not in the current walk"
-                    ),
+                    reason,
                     refresh: refresh_cmd(REFRESH_INDEX_SEMANTIC, false, permission_denied),
                     indexed_head: None,
                     compared_head: None,
@@ -636,6 +649,7 @@ mod tests {
             rows: 0,
             orphaned_hash_count: 0,
             orphaned_vector_file_count: 0,
+            drifted_hash_count: 0,
         };
         let rows = classify_surface_freshness(input);
         let embeddings = row(&rows, "embeddings");
@@ -656,6 +670,7 @@ mod tests {
             rows: 0,
             orphaned_hash_count: 0,
             orphaned_vector_file_count: 0,
+            drifted_hash_count: 0,
         };
         let rows = classify_surface_freshness(input);
         let embeddings = row(&rows, "embeddings");
@@ -676,6 +691,7 @@ mod tests {
             rows: 4,
             orphaned_hash_count: 1,
             orphaned_vector_file_count: 1,
+            drifted_hash_count: 0,
         };
         let rows = classify_surface_freshness(input);
         let embeddings = row(&rows, "embeddings");
@@ -693,6 +709,50 @@ mod tests {
         assert_eq!(files.source, SurfaceFreshnessSource::ContentHash);
     }
 
+    fn embeddings_reason_for(
+        orphans: (usize, usize),
+        drifted: usize,
+    ) -> (SurfaceFreshnessStatus, String) {
+        let mut input = mapping_stale_input();
+        input.embeddings = EmbeddingsProbe::Rows {
+            rows: 4,
+            orphaned_hash_count: orphans.0,
+            orphaned_vector_file_count: orphans.1,
+            drifted_hash_count: drifted,
+        };
+        let rows = classify_surface_freshness(input);
+        let embeddings = row(&rows, "embeddings");
+        assert_eq!(embeddings.source, SurfaceFreshnessSource::ContentHash);
+        (embeddings.status, embeddings.reason.clone())
+    }
+
+    #[test]
+    fn surface_freshness_embeddings_drift_only_is_stale_with_drift_reason() {
+        let (status, reason) = embeddings_reason_for((0, 0), 2);
+        assert_eq!(status, SurfaceFreshnessStatus::Stale);
+        assert_eq!(reason, "2 file(s) drifted from the stored semantic hash");
+    }
+
+    #[test]
+    fn surface_freshness_embeddings_orphans_and_drift_combine_reasons() {
+        let (status, reason) = embeddings_reason_for((1, 1), 3);
+        assert_eq!(status, SurfaceFreshnessStatus::Stale);
+        assert_eq!(
+            reason,
+            "1 stored semantic hash path(s) and 1 vector file path(s) are not in the current walk; 3 file(s) drifted from the stored semantic hash"
+        );
+    }
+
+    #[test]
+    fn surface_freshness_embeddings_zero_drift_zero_orphans_is_available() {
+        let (status, reason) = embeddings_reason_for((0, 0), 0);
+        assert_eq!(status, SurfaceFreshnessStatus::Available);
+        assert_eq!(
+            reason,
+            "semantic file hashes match the current walk; 4 vector rows (function-grain chunks)"
+        );
+    }
+
     #[test]
     fn surface_freshness_embeddings_populated_available_content_hash() {
         let mut input = mapping_stale_input();
@@ -700,6 +760,7 @@ mod tests {
             rows: 4,
             orphaned_hash_count: 0,
             orphaned_vector_file_count: 0,
+            drifted_hash_count: 0,
         };
         let rows = classify_surface_freshness(input);
         let embeddings = row(&rows, "embeddings");

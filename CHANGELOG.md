@@ -12,6 +12,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Embeddings freshness compares stored hashes (0536):** `index --check` and `change-context` now compare each stored `semantic_file_hash` with the current file content. A file edited after `index --semantic` reports `stale` (`index --check --strict` exits 1) with `N file(s) drifted from the stored semantic hash`, instead of `available` with a hashes-match reason. Orphans, missing hashes, grain and the search/Ask overlay are unchanged. `schemaVersion` stays 1. Package stays `0.2.17`.
 - **Bridge empty local project id (0535):** when `.ledgerful/project_id` is empty or whitespace, `bridge query` and Ask no longer treat Insights with empty provenance as in-scope; they count as `unknownCount`. A non-empty record id is foreign. Match, foreign and unknown buckets are unchanged for a non-empty local id.
 - **Ask ReviewPatch diff byte budget (0533):** the ReviewPatch `review_diff` is capped at 8 KiB per file and `min(64 KiB, char_limit/4)` in total, with explicit truncation markers, and its escaped length is charged against the packet `truncate_for_context` target (floor `char_limit/2`). A minified one-line file can no longer add unbounded bytes to the Ask prompt. Scan diff summaries are unchanged. No `ask --json`. `schemaVersion` stays 1. Package stays `0.2.17`.
 - **Ask KG fusion (0532):** `kg=` now counts only Knowledge Graph chunks present in the prompt; an empty-fusion global Ask keeps its KG neighborhood chunk.
