@@ -77,6 +77,8 @@ mod cli_update;
 #[cfg(feature = "usage-metrics")]
 mod cli_usage;
 mod cli_verify;
+mod cli_verify_embedded;
+mod cli_verify_embedded_qualification;
 mod cli_verify_explain_test_mapping;
 mod cli_verify_fast_non_code;
 mod cli_verify_rules;

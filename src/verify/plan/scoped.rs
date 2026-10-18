@@ -10,9 +10,10 @@ use crate::verify::predict::PredictedFile;
 use crate::verify::timeouts::DEFAULT_AUTO_TIMEOUT_SECS;
 use std::path::Path;
 
+use super::embedded::{self, EmbeddedDecision};
 use super::non_code::{
     all_non_code_cheap, any_include_str_material, any_packaging_or_bump_script,
-    union_include_str_material_stems,
+    is_legacy_material_path, is_non_code_cheap_path, union_include_str_material_stems,
 };
 use super::shared_infra::touches_shared_infra;
 
@@ -227,8 +228,67 @@ pub fn build_plan_scoped_with_options(
     // 2. NonCodeCheap — all classified paths match cheap globs (docs /
     // CHANGELOG / packaging / bump scripts). Skip freshness and mapping.
     // `fallback_reason` stays None so JSON `scopeExecuted` remains `"fast"`.
-    if all_non_code_cheap(packet) {
-        return build_non_code_cheap_plan(packet, profile, repo_root, config.suite_timeout_secs);
+    //
+    // 0549: before trusting the cheap globs, look up whether a changed
+    // non-source path is compiled into or read by Rust tests. A referenced
+    // path contributes test function names; anything the lookup cannot
+    // prove refuses (or runs full under `allow_full_fallback`).
+    // The engine's own tree keeps the finer hand-written `INCLUDE_STR_MATERIAL`
+    // table (0480/0483) for the cheap set; a file-level union would select
+    // dozens of unrelated tests per README edit. Non-cheap paths (fixtures,
+    // templates, data) are looked up everywhere, including this tree.
+    let engine_tree = work_root_is_engine_tree(repo_root);
+    let lookup_active = profile.rust.is_some() && !packet.changes.is_empty();
+    let emb: EmbeddedDecision = if lookup_active {
+        let candidates: Vec<String> = embedded::candidate_paths(packet)
+            .into_iter()
+            .filter(|p| !engine_tree || !is_non_code_cheap_path(Path::new(p)))
+            .collect();
+        embedded::decide(repo_root, &candidates, |p| {
+            is_non_code_cheap_path(Path::new(p))
+        })
+    } else {
+        EmbeddedDecision::default()
+    };
+    if let Some(trigger) = &emb.refuse {
+        return mapping_cannot_scope_outcome(
+            trigger,
+            allow_full_fallback,
+            packet,
+            rules,
+            predicted,
+            config,
+            profile,
+            scope,
+            repo_root,
+        );
+    }
+    let has_source = packet
+        .changes
+        .iter()
+        .any(|c| embedded::is_source_path(&c.path));
+    let pure_non_source = !packet.changes.is_empty() && !has_source;
+    // Gate2 P1-1: an unreferenced path that the pre-0549 definition treated as
+    // material (nested `Cargo.toml`, `.json`/`.yaml`/`.sql` fixtures, ...) must
+    // keep reaching the mapping gate (refuse), never become a fmt+clippy pass.
+    let legacy_unreferenced = emb
+        .no_dependency
+        .iter()
+        .any(|p| !is_non_code_cheap_path(Path::new(p)) && is_legacy_material_path(Path::new(p)));
+    if emb.needs_mapping.is_empty()
+        && (all_non_code_cheap(packet)
+            || (lookup_active
+                && pure_non_source
+                && !legacy_unreferenced
+                && (!engine_tree || !emb.stems.is_empty())))
+    {
+        return build_non_code_cheap_plan(
+            packet,
+            profile,
+            repo_root,
+            config.suite_timeout_secs,
+            &emb,
+        );
     }
 
     // 3. EmptyChanges — before stem query (query_scoped returns None for both
@@ -250,8 +310,25 @@ pub fn build_plan_scoped_with_options(
         "test_mapping head_hash lags HEAD; run `ledgerful index --incremental`";
     const UNVERIFIABLE_REMEDIATION: &str = "test_mapping freshness unverifiable; run `ledgerful index --incremental` or use `--auto-index`";
 
+    // 0549 D3(d): production includers without inline tests are resolved
+    // through `test_mapping` under the same freshness gate as changed code.
+    let mapping_packet: std::borrow::Cow<'_, ImpactPacket> = if emb.needs_mapping.is_empty() {
+        std::borrow::Cow::Borrowed(packet)
+    } else {
+        let mut eff = packet.clone();
+        for includer in &emb.needs_mapping {
+            eff.changes.push(crate::impact::packet::ChangedFile {
+                path: std::path::PathBuf::from(includer),
+                status: "Modified".to_string(),
+                ..Default::default()
+            });
+        }
+        std::borrow::Cow::Owned(eff)
+    };
+    let packet_for_mapping: &ImpactPacket = mapping_packet.as_ref();
+
     if let Some(c) = conn {
-        let mut freshness = classify_test_mapping_freshness(c, packet);
+        let mut freshness = classify_test_mapping_freshness(c, packet_for_mapping);
         let should_repair = should_attempt_mapping_repair(freshness, auto_index);
 
         if should_repair {
@@ -275,7 +352,7 @@ pub fn build_plan_scoped_with_options(
                     repo_root,
                 );
             }
-            freshness = classify_test_mapping_freshness(c, packet);
+            freshness = classify_test_mapping_freshness(c, packet_for_mapping);
             if freshness == MappingFreshness::Ok {
                 tracing::debug!("test_mapping freshness repaired; continuing to stem query");
             }
@@ -320,10 +397,54 @@ pub fn build_plan_scoped_with_options(
     // P7: union `bump_manifests` when any packaging / bump-script path is in
     // the classified set (mixed src+packaging that already ScopedOk on src).
     // 0480: union `include_str!` cheap-doc stems the same way.
-    let scoped_stems = conn.and_then(|c| query_scoped_test_files(c, packet));
+    // 0549 P1-2: every production includer must itself have mapped tests; a
+    // sibling file's stems must not stand in for it.
+    for includer in &emb.needs_mapping {
+        let single = ImpactPacket {
+            changes: vec![crate::impact::packet::ChangedFile {
+                path: std::path::PathBuf::from(includer),
+                status: "Modified".to_string(),
+                ..Default::default()
+            }],
+            head_hash: packet.head_hash.clone(),
+            ..ImpactPacket::default()
+        };
+        if conn
+            .and_then(|c| query_scoped_test_files(c, &single))
+            .is_none()
+        {
+            return mapping_cannot_scope_outcome(
+                &format!("embedded path is read by {includer}, which has no test_mapping rows"),
+                allow_full_fallback,
+                packet,
+                rules,
+                predicted,
+                config,
+                profile,
+                scope,
+                repo_root,
+            );
+        }
+    }
+    // P1-1: embedded stems never stand in for unmapped changed source; the
+    // code-change mapping must scope on its own before they are unioned.
+    let mut scoped_stems = conn.and_then(|c| query_scoped_test_files(c, packet_for_mapping));
+    if let Some(stems) = scoped_stems.as_mut()
+        && !emb.stems.is_empty()
+    {
+        stems.extend(emb.stems.iter().cloned());
+        stems.sort();
+        stems.dedup();
+    }
     if let Some(mut test_stems) = scoped_stems {
         let inject = union_cheap_inject_stems(packet, profile, repo_root, &mut test_stems);
-        return build_fast_scoped_plan(packet, &test_stems, inject, config.suite_timeout_secs);
+        return build_fast_scoped_plan(
+            packet,
+            &test_stems,
+            inject,
+            config.suite_timeout_secs,
+            &emb,
+        );
     }
 
     // 6. MappingRefuse — fresh mapping but no coverage for changed files.
@@ -382,6 +503,7 @@ fn build_non_code_cheap_plan(
     profile: &crate::platform::repository::RepositoryProfile,
     repo_root: &Path,
     suite: Option<u64>,
+    emb: &EmbeddedDecision,
 ) -> VerificationPlan {
     let rust_steps: Vec<VerificationStep> = if profile.rust.is_some() {
         vec![
@@ -418,18 +540,36 @@ fn build_non_code_cheap_plan(
     if include_str {
         union_include_str_material_stems(packet, &mut stems);
     }
-    if packaging || include_str {
+    // 0549: lookup-derived test function names (any repo, not engine-only).
+    stems.extend(emb.stems.iter().cloned());
+    if packaging || include_str || !emb.stems.is_empty() {
         stems.sort();
         stems.dedup();
     }
     let nextest_step = (!stems.is_empty()).then(|| VerificationStep {
         command: build_scoped_nextest_command(&stems),
         timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
-        description: non_code_nextest_description(packaging, include_str),
+        description: with_embedded_note(non_code_nextest_description(packaging, include_str), emb),
         shell: false,
         budget_source: None,
     });
     let mut steps: Vec<VerificationStep> = rust_steps.into_iter().chain(nextest_step).collect();
+    // D4: unreferenced non-cheap paths are annotated, not silently ignored.
+    let unreferenced: Vec<&str> = emb
+        .no_dependency
+        .iter()
+        .filter(|p| !is_non_code_cheap_path(Path::new(p.as_str())))
+        .map(String::as_str)
+        .collect();
+    if !unreferenced.is_empty()
+        && let Some(first) = steps.first_mut()
+    {
+        first.description = format!(
+            "{} (no test dependency found for: {})",
+            first.description,
+            unreferenced.join(", ")
+        );
+    }
     for step in &mut steps {
         crate::verify::runner::stamp_auto_budget(step, suite);
     }
@@ -479,6 +619,17 @@ fn union_bump_manifests_if_needed(packet: &ImpactPacket, stems: &mut Vec<String>
     true
 }
 
+/// Append the lookup evidence (`path -> includer -> tests`) to a step description.
+fn with_embedded_note(base: String, emb: &EmbeddedDecision) -> String {
+    if emb.stems.is_empty() && emb.needs_mapping.is_empty() {
+        return base;
+    }
+    format!(
+        "{base} plus embedded-material tests ({})",
+        emb.evidence.join("; ")
+    )
+}
+
 fn non_code_nextest_description(packaging: bool, include_str: bool) -> String {
     match (packaging, include_str) {
         (true, true) => {
@@ -519,6 +670,7 @@ fn build_fast_scoped_plan(
     test_stems: &[String],
     inject: CheapInject,
     suite: Option<u64>,
+    emb: &EmbeddedDecision,
 ) -> VerificationPlan {
     let scoped_cmd = build_scoped_nextest_command(test_stems);
     // Always include fmt + clippy in fast scope — they're cheap and
@@ -546,7 +698,7 @@ fn build_fast_scoped_plan(
         VerificationStep {
             command: scoped_cmd,
             timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
-            description: scoped_nextest_description(packet, inject),
+            description: with_embedded_note(scoped_nextest_description(packet, inject), emb),
             shell: false,
             budget_source: None,
         },

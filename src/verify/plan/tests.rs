@@ -1,3 +1,4 @@
+use super::rust_lex::*;
 use super::*;
 use crate::impact::packet::{ChangedFile, FileAnalysisStatus, ImpactPacket};
 use crate::policy::mode::Mode;
@@ -3070,367 +3071,6 @@ fn parse_cargo_manifest_concat(source_rel: &str, inner: &str) -> Result<IncludeS
     ))
 }
 
-fn parse_rust_string_literal(s: &str) -> Option<String> {
-    let s = s.trim();
-    if s.len() < 2 || !s.starts_with('"') || !s.ends_with('"') {
-        return None;
-    }
-    let inner = &s[1..s.len() - 1];
-    let mut out = String::new();
-    let mut chars = inner.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            match chars.next()? {
-                'n' => out.push('\n'),
-                'r' => out.push('\r'),
-                't' => out.push('\t'),
-                '\\' => out.push('\\'),
-                '"' => out.push('"'),
-                other => out.push(other),
-            }
-        } else if c == '"' {
-            return None;
-        } else {
-            out.push(c);
-        }
-    }
-    Some(out)
-}
-
-fn is_ident_byte(c: u8) -> bool {
-    c.is_ascii_alphanumeric() || c == b'_'
-}
-
-fn is_ident_start(c: char) -> bool {
-    c.is_ascii_alphabetic() || c == '_'
-}
-
-fn is_ident_continue(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_'
-}
-
-fn is_hex(c: u8) -> bool {
-    c.is_ascii_hexdigit()
-}
-
-/// Skip whitespace and comments. Strings and char literals stay in place.
-fn skip_trivia(src: &str, mut i: usize, source_rel: &str) -> Result<usize, String> {
-    let b = src.as_bytes();
-    loop {
-        while i < b.len() && b[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if src[i..].starts_with("//") {
-            i = end_of_line_comment(src, i);
-            continue;
-        }
-        if src[i..].starts_with("/*") {
-            i = end_of_block_comment(src, i, source_rel)?;
-            continue;
-        }
-        return Ok(i);
-    }
-}
-
-fn end_of_line_comment(src: &str, i: usize) -> usize {
-    src[i..]
-        .find('\n')
-        .map(|rel| i + rel + 1)
-        .unwrap_or(src.len())
-}
-
-fn end_of_block_comment(src: &str, i: usize, source_rel: &str) -> Result<usize, String> {
-    let b = src.as_bytes();
-    let mut k = i + 2;
-    let mut depth = 1i32;
-    while k + 1 < b.len() {
-        if b[k] == b'/' && b[k + 1] == b'*' {
-            depth += 1;
-            k += 2;
-            continue;
-        }
-        if b[k] == b'*' && b[k + 1] == b'/' {
-            depth -= 1;
-            k += 2;
-            if depth == 0 {
-                return Ok(k);
-            }
-            continue;
-        }
-        k += 1;
-    }
-    Err(format!("{source_rel}: unterminated block comment"))
-}
-
-enum RawString {
-    NotRaw,
-    End(usize),
-    Unterminated,
-    TooManyHashes,
-}
-
-fn classify_raw_string(src: &str, r_idx: usize) -> RawString {
-    let b = src.as_bytes();
-    if r_idx >= b.len() || b[r_idx] != b'r' {
-        return RawString::NotRaw;
-    }
-    let mut k = r_idx + 1;
-    let mut hashes = 0usize;
-    while k < b.len() && b[k] == b'#' {
-        hashes += 1;
-        if hashes >= 256 {
-            return RawString::TooManyHashes;
-        }
-        k += 1;
-    }
-    if k >= b.len() || b[k] != b'"' {
-        return RawString::NotRaw;
-    }
-    k += 1;
-    while k < b.len() {
-        if b[k] == b'"' {
-            let mut seen = 0usize;
-            let mut t = k + 1;
-            while seen < hashes && t < b.len() && b[t] == b'#' {
-                seen += 1;
-                t += 1;
-            }
-            if seen == hashes {
-                return RawString::End(t);
-            }
-        }
-        k += 1;
-    }
-    RawString::Unterminated
-}
-
-fn raw_string_body(src: &str, r_idx: usize, end: usize) -> String {
-    let b = src.as_bytes();
-    let mut k = r_idx + 1;
-    let mut hashes = 0usize;
-    while k < b.len() && b[k] == b'#' {
-        hashes += 1;
-        k += 1;
-    }
-    let body_start = k + 1;
-    let body_end = end - hashes - 1;
-    src[body_start..body_end].to_string()
-}
-
-fn end_of_ordinary_string(src: &str, i: usize, source_rel: &str) -> Result<usize, String> {
-    let b = src.as_bytes();
-    let mut k = i + 1;
-    while k < b.len() {
-        if b[k] == b'\\' {
-            if k + 1 >= b.len() {
-                return Err(format!("{source_rel}: unterminated string"));
-            }
-            k += 2;
-            continue;
-        }
-        if b[k] == b'"' {
-            return Ok(k + 1);
-        }
-        k += 1;
-    }
-    Err(format!("{source_rel}: unterminated string"))
-}
-
-fn end_of_escaped_char(src: &str, i: usize, source_rel: &str) -> Result<usize, String> {
-    let b = src.as_bytes();
-    let mut k = i + 2;
-    if k >= b.len() {
-        return Err(format!("{source_rel}: unterminated char literal"));
-    }
-    match b[k] {
-        b'n' | b'r' | b't' | b'0' | b'\\' | b'\'' | b'"' => k += 1,
-        b'x' => {
-            if k + 3 > b.len() || !is_hex(b[k + 1]) || !is_hex(b[k + 2]) {
-                return Err(format!("{source_rel}: unterminated char literal"));
-            }
-            k += 3;
-        }
-        b'u' => {
-            k += 1;
-            if b.get(k) != Some(&b'{') {
-                return Err(format!("{source_rel}: unterminated char literal"));
-            }
-            k += 1;
-            let start = k;
-            while k < b.len() && b[k] != b'}' {
-                if !is_hex(b[k]) {
-                    return Err(format!("{source_rel}: unterminated char literal"));
-                }
-                k += 1;
-            }
-            if k >= b.len() || k == start {
-                return Err(format!("{source_rel}: unterminated char literal"));
-            }
-            k += 1;
-        }
-        _ => return Err(format!("{source_rel}: unterminated char literal")),
-    }
-    if b.get(k) != Some(&b'\'') {
-        return Err(format!("{source_rel}: unterminated char literal"));
-    }
-    Ok(k + 1)
-}
-
-fn end_of_char_or_lifetime(src: &str, i: usize, source_rel: &str) -> Result<usize, String> {
-    let b = src.as_bytes();
-    if i + 1 >= b.len() {
-        return Err(format!("{source_rel}: unterminated char literal"));
-    }
-    if b[i + 1] == b'\\' {
-        return end_of_escaped_char(src, i, source_rel);
-    }
-    let Some(first) = src[i + 1..].chars().next() else {
-        return Err(format!("{source_rel}: unterminated char literal"));
-    };
-    let after = i + 1 + first.len_utf8();
-    if b.get(after) == Some(&b'\'') {
-        return Ok(after + 1);
-    }
-    if is_ident_start(first) {
-        let mut k = after;
-        while k < src.len() {
-            let Some(c) = src[k..].chars().next() else {
-                break;
-            };
-            if !is_ident_continue(c) {
-                break;
-            }
-            k += c.len_utf8();
-        }
-        return Ok(k);
-    }
-    Err(format!("{source_rel}: unterminated char literal"))
-}
-
-/// When `i` starts a comment or literal, return the index after it.
-fn consume_skipped(src: &str, i: usize, source_rel: &str) -> Result<Option<usize>, String> {
-    let b = src.as_bytes();
-    if i >= b.len() || !src.is_char_boundary(i) {
-        return Ok(None);
-    }
-    if src[i..].starts_with("//") {
-        return Ok(Some(end_of_line_comment(src, i)));
-    }
-    if src[i..].starts_with("/*") {
-        return Ok(Some(end_of_block_comment(src, i, source_rel)?));
-    }
-    if b[i] == b'"' {
-        return Ok(Some(end_of_ordinary_string(src, i, source_rel)?));
-    }
-    if b[i] == b'\'' {
-        return Ok(Some(end_of_char_or_lifetime(src, i, source_rel)?));
-    }
-    if b[i] == b'b' {
-        match b.get(i + 1).copied() {
-            Some(b'\'') => return Ok(Some(end_of_char_or_lifetime(src, i + 1, source_rel)?)),
-            Some(b'"') => return Ok(Some(end_of_ordinary_string(src, i + 1, source_rel)?)),
-            Some(b'r') => match classify_raw_string(src, i + 1) {
-                RawString::NotRaw => return Ok(None),
-                RawString::End(end) => return Ok(Some(end)),
-                RawString::Unterminated => {
-                    return Err(format!("{source_rel}: unterminated raw byte string"));
-                }
-                RawString::TooManyHashes => {
-                    return Err(format!("{source_rel}: raw string has 256 or more hashes"));
-                }
-            },
-            _ => return Ok(None),
-        }
-    }
-    if b[i] == b'r' {
-        match classify_raw_string(src, i) {
-            RawString::NotRaw => return Ok(None),
-            RawString::End(end) => return Ok(Some(end)),
-            RawString::Unterminated => {
-                return Err(format!("{source_rel}: unterminated raw string"));
-            }
-            RawString::TooManyHashes => {
-                return Err(format!("{source_rel}: raw string has 256 or more hashes"));
-            }
-        }
-    }
-    Ok(None)
-}
-
-fn take_string_literal(
-    src: &str,
-    i: usize,
-    source_rel: &str,
-) -> Result<Option<(String, usize)>, String> {
-    let b = src.as_bytes();
-    if i >= b.len() {
-        return Ok(None);
-    }
-    if b[i] == b'r' {
-        match classify_raw_string(src, i) {
-            RawString::NotRaw => return Ok(None),
-            RawString::End(end) => return Ok(Some((raw_string_body(src, i, end), end))),
-            RawString::Unterminated => {
-                return Err(format!("{source_rel}: unterminated raw string"));
-            }
-            RawString::TooManyHashes => {
-                return Err(format!("{source_rel}: raw string has 256 or more hashes"));
-            }
-        }
-    }
-    if b[i] == b'"' {
-        let end = end_of_ordinary_string(src, i, source_rel)?;
-        let lit = parse_rust_string_literal(&src[i..end]).ok_or_else(|| {
-            format!(
-                "{source_rel}: unresolved include_str! form: {}",
-                src[i..end].trim()
-            )
-        })?;
-        return Ok(Some((lit, end)));
-    }
-    Ok(None)
-}
-
-/// Pair `(` with `)` and `{` with `}`. `[` is not a delimiter here.
-fn find_matching_delimiter(
-    src: &str,
-    open_idx: usize,
-    source_rel: &str,
-) -> Result<Option<usize>, String> {
-    let b = src.as_bytes();
-    if open_idx >= b.len() {
-        return Ok(None);
-    }
-    let (open, close) = match b[open_idx] {
-        b'(' => (b'(', b')'),
-        b'{' => (b'{', b'}'),
-        _ => return Ok(None),
-    };
-    let mut depth = 0i32;
-    let mut i = open_idx;
-    while i < b.len() {
-        if i != open_idx
-            && let Some(next) = consume_skipped(src, i, source_rel)?
-        {
-            if next <= i {
-                return Err(format!("{source_rel}: scanner did not advance"));
-            }
-            i = next;
-            continue;
-        }
-        if b[i] == open {
-            depth += 1;
-        } else if b[i] == close {
-            depth -= 1;
-            if depth == 0 {
-                return Ok(Some(i));
-            }
-        }
-        i += 1;
-    }
-    Ok(None)
-}
-
 fn code_has_fn_stem(src: &str, stem: &str, source_rel: &str) -> Result<bool, String> {
     let b = src.as_bytes();
     let mut i = 0;
@@ -3718,5 +3358,473 @@ fn resolve_verify_scope_explicit_fast_live_stays_fast() {
         resolve_verify_scope(Some(VerifyScope::Fast), false),
         VerifyScope::Fast,
         "explicit --scope fast always wins"
+    );
+}
+
+// ---- 0549: embedded documents / templates in a third-party repo ----
+
+fn foreign_fixture(files: &[(&str, &str)]) -> (tempfile::TempDir, camino::Utf8PathBuf) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    for (rel, body) in files {
+        let p = tmp.path().join(rel);
+        fs::create_dir_all(p.parent().expect("parent")).expect("mkdir");
+        fs::write(p, body).expect("write");
+    }
+    let root = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8 temp");
+    (tmp, root)
+}
+
+const EMBED_ACCESSOR: &str = r#"
+pub fn contract() -> &'static str { include_str!("../docs/contract.md") }
+pub fn message() -> &'static str { include_str!("../templates/message.txt") }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn contracts_document() { assert!(contract().contains("v1")); }
+    #[test]
+    fn contracts_template() { assert!(message().contains("hi")); }
+}
+"#;
+
+const DYNAMIC_READ_TEST: &str =
+    "#[test]\nfn d() { let p = std::env::var(\"X\").unwrap(); let _ = std::fs::read(p); }\n";
+
+#[test]
+fn embedded_doc_in_foreign_repo_runs_includer_tests_not_fmt_clippy_only() {
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname=\"fx\"\n"),
+        ("src/contracts.rs", EMBED_ACCESSOR),
+    ]);
+    let packet = packet_with_paths(&["docs/contract.md"]);
+    let plan = plan_at(&root, &packet, None, &rust_profile());
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+    assert!(plan.fallback_reason.is_none(), "fast scope stays fast");
+    let nextest = nextest_step(&plan).expect("embedded doc must schedule nextest");
+    assert_scoped_filterset_not_workspace_ci(&nextest.command);
+    assert!(
+        nextest.command.contains("test(contracts_document)"),
+        "{}",
+        nextest.command
+    );
+    assert!(
+        nextest
+            .description
+            .contains("docs/contract.md -> src/contracts.rs"),
+        "{}",
+        nextest.description
+    );
+    for vacuous in ["test(tests)", "test(mod)", "test(lib)", "test(contracts)"] {
+        assert!(!nextest.command.contains(vacuous), "{}", nextest.command);
+    }
+}
+
+#[test]
+fn embedded_template_in_foreign_repo_runs_includer_tests() {
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname=\"fx\"\n"),
+        ("src/contracts.rs", EMBED_ACCESSOR),
+    ]);
+    let packet = packet_with_paths(&["templates/message.txt"]);
+    let plan = plan_at(&root, &packet, None, &rust_profile());
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+    let nextest = nextest_step(&plan).expect("embedded template must schedule nextest");
+    assert!(
+        nextest.command.contains("test(contracts_template)"),
+        "{}",
+        nextest.command
+    );
+}
+
+#[test]
+fn embedded_plan_is_deterministic_across_runs() {
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname=\"fx\"\n"),
+        ("src/contracts.rs", EMBED_ACCESSOR),
+    ]);
+    let packet = packet_with_paths(&["templates/message.txt", "docs/contract.md"]);
+    let a = plan_at(&root, &packet, None, &rust_profile());
+    let b = plan_at(&root, &packet, None, &rust_profile());
+    let cmds = |p: &VerificationPlan| {
+        p.steps
+            .iter()
+            .map(|s| s.command.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(cmds(&a), cmds(&b));
+    let nextest = nextest_step(&a).expect("nextest");
+    assert!(
+        nextest
+            .command
+            .contains("test(contracts_document) + test(contracts_template)"),
+        "{}",
+        nextest.command
+    );
+}
+
+#[test]
+fn unreferenced_doc_stays_cheap_even_with_dynamic_reads_elsewhere() {
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname=\"fx\"\n"),
+        ("tests/dyn.rs", DYNAMIC_READ_TEST),
+    ]);
+    let packet = packet_with_paths(&["docs/guide.md"]);
+    let plan = plan_at(&root, &packet, None, &rust_profile());
+    assert!(!plan.refused);
+    assert!(plan.fallback_reason.is_none());
+    assert!(nextest_step(&plan).is_none(), "{:?}", plan.steps);
+}
+
+#[test]
+fn unreferenced_asset_is_annotated_not_blocked_without_dynamic_reads() {
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname=\"fx\"\n"),
+        ("src/lib.rs", "pub fn f() {}\n"),
+    ]);
+    let packet = packet_with_paths(&["assets/logo.png", "data/x.csv"]);
+    let plan = plan_at(&root, &packet, None, &rust_profile());
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+    assert!(nextest_step(&plan).is_none());
+    assert!(plan.steps.iter().any(|s| s.command.contains("fmt")));
+}
+
+#[test]
+fn unreferenced_asset_refuses_when_repo_has_dynamic_test_reads() {
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname=\"fx\"\n"),
+        ("tests/dyn.rs", DYNAMIC_READ_TEST),
+    ]);
+    let packet = packet_with_paths(&["assets/logo.png"]);
+    let plan = plan_at(&root, &packet, None, &rust_profile());
+    assert!(plan.refused);
+    assert!(plan.steps.is_empty());
+    assert!(
+        plan.fallback_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("unresolved reads")
+    );
+}
+
+#[test]
+fn referenced_but_untestable_embed_refuses_or_falls_back_to_full() {
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname=\"fx\"\n"),
+        (
+            "tests/common/mod.rs",
+            "pub fn d() -> &'static str { include_str!(\"../../docs/x.md\") }\n",
+        ),
+    ]);
+    let packet = packet_with_paths(&["docs/x.md"]);
+    let refused = plan_at(&root, &packet, None, &rust_profile());
+    assert!(refused.refused);
+    assert!(
+        refused
+            .fallback_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("no #[test]")
+    );
+
+    let layout = crate::state::layout::Layout::new(&root);
+    let full = build_plan_scoped_with_options(
+        &packet,
+        &Rules::default(),
+        &[],
+        &crate::config::model::VerifyConfig::default(),
+        &rust_profile(),
+        VerifyScope::Fast,
+        None,
+        &layout,
+        false,
+        true,
+    );
+    assert!(!full.refused);
+    assert!(
+        full.fallback_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("fast scope unavailable")
+    );
+}
+
+#[test]
+fn production_includer_without_inline_tests_refuses_without_mapping() {
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname=\"fx\"\n"),
+        (
+            "src/a.rs",
+            "pub fn t() -> &'static str { include_str!(\"../docs/t.md\") }\n",
+        ),
+    ]);
+    let packet = packet_with_paths(&["docs/t.md"]);
+    let plan = plan_at(&root, &packet, None, &rust_profile());
+    assert!(plan.refused);
+    assert!(
+        plan.fallback_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("test_mapping unavailable")
+    );
+}
+
+#[test]
+fn packaging_plus_embedded_share_one_nextest_step() {
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname=\"fx\"\n"),
+        ("src/contracts.rs", EMBED_ACCESSOR),
+    ]);
+    let packet = packet_with_paths(&["packaging/homebrew/x.rb", "docs/contract.md"]);
+    let plan = plan_at(&root, &packet, None, &rust_profile());
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+    let steps: Vec<_> = plan
+        .steps
+        .iter()
+        .filter(|s| s.command.contains("nextest"))
+        .collect();
+    assert_eq!(steps.len(), 1, "{:?}", plan.steps);
+    assert!(steps[0].command.contains("test(bump_manifests)"));
+    assert!(steps[0].command.contains("test(contracts_document)"));
+}
+
+#[test]
+fn non_rust_profile_keeps_cheap_docs_unchanged() {
+    let (_tmp, root) = foreign_fixture(&[("src/contracts.rs", EMBED_ACCESSOR)]);
+    let packet = packet_with_paths(&["docs/contract.md"]);
+    let plan = plan_at(
+        &root,
+        &packet,
+        None,
+        &crate::platform::repository::RepositoryProfile::default(),
+    );
+    assert!(!plan.refused);
+    assert!(nextest_step(&plan).is_none(), "non-Rust embedding is 0570");
+}
+
+// ---- 0549 address-findings: forms, dynamic reads, workspace, deleted ----
+
+#[rstest::rstest]
+#[case::include_bytes(
+    "#[test]\nfn t_bytes() { let _ = include_bytes!(\"../data/a.bin\"); }\n",
+    "data/a.bin",
+    "t_bytes"
+)]
+#[case::include_macro(
+    "#[test]\nfn t_incl() { let _ = include!(\"../data/gen.in\"); }\n",
+    "data/gen.in",
+    "t_incl"
+)]
+#[case::brace_form(
+    "#[test]\nfn t_brace() { let _ = include_str! { \"../data/b.txt\" }; }\n",
+    "data/b.txt",
+    "t_brace"
+)]
+#[case::literal_runtime_read(
+    "#[test]\nfn t_read() { let _ = std::fs::read_to_string(\"data/r.csv\"); }\n",
+    "data/r.csv",
+    "t_read"
+)]
+fn embedded_forms_select_function_names(
+    #[case] source: &str,
+    #[case] changed: &str,
+    #[case] stem: &str,
+) {
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname=\"fx\"\n"),
+        ("tests/t.rs", source),
+    ]);
+    let plan = plan_at(&root, &packet_with_paths(&[changed]), None, &rust_profile());
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+    let nextest = nextest_step(&plan).expect("nextest");
+    assert!(
+        nextest.command.contains(&format!("test({stem})")),
+        "{}",
+        nextest.command
+    );
+}
+
+#[test]
+fn two_member_workspace_resolves_manifest_dir_per_crate() {
+    let (_tmp, root) = foreign_fixture(&[
+        (
+            "Cargo.toml",
+            "[workspace]\nmembers=[\"packages/a\",\"services/b\"]\n",
+        ),
+        ("packages/a/Cargo.toml", "[package]\nname=\"a\"\n"),
+        ("services/b/Cargo.toml", "[package]\nname=\"b\"\n"),
+        (
+            "services/b/src/lib.rs",
+            "#[test]\nfn b_reads() { let _ = include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/fixtures/m.txt\")); }\n",
+        ),
+    ]);
+    let plan = plan_at(
+        &root,
+        &packet_with_paths(&["services/b/fixtures/m.txt"]),
+        None,
+        &rust_profile(),
+    );
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+    assert!(
+        nextest_step(&plan)
+            .expect("nextest")
+            .command
+            .contains("test(b_reads)")
+    );
+}
+
+#[test]
+fn format_built_read_is_dynamic_so_unreferenced_fixture_refuses() {
+    // P1-3: a `format!`-built path must not count as a literal read.
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname=\"fx\"\n"),
+        (
+            "tests/t.rs",
+            "#[test]\nfn t() { let n = \"case1\"; let _ = std::fs::read_to_string(format!(\"tests/fixtures/{n}.json\")); }\n",
+        ),
+    ]);
+    let plan = plan_at(
+        &root,
+        &packet_with_paths(&["tests/fixtures/case1.json"]),
+        None,
+        &rust_profile(),
+    );
+    assert!(plan.refused, "{:?}", plan.steps);
+}
+
+#[test]
+fn unmodeled_file_macro_makes_unreferenced_fixture_refuse() {
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname=\"fx\"\n"),
+        (
+            "src/q.rs",
+            "fn q() { sqlx::query_file!(\"queries/a.sql\"); }\n",
+        ),
+    ]);
+    let plan = plan_at(
+        &root,
+        &packet_with_paths(&["queries/b.sql"]),
+        None,
+        &rust_profile(),
+    );
+    assert!(plan.refused);
+}
+
+#[test]
+fn unreferenced_csv_control_is_annotated_in_plan() {
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname=\"fx\"\n"),
+        ("src/lib.rs", "pub fn f() {}\n"),
+    ]);
+    let plan = plan_at(
+        &root,
+        &packet_with_paths(&["data/x.csv"]),
+        None,
+        &rust_profile(),
+    );
+    assert!(!plan.refused);
+    assert!(
+        plan.steps[0]
+            .description
+            .contains("no test dependency found for: data/x.csv"),
+        "{}",
+        plan.steps[0].description
+    );
+}
+
+#[test]
+fn deleted_embedded_material_still_selects_includer_tests() {
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname=\"fx\"\n"),
+        ("src/contracts.rs", EMBED_ACCESSOR),
+    ]);
+    let mut packet = packet_with_paths(&["templates/message.txt"]);
+    packet.changes[0].status = "Deleted".to_string();
+    let plan = plan_at(&root, &packet, None, &rust_profile());
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+    assert!(
+        nextest_step(&plan)
+            .expect("nextest")
+            .command
+            .contains("test(contracts_template)")
+    );
+}
+
+#[test]
+fn renamed_embedded_material_selects_tests_via_old_path() {
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname=\"fx\"\n"),
+        ("src/contracts.rs", EMBED_ACCESSOR),
+    ]);
+    let mut packet = packet_with_paths(&["templates/renamed.txt"]);
+    packet.changes[0].status = "Renamed".to_string();
+    packet.changes[0].old_path = Some(PathBuf::from("templates/message.txt"));
+    let plan = plan_at(&root, &packet, None, &rust_profile());
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+    assert!(
+        nextest_step(&plan)
+            .expect("nextest")
+            .command
+            .contains("test(contracts_template)")
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_case_difference_still_matches_embedded_path() {
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname=\"fx\"\n"),
+        ("src/contracts.rs", EMBED_ACCESSOR),
+    ]);
+    let plan = plan_at(
+        &root,
+        &packet_with_paths(&["Templates/Message.TXT"]),
+        None,
+        &rust_profile(),
+    );
+    assert!(
+        nextest_step(&plan)
+            .expect("nextest")
+            .command
+            .contains("test(contracts_template)")
+    );
+}
+
+#[test]
+fn engine_tree_looks_up_non_cheap_fixture_but_keeps_table_for_cheap_docs() {
+    // The engine's own cheap docs keep the hand-written table; a non-cheap
+    // path is still checked by the lookup (it is unreferenced here, so the
+    // pre-existing refuse-on-unmapped behavior is unchanged).
+    let packet = packet_with_paths(&["README.md"]);
+    let plan = plan_fast(&packet, None, &rust_profile());
+    let nextest = nextest_step(&plan).expect("engine table inject");
+    assert!(nextest.command.contains("readme_has_daily_5_front_door"));
+}
+
+// ---- 0549 gate2 P1-1: formerly-material unreferenced paths keep refusing ----
+
+#[rstest::rstest]
+#[case::nested_cargo_manifest("crates/core/Cargo.toml")]
+#[case::cargo_config(".cargo/config.toml")]
+#[case::json_fixture("tests/fixtures/a.json")]
+#[case::yaml_fixture("tests/fixtures/a.yaml")]
+#[case::sql_fixture("db/seed.sql")]
+fn unreferenced_formerly_material_path_still_refuses(#[case] changed: &str) {
+    // Fixture read through a production helper: the scan finds no reference.
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname=\"fx\"\n"),
+        (
+            "src/loader.rs",
+            "pub fn load(p: &std::path::Path) -> String { std::fs::read_to_string(p).unwrap_or_default() }\n",
+        ),
+        (
+            "tests/it.rs",
+            "#[test]\nfn it() { let _ = fx::loader::load(std::path::Path::new(\"tests/fixtures/a.json\")); }\n",
+        ),
+    ]);
+    let plan = plan_at(&root, &packet_with_paths(&[changed]), None, &rust_profile());
+    assert!(
+        plan.refused,
+        "{changed} must not become a fmt+clippy-only pass: {:?}",
+        plan.steps
     );
 }

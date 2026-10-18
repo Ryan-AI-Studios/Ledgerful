@@ -170,6 +170,98 @@ pub(crate) fn union_include_str_material_stems(
     added
 }
 
+/// Pre-0549 "material" definition: source-like extensions, shared-infra
+/// basenames and `packaging/**` (0321/0203). Still the rule for non-Rust
+/// profiles, and the set of unreferenced paths that must keep refusing
+/// (never become a silent fmt+clippy pass) when the embedded lookup finds no
+/// test dependency.
+pub(crate) fn is_legacy_material_path(path: &std::path::Path) -> bool {
+    let norm = path.to_string_lossy().replace('\\', "/");
+    let norm = norm.trim_start_matches("./");
+    if norm.starts_with(".ledgerful/") || norm == ".ledgerful" {
+        return false;
+    }
+    // PATH/test shim used by empty-repo verify tests — not product source.
+    if norm.eq_ignore_ascii_case("cargo.bat")
+        || norm.eq_ignore_ascii_case("cargo.cmd")
+        || norm.eq_ignore_ascii_case("cargo")
+    {
+        return false;
+    }
+    // 0203-D: packaging templates (including `.rb`) are material so a
+    // template-only diff is not LiveEmpty.
+    if norm == "packaging" || norm.starts_with("packaging/") {
+        return true;
+    }
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    // Shared-infra basenames that already force full under --scope fast when
+    // present in a packet (see plan::touches_shared_infra).
+    const INFRA: &[&str] = &[
+        "cargo.toml",
+        "cargo.lock",
+        "package.json",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "go.mod",
+        "go.sum",
+        "pyproject.toml",
+        "requirements.txt",
+        "poetry.lock",
+        "dockerfile",
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "makefile",
+    ];
+    if INFRA.iter().any(|b| name == *b) {
+        return true;
+    }
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(
+        ext.as_str(),
+        "rs" | "ts"
+            | "tsx"
+            | "js"
+            | "jsx"
+            | "mjs"
+            | "cjs"
+            | "py"
+            | "go"
+            | "java"
+            | "kt"
+            | "kts"
+            // D2 C/C++ (aligned with analysis/semantic index support)
+            | "c"
+            | "h"
+            | "cpp"
+            | "cc"
+            | "cxx"
+            | "hpp"
+            | "hh"
+            | "hxx"
+            | "h++"
+            | "toml"
+            | "yaml"
+            | "yml"
+            | "json"
+            | "md"
+            | "css"
+            | "scss"
+            | "html"
+            | "sql"
+            | "sh"
+            | "ps1"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
