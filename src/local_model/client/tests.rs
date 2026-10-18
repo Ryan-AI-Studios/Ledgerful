@@ -584,7 +584,7 @@ fn complete_falls_back_to_ollama_cloud_with_auth() {
     });
 
     let config = LocalModelConfig {
-        base_url: "http://127.0.0.1:1".to_string(),
+        base_url: refused_local_url(),
         ollama_cloud_url: Some(server.base_url()),
         ollama_cloud_api_key: Some("test-token".to_string()),
         ollama_cloud_model: Some("minimax-m3:cloud".to_string()),
@@ -627,7 +627,7 @@ fn complete_strips_ollama_run_prefix_from_cloud_model() {
     });
 
     let config = LocalModelConfig {
-        base_url: "http://127.0.0.1:1".to_string(),
+        base_url: refused_local_url(),
         ollama_cloud_url: Some(server.base_url()),
         ollama_cloud_api_key: Some("test-token".to_string()),
         ollama_cloud_model: Some("ollama run minimax-m3:cloud".to_string()),
