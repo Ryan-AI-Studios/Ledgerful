@@ -158,7 +158,9 @@ pub struct HotspotCalculation {
     pub contributing_commits: Vec<String>,
     /// True only when `calculate_hotspots_detailed` skipped complexity because
     /// the walk was not complete or the history budget had already stopped.
-    /// An empty complexity map from a missing index leaves this false.
+    /// An empty complexity map from a missing index leaves this false. On a
+    /// `Complete` walk it means the history budget or insert reserve fired
+    /// after the walk (or cancel, for callers that can set it).
     pub complexity_skipped: bool,
 }
 
