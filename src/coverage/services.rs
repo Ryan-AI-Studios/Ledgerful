@@ -467,7 +467,9 @@ pub fn infer_services(
 
     // 0.5 Pre-populate from declared services in config
     for ds in declared_services {
-        let path = PathBuf::from(&ds.root);
+        // Same `\` to `/` replace as `selected_service_definition`; `Path` equality
+        // only ignores the separator on Windows.
+        let path = PathBuf::from(ds.root.replace('\\', "/"));
         service_groups.insert(path, (ds.name.clone(), Vec::new(), Vec::new()));
     }
 
@@ -545,7 +547,7 @@ pub fn infer_services(
         // Find declared service for this root
         let declared = declared_services
             .iter()
-            .find(|ds| std::path::Path::new(&ds.root) == key);
+            .find(|ds| std::path::Path::new(&ds.root.replace('\\', "/")) == key);
 
         services.push(Service {
             name: final_name,
@@ -1112,6 +1114,77 @@ mod tests {
             .expect("replaced roots still select one definition");
         assert_eq!(selected.owners, vec!["first".to_string()]);
         assert_eq!(selected.root, r"services\alpha");
+    }
+
+    fn declared(
+        name: &str,
+        root: &str,
+        owners: &[&str],
+    ) -> crate::config::model::ServiceDefinition {
+        crate::config::model::ServiceDefinition {
+            name: name.to_string(),
+            root: root.to_string(),
+            owners: owners.iter().map(|o| o.to_string()).collect(),
+            runtime_name: None,
+            queues: Vec::new(),
+            topics: Vec::new(),
+            rpc_endpoints: Vec::new(),
+        }
+    }
+
+    #[rstest::rstest]
+    #[case::backslash_first(r"services\alpha", "services/alpha")]
+    #[case::slash_first("services/alpha", r"services\alpha")]
+    fn infer_services_declared_roots_differing_by_separator_form_one_group(
+        #[case] first_root: &str,
+        #[case] second_root: &str,
+    ) {
+        let declared_services = vec![
+            declared("web", first_root, &["first"]),
+            declared("web", second_root, &["second"]),
+        ];
+        let topology = DirectoryTopology {
+            classifications: vec![],
+        };
+        let services = infer_services(
+            &[],
+            &[],
+            &CallGraph { edges: Vec::new() },
+            &topology,
+            &declared_services,
+        );
+        assert_eq!(services.len(), 1, "got: {:?}", services);
+        // `PathBuf` equality ignores the separator on Windows, so compare the string.
+        assert_eq!(services[0].directory.to_str(), Some("services/alpha"));
+        assert_eq!(services[0].owners, vec!["first".to_string()]);
+    }
+
+    #[test]
+    fn infer_services_backslash_declared_root_meets_slash_topology_group() {
+        let topology = DirectoryTopology {
+            classifications: vec![DirectoryClassification {
+                dir_path: "services/alpha".to_string(),
+                role: DirectoryRole::ServiceRoot,
+                confidence: 1.0,
+                evidence: "test".to_string(),
+            }],
+        };
+        let sources = vec![ApiRouteSource {
+            route: sample_route("axum", "list"),
+            registration_file_path: Some("services/alpha/mod.rs".to_string()),
+        }];
+        let declared_services = vec![declared("alpha", r"services\alpha", &["declared-owner"])];
+        let services = infer_services(
+            &sources,
+            &[],
+            &CallGraph { edges: Vec::new() },
+            &topology,
+            &declared_services,
+        );
+        assert_eq!(services.len(), 1, "got: {:?}", services);
+        assert_eq!(services[0].directory.to_str(), Some("services/alpha"));
+        assert_eq!(services[0].routes, vec!["list".to_string()]);
+        assert_eq!(services[0].owners, vec!["declared-owner".to_string()]);
     }
 
     fn sample_route(route_source: &str, handler: &str) -> ApiRoute {
