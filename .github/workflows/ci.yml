@@ -181,23 +181,42 @@ jobs:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         timeout-minutes: 15
-      - name: Release search perf gate
-        timeout-minutes: 30
+        with:
+          # Save target/ even when the build step below times out, so a cold
+          # compile that misses its budget does not leave the next run cold too.
+          cache-on-failure: true
+      - name: Build release search perf test binaries
+        id: build
+        timeout-minutes: 45
         shell: bash
         run: |
           set -o pipefail
           mkdir -p search-perf-out
+          cargo test --release --no-run --lib --test integration 2>&1 | tee search-perf-out/build.txt
+      - name: Release search perf gate
+        id: gate
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -o pipefail
           cargo test --release --lib search::perf_gate::search_perf_warm_query_budget -- --ignored --exact --nocapture | tee search-perf-out/lib.txt
           grep -q "search_perf_warm_query_budget ... ok" search-perf-out/lib.txt
           cargo test --release --test integration search_correctness::search_perf_cli_cold_sample -- --ignored --exact --nocapture | tee search-perf-out/cli.txt
           grep -q "search_perf_cli_cold_sample ... ok" search-perf-out/cli.txt
-      - name: Warn if search-perf missed its step budget
-        if: failure()
+      - name: Warn if search-perf build missed its step budget
+        if: failure() && steps.build.outcome == 'failure'
         timeout-minutes: 15
         shell: bash
         run: |
-          echo "::warning::search-perf failed or timed out (30-minute step budget; non-blocking)"
-          echo "search-perf failed or timed out (30-minute step budget; non-blocking)" >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::search-perf build failed or timed out (45-minute step budget; non-blocking). If this step ran its full budget it is infrastructure, not a perf regression; otherwise read the step log."
+          echo "search-perf build failed or timed out (45-minute step budget; non-blocking). If this step ran its full budget it is infrastructure, not a perf regression; otherwise read the step log." >> "$GITHUB_STEP_SUMMARY"
+      - name: Warn if search-perf gate failed
+        if: failure() && steps.gate.outcome == 'failure'
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          echo "::warning::search-perf gate failed or timed out (10-minute step budget; non-blocking). A gate that completed inside its budget is a perf or correctness result, see the search-perf-samples artifact. A gate that ran its full budget is infrastructure."
+          echo "search-perf gate failed or timed out (10-minute step budget; non-blocking). A gate that completed inside its budget is a perf or correctness result, see the search-perf-samples artifact. A gate that ran its full budget is infrastructure." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         timeout-minutes: 5
