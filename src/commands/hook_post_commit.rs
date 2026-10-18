@@ -7,7 +7,7 @@ use crate::git::numstat::per_file_numstat;
 use crate::git::repo::{get_head_info, open_repo};
 use crate::impact::budget::{AnalysisBudget, HistoryWalkStop};
 use crate::impact::hotspots::normalize_score;
-use crate::impact::hotspots::{HotspotQuery, calculate_hotspots_detailed};
+use crate::impact::hotspots::{HotspotCalculation, HotspotQuery, calculate_hotspots_detailed};
 use crate::impact::packet::Hotspot;
 use crate::impact::temporal::GixHistoryProvider;
 use crate::ledger::{ChangeType, CommitRequest, TransactionManager, VerificationStatus};
@@ -342,8 +342,11 @@ pub(crate) fn hotspot_scores_unscored(hotspots: &[Hotspot]) -> bool {
 }
 
 /// `Some` when the walk must not be stored. A non-complete walk is not a
-/// sample. A finished walk that skipped complexity, or whose scores are all
-/// zero, is not a sample either. An empty list stays `Empty`.
+/// sample and warns (history budget). An empty list stays `Empty`. On a
+/// finished walk, `complexity_skipped` means the budget fired after the walk,
+/// so it also warns (history budget) and wins over `scores_unscored`, which a
+/// skipped query forces. Scores that are all zero after the query ran stay
+/// `NotRecordedUnscored` and print nothing.
 pub(crate) fn outcome_for_walk(
     stop: HistoryWalkStop,
     hotspots_empty: bool,
@@ -352,14 +355,25 @@ pub(crate) fn outcome_for_walk(
 ) -> Option<RecordOutcome> {
     match stop {
         HistoryWalkStop::Complete if hotspots_empty => Some(RecordOutcome::Empty),
-        HistoryWalkStop::Complete if complexity_skipped || scores_unscored => {
-            Some(RecordOutcome::NotRecordedUnscored)
+        HistoryWalkStop::Complete if complexity_skipped => {
+            Some(RecordOutcome::NotRecordedHistoryBudget)
         }
+        HistoryWalkStop::Complete if scores_unscored => Some(RecordOutcome::NotRecordedUnscored),
         HistoryWalkStop::Complete => None,
         HistoryWalkStop::Budget | HistoryWalkStop::Cancelled => {
             Some(RecordOutcome::NotRecordedHistoryBudget)
         }
     }
+}
+
+/// Map a finished hotspot calculation to the outcome the worker reports.
+pub(crate) fn walk_outcome(calculated: &HotspotCalculation) -> Option<RecordOutcome> {
+    outcome_for_walk(
+        calculated.walk_stop,
+        calculated.hotspots.is_empty(),
+        calculated.complexity_skipped,
+        hotspot_scores_unscored(&calculated.hotspots),
+    )
 }
 
 pub(crate) fn warning_line(outcome: RecordOutcome) -> Option<&'static str> {
@@ -465,18 +479,18 @@ pub(crate) fn record_hotspot_trends_with_budget(
         }
     };
 
-    if let Some(outcome) = outcome_for_walk(
-        calculated.walk_stop,
-        calculated.hotspots.is_empty(),
-        calculated.complexity_skipped,
-        hotspot_scores_unscored(&calculated.hotspots),
-    ) {
+    if let Some(outcome) = walk_outcome(&calculated) {
         if outcome == RecordOutcome::Empty {
             tracing::debug!("Post-commit hook: no hotspots computed for this commit");
         }
         if outcome == RecordOutcome::NotRecordedUnscored {
             tracing::debug!(
-                "Post-commit hook: hotspot trend sample withheld (complexity skipped or unscored)"
+                "Post-commit hook: hotspot trend sample withheld (scores all zero or non-finite)"
+            );
+        }
+        if outcome == RecordOutcome::NotRecordedHistoryBudget {
+            tracing::debug!(
+                "Post-commit hook: hotspot trend sample withheld (history budget stopped the walk or the complexity query)"
             );
         }
         return outcome;
@@ -927,44 +941,77 @@ mod tests {
         );
     }
 
-    #[test]
-    fn outcome_for_walk_complete_with_complexity_skipped_records_nothing() {
+    #[rstest::rstest]
+    #[case::clean(false, false, false, None)]
+    #[case::unscored_only(false, false, true, Some(RecordOutcome::NotRecordedUnscored))]
+    #[case::skipped_only(false, true, false, Some(RecordOutcome::NotRecordedHistoryBudget))]
+    #[case::skipped_and_unscored(false, true, true, Some(RecordOutcome::NotRecordedHistoryBudget))]
+    #[case::empty(true, false, false, Some(RecordOutcome::Empty))]
+    #[case::empty_unscored(true, false, true, Some(RecordOutcome::Empty))]
+    #[case::empty_skipped(true, true, false, Some(RecordOutcome::Empty))]
+    #[case::empty_skipped_unscored(true, true, true, Some(RecordOutcome::Empty))]
+    fn outcome_for_walk_complete_truth_table(
+        #[case] hotspots_empty: bool,
+        #[case] complexity_skipped: bool,
+        #[case] scores_unscored: bool,
+        #[case] expected: Option<RecordOutcome>,
+    ) {
         assert_eq!(
-            outcome_for_walk(HistoryWalkStop::Complete, false, true, false),
-            Some(RecordOutcome::NotRecordedUnscored)
+            outcome_for_walk(
+                HistoryWalkStop::Complete,
+                hotspots_empty,
+                complexity_skipped,
+                scores_unscored
+            ),
+            expected
         );
+    }
+
+    #[rstest::rstest]
+    #[case::budget_clean(HistoryWalkStop::Budget, false, false, false)]
+    #[case::budget_all_flags(HistoryWalkStop::Budget, false, true, true)]
+    #[case::budget_empty(HistoryWalkStop::Budget, true, false, false)]
+    #[case::cancelled_clean(HistoryWalkStop::Cancelled, false, false, false)]
+    #[case::cancelled_all_flags(HistoryWalkStop::Cancelled, false, true, true)]
+    #[case::cancelled_empty(HistoryWalkStop::Cancelled, true, true, true)]
+    fn outcome_for_walk_stopped_walk_is_history_budget(
+        #[case] stop: HistoryWalkStop,
+        #[case] hotspots_empty: bool,
+        #[case] complexity_skipped: bool,
+        #[case] scores_unscored: bool,
+    ) {
         assert_eq!(
-            outcome_for_walk(HistoryWalkStop::Complete, false, false, true),
-            Some(RecordOutcome::NotRecordedUnscored)
-        );
-        assert_eq!(
-            outcome_for_walk(HistoryWalkStop::Complete, false, true, true),
-            Some(RecordOutcome::NotRecordedUnscored)
-        );
-        assert_eq!(
-            outcome_for_walk(HistoryWalkStop::Complete, true, true, false),
-            Some(RecordOutcome::Empty)
-        );
-        assert_eq!(
-            outcome_for_walk(HistoryWalkStop::Complete, true, false, true),
-            Some(RecordOutcome::Empty)
-        );
-        assert_eq!(
-            outcome_for_walk(HistoryWalkStop::Complete, false, false, false),
-            None
-        );
-        assert_eq!(
-            outcome_for_walk(HistoryWalkStop::Budget, false, true, true),
+            outcome_for_walk(stop, hotspots_empty, complexity_skipped, scores_unscored),
             Some(RecordOutcome::NotRecordedHistoryBudget)
         );
-        assert_eq!(
-            outcome_for_walk(HistoryWalkStop::Cancelled, false, true, true),
-            Some(RecordOutcome::NotRecordedHistoryBudget)
-        );
-        assert_eq!(
-            outcome_for_walk(HistoryWalkStop::Cancelled, false, false, false),
-            Some(RecordOutcome::NotRecordedHistoryBudget)
-        );
+    }
+
+    #[rstest::rstest]
+    #[case::skipped_zero_scores(vec![0.0, 0.0], true, Some(RecordOutcome::NotRecordedHistoryBudget), Some(HISTORY_BUDGET_WARNING))]
+    #[case::ran_zero_scores(vec![0.0, 0.0], false, Some(RecordOutcome::NotRecordedUnscored), None)]
+    #[case::ran_non_finite_scores(vec![f32::NAN], false, Some(RecordOutcome::NotRecordedUnscored), None)]
+    #[case::ran_positive_score(vec![0.5, 0.0], false, None, None)]
+    #[case::empty_skipped(vec![], true, Some(RecordOutcome::Empty), None)]
+    fn walk_outcome_maps_a_complete_calculation(
+        #[case] scores: Vec<f32>,
+        #[case] complexity_skipped: bool,
+        #[case] expected: Option<RecordOutcome>,
+        #[case] warning: Option<&'static str>,
+    ) {
+        let hotspots = scores
+            .iter()
+            .enumerate()
+            .map(|(i, score)| make_hotspot(&format!("f{i}.rs"), *score))
+            .collect();
+        let calculated = HotspotCalculation {
+            hotspots,
+            walk_stop: HistoryWalkStop::Complete,
+            complexity_skipped,
+            ..Default::default()
+        };
+        let outcome = walk_outcome(&calculated);
+        assert_eq!(outcome, expected);
+        assert_eq!(outcome.and_then(warning_line), warning);
     }
 
     #[test]
@@ -1112,8 +1159,14 @@ mod tests {
         assert_eq!(days, 0);
     }
 
-    #[test]
-    fn post_commit_unscored_debug_is_not_cli_summary() {
+    #[rstest::rstest]
+    #[case::unscored(
+        "Post-commit hook: hotspot trend sample withheld (scores all zero or non-finite)"
+    )]
+    #[case::history_budget(
+        "Post-commit hook: hotspot trend sample withheld (history budget stopped the walk or the complexity query)"
+    )]
+    fn post_commit_withheld_debug_is_not_cli_summary(#[case] needle: &str) {
         let src = include_str!("hook_post_commit.rs");
         let start = src
             .find("fn record_hotspot_trends_with_budget")
@@ -1123,8 +1176,10 @@ mod tests {
             .find("\nfn project_score_from_hotspots")
             .expect("next function");
         let body = &rest[..end];
-        let needle =
-            "Post-commit hook: hotspot trend sample withheld (complexity skipped or unscored)";
+        assert!(
+            !body.contains("(complexity skipped or unscored)"),
+            "old merged debug sentence must be gone"
+        );
         let pos = body.find(needle).expect("debug sentence");
         let head = body[..pos].rfind("tracing::debug!(").expect("debug macro");
         let tail = body[pos..].find(");").expect("macro end");
