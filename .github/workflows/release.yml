@@ -195,6 +195,9 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install cargo-auditable + cargo-audit
         shell: bash
+        env:
+          # These tools are not shipped; build them as before, not under the job-level static CRT flag.
+          RUSTFLAGS: ""
         run: |
           set -euo pipefail
           cargo install cargo-auditable --locked
@@ -254,12 +257,17 @@ jobs:
         shell: pwsh
         run: |
           $objdump = "C:/Program Files/LLVM/bin/llvm-objdump.exe"
+          if (-not (Test-Path $objdump)) {
+            $found = Get-Command llvm-objdump -ErrorAction SilentlyContinue
+            if (-not $found) { throw "llvm-objdump not found at $objdump or on PATH; the Windows runner image changed, so install LLVM or switch the guard to dumpbin /dependents" }
+            $objdump = $found.Source
+          }
           & $objdump --version | Select-Object -First 2
           $exe = "dist/${{ matrix.asset }}/${{ matrix.binary }}"
           $imports = & $objdump -p $exe | Select-String "DLL Name:" | ForEach-Object { ($_ -replace '.*DLL Name:\s*', '').Trim() } | Sort-Object -Unique
           if (-not $imports) { throw "No imports parsed from $exe; the guard would pass vacuously" }
           $imports | ForEach-Object { "import: $_" }
-          $banned = $imports | Where-Object { $_ -match '^(VCRUNTIME140|MSVCP140|ucrtbase|api-ms-win-crt-)' }
+          $banned = $imports | Where-Object { $_ -match '^(VCRUNTIME140|MSVCP140|CONCRT140|VCOMP140|VCCORLIB140|ucrtbase|api-ms-win-crt-)' }
           if ($banned) { throw "Windows exe still imports the MSVC runtime: $($banned -join ', ')" }
       - name: Attest build provenance
         # actions/attest requires a public repo or GitHub Enterprise Cloud.

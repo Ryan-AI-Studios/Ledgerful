@@ -339,6 +339,8 @@ fn release_windows_leg_builds_with_static_crt_and_guards_imports() {
         );
     }
 
+    // The `RUSTFLAGS: ${{ matrix.rustflags }}` literal is deliberate; adding `|| ''` as a safety
+    // net for an undefined matrix key would need this assertion updated with it.
     let env_lines = contiguous_job_env_lines(release, "build");
     assert!(
         env_lines.contains(&JOB_RUSTFLAGS_LINE),
@@ -365,6 +367,59 @@ fn release_windows_leg_builds_with_static_crt_and_guards_imports() {
             "release.yml build job is missing Package Windows, the CRT guard, or attestation"
         ),
     }
+
+    // The guard body must stay load-bearing: a renamed-but-gutted step must fail this test.
+    let guard = step_lines(&body, WINDOWS_CRT_GUARD_STEP);
+    for needle in [
+        "        if: matrix.archive == 'zip'",
+        "        shell: pwsh",
+        "llvm-objdump",
+        "throw \"No imports parsed",
+        "throw \"Windows exe still imports the MSVC runtime",
+    ] {
+        assert!(
+            guard.iter().any(|line| line.contains(needle)),
+            "the CRT guard step lost `{needle}`"
+        );
+    }
+    let banned_line = guard
+        .iter()
+        .find(|line| line.contains("$banned ="))
+        .copied()
+        .unwrap_or_default();
+    for name in [
+        "VCRUNTIME140",
+        "MSVCP140",
+        "CONCRT140",
+        "VCOMP140",
+        "VCCORLIB140",
+        "ucrtbase",
+        "api-ms-win-crt-",
+    ] {
+        assert!(
+            banned_line.contains(name),
+            "the CRT guard no longer bans {name}: {banned_line}"
+        );
+    }
+
+    // The installed tools are not shipped, so they must not inherit the static CRT flag.
+    let install = step_lines(&body, "      - name: Install cargo-auditable + cargo-audit");
+    assert!(
+        install.contains(&"          RUSTFLAGS: \"\""),
+        "the cargo install step must reset the job-level RUSTFLAGS"
+    );
+}
+
+/// Lines of the workflow step whose `- name:` line equals `header`, up to the next step.
+fn step_lines<'a>(body: &[&'a str], header: &str) -> Vec<&'a str> {
+    let Some(start) = body.iter().position(|line| *line == header) else {
+        return Vec::new();
+    };
+    let end = body[start + 1..]
+        .iter()
+        .position(|line| line.starts_with("      - "))
+        .map_or(body.len(), |off| start + 1 + off);
+    body[start..end].to_vec()
 }
 
 #[test]
