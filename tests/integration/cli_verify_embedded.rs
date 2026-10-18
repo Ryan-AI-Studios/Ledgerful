@@ -403,7 +403,10 @@ fn non_rust_repo_keeps_legacy_material_definition() {
 #[rstest::rstest]
 #[case("docs/contract.md", "contracts_document")]
 #[case("templates/message.txt", "contracts_template")]
-fn nested_rust_repo_material_is_selected(#[case] path: &str, #[case] stem: &str) {
+fn nested_rust_repo_referenced_material_refuses_with_crate_guidance(
+    #[case] path: &str,
+    #[case] stem: &str,
+) {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -423,16 +426,18 @@ fn nested_rust_repo_material_is_selected(#[case] path: &str, #[case] stem: &str)
     write(root, "templates/message.txt", "hi");
     git_add_and_commit(root, "nested Rust");
     write(root, path, "mutation");
+    let _ = stem;
     let v = dry_run_json(root, &[]);
-    assert_eq!(v["cleanTree"], false, "{v}");
-    assert_eq!(v["refused"], false, "{v}");
-    assert_eq!(v["scopeExecuted"], "fast", "{v}");
+    assert_eq!(v["refused"], true, "{v}");
+    let reason = v["fallbackReason"].as_str().unwrap_or("");
+    assert!(reason.contains("only below the repo root"), "{v}");
     assert!(
-        nextest_command(&v)
-            .unwrap_or_default()
-            .contains(&format!("test({stem})")),
-        "{v}"
+        reason.contains("root workspace Cargo.toml") && !reason.contains("-C"),
+        "remediation must not point at -C: {v}"
     );
+    // A real (non-dry-run) refusal exits 1 before running anything.
+    let real = spawn_verify(root, &["verify", "--scope", "fast"]);
+    assert_eq!(real.status.code(), Some(1));
 }
 
 #[rstest::rstest]
@@ -511,7 +516,6 @@ fn benign_noncheap_exact_outcome(#[case] path: &str) {
     assert!(nextest_command(&v).is_none());
 }
 
-
 #[test]
 fn malformed_root_manifest_cannot_produce_empty_cheap_green() {
     let tmp = tempdir().unwrap();
@@ -521,5 +525,11 @@ fn malformed_root_manifest_cannot_produce_empty_cheap_green() {
     git_add_and_commit(root, "malformed manifest fixture");
     write(root, "docs/guide.md", "changed guide");
     let v = dry_run_json(root, &[]);
-    assert!(v["refused"] == true || v["steps"].as_array().is_some_and(|s| s.iter().any(|step| step["command"].as_str().unwrap_or("").contains("cargo"))), "manifest presence must not disappear into a non-Rust empty plan: {v}");
+    assert!(
+        v["refused"] == true
+            || v["steps"].as_array().is_some_and(|s| s
+                .iter()
+                .any(|step| step["command"].as_str().unwrap_or("").contains("cargo"))),
+        "manifest presence must not disappear into a non-Rust empty plan: {v}"
+    );
 }

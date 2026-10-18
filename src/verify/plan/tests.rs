@@ -3572,7 +3572,10 @@ fn production_includer_without_inline_tests_refuses_without_mapping() {
 fn mapped_production_includer_cannot_rescue_unmapped_changed_source() {
     let (_tmp, root) = foreign_fixture(&[
         ("Cargo.toml", "[package]\nname=\"fx\"\n"),
-        ("src/reader.rs", "pub fn text() -> &'static str { include_str!(\"../templates/x.txt\") }\n"),
+        (
+            "src/reader.rs",
+            "pub fn text() -> &'static str { include_str!(\"../templates/x.txt\") }\n",
+        ),
     ]);
     let conn = rusqlite::Connection::open(root.join("mapping.db")).unwrap();
     conn.execute_batch("CREATE TABLE project_files (id INTEGER PRIMARY KEY, file_path TEXT);
@@ -3581,12 +3584,41 @@ fn mapped_production_includer_cannot_rescue_unmapped_changed_source() {
         INSERT INTO project_files VALUES (1, 'src/reader.rs'), (2, 'src/check.rs');
         INSERT INTO project_symbols VALUES (1, 'reader_contract', 2);
         INSERT INTO test_mapping VALUES (1, 2, NULL, 1);").unwrap();
-    let pure = plan_at(&root, &packet_with_paths(&["templates/x.txt"]), Some(&conn), &rust_profile());
-    assert!(!pure.refused, "pure D3(d) must keep working: {:?}", pure.fallback_reason);
-    assert!(nextest_step(&pure).unwrap().command.contains("test(reader_contract)"));
-    let mixed = plan_at(&root, &packet_with_paths(&["src/unmapped.rs", "templates/x.txt"]), Some(&conn), &rust_profile());
-    assert!(mixed.refused, "mapped includer must not rescue unmapped source: {:?}", mixed.steps);
-    assert!(mixed.fallback_reason.as_deref().unwrap().contains("changed source"));
+    let pure = plan_at(
+        &root,
+        &packet_with_paths(&["templates/x.txt"]),
+        Some(&conn),
+        &rust_profile(),
+    );
+    assert!(
+        !pure.refused,
+        "pure D3(d) must keep working: {:?}",
+        pure.fallback_reason
+    );
+    assert!(
+        nextest_step(&pure)
+            .unwrap()
+            .command
+            .contains("test(reader_contract)")
+    );
+    let mixed = plan_at(
+        &root,
+        &packet_with_paths(&["src/unmapped.rs", "templates/x.txt"]),
+        Some(&conn),
+        &rust_profile(),
+    );
+    assert!(
+        mixed.refused,
+        "mapped includer must not rescue unmapped source: {:?}",
+        mixed.steps
+    );
+    assert!(
+        mixed
+            .fallback_reason
+            .as_deref()
+            .unwrap()
+            .contains("changed source")
+    );
 }
 
 #[test]
@@ -3746,7 +3778,7 @@ fn unreferenced_csv_control_is_annotated_in_plan() {
     assert!(
         plan.steps[0]
             .description
-            .contains("no test dependency found for: data/x.csv"),
+            .contains("no direct include/read found by the lexical lookup for: data/x.csv"),
         "{}",
         plan.steps[0].description
     );

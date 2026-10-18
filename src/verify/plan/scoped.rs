@@ -207,30 +207,23 @@ pub fn build_plan_scoped_with_options(
     auto_index: bool,
     allow_full_fallback: bool,
 ) -> VerificationPlan {
-    let repo_root = layout.root.as_std_path();
-    let manifests = match embedded::rust_manifest_paths(repo_root) {
-        Ok(manifests) => manifests,
-        Err(reason) => return refuse_plan(&reason),
-    };
-    let profile = super::nested_rust_profile(profile, &manifests);
-    let mut plan = build_scoped_inner(
+    build_plan_scoped_with_rust_crates(
         packet,
         rules,
         predicted,
         config,
-        &profile,
+        profile,
         scope,
         conn,
         layout,
         auto_index,
         allow_full_fallback,
-    );
-    super::bind_nested_manifests(&mut plan, &manifests);
-    plan
+        None,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_scoped_inner(
+pub(crate) fn build_plan_scoped_with_rust_crates(
     packet: &ImpactPacket,
     rules: &Rules,
     predicted: &[PredictedFile],
@@ -241,6 +234,7 @@ fn build_scoped_inner(
     layout: &crate::state::layout::Layout,
     auto_index: bool,
     allow_full_fallback: bool,
+    rust_crates: Option<embedded::RustCrates>,
 ) -> VerificationPlan {
     let repo_root = layout.root.as_std_path();
     if !scope.is_fast() {
@@ -273,7 +267,60 @@ fn build_scoped_inner(
     // dozens of unrelated tests per README edit. Non-cheap paths (fixtures,
     // templates, data) are looked up everywhere, including this tree.
     let engine_tree = work_root_is_engine_tree(repo_root);
-    let lookup_active = profile.rust.is_some() && !packet.changes.is_empty();
+    // Tri-state, fail closed (0549 D8): a manifest that exists but yields no Rust
+    // profile (malformed), or an inconclusive crate walk, must never degrade to
+    // a 0-step non-Rust green.
+    let detected = rust_crates.unwrap_or_else(|| {
+        if profile.rust.is_some() {
+            embedded::RustCrates::Present
+        } else {
+            embedded::repo_has_rust_crates(repo_root)
+        }
+    });
+    if profile.rust.is_none()
+        && profile
+            .evidence
+            .contains(&crate::platform::repository::DetectionEvidence::FoundCargoToml)
+    {
+        let class = if profile.warnings.iter().any(|w| {
+            matches!(
+                w,
+                crate::platform::repository::DetectionWarning::UnreadableManifest(_)
+            )
+        }) {
+            "unreadable Cargo.toml"
+        } else {
+            "malformed Cargo.toml"
+        };
+        return mapping_cannot_scope_outcome(
+            &format!("Rust detection inconclusive: {class}"),
+            allow_full_fallback,
+            packet,
+            rules,
+            predicted,
+            config,
+            profile,
+            scope,
+            repo_root,
+        );
+    }
+    if let embedded::RustCrates::Unknown(class) = detected
+        && !packet.changes.is_empty()
+    {
+        return mapping_cannot_scope_outcome(
+            &format!("Rust detection inconclusive: {class}"),
+            allow_full_fallback,
+            packet,
+            rules,
+            predicted,
+            config,
+            profile,
+            scope,
+            repo_root,
+        );
+    }
+    let lookup_active =
+        (profile.rust.is_some() || detected.is_strict()) && !packet.changes.is_empty();
     let emb: EmbeddedDecision = if lookup_active {
         let candidates: Vec<String> = embedded::candidate_paths(packet)
             .into_iter()
@@ -285,6 +332,24 @@ fn build_scoped_inner(
     } else {
         EmbeddedDecision::default()
     };
+    // Nested-only Rust (no root manifest): cargo steps cannot run at the root and
+    // Ledgerful does not rewrite commands, so a referenced path refuses honestly.
+    if profile.rust.is_none()
+        && lookup_active
+        && (!emb.stems.is_empty() || !emb.needs_mapping.is_empty())
+    {
+        return mapping_cannot_scope_outcome(
+            "Rust crates found only below the repo root (no root Cargo.toml); add a root workspace Cargo.toml or run verify from a checkout rooted at the crate",
+            allow_full_fallback,
+            packet,
+            rules,
+            predicted,
+            config,
+            profile,
+            scope,
+            repo_root,
+        );
+    }
     if let Some(trigger) = &emb.refuse {
         return mapping_cannot_scope_outcome(
             trigger,
@@ -449,6 +514,28 @@ fn build_scoped_inner(
     // 0480: union `include_str!` cheap-doc stems the same way.
     // 0549 P1-2: every production includer must itself have mapped tests; a
     // sibling file's stems must not stand in for it.
+    if has_source {
+        let mut source_packet = packet.clone();
+        source_packet
+            .changes
+            .retain(|change| embedded::is_source_path(&change.path));
+        if conn
+            .and_then(|c| query_scoped_test_files(c, &source_packet))
+            .is_none()
+        {
+            return mapping_cannot_scope_outcome(
+                "test_mapping has no mappings for changed source independently of embedded includers",
+                allow_full_fallback,
+                packet,
+                rules,
+                predicted,
+                config,
+                profile,
+                scope,
+                repo_root,
+            );
+        }
+    }
     for includer in &emb.needs_mapping {
         let single = ImpactPacket {
             changes: vec![crate::impact::packet::ChangedFile {
@@ -615,7 +702,7 @@ fn build_non_code_cheap_plan(
         && let Some(first) = steps.first_mut()
     {
         first.description = format!(
-            "{} (no test dependency found for: {})",
+            "{} (no direct include/read found by the lexical lookup for: {})",
             first.description,
             unreferenced.join(", ")
         );

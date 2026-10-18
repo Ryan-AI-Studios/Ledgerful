@@ -6,6 +6,10 @@
 //! cargo nextest run --test integration --run-ignored only -E 'test(embedded_qualification)'
 //! ```
 //!
+//! Nested-only Rust (no root `Cargo.toml`) is a **refusal** case, covered by
+//! `cli_verify_embedded::nested_rust_repo_referenced_material_refuses_with_crate_guidance`;
+//! its real nextest failure is the `document` case run in a crate-rooted checkout.
+//!
 //! Expected wall-clock: roughly 1-3 minutes per platform (five verify runs).
 
 use crate::common::{git_add_and_commit, setup_git_repo};
@@ -79,27 +83,19 @@ fn init_fixture(root: &Path) {
 }
 
 #[rstest]
-#[case("document", "docs/contract.md", "v2\n", "contracts_document", false)]
-#[case(
-    "template",
-    "templates/message.txt",
-    "bye\n",
-    "contracts_template",
-    false
-)]
-#[case("mixed", "templates/message.txt", "bye\n", "contracts_template", false)]
-#[case("bytes", "data/value.bin", "bye\n", "material_value", false)]
-#[case("include", "data/value.inc", "2\n", "material_value", false)]
-#[case("manifest", "data/value.txt", "bye\n", "material_value", false)]
-#[case("runtime", "data/value.txt", "bye\n", "material_value", false)]
-#[case("nested", "docs/contract.md", "v2\n", "contracts_document", true)]
+#[case("document", "docs/contract.md", "v2\n", "contracts_document")]
+#[case("template", "templates/message.txt", "bye\n", "contracts_template")]
+#[case("mixed", "templates/message.txt", "bye\n", "contracts_template")]
+#[case("bytes", "data/value.bin", "bye\n", "material_value")]
+#[case("include", "data/value.inc", "2\n", "material_value")]
+#[case("manifest", "data/value.txt", "bye\n", "material_value")]
+#[case("runtime", "data/value.txt", "bye\n", "material_value")]
 #[ignore = "0549 D9: real cargo/nextest qualification; run manually per platform (owner: 0549)"]
 fn embedded_qualification_mutations_fail_and_repairs_pass(
     #[case] kind: &str,
     #[case] material: &str,
     #[case] mutation: &str,
     #[case] failing_test: &str,
-    #[case] nested: bool,
 ) {
     let tmp = tempdir().unwrap();
     let root = &tmp.path().join("space ü fixture");
@@ -138,30 +134,13 @@ fn embedded_qualification_mutations_fail_and_repairs_pass(
             );
             "hi\n"
         }
-        "document" | "nested" => "v1\n",
+        "document" => "v1\n",
         _ => "hi\n",
     };
     write(root, material, original);
-    if nested {
-        fs::create_dir_all(root.join("backend")).unwrap();
-        fs::rename(root.join("Cargo.toml"), root.join("backend/Cargo.toml")).unwrap();
-        fs::rename(root.join("src"), root.join("backend/src")).unwrap();
-        write(
-            root,
-            "backend/src/contracts.rs",
-            &ACCESSOR
-                .replace("../docs/", "../../docs/")
-                .replace("../templates/", "../../templates/"),
-        );
-    }
-    let cargo_root = if nested {
-        root.join("backend")
-    } else {
-        root.to_path_buf()
-    };
     let fmt = Command::new("cargo")
         .args(["fmt", "--all"])
-        .current_dir(&cargo_root)
+        .current_dir(root)
         .output()
         .unwrap();
     assert!(fmt.status.success(), "{}", text(&fmt));

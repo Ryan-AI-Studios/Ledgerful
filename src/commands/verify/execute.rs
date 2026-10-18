@@ -164,6 +164,10 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
     // Probability map size when extract_dataset succeeds (0144 dry-run stdout).
     let mut bayesian_dataset_keys: Option<usize> = None;
 
+    // One material snapshot feeds prediction, overlay, and JSON. Nested Rust
+    // discovery is only needed here if strict and legacy materiality differ.
+    let (working_material, rust_crates) = classify_working_tree_material(layout.root.as_std_path());
+
     // 3. Build Plan
     let (plan, steps) = match command_str {
         Some(ref cmd) => (
@@ -186,12 +190,12 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                 // (stale Temporal dump / optional-embed 10060). Do not set
                 // ctx.no_predict — that also gates storage/packet warnings.
                 // Manual --command and [[verify.steps]] never reach here.
-                let prediction =
-                    if dry_run && !working_tree_has_material_changes(layout.root.as_std_path()) {
-                        crate::verify::predict::PredictionResult::default()
-                    } else {
-                        OutcomePredictor::predict(&mut ctx)?
-                    };
+                let prediction = if dry_run && !working_tree_has_material_changes(working_material)
+                {
+                    crate::verify::predict::PredictionResult::default()
+                } else {
+                    OutcomePredictor::predict(&mut ctx)?
+                };
                 let rules = crate::policy::load::load_rules(&layout)?;
 
                 let mut plan = match &ctx.packet {
@@ -203,9 +207,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                         // a saved impact packet still lists changes (phantom packet).
                         // Kept here (not in plan.rs) so Layout::new(".") unit tests
                         // stay hermetic without a live git short-circuit.
-                        if scope.is_fast()
-                            && !working_tree_has_material_changes(layout.root.as_std_path())
-                        {
+                        if scope.is_fast() && !working_tree_has_material_changes(working_material) {
                             crate::verify::plan::build_empty_changes_plan(&profile)
                         } else if scope.is_fast() {
                             // 0203-B: classify from live git paths (replace
@@ -221,6 +223,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                                 conn,
                                 auto_index,
                                 allow_full_fallback,
+                                rust_crates,
                             )
                         } else {
                             let conn = ctx.storage.as_ref().map(|s| s.get_connection());
@@ -249,7 +252,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                         );
                         let empty_packet = crate::impact::packet::ImpactPacket::default();
                         if scope.is_fast() {
-                            if working_tree_has_material_changes(layout.root.as_std_path()) {
+                            if working_tree_has_material_changes(working_material) {
                                 let conn = ctx.storage.as_ref().map(|s| s.get_connection());
                                 build_fast_scoped_from_overlay_or_fail_closed(
                                     None,
@@ -261,6 +264,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                                     conn,
                                     auto_index,
                                     allow_full_fallback,
+                                    rust_crates,
                                 )
                             } else {
                                 let conn = ctx.storage.as_ref().map(|s| s.get_connection());
@@ -450,7 +454,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                     .unwrap_or_else(|| "fast scope unavailable; refusing full suite".to_string());
                 let prediction_skipped = command_str.is_none()
                     && matches!(
-                        classify_working_tree_material(layout.root.as_std_path()),
+                        working_material,
                         WorkingTreeMaterial::Clean | WorkingTreeMaterial::Unavailable
                     );
                 emit_verify_dry_run_json(
@@ -460,7 +464,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                     true,
                     bayesian_matched_steps,
                     bayesian_dataset_keys,
-                    layout.root.as_std_path(),
+                    working_material,
                     prediction_skipped,
                 )?;
                 return Err(miette::miette!("{reason}"));
@@ -501,7 +505,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
         if json {
             let prediction_skipped = command_str.is_none()
                 && matches!(
-                    classify_working_tree_material(layout.root.as_std_path()),
+                    working_material,
                     WorkingTreeMaterial::Clean | WorkingTreeMaterial::Unavailable
                 );
             return emit_verify_dry_run_json(
@@ -511,7 +515,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                 false,
                 bayesian_matched_steps,
                 bayesian_dataset_keys,
-                layout.root.as_std_path(),
+                working_material,
                 prediction_skipped,
             );
         }
@@ -827,12 +831,25 @@ fn print_fallback_announcement(reason: &str, refused: bool) {
 ///
 /// Replaces `packet.changes` (does not union). Sets `head_hash` from
 /// live HEAD. Does not persist the overlay or write `latest-impact.json`.
+#[cfg(test)]
 fn overlay_fast_classifier_packet(
     layout: &crate::state::layout::Layout,
+    packet: crate::impact::packet::ImpactPacket,
+) -> miette::Result<crate::impact::packet::ImpactPacket> {
+    let (_, rust) = classify_working_tree_material(layout.root.as_std_path());
+    overlay_fast_classifier_packet_with_rust(
+        layout,
+        packet,
+        rust.is_some_and(crate::verify::plan::RustCrates::is_strict),
+    )
+}
+
+fn overlay_fast_classifier_packet_with_rust(
+    layout: &crate::state::layout::Layout,
     mut packet: crate::impact::packet::ImpactPacket,
+    rust: bool,
 ) -> miette::Result<crate::impact::packet::ImpactPacket> {
     let live = crate::git::status::collect_changed_files_for_filter(layout)?;
-    let rust = repo_is_rust(layout.root.as_std_path());
     let mut changes: Vec<crate::impact::packet::ChangedFile> = live
         .into_iter()
         .filter(|c| is_material_or_cheap_verify_path(&c.path, rust))
@@ -881,12 +898,6 @@ fn is_material_for_profile(path: &std::path::Path, rust: bool) -> bool {
     }
 }
 
-fn repo_is_rust(repo_root: &std::path::Path) -> bool {
-    crate::verify::plan::rust_manifest_paths(repo_root)
-        .map(|p| !p.is_empty())
-        .unwrap_or(true)
-}
-
 /// Live overlay + classifier for `--scope fast` dirty trees. Shared by Some-packet
 /// and None-packet (P2) arms. Overlay failure is fail-closed (snapshot or refuse).
 #[allow(clippy::too_many_arguments)]
@@ -900,15 +911,20 @@ fn build_fast_scoped_from_overlay_or_fail_closed(
     conn: Option<&rusqlite::Connection>,
     auto_index: bool,
     allow_full_fallback: bool,
+    rust_crates: Option<crate::verify::plan::RustCrates>,
 ) -> crate::verify::plan::VerificationPlan {
     let base = snapshot.cloned().unwrap_or_default();
-    let overlaid = match overlay_fast_classifier_packet(layout, base) {
+    let overlaid = match overlay_fast_classifier_packet_with_rust(
+        layout,
+        base,
+        rust_crates.is_some_and(crate::verify::plan::RustCrates::is_strict),
+    ) {
         Ok(packet) => packet,
         Err(err) => {
             warn!("fast-scope live overlay failed: {err}");
             match snapshot {
                 Some(packet) => {
-                    return crate::verify::plan::build_plan_scoped_with_options(
+                    return crate::verify::plan::build_plan_scoped_with_rust_crates(
                         packet,
                         rules,
                         predicted,
@@ -919,6 +935,7 @@ fn build_fast_scoped_from_overlay_or_fail_closed(
                         layout,
                         auto_index,
                         allow_full_fallback,
+                        rust_crates,
                     );
                 }
                 None => {
@@ -946,7 +963,7 @@ fn build_fast_scoped_from_overlay_or_fail_closed(
             }
         }
     };
-    crate::verify::plan::build_plan_scoped_with_options(
+    crate::verify::plan::build_plan_scoped_with_rust_crates(
         &overlaid,
         rules,
         predicted,
@@ -957,6 +974,7 @@ fn build_fast_scoped_from_overlay_or_fail_closed(
         layout,
         auto_index,
         allow_full_fallback,
+        rust_crates,
     )
 }
 
@@ -969,21 +987,34 @@ enum WorkingTreeMaterial {
     Unavailable,
 }
 
-fn classify_working_tree_material(repo_root: &std::path::Path) -> WorkingTreeMaterial {
+fn classify_working_tree_material(
+    repo_root: &std::path::Path,
+) -> (WorkingTreeMaterial, Option<crate::verify::plan::RustCrates>) {
     let Ok(repo) = crate::git::repo::open_repo(repo_root) else {
-        return WorkingTreeMaterial::Unavailable;
+        return (WorkingTreeMaterial::Unavailable, None);
     };
     let Ok(changes) = crate::git::status::get_repo_status(&repo) else {
-        return WorkingTreeMaterial::Unavailable;
+        return (WorkingTreeMaterial::Unavailable, None);
     };
-    let rust = repo_is_rust(repo_root);
-    if changes
+    let rust = if repo_root.join("Cargo.toml").is_file() {
+        Some(crate::verify::plan::RustCrates::Present)
+    } else if changes
         .iter()
-        .any(|c| is_material_for_profile(&c.path, rust))
+        .any(|c| is_material_verify_path(&c.path) != is_legacy_material_verify_path(&c.path))
     {
-        WorkingTreeMaterial::Dirty
+        Some(crate::verify::plan::repo_has_rust_crates(repo_root))
     } else {
-        WorkingTreeMaterial::Clean
+        None
+    };
+    if changes.iter().any(|c| {
+        is_material_for_profile(
+            &c.path,
+            rust.is_some_and(crate::verify::plan::RustCrates::is_strict),
+        )
+    }) {
+        (WorkingTreeMaterial::Dirty, rust)
+    } else {
+        (WorkingTreeMaterial::Clean, rust)
     }
 }
 
@@ -998,11 +1029,8 @@ fn classify_working_tree_material(repo_root: &std::path::Path) -> WorkingTreeMat
 ///
 /// On git discovery/status failure, returns false so clean EmptyChanges still
 /// works in non-git fixtures (Unavailable ≠ Dirty).
-fn working_tree_has_material_changes(repo_root: &std::path::Path) -> bool {
-    matches!(
-        classify_working_tree_material(repo_root),
-        WorkingTreeMaterial::Dirty
-    )
+fn working_tree_has_material_changes(material: WorkingTreeMaterial) -> bool {
+    matches!(material, WorkingTreeMaterial::Dirty)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1013,10 +1041,9 @@ fn emit_verify_dry_run_json(
     refused: bool,
     matched_steps: Option<usize>,
     dataset_keys: Option<usize>,
-    repo_root: &std::path::Path,
+    material: WorkingTreeMaterial,
     prediction_gate: bool,
 ) -> Result<()> {
-    let material = classify_working_tree_material(repo_root);
     let git_available = !matches!(material, WorkingTreeMaterial::Unavailable);
     let clean_tree = match material {
         WorkingTreeMaterial::Clean => Some(true),

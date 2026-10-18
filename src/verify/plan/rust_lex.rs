@@ -2,43 +2,6 @@
 //! matching). Used by the embedded-material scanner and by the
 //! `INCLUDE_STR_MATERIAL` drift test so there is exactly one lexer (0549 D5).
 
-#[cfg(test)]
-mod string_escape_tests {
-    use super::parse_rust_string_literal;
-
-    #[test]
-    fn hex_escape_decodes_material_path() {
-        assert_eq!(
-            parse_rust_string_literal(r#""../templates/mess\x61ge.txt""#).as_deref(),
-            Some("../templates/message.txt")
-        );
-    }
-
-    #[test]
-    fn unicode_escape_decodes_material_path() {
-        assert_eq!(
-            parse_rust_string_literal(r#""../templates/mess\u{0061}ge-\u{fc}.txt""#).as_deref(),
-            Some("../templates/message-ü.txt")
-        );
-    }
-
-    #[test]
-    fn escaped_line_continuation_does_not_change_path() {
-        assert_eq!(
-            parse_rust_string_literal("\"../templates/mess\\\r\n    age.txt\"").as_deref(),
-            Some("../templates/message.txt")
-        );
-    }
-
-    #[test]
-    fn invalid_escape_is_rejected_instead_of_changing_path() {
-        assert_eq!(
-            parse_rust_string_literal(r#""../templates/mess\qge.txt""#),
-            None
-        );
-    }
-}
-
 pub(crate) fn parse_rust_string_literal(s: &str) -> Option<String> {
     let s = s.trim();
     if s.len() < 2 || !s.starts_with('"') || !s.ends_with('"') {
@@ -468,4 +431,41 @@ pub(crate) fn find_matching_delimiter(
         i += 1;
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod string_escape_tests {
+    use super::parse_rust_string_literal;
+
+    #[test]
+    fn hex_escape_decodes_material_path() {
+        assert_eq!(
+            parse_rust_string_literal(r#""../templates/mess\x61ge.txt""#).as_deref(),
+            Some("../templates/message.txt")
+        );
+    }
+
+    #[test]
+    fn unicode_escape_decodes_material_path() {
+        assert_eq!(
+            parse_rust_string_literal(r#""../templates/mess\u{0061}ge-\u{fc}.txt""#).as_deref(),
+            Some("../templates/message-ü.txt")
+        );
+    }
+
+    #[test]
+    fn escaped_line_continuation_does_not_change_path() {
+        assert_eq!(
+            parse_rust_string_literal("\"../templates/mess\\\r\n    age.txt\"").as_deref(),
+            Some("../templates/message.txt")
+        );
+    }
+
+    #[test]
+    fn invalid_escape_is_rejected_instead_of_changing_path() {
+        assert_eq!(
+            parse_rust_string_literal(r#""../templates/mess\qge.txt""#),
+            None
+        );
+    }
 }
