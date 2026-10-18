@@ -18,8 +18,14 @@ pub(crate) type ParsedSemanticFile = (PathBuf, String, Vec<crate::semantic::chun
 pub(crate) enum SemanticFileError {
     #[error("{path}: {message}")]
     Read { path: String, message: String },
-    #[error("{path}: {message}")]
-    Chunk { path: String, message: String },
+    /// `content_hash` is the grain-mixed hash of the content that failed to chunk
+    /// (0545), so a drop can be gated on the stored hash being stale.
+    #[error("{}: {message}", file.display())]
+    Chunk {
+        file: PathBuf,
+        content_hash: String,
+        message: String,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -41,6 +47,9 @@ pub(crate) fn semantic_embedding_batches(
         .collect()
 }
 
+/// Read and chunk each file. A read failure is `Read`; a chunk failure is `Chunk`
+/// and carries the failing content hash so the indexer can clear rows of a changed
+/// file (0545, see `chunk_failures`).
 pub(crate) fn parse_semantic_files(
     pool: &rayon::ThreadPool,
     files_to_process: Vec<PathBuf>,
@@ -76,7 +85,10 @@ pub(crate) fn parse_semantic_files(
                         match crate::semantic::chunker::AstChunker::chunk_file(&path, &content) {
                             Ok(chunks) => Ok((path, content, chunks)),
                             Err(e) => Err(SemanticFileError::Chunk {
-                                path: path.display().to_string(),
+                                content_hash: crate::semantic::chunker::semantic_file_content_hash(
+                                    &content,
+                                ),
+                                file: path,
                                 message: e.to_string(),
                             }),
                         }
