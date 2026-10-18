@@ -2752,7 +2752,7 @@ fn test_truncate_for_context_under_budget_serializes_once() {
     assert!(!truncated);
     assert_eq!(
         serializes, 1,
-        "under-budget path must compact-serialize once"
+        "under-budget path must prompt-serialize once"
     );
     assert!(packet.service_map_delta.is_some());
     assert_eq!(packet.schema_version, "v1");
@@ -2776,7 +2776,7 @@ fn test_truncate_for_context_over_budget_serializes_at_most_twice() {
     assert!(truncated);
     assert!(
         serializes <= 2,
-        "truncate path must compact-serialize at most twice, got {serializes}"
+        "truncate path must prompt-serialize at most twice, got {serializes}"
     );
     assert_eq!(serializes, 2);
     assert!(packet.relevant_decisions.is_empty());
@@ -2816,12 +2816,12 @@ fn test_truncate_for_context_phase1_preserves_couplings_and_hotspots() {
         res.stderr = "[TRUNCATED]".to_string();
         res.truncated = true;
     }
-    let after_phase1_len = serde_json::to_string(&after_phase1).unwrap().len();
-    let full_len = serde_json::to_string(&packet).unwrap().len();
+    let after_phase1_len = prompt_packet_text(&after_phase1).unwrap().len();
+    let full_len = prompt_packet_text(&packet).unwrap().len();
     let target = after_phase1_len.saturating_add(256);
     assert!(
         after_phase1_len < full_len && target < full_len,
-        "phase 1 must shrink compact JSON: {after_phase1_len} vs {full_len}"
+        "phase 1 must shrink the prompt text: {after_phase1_len} vs {full_len}"
     );
 
     let (truncated, serializes) = packet.truncate_for_context_metered(target);
@@ -2878,7 +2878,7 @@ fn test_truncate_for_context_serialize_error_still_strips() {
     );
     assert!(
         serializes <= 2,
-        "full-packet compact serializes: {serializes}"
+        "full-packet prompt serializes: {serializes}"
     );
     assert_eq!(packet.verification_results[0].stdout, "[TRUNCATED]");
     assert!(packet.verification_results[0].truncated);
