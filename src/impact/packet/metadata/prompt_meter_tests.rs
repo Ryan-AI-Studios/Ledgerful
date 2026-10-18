@@ -261,7 +261,12 @@ fn field_prompt_debit_tracks_the_reference_prompt(
 #[test]
 fn blast_radius_some_empty_is_not_in_the_measure() {
     let packet = packet_for("blast_empty");
-    let none = ImpactPacket::default();
+    // `default()` stamps `Utc::now().to_rfc3339()`, whose sub-second width varies;
+    // pin it so only the blast radius can differ.
+    let none = ImpactPacket {
+        timestamp_utc: packet.timestamp_utc.clone(),
+        ..ImpactPacket::default()
+    };
     assert_eq!(
         reference_prompt_len(&packet),
         reference_prompt_len(&none),

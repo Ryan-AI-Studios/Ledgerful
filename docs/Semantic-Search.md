@@ -69,16 +69,19 @@ bootstrap so the index never silently stays empty.
   `index --semantic` (query/Ask keep ranking pre-header vectors until
   that run). Hash-current files with zero snippet rows still re-process
   unless the chunker produces zero chunks (declaration-only `mod x;`).
+  A file that reads but fails to chunk after its content changed loses its stored
+  hash and snippets (so `index --check` stops reporting it drifted) and is retried
+  on every run; if its stored hash still matches, the index is kept (0545).
 - **Force rebuild:** `index --semantic --full` always wins over `-i`.
 - **After repo absolute-path move / isolation cleanup:** prefer
   `index --semantic --full` once so foreign keys purge and relative keys rewrite.
 - **Progress:** interactive TTY keeps indicatif parse/embed bars + HNSW spinner.
   Non-TTY / agent runs (`CI`, `LEDGERFUL_NON_INTERACTIVE`, non-TTY stdin) emit
   product phase lines and throttled counters on stdout (mode early, parse,
-  embed, HNSW, complete) — not tracing INFO (which default human QUIET hides).
+  embed, HNSW, complete, plus one line when files failed to chunk) — not tracing INFO (which default human QUIET hides).
 - **Machine mode:** `index --semantic --json` suppresses all human progress;
   success prints **one** final JSON object (`schemaVersion`, `mode`, `reason`,
-  counts, `upToDate`, optional `purgedForeign` / `hnswRebuilt`).
+  counts, `upToDate`, optional `purgedForeign` / `hnswRebuilt` / `chunkFailedFiles`).
 - **HNSW rebuild:** large batches (≥ `semantic.hnsw_rebuild_threshold`, default
   500) drop and rebuild the HNSW index over the **whole** relation. The
   announce line uses total store size (existing + new), not batch-only undercount.
