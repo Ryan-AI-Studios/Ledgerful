@@ -1442,9 +1442,17 @@ mod execute_verify_json_gate_tests {
         let gate = &prod[window_start..predict_at];
         assert!(
             gate.contains("dry_run")
-                && gate.contains("working_tree_has_material_changes")
-                && gate.contains("as_std_path()"),
-            "clean dry-run must gate predict with dry_run + as_std_path material check; nearby: {gate:?}"
+                && gate.contains("working_tree_has_material_changes(working_material)"),
+            "clean dry-run must gate predict with dry_run + the material snapshot; nearby: {gate:?}"
+        );
+        // 0549 D8 hoists ONE material snapshot and feeds it to prediction,
+        // overlay, and JSON, so the gate argument is no longer the raw
+        // `layout.root.as_std_path()` this test used to look for. Assert the
+        // equivalent fact instead: that snapshot is still classified from the
+        // real repo root path, not from an abstract flag.
+        assert!(
+            prod.contains("classify_working_tree_material(layout.root.as_std_path())"),
+            "material snapshot must be classified from the real repo root path"
         );
         let extract_at = prod
             .find("probability::extract_dataset")
