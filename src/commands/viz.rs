@@ -69,16 +69,24 @@ fn services_banner_tokens(gated: bool, persisted_hidden: Option<usize>) -> Strin
 }
 
 fn declared_svc_nodes(config: &Config) -> Vec<SvcNode> {
-    let mut defs: Vec<_> = config.services.definitions.iter().collect();
-    defs.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.root.cmp(&b.root)));
-    defs.into_iter()
+    let mut nodes: Vec<SvcNode> = config
+        .services
+        .definitions
+        .iter()
         .map(|d| SvcNode {
             name: d.name.clone(),
             dir_path: d.root.replace('\\', "/"),
             marker_kind: "DECLARED".to_string(),
             confidence: 1.0,
         })
-        .collect()
+        .collect();
+    // Sort on the emitted path: raw roots order `/` before `\`.
+    nodes.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.dir_path.cmp(&b.dir_path))
+    });
+    nodes
 }
 
 fn apply_fetch_limit<T>(mut items: Vec<T>, limit: usize) -> (Vec<T>, bool) {
@@ -1035,6 +1043,40 @@ mod tests {
         assert_eq!(nodes[0].confidence, 1.0);
         assert_eq!(nodes[1].name, "beta");
         assert_eq!(nodes[1].dir_path, "src/beta");
+    }
+
+    fn declared(name: &str, root: &str) -> ServiceDefinition {
+        ServiceDefinition {
+            name: name.into(),
+            root: root.into(),
+            owners: vec![],
+            runtime_name: None,
+            queues: vec![],
+            topics: vec![],
+            rpc_endpoints: vec![],
+        }
+    }
+
+    #[rstest::rstest]
+    #[case::backslash_first(vec![r"services\alpha", "services/beta"])]
+    #[case::slash_first(vec!["services/beta", r"services\alpha"])]
+    fn declared_svc_nodes__same_name_orders_by_emitted_path(#[case] roots: Vec<&str>) {
+        let mut config = Config::default();
+        config.services.definitions = roots.into_iter().map(|r| declared("svc", r)).collect();
+        let paths: Vec<String> = declared_svc_nodes(&config)
+            .into_iter()
+            .map(|n| n.dir_path)
+            .collect();
+        assert_eq!(paths, vec!["services/alpha", "services/beta"]);
+    }
+
+    #[test]
+    fn declared_svc_nodes__equal_replaced_roots_are_both_listed() {
+        let mut config = Config::default();
+        config.services.definitions = vec![declared("svc", r"a\b"), declared("svc", "a/b")];
+        let nodes = declared_svc_nodes(&config);
+        assert_eq!(nodes.len(), 2);
+        assert!(nodes.iter().all(|n| n.dir_path == "a/b"));
     }
 
     #[test]
