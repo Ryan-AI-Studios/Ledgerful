@@ -2239,3 +2239,17 @@ fn policy_check_report_roundtrip() {
     let from_fail: PolicyCheckReport = serde_json::from_str(legacy_fail).unwrap();
     assert_eq!(from_fail.status, PolicyHeadline::Fail);
 }
+
+/// 0542: a missing or explicit `fail` status with violations cannot keep `passed: true`.
+#[rstest::rstest]
+#[case::missing_status("")]
+#[case::explicit_fail(r#","status":"fail""#)]
+fn policy_check_report_legacy_passed_true_with_violations_reads_failed(#[case] status: &str) {
+    let violation = r#"{"ruleId":"no_pending_tx","file":".ledgerful/state/ledger.db","line":null,"message":"pending","severity":"error"}"#;
+    let body = format!(
+        r#"{{"schemaVersion":1,"violations":[{violation}],"passed":true,"mode":"enforce","policySource":"local"{status}}}"#
+    );
+    let parsed: PolicyCheckReport = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed.status, PolicyHeadline::Fail);
+    assert!(!parsed.passed);
+}

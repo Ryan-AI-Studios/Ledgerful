@@ -53,6 +53,8 @@ const REQUIRED_IDLE_FOOTER: &str = "A required rule did not run. This is not a m
 pub struct PolicyCheckReport {
     pub schema_version: u32,
     pub violations: Vec<PolicyViolation>,
+    /// No violations. On read, a `fail` status (missing or explicit) with violations
+    /// forces `false`; an explicit `pass` or `idle` keeps `passed` as written.
     pub passed: bool,
     /// `observe` | `enforce`
     pub mode: String,
@@ -111,10 +113,13 @@ impl From<PolicyCheckReportDe> for PolicyCheckReport {
             None if !raw.violations.is_empty() => PolicyHeadline::Fail,
             None => PolicyHeadline::Idle,
         };
+        // `passed` means no violations: a `Fail` with violations cannot be passed.
+        // Explicit `pass` and `idle` keep `passed` as written.
+        let passed = raw.passed && !(status == PolicyHeadline::Fail && !raw.violations.is_empty());
         Self {
             schema_version: raw.schema_version,
             violations: raw.violations,
-            passed: raw.passed,
+            passed,
             mode: raw.mode,
             policy_source: raw.policy_source,
             notes: raw.notes,
@@ -1535,6 +1540,91 @@ mod tests {
         );
         assert!(!human_chrome_suppressed(&warned));
         assert!(!enforcement_rejects(&warned));
+    }
+
+    const LEGACY_VIOLATION: &str = r#"{"ruleId":"no_pending_tx","file":".ledgerful/state/ledger.db","line":null,"message":"pending","severity":"error"}"#;
+
+    fn legacy_payload(mode: &str, passed: bool, status: Option<&str>, violations: bool) -> String {
+        let violations = if violations { LEGACY_VIOLATION } else { "" };
+        let status = status
+            .map(|s| format!(r#","status":"{s}""#))
+            .unwrap_or_default();
+        format!(
+            r#"{{"schemaVersion":1,"violations":[{violations}],"passed":{passed},"mode":"{mode}","policySource":"local"{status}}}"#
+        )
+    }
+
+    #[rstest::rstest]
+    #[case::enforce_missing_status("enforce", None, "FAILED", true)]
+    #[case::observe_missing_status("observe", None, "WARNINGS (observe — not blocking)", false)]
+    #[case::enforce_explicit_fail("enforce", Some("fail"), "FAILED", true)]
+    #[case::observe_explicit_fail(
+        "observe",
+        Some("fail"),
+        "WARNINGS (observe — not blocking)",
+        false
+    )]
+    fn legacy_passed_true_with_violations_reads_failed(
+        #[case] mode: &str,
+        #[case] status: Option<&str>,
+        #[case] label: &str,
+        #[case] rejects: bool,
+    ) {
+        let report: PolicyCheckReport =
+            serde_json::from_str(&legacy_payload(mode, true, status, true)).unwrap();
+        assert_eq!(report.status, PolicyHeadline::Fail);
+        assert!(!report.passed);
+        assert_eq!(human_result_label(&report), label);
+        assert!(!human_chrome_suppressed(&report));
+        assert_eq!(enforcement_rejects(&report), rejects);
+
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["status"], "fail");
+        assert_eq!(json["passed"], false);
+    }
+
+    #[rstest::rstest]
+    #[case::explicit_pass(Some("pass"), true, true, true, "PASSED")]
+    #[case::explicit_idle_with_violation(Some("idle"), true, true, true, REQUIRED_IDLE_RESULT)]
+    #[case::missing_status_empty_passed_true(None, true, false, true, REQUIRED_IDLE_RESULT)]
+    #[case::missing_status_empty_passed_false(None, false, false, false, REQUIRED_IDLE_RESULT)]
+    fn passed_is_kept_outside_the_fail_with_violations_arm(
+        #[case] status: Option<&str>,
+        #[case] passed: bool,
+        #[case] violations: bool,
+        #[case] expect_passed: bool,
+        #[case] label: &str,
+    ) {
+        let report: PolicyCheckReport =
+            serde_json::from_str(&legacy_payload("observe", passed, status, violations)).unwrap();
+        assert_eq!(report.passed, expect_passed);
+        assert_eq!(human_result_label(&report), label);
+    }
+
+    #[test]
+    fn legacy_missing_status_passed_true_reserializes_canonically() {
+        let legacy = legacy_payload("enforce", true, None, true);
+        let first: PolicyCheckReport = serde_json::from_str(&legacy).unwrap();
+        let s1 = serde_json::to_string(&first).unwrap();
+        assert!(s1.contains(r#""passed":false"#));
+        assert!(s1.contains(r#""status":"fail""#));
+        let second: PolicyCheckReport = serde_json::from_str(&s1).unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[rstest::rstest]
+    #[case::pass(true, "observe", PolicyHeadline::Pass)]
+    #[case::fail(false, "enforce", PolicyHeadline::Fail)]
+    #[case::idle(true, "observe", PolicyHeadline::Idle)]
+    fn sample_report_round_trips_unchanged(
+        #[case] passed: bool,
+        #[case] mode: &str,
+        #[case] status: PolicyHeadline,
+    ) {
+        let report = sample_report(passed, mode, "local", vec![], false, status);
+        let back: PolicyCheckReport =
+            serde_json::from_str(&serde_json::to_string(&report).unwrap()).unwrap();
+        assert_eq!(report, back);
     }
 
     #[test]

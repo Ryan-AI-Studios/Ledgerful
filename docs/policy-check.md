@@ -205,7 +205,7 @@ Risk thresholds compare inclusively: `fail_on = medium` fires on medium **and** 
 | `enforce` | no | **0** |
 | `enforce` | yes | **nonzero** (severities marked `error`) |
 
-JSON `passed` is `true` only when there are zero violations (independent of mode).
+JSON `passed` is `true` only when there are zero violations (independent of mode). Reading a stored report enforces this for a missing or explicit `fail` status; an explicit `pass` or `idle` is trusted as written.
 Exit 0 is not `status: pass`. Observe with violations is still exit 0. Enforce
 with `status: idle` and no violations is still exit 0.
 
