@@ -69,12 +69,16 @@ pub(crate) fn resolve_verify_scope(scope: Option<VerifyScope>, dry_run: bool) ->
     }
 }
 
+mod embedded;
+pub(crate) use embedded::{RustCrates, repo_has_rust_crates};
 mod full;
 mod non_code;
+mod rust_lex;
 mod scoped;
 mod shared_infra;
 
 pub use full::{build_plan, resolve_default_test_command, resolve_doctest_command};
+pub(crate) use scoped::build_plan_scoped_with_rust_crates;
 pub use scoped::{build_plan_scoped, build_plan_scoped_with_options};
 
 pub(crate) use full::build_plan_with_scope;
@@ -82,7 +86,7 @@ pub(crate) use full::build_plan_with_scope;
 pub(crate) use full::{append_full_tier_commands, nextest_has_profile};
 #[cfg(test)]
 pub(crate) use non_code::INCLUDE_STR_MATERIAL;
-pub(crate) use non_code::is_non_code_cheap_path;
+pub(crate) use non_code::{is_legacy_material_path, is_non_code_cheap_path};
 pub(crate) use scoped::test_file_to_nextest_stem;
 #[cfg(test)]
 pub(crate) use scoped::{
