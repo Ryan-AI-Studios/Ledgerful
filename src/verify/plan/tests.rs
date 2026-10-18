@@ -3569,6 +3569,27 @@ fn production_includer_without_inline_tests_refuses_without_mapping() {
 }
 
 #[test]
+fn mapped_production_includer_cannot_rescue_unmapped_changed_source() {
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname=\"fx\"\n"),
+        ("src/reader.rs", "pub fn text() -> &'static str { include_str!(\"../templates/x.txt\") }\n"),
+    ]);
+    let conn = rusqlite::Connection::open(root.join("mapping.db")).unwrap();
+    conn.execute_batch("CREATE TABLE project_files (id INTEGER PRIMARY KEY, file_path TEXT);
+        CREATE TABLE project_symbols (id INTEGER PRIMARY KEY, symbol_name TEXT, file_id INTEGER);
+        CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, tested_symbol_id INTEGER, tested_file_id INTEGER);
+        INSERT INTO project_files VALUES (1, 'src/reader.rs'), (2, 'tests/reader.rs');
+        INSERT INTO project_symbols VALUES (1, 'reader_contract', 2);
+        INSERT INTO test_mapping VALUES (1, 2, NULL, 1);").unwrap();
+    let pure = plan_at(&root, &packet_with_paths(&["templates/x.txt"]), Some(&conn), &rust_profile());
+    assert!(!pure.refused, "pure D3(d) must keep working: {:?}", pure.fallback_reason);
+    assert!(nextest_step(&pure).unwrap().command.contains("test(reader_contract)"));
+    let mixed = plan_at(&root, &packet_with_paths(&["src/unmapped.rs", "templates/x.txt"]), Some(&conn), &rust_profile());
+    assert!(mixed.refused, "mapped includer must not rescue unmapped source: {:?}", mixed.steps);
+    assert!(mixed.fallback_reason.as_deref().unwrap().contains("changed source"));
+}
+
+#[test]
 fn packaging_plus_embedded_share_one_nextest_step() {
     let (_tmp, root) = foreign_fixture(&[
         ("Cargo.toml", "[package]\nname=\"fx\"\n"),
@@ -3827,4 +3848,80 @@ fn unreferenced_formerly_material_path_still_refuses(#[case] changed: &str) {
         "{changed} must not become a fmt+clippy-only pass: {:?}",
         plan.steps
     );
+}
+
+#[test]
+fn embedded_mixed_legacy_path_is_named_in_refusal() {
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname=\"fx\"\n"),
+        ("src/lib.rs", "pub fn f() {}\n"),
+    ]);
+    let plan = plan_at(
+        &root,
+        &packet_with_paths(&["src/lib.rs", "data/x.sql"]),
+        None,
+        &rust_profile(),
+    );
+    assert!(plan.refused);
+    assert!(
+        plan.fallback_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("data/x.sql")
+    );
+}
+
+#[test]
+fn embedded_mapping_includer_head_mismatch_refuses_after_repair() {
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname=\"fx\"\n"),
+        (
+            "src/render.rs",
+            "pub fn render() -> &'static str { include_str!(\"../message.txt\") }\n",
+        ),
+    ]);
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    seed_mapping_row(&conn);
+    seed_index_head(&conn, "old-hash");
+    conn.execute_batch("CREATE TABLE project_files (id INTEGER PRIMARY KEY, file_path TEXT); INSERT INTO project_files VALUES (1, 'src/render.rs');").unwrap();
+    let mut packet = packet_with_paths(&["message.txt"]);
+    packet.head_hash = Some("new-hash".to_string());
+    assert_eq!(
+        classify_test_mapping_freshness(&conn, &packet),
+        MappingFreshness::HeadMismatch
+    );
+    let plan = plan_at(&root, &packet, Some(&conn), &rust_profile());
+    assert!(plan.refused, "{:?}", plan.steps);
+    assert!(plan.steps.is_empty());
+    let reason = plan.fallback_reason.as_deref().unwrap_or("");
+    assert!(
+        reason.contains("head_hash") || reason.contains("auto-index failed"),
+        "{reason}"
+    );
+}
+
+#[test]
+#[ignore = "0549 local qualification: engine edit refusal-rate cohort; owner track 0549"]
+fn embedded_engine_edit_refusal_rate_qualification() {
+    let root = camino::Utf8Path::new(env!("CARGO_MANIFEST_DIR"));
+    let cohort = [
+        "README.md",
+        "SECURITY.md",
+        "docs/Features.md",
+        "docs/verify-performance.md",
+        "docs/Engineering.md",
+        "docs/agent-output-contract.md",
+        "tests/fixtures/qualification.csv",
+        "tests/fixtures/qualification.txt",
+    ];
+    let mut refused = 0;
+    for path in cohort {
+        let plan = plan_at(root, &packet_with_paths(&[path]), None, &rust_profile());
+        refused += usize::from(plan.refused);
+        eprintln!(
+            "engine cohort {path}: refused={} reason={:?}",
+            plan.refused, plan.fallback_reason
+        );
+    }
+    eprintln!("0549 engine edit refusal rate: {refused}/{}", cohort.len());
 }

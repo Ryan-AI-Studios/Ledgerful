@@ -882,9 +882,9 @@ fn is_material_for_profile(path: &std::path::Path, rust: bool) -> bool {
 }
 
 fn repo_is_rust(repo_root: &std::path::Path) -> bool {
-    crate::platform::repository::detect_repository(repo_root)
-        .rust
-        .is_some()
+    crate::verify::plan::rust_manifest_paths(repo_root)
+        .map(|p| !p.is_empty())
+        .unwrap_or(true)
 }
 
 /// Live overlay + classifier for `--scope fast` dirty trees. Shared by Some-packet

@@ -208,6 +208,41 @@ pub fn build_plan_scoped_with_options(
     allow_full_fallback: bool,
 ) -> VerificationPlan {
     let repo_root = layout.root.as_std_path();
+    let manifests = match embedded::rust_manifest_paths(repo_root) {
+        Ok(manifests) => manifests,
+        Err(reason) => return refuse_plan(&reason),
+    };
+    let profile = super::nested_rust_profile(profile, &manifests);
+    let mut plan = build_scoped_inner(
+        packet,
+        rules,
+        predicted,
+        config,
+        &profile,
+        scope,
+        conn,
+        layout,
+        auto_index,
+        allow_full_fallback,
+    );
+    super::bind_nested_manifests(&mut plan, &manifests);
+    plan
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_scoped_inner(
+    packet: &ImpactPacket,
+    rules: &Rules,
+    predicted: &[PredictedFile],
+    config: &VerifyConfig,
+    profile: &crate::platform::repository::RepositoryProfile,
+    scope: VerifyScope,
+    conn: Option<&rusqlite::Connection>,
+    layout: &crate::state::layout::Layout,
+    auto_index: bool,
+    allow_full_fallback: bool,
+) -> VerificationPlan {
+    let repo_root = layout.root.as_std_path();
     if !scope.is_fast() {
         // Explicit full request — no fallback announcement needed.
         return build_plan_with_scope(packet, rules, predicted, config, profile, scope, repo_root);
@@ -271,16 +306,31 @@ pub fn build_plan_scoped_with_options(
     // Gate2 P1-1: an unreferenced path that the pre-0549 definition treated as
     // material (nested `Cargo.toml`, `.json`/`.yaml`/`.sql` fixtures, ...) must
     // keep reaching the mapping gate (refuse), never become a fmt+clippy pass.
-    let legacy_unreferenced = emb
+    let legacy_unreferenced: Vec<&str> = emb
         .no_dependency
         .iter()
-        .any(|p| !is_non_code_cheap_path(Path::new(p)) && is_legacy_material_path(Path::new(p)));
+        .filter(|p| !is_non_code_cheap_path(Path::new(p)) && is_legacy_material_path(Path::new(p)))
+        .map(String::as_str)
+        .collect();
+    if !legacy_unreferenced.is_empty() {
+        return mapping_cannot_scope_outcome(
+            &format!(
+                "unreferenced legacy-material path(s): {}",
+                legacy_unreferenced.join(", ")
+            ),
+            allow_full_fallback,
+            packet,
+            rules,
+            predicted,
+            config,
+            profile,
+            scope,
+            repo_root,
+        );
+    }
     if emb.needs_mapping.is_empty()
         && (all_non_code_cheap(packet)
-            || (lookup_active
-                && pure_non_source
-                && !legacy_unreferenced
-                && (!engine_tree || !emb.stems.is_empty())))
+            || (lookup_active && pure_non_source && legacy_unreferenced.is_empty()))
     {
         return build_non_code_cheap_plan(
             packet,
@@ -569,6 +619,13 @@ fn build_non_code_cheap_plan(
             first.description,
             unreferenced.join(", ")
         );
+    }
+    if !emb.annotations.is_empty()
+        && let Some(first) = steps.first_mut()
+    {
+        first
+            .description
+            .push_str(&format!(" ({})", emb.annotations.join("; ")));
     }
     for step in &mut steps {
         crate::verify::runner::stamp_auto_budget(step, suite);

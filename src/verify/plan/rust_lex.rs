@@ -2,6 +2,43 @@
 //! matching). Used by the embedded-material scanner and by the
 //! `INCLUDE_STR_MATERIAL` drift test so there is exactly one lexer (0549 D5).
 
+#[cfg(test)]
+mod string_escape_tests {
+    use super::parse_rust_string_literal;
+
+    #[test]
+    fn hex_escape_decodes_material_path() {
+        assert_eq!(
+            parse_rust_string_literal(r#""../templates/mess\x61ge.txt""#).as_deref(),
+            Some("../templates/message.txt")
+        );
+    }
+
+    #[test]
+    fn unicode_escape_decodes_material_path() {
+        assert_eq!(
+            parse_rust_string_literal(r#""../templates/mess\u{0061}ge-\u{fc}.txt""#).as_deref(),
+            Some("../templates/message-ü.txt")
+        );
+    }
+
+    #[test]
+    fn escaped_line_continuation_does_not_change_path() {
+        assert_eq!(
+            parse_rust_string_literal("\"../templates/mess\\\r\n    age.txt\"").as_deref(),
+            Some("../templates/message.txt")
+        );
+    }
+
+    #[test]
+    fn invalid_escape_is_rejected_instead_of_changing_path() {
+        assert_eq!(
+            parse_rust_string_literal(r#""../templates/mess\qge.txt""#),
+            None
+        );
+    }
+}
+
 pub(crate) fn parse_rust_string_literal(s: &str) -> Option<String> {
     let s = s.trim();
     if s.len() < 2 || !s.starts_with('"') || !s.ends_with('"') {
@@ -18,10 +55,68 @@ pub(crate) fn parse_rust_string_literal(s: &str) -> Option<String> {
                 't' => out.push('\t'),
                 '\\' => out.push('\\'),
                 '"' => out.push('"'),
-                other => out.push(other),
+                '\'' => out.push('\''),
+                '0' => out.push('\0'),
+                'x' => {
+                    let high = chars.next()?.to_digit(16)?;
+                    let low = chars.next()?.to_digit(16)?;
+                    let value = high * 16 + low;
+                    // Rust string hex escapes are ASCII, unlike byte strings.
+                    if value > 0x7f {
+                        return None;
+                    }
+                    out.push(char::from_u32(value)?);
+                }
+                'u' => {
+                    if chars.next()? != '{' {
+                        return None;
+                    }
+                    let first = chars.next()?.to_digit(16)?;
+                    let mut value = first;
+                    let mut digits = 1;
+                    loop {
+                        match chars.next()? {
+                            '}' => break,
+                            '_' => {}
+                            c => {
+                                digits += 1;
+                                if digits > 6 {
+                                    return None;
+                                }
+                                value = value * 16 + c.to_digit(16)?;
+                            }
+                        }
+                    }
+                    out.push(char::from_u32(value)?);
+                }
+                '\n' => {
+                    while chars
+                        .peek()
+                        .is_some_and(|c| matches!(c, ' ' | '\t' | '\n' | '\r'))
+                    {
+                        chars.next();
+                    }
+                }
+                '\r' => {
+                    if chars.next()? != '\n' {
+                        return None;
+                    }
+                    while chars
+                        .peek()
+                        .is_some_and(|c| matches!(c, ' ' | '\t' | '\n' | '\r'))
+                    {
+                        chars.next();
+                    }
+                }
+                _ => return None,
             }
         } else if c == '"' {
             return None;
+        } else if c == '\r' {
+            if chars.next()? != '\n' {
+                return None;
+            }
+            out.push('\n');
         } else {
             out.push(c);
         }

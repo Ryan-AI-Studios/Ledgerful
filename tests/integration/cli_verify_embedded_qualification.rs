@@ -9,6 +9,7 @@
 //! Expected wall-clock: roughly 1-3 minutes per platform (five verify runs).
 
 use crate::common::{git_add_and_commit, setup_git_repo};
+use rstest::rstest;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -64,6 +65,7 @@ mod tests {
 
 fn init_fixture(root: &Path) {
     setup_git_repo(root);
+    write(root, ".gitignore", "target/\n.ledgerful/\n");
     write(
         root,
         "Cargo.toml",
@@ -76,49 +78,149 @@ fn init_fixture(root: &Path) {
     git_add_and_commit(root, "init");
 }
 
-#[test]
+#[rstest]
+#[case("document", "docs/contract.md", "v2\n", "contracts_document", false)]
+#[case(
+    "template",
+    "templates/message.txt",
+    "bye\n",
+    "contracts_template",
+    false
+)]
+#[case("mixed", "templates/message.txt", "bye\n", "contracts_template", false)]
+#[case("bytes", "data/value.bin", "bye\n", "material_value", false)]
+#[case("include", "data/value.inc", "2\n", "material_value", false)]
+#[case("manifest", "data/value.txt", "bye\n", "material_value", false)]
+#[case("runtime", "data/value.txt", "bye\n", "material_value", false)]
+#[case("nested", "docs/contract.md", "v2\n", "contracts_document", true)]
 #[ignore = "0549 D9: real cargo/nextest qualification; run manually per platform (owner: 0549)"]
-fn embedded_qualification_mutations_fail_and_repairs_pass() {
+fn embedded_qualification_mutations_fail_and_repairs_pass(
+    #[case] kind: &str,
+    #[case] material: &str,
+    #[case] mutation: &str,
+    #[case] failing_test: &str,
+    #[case] nested: bool,
+) {
     let tmp = tempdir().unwrap();
-    let root = tmp.path();
+    let root = &tmp.path().join("space ü fixture");
+    fs::create_dir_all(root).unwrap();
     init_fixture(root);
-
-    // Template mutation (clean-tree `.txt` shape): fast must run the failing test.
-    write(root, "templates/message.txt", "bye\n");
-    let fast = run(root, &["verify", "--scope", "fast"]);
+    let original = match kind {
+        "bytes" => {
+            write(
+                root,
+                "src/lib.rs",
+                "#[test]\nfn material_value() { assert_eq!(include_bytes!(\"../data/value.bin\"), b\"hi\\n\"); }\n",
+            );
+            "hi\n"
+        }
+        "include" => {
+            write(
+                root,
+                "src/lib.rs",
+                "const VALUE: u32 = include!(\"../data/value.inc\");\n#[test]\nfn material_value() { assert_eq!(VALUE, 1); }\n",
+            );
+            "1\n"
+        }
+        "manifest" => {
+            write(
+                root,
+                "src/lib.rs",
+                "#[test]\nfn material_value() { assert_eq!(include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/data/value.txt\")), \"hi\\n\"); }\n",
+            );
+            "hi\n"
+        }
+        "runtime" => {
+            write(
+                root,
+                "src/lib.rs",
+                "#[test]\nfn material_value() { assert_eq!(std::fs::read_to_string(\"data/value.txt\").unwrap(), \"hi\\n\"); }\n",
+            );
+            "hi\n"
+        }
+        "document" | "nested" => "v1\n",
+        _ => "hi\n",
+    };
+    write(root, material, original);
+    if nested {
+        fs::create_dir_all(root.join("backend")).unwrap();
+        fs::rename(root.join("Cargo.toml"), root.join("backend/Cargo.toml")).unwrap();
+        fs::rename(root.join("src"), root.join("backend/src")).unwrap();
+        write(
+            root,
+            "backend/src/contracts.rs",
+            &ACCESSOR
+                .replace("../docs/", "../../docs/")
+                .replace("../templates/", "../../templates/"),
+        );
+    }
+    let cargo_root = if nested {
+        root.join("backend")
+    } else {
+        root.to_path_buf()
+    };
+    let fmt = Command::new("cargo")
+        .args(["fmt", "--all"])
+        .current_dir(&cargo_root)
+        .output()
+        .unwrap();
+    assert!(fmt.status.success(), "{}", text(&fmt));
+    git_add_and_commit(root, "qualification parent");
+    let parent = run(root, &["verify", "--scope", "full"]);
+    assert!(parent.status.success(), "parent {kind}: {}", text(&parent));
+    // Cargo creates its lockfile during the oracle. Include it in the
+    // passing parent so the mutation does not become a shared-infra edit.
+    git_add_and_commit(root, "qualification built parent");
+    write(root, material, mutation);
+    if kind == "mixed" {
+        // A real source edit beside the template; index before editing so
+        // the existing SAME_FILE route can scope it.
+        let init = run(root, &["init"]);
+        assert!(init.status.success(), "{}", text(&init));
+        let index = run(root, &["index", "--incremental"]);
+        assert!(index.status.success(), "{}", text(&index));
+        let source = fs::read_to_string(root.join("src/contracts.rs")).unwrap();
+        write(
+            root,
+            "src/contracts.rs",
+            &(source + "\n// qualification mixed source edit\n"),
+        );
+    }
+    let plan = run(root, &["verify", "--scope", "fast", "--dry-run", "--json"]);
+    let value: serde_json::Value = serde_json::from_slice(&plan.stdout).unwrap();
+    assert_eq!(value["refused"], false, "{kind}: {value}");
+    assert_eq!(value["scopeExecuted"], "fast", "{kind}: {value}");
     assert!(
-        !fast.status.success(),
-        "template mutation must fail fast verify: {}",
-        text(&fast)
-    );
-    assert!(
-        text(&fast).contains("contracts_template"),
+        text(&plan).contains(&format!("test({failing_test})")),
         "{}",
-        text(&fast)
+        text(&plan)
     );
-
-    // Full verification fails in the test step on the same mutation.
-    let full = run(root, &["verify", "--scope", "full"]);
-    assert!(!full.status.success(), "{}", text(&full));
+    for scope in ["fast", "full"] {
+        let failed = run(root, &["verify", "--scope", scope]);
+        assert_eq!(
+            failed.status.code(),
+            Some(1),
+            "{kind}/{scope}: {}",
+            text(&failed)
+        );
+        assert!(
+            text(&failed).contains(failing_test),
+            "{kind}/{scope}: {}",
+            text(&failed)
+        );
+        assert!(
+            text(&failed).contains("FAIL"),
+            "must observe test failure: {}",
+            text(&failed)
+        );
+        eprintln!("0549 qualification {kind}/{scope}: exit=1 failing_test={failing_test}");
+    }
+    write(root, material, original);
+    let repaired = run(root, &["verify", "--scope", "full"]);
     assert!(
-        text(&full).contains("contracts_template"),
-        "{}",
-        text(&full)
+        repaired.status.success(),
+        "repair {kind}: {}",
+        text(&repaired)
     );
-
-    // Repair: template still contains the asserted text, tests run and pass.
-    write(root, "templates/message.txt", "hi there\n");
-    let repaired = run(root, &["verify", "--scope", "fast"]);
-    assert!(repaired.status.success(), "{}", text(&repaired));
-
-    // Document mutation (docs/** used to be fmt+clippy only).
-    git_add_and_commit(root, "repair");
-    write(root, "docs/contract.md", "v2\n");
-    let doc = run(root, &["verify", "--scope", "fast"]);
-    assert!(
-        !doc.status.success(),
-        "document mutation must fail fast verify: {}",
-        text(&doc)
-    );
-    assert!(text(&doc).contains("contracts_document"), "{}", text(&doc));
+    eprintln!("0549 qualification {kind}: parent=pass repair=pass plan={value}");
 }

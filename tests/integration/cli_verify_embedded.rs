@@ -399,3 +399,114 @@ fn non_rust_repo_keeps_legacy_material_definition() {
     assert_eq!(v["cleanTree"], true, "{v}");
     assert_eq!(v["refused"], false, "{v}");
 }
+
+#[rstest::rstest]
+#[case("docs/contract.md", "contracts_document")]
+#[case("templates/message.txt", "contracts_template")]
+fn nested_rust_repo_material_is_selected(#[case] path: &str, #[case] stem: &str) {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    write(
+        root,
+        "backend/Cargo.toml",
+        "[package]\nname=\"fx\"\nversion=\"0.1.0\"\n",
+    );
+    write(
+        root,
+        "backend/src/lib.rs",
+        &ACCESSOR
+            .replace("../docs", "../../docs")
+            .replace("../templates", "../../templates"),
+    );
+    write(root, "docs/contract.md", "v1");
+    write(root, "templates/message.txt", "hi");
+    git_add_and_commit(root, "nested Rust");
+    write(root, path, "mutation");
+    let v = dry_run_json(root, &[]);
+    assert_eq!(v["cleanTree"], false, "{v}");
+    assert_eq!(v["refused"], false, "{v}");
+    assert_eq!(v["scopeExecuted"], "fast", "{v}");
+    assert!(
+        nextest_command(&v)
+            .unwrap_or_default()
+            .contains(&format!("test({stem})")),
+        "{v}"
+    );
+}
+
+#[rstest::rstest]
+#[case("data/x.sql")]
+#[case("nested/Cargo.toml")]
+fn mixed_legacy_material_refuses_and_names_path(#[case] path: &str) {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    init_mixed_fixture(root);
+    write(
+        root,
+        "src/alpha.rs",
+        "pub fn a() -> u32 { 2 }\n#[cfg(test)] mod tests { #[test] fn alpha_ok() {} }\n",
+    );
+    write(root, path, "changed");
+    let out = spawn_verify(root, &["verify", "--scope", "fast", "--json", "--dry-run"]);
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["refused"], true);
+    assert_eq!(v["scopeExecuted"], "refused");
+    assert!(
+        v["fallbackReason"].as_str().unwrap_or("").contains(path),
+        "{v}"
+    );
+}
+
+#[test]
+fn saved_packet_overlay_retains_template_selection() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    init_fixture(root);
+    index_fixture(root);
+    let layout = ledgerful::state::layout::Layout::new(camino::Utf8Path::from_path(root).unwrap());
+    let storage = ledgerful::state::storage::StorageManager::init(
+        layout.state_subdir().join("ledger.db").as_std_path(),
+    )
+    .unwrap();
+    let packet = ledgerful::impact::packet::ImpactPacket {
+        changes: vec![ledgerful::impact::packet::ChangedFile {
+            path: "src/unrelated.rs".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    storage.save_packet(&packet).unwrap();
+    write(root, "templates/message.txt", "mutated");
+    let v = dry_run_json(root, &[]);
+    assert_eq!(v["scopeExecuted"], "fast", "{v}");
+    assert_eq!(v["refused"], false, "{v}");
+    assert!(
+        nextest_command(&v)
+            .unwrap()
+            .contains("test(contracts_template)")
+    );
+    assert_eq!(
+        storage.get_latest_packet().unwrap().unwrap().changes[0]
+            .path
+            .to_string_lossy(),
+        "src/unrelated.rs"
+    );
+}
+
+#[rstest::rstest]
+#[case("assets/logo.png")]
+#[case("data/x.csv")]
+fn benign_noncheap_exact_outcome(#[case] path: &str) {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    init_fixture(root);
+    write(root, path, "benign");
+    let out = spawn_verify(root, &["verify", "--scope", "fast", "--json", "--dry-run"]);
+    assert_eq!(out.status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["refused"], false);
+    assert_eq!(v["scopeExecuted"], "fast");
+    assert!(nextest_command(&v).is_none());
+}

@@ -75,6 +75,26 @@ pub(crate) fn build_plan_with_scope(
     scope: VerifyScope,
     repo_root: &std::path::Path,
 ) -> VerificationPlan {
+    let manifests = match super::rust_manifest_paths(repo_root) {
+        Ok(manifests) => manifests,
+        Err(reason) => return super::refuse_plan(&reason),
+    };
+    let profile = super::nested_rust_profile(profile, &manifests);
+    let mut plan = build_full_inner(packet, rules, predicted, config, &profile, scope, repo_root);
+    super::bind_nested_manifests(&mut plan, &manifests);
+    plan
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_full_inner(
+    packet: &ImpactPacket,
+    rules: &Rules,
+    predicted: &[PredictedFile],
+    config: &VerifyConfig,
+    profile: &crate::platform::repository::RepositoryProfile,
+    scope: VerifyScope,
+    repo_root: &std::path::Path,
+) -> VerificationPlan {
     let mut commands: Vec<String> = Vec::new();
     let mut predicted_steps: Vec<VerificationStep> = Vec::new();
 

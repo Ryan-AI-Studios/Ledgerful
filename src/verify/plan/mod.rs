@@ -70,6 +70,7 @@ pub(crate) fn resolve_verify_scope(scope: Option<VerifyScope>, dry_run: bool) ->
 }
 
 mod embedded;
+pub(crate) use embedded::rust_manifest_paths;
 mod full;
 mod non_code;
 mod rust_lex;
@@ -337,3 +338,59 @@ pub fn build_plan_from_config(config: &VerifyConfig) -> Option<VerificationPlan>
 
 #[cfg(test)]
 mod tests;
+
+/// Nested Rust is a verification concern: platform detection still reports the
+/// repository root. Generated cargo commands use explicit manifest arguments,
+/// without shell wrappers or a new public plan/result field.
+fn nested_rust_profile(
+    profile: &crate::platform::repository::RepositoryProfile,
+    manifests: &[String],
+) -> crate::platform::repository::RepositoryProfile {
+    let mut profile = profile.clone();
+    if profile.rust.is_none()
+        && !manifests.is_empty()
+        && !manifests.iter().any(|p| p == "Cargo.toml")
+    {
+        profile.rust = Some(crate::platform::repository::RustProfile {
+            is_virtual_workspace: false,
+        });
+    }
+    profile
+}
+
+fn bind_nested_manifests(plan: &mut VerificationPlan, manifests: &[String]) {
+    if manifests.is_empty() || manifests.iter().any(|p| p == "Cargo.toml") {
+        return;
+    }
+    let mut steps = Vec::new();
+    for step in std::mem::take(&mut plan.steps) {
+        // Explicit rules/config retain the operator's command and cwd contract.
+        if step.shell
+            || !step.command.starts_with("cargo ")
+            || step.description.starts_with("From rules:")
+            || step.command.contains("--manifest-path")
+        {
+            steps.push(step);
+            continue;
+        }
+        for manifest in manifests {
+            let mut nested = step.clone();
+            let argument = match shlex::try_quote(manifest) {
+                Ok(argument) => argument,
+                Err(_) => {
+                    *plan = refuse_plan("embedded manifest path is unrepresentable");
+                    return;
+                }
+            };
+            let split = nested.command.find(" -- ").unwrap_or(nested.command.len());
+            nested
+                .command
+                .insert_str(split, &format!(" --manifest-path {argument}"));
+            nested
+                .description
+                .push_str(&format!(" (manifest: {manifest})"));
+            steps.push(nested);
+        }
+    }
+    plan.steps = steps;
+}

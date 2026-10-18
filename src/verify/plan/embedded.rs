@@ -28,7 +28,15 @@ pub(crate) const MAX_FILE_BYTES: u64 = 512 * 1024;
 pub(crate) const MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Directory names never walked.
-const SKIP_DIRS: &[&str] = &["target", ".git", ".ledgerful", "node_modules"];
+const SKIP_DIRS: &[&str] = &[
+    "target",
+    ".git",
+    ".ledgerful",
+    "node_modules",
+    "vendor",
+    "deps_src",
+    "third_party",
+];
 
 /// Extensions the index maps as source; every other changed path is a
 /// non-code candidate for the embedded lookup.
@@ -70,9 +78,11 @@ pub(crate) struct EmbeddedScan {
     runtime: BTreeMap<String, RuntimeFile>,
     /// Set when a cap was hit; the reason names the cap.
     pub bounded: Option<String>,
+    /// Oversized sources proven to contain no file-consumer tokens.
+    pub skipped: BTreeSet<String>,
     /// Unreadable / unlexable files (sorted).
     pub errors: BTreeSet<String>,
-    /// Non-literal compile-time include forms (e.g. `OUT_DIR`) and
+    /// Non-literal compile-time include forms (except generated `OUT_DIR`) and
     /// non-literal runtime reads in test scope (sorted, `file: form`).
     pub unresolved_reads: BTreeSet<String>,
 }
@@ -369,52 +379,196 @@ enum IncludeArg {
     Literal(String),
     ManifestRel(String),
     Unresolved(String),
+    Generated,
 }
 
 fn find_code_macro(src: &str, from: usize, name: &str, rel: &str) -> Result<Option<usize>, String> {
     let b = src.as_bytes();
-    let pat = format!("{name}!");
+    let pat = name;
     let mut i = from;
     while i < b.len() {
         if let Some(next) = consume_skipped(src, i, rel)? {
             i = next.max(i + 1);
             continue;
         }
-        if src[i..].starts_with(&pat) && (i == 0 || !is_ident_byte(b[i - 1])) {
-            return Ok(Some(i));
+        if src[i..].starts_with(pat) && (i == 0 || !is_ident_byte(b[i - 1])) {
+            let after = skip_trivia(src, i + name.len(), rel)?;
+            if b.get(after) == Some(&b'!') {
+                return Ok(Some(i));
+            }
         }
         i += src[i..].chars().next().map(char::len_utf8).unwrap_or(1);
     }
     Ok(None)
 }
 
-fn parse_include_arg(inner: &str, rel: &str) -> Result<IncludeArg, String> {
-    let start = skip_trivia(inner, 0, rel)?;
-    if let Some((lit, end)) = take_string_literal(inner, start, rel)? {
-        let after = skip_trivia(inner, end, rel)?;
-        if after == inner.len() {
-            return Ok(IncludeArg::Literal(lit));
-        }
+// Small literal/path grammar. Literal whitespace is significant.
+const MANIFEST_MARKER: &str = "\0manifest";
+const GENERATED_MARKER: &str = "\0generated";
+
+fn literal_path_prefix(
+    src: &str,
+    start: usize,
+    rel: &str,
+    depth: usize,
+) -> Result<Option<(String, usize)>, String> {
+    if depth > 64 {
+        return Ok(None);
     }
-    if inner[start..].starts_with("concat!") {
-        let compact: String = inner[start..]
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect();
-        let body = compact
-            .strip_prefix("concat!(")
-            .and_then(|r| r.strip_suffix(')'));
-        if let Some(body) = body
-            && let Some(rest) = body.strip_prefix("env!(\"CARGO_MANIFEST_DIR\"),\"")
-            && let Some(relp) = rest.strip_suffix('"')
-            && !relp.contains('"')
+    let b = src.as_bytes();
+    let mut i = skip_trivia(src, start, rel)?;
+    if b.get(i) == Some(&b'&') {
+        i = skip_trivia(src, i + 1, rel)?;
+    }
+    let (mut value, mut after) = if let Some(lit) = take_string_literal(src, i, rel)? {
+        lit
+    } else {
+        let mut head = String::new();
+        while i < b.len() {
+            if is_ident_byte(b[i]) || b[i] == b':' {
+                head.push(b[i] as char);
+                i += 1;
+            } else if let Some(next) = consume_skipped(src, i, rel)? {
+                i = next;
+            } else if b[i].is_ascii_whitespace() {
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        if b.get(i) == Some(&b'!') {
+            i = skip_trivia(src, i + 1, rel)?;
+            if b.get(i) != Some(&b'(') {
+                return Ok(None);
+            }
+            let Some(end) = find_matching_delimiter(src, i, rel)? else {
+                return Ok(None);
+            };
+            let inner = &src[i + 1..end];
+            let value = if head == "env" {
+                let at = skip_trivia(inner, 0, rel)?;
+                let Some((key, tail)) = take_string_literal(inner, at, rel)? else {
+                    return Ok(None);
+                };
+                if skip_trivia(inner, tail, rel)? != inner.len() {
+                    return Ok(None);
+                }
+                match key.as_str() {
+                    "CARGO_MANIFEST_DIR" => MANIFEST_MARKER.to_string(),
+                    "OUT_DIR" => GENERATED_MARKER.to_string(),
+                    _ => return Ok(None),
+                }
+            } else if head == "concat" {
+                let mut at = 0;
+                let mut value = String::new();
+                loop {
+                    at = skip_trivia(inner, at, rel)?;
+                    if at == inner.len() {
+                        break;
+                    }
+                    let Some((part, end)) = literal_path_prefix(inner, at, rel, depth + 1)? else {
+                        return Ok(None);
+                    };
+                    value.push_str(&part);
+                    at = skip_trivia(inner, end, rel)?;
+                    if at == inner.len() {
+                        break;
+                    }
+                    if inner.as_bytes().get(at) != Some(&b',') {
+                        return Ok(None);
+                    }
+                    at += 1;
+                }
+                value
+            } else {
+                return Ok(None);
+            };
+            (value, end + 1)
+        } else if b.get(i) == Some(&b'(')
+            && matches!(
+                head.as_str(),
+                "Path::new"
+                    | "PathBuf::from"
+                    | "PathBuf::new"
+                    | "std::path::Path::new"
+                    | "std::path::PathBuf::from"
+                    | "std::path::PathBuf::new"
+            )
         {
-            return Ok(IncludeArg::ManifestRel(
-                relp.trim_start_matches(['/', '\\']).replace('\\', "/"),
-            ));
+            let Some(end) = find_matching_delimiter(src, i, rel)? else {
+                return Ok(None);
+            };
+            let inner = &src[i + 1..end];
+            let value = if inner.trim().is_empty() {
+                String::new()
+            } else {
+                let Some(v) = literal_path_expression(inner, rel, depth + 1)? else {
+                    return Ok(None);
+                };
+                v
+            };
+            (value, end + 1)
+        } else {
+            return Ok(None);
         }
+    };
+    loop {
+        let dot = skip_trivia(src, after, rel)?;
+        if b.get(dot) != Some(&b'.') {
+            break;
+        }
+        let name = skip_trivia(src, dot + 1, rel)?;
+        if !src[name..].starts_with("join") {
+            return Ok(None);
+        }
+        let open = skip_trivia(src, name + 4, rel)?;
+        if b.get(open) != Some(&b'(') {
+            return Ok(None);
+        }
+        let Some(end) = find_matching_delimiter(src, open, rel)? else {
+            return Ok(None);
+        };
+        let Some(part) = literal_path_expression(&src[open + 1..end], rel, depth + 1)? else {
+            return Ok(None);
+        };
+        if part.starts_with('/') || part.starts_with('\\') || part.as_bytes().get(1) == Some(&b':')
+        {
+            value = part;
+        } else if value.is_empty() {
+            value = part;
+        } else {
+            value.push('/');
+            value.push_str(&part);
+        }
+        after = end + 1;
     }
-    Ok(IncludeArg::Unresolved(inner.trim().to_string()))
+    Ok(Some((value, after)))
+}
+
+fn literal_path_expression(src: &str, rel: &str, depth: usize) -> Result<Option<String>, String> {
+    let Some((value, end)) = literal_path_prefix(src, 0, rel, depth)? else {
+        return Ok(None);
+    };
+    let mut end = skip_trivia(src, end, rel)?;
+    if src.as_bytes().get(end) == Some(&b',') {
+        end = skip_trivia(src, end + 1, rel)?;
+    }
+    Ok((end == src.len()).then_some(value))
+}
+
+fn parse_include_arg(inner: &str, rel: &str) -> Result<IncludeArg, String> {
+    let Some(value) = literal_path_expression(inner, rel, 0)? else {
+        return Ok(IncludeArg::Unresolved(inner.trim().to_string()));
+    };
+    if value.starts_with(GENERATED_MARKER) {
+        return Ok(IncludeArg::Generated);
+    }
+    if let Some(value) = value.strip_prefix(MANIFEST_MARKER) {
+        return Ok(IncludeArg::ManifestRel(
+            value.trim_start_matches(['/', '\\']).replace('\\', "/"),
+        ));
+    }
+    Ok(IncludeArg::Literal(value))
 }
 
 /// Nearest ancestor directory (repo-relative, `""` = root) holding a `Cargo.toml`.
@@ -454,73 +608,6 @@ const UNMODELED_FILE_CONSUMERS: &[&str] = &[
 ];
 const READ_CALLS: &[&str] = &["read_to_string", "fs::read", "File::open"];
 
-/// String literal contents (comments skipped) inside `sub`.
-fn literals_in(sub: &str, rel: &str, out: &mut BTreeSet<String>) -> Result<(), String> {
-    let b = sub.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        let ident_start = i == 0 || !is_ident_byte(b[i - 1]);
-        if (b[i] == b'"' || (b[i] == b'r' && ident_start))
-            && let Some((lit, end)) = take_string_literal(sub, i, rel)?
-        {
-            out.insert(lit);
-            i = end.max(i + 1);
-            continue;
-        }
-        if let Some(next) = consume_skipped(sub, i, rel)? {
-            i = next.max(i + 1);
-            continue;
-        }
-        i += sub[i..].chars().next().map(char::len_utf8).unwrap_or(1);
-    }
-    Ok(())
-}
-
-/// True when `arg` is built only from string literals and plain path
-/// builders (`Path::new("a").join("b")`, `concat!(env!("CARGO_MANIFEST_DIR"), ..)`).
-/// Any other identifier (a variable, `format!`, a helper call) makes the read
-/// non-literal, so the scan cannot attribute it to a specific path.
-fn is_pure_path_literal_expr(arg: &str, rel: &str) -> Result<bool, String> {
-    const ALLOWED: &[&str] = &[
-        "Path",
-        "PathBuf",
-        "new",
-        "from",
-        "join",
-        "std",
-        "path",
-        "env",
-        "concat",
-        "CARGO_MANIFEST_DIR",
-    ];
-    let b = arg.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        if let Some((_, end)) = take_string_literal(arg, i, rel)?
-            && (b[i] == b'"' || (b[i] == b'r' && (i == 0 || !is_ident_byte(b[i - 1]))))
-        {
-            i = end.max(i + 1);
-            continue;
-        }
-        if let Some(next) = consume_skipped(arg, i, rel)? {
-            i = next.max(i + 1);
-            continue;
-        }
-        if b[i].is_ascii_alphabetic() || b[i] == b'_' {
-            let start = i;
-            while i < b.len() && is_ident_byte(b[i]) {
-                i += 1;
-            }
-            if !ALLOWED.contains(&&arg[start..i]) {
-                return Ok(false);
-            }
-            continue;
-        }
-        i += arg[i..].chars().next().map(char::len_utf8).unwrap_or(1);
-    }
-    Ok(true)
-}
-
 /// Literals that are arguments of a runtime file read (`read_to_string`,
 /// `fs::read`, `File::open`), including nested `join("..")` / `Path::new("..")`
 /// pieces, plus the count of reads with no literal at all in their argument.
@@ -544,12 +631,26 @@ fn collect_literals(src: &str, rel: &str) -> Result<(BTreeSet<String>, usize), S
                         && let Some(end) = find_matching_delimiter(src, after, rel)?
                     {
                         let arg = &src[after + 1..end];
-                        let mut found = BTreeSet::new();
-                        literals_in(arg, rel, &mut found)?;
-                        if found.is_empty() || !is_pure_path_literal_expr(arg, rel)? {
+                        if let Some(value) = literal_path_expression(arg, rel, 0)? {
+                            if value.starts_with(GENERATED_MARKER) {
+                                dynamic += 1;
+                            } else {
+                                let value = value
+                                    .strip_prefix(MANIFEST_MARKER)
+                                    .map(|p| p.trim_start_matches(['/', '\\']).to_string())
+                                    .unwrap_or(value);
+                                if normalize_repo_path(&value).is_some()
+                                    && !value.starts_with('/')
+                                    && value.as_bytes().get(1) != Some(&b':')
+                                {
+                                    lits.insert(value);
+                                } else {
+                                    dynamic += 1;
+                                }
+                            }
+                        } else {
                             dynamic += 1;
                         }
-                        lits.extend(found);
                     }
                     break;
                 }
@@ -560,24 +661,181 @@ fn collect_literals(src: &str, rel: &str) -> Result<(BTreeSet<String>, usize), S
     Ok((lits, dynamic))
 }
 
+fn pinned_walk(root: &Path) -> ignore::WalkBuilder {
+    let mut walk = ignore::WalkBuilder::new(root);
+    walk.hidden(false)
+        .ignore(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .parents(false)
+        .require_git(false)
+        .sort_by_file_path(|a, b| a.cmp(b))
+        .filter_entry(|e| {
+            e.depth() == 0 || !SKIP_DIRS.contains(&e.file_name().to_str().unwrap_or(""))
+        });
+    walk
+}
+
+fn has_consumer_tokens(src: &str) -> bool {
+    src.contains("include")
+        || RUNTIME_PREFILTER.iter().any(|p| src.contains(p))
+        || UNMODELED_FILE_CONSUMERS.iter().any(|p| src.contains(p))
+}
+
+/// Manifest roots for verification only. The same pinned walk controls H0
+/// material filtering and lookup activation in nested Rust monorepos.
+pub(crate) fn rust_manifest_paths(root: &Path) -> Result<Vec<String>, String> {
+    if root.join("Cargo.toml").is_file() {
+        return Ok(vec!["Cargo.toml".to_string()]);
+    }
+    let mut manifests = Vec::new();
+    let mut rust_files = 0;
+    for entry in pinned_walk(root).build() {
+        let entry = entry.map_err(|_| "embedded manifest discovery: unreadable".to_string())?;
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        if entry.path().extension().and_then(|e| e.to_str()) == Some("rs") {
+            rust_files += 1;
+        }
+        if rust_files > MAX_FILES_SCANNED || manifests.len() >= MAX_FILES_SCANNED {
+            return Err("embedded manifest discovery bound exceeded".to_string());
+        }
+        if entry.file_name() == "Cargo.toml" {
+            if let Ok(rel) = entry.path().strip_prefix(root) {
+                manifests.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    manifests.sort();
+    // Workspace members are already included by their ancestor --workspace
+    // command. Excluded packages remain independent roots: dropping them could
+    // run a same-named test in another crate while missing the actual includer.
+    let mut workspaces = Vec::new();
+    let mut manifest_bytes = 0u64;
+    for manifest in &manifests {
+        use std::io::Read;
+        let file = std::fs::File::open(root.join(manifest))
+            .map_err(|_| format!("{manifest}: unreadable"))?;
+        let mut bytes = Vec::new();
+        file.take(MAX_FILE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| format!("{manifest}: unreadable"))?;
+        if bytes.len() as u64 > MAX_FILE_BYTES {
+            return Err(format!("{manifest}: oversized"));
+        }
+        manifest_bytes += bytes.len() as u64;
+        if manifest_bytes > MAX_TOTAL_BYTES {
+            return Err("embedded manifest discovery byte bound exceeded".to_string());
+        }
+        let text = String::from_utf8(bytes).map_err(|_| format!("{manifest}: nonUtf8"))?;
+        let parsed: toml::Value =
+            toml::from_str(&text).map_err(|_| format!("{manifest}: unlexable"))?;
+        if let Some(workspace) = parsed.get("workspace") {
+            let base = parent_dir(manifest);
+            let patterns = |key: &str| -> Result<Vec<globset::GlobMatcher>, String> {
+                let Some(value) = workspace.get(key) else {
+                    return Ok(Vec::new());
+                };
+                let entries = value
+                    .as_array()
+                    .ok_or_else(|| format!("{manifest}: unlexable workspace {key}"))?;
+                entries
+                    .iter()
+                    .map(|entry| {
+                        let member = entry
+                            .as_str()
+                            .ok_or_else(|| format!("{manifest}: unlexable workspace {key}"))?;
+                        let path = join_norm(base, &format!("{member}/Cargo.toml"))
+                            .ok_or_else(|| format!("{manifest}: unresolved workspace {key}"))?;
+                        globset::GlobBuilder::new(&path)
+                            .literal_separator(true)
+                            .build()
+                            .map(|glob| glob.compile_matcher())
+                            .map_err(|_| format!("{manifest}: unlexable workspace {key}"))
+                    })
+                    .collect()
+            };
+            workspaces.push((base.to_string(), patterns("members")?, patterns("exclude")?));
+        }
+    }
+    manifests.retain(|manifest| {
+        !workspaces.iter().any(|(base, members, excluded)| {
+            manifest
+                .strip_prefix(base)
+                .is_some_and(|rest| rest.starts_with('/') && rest != "/Cargo.toml")
+                && members.iter().any(|p| p.is_match(manifest))
+                && !excluded.iter().any(|p| p.is_match(manifest))
+        })
+    });
+    Ok(manifests)
+}
+
+#[cfg(test)]
+mod manifest_discovery_tests {
+    use super::*;
+
+    #[test]
+    fn excluded_workspace_crate_remains_an_independent_verification_root() {
+        let dir = tempfile::tempdir().unwrap();
+        for (path, text) in [
+            (
+                "ws/Cargo.toml",
+                "[workspace]\nmembers=[\"crates/*\"]\nexclude=[\"crates/standalone\"]\n",
+            ),
+            (
+                "ws/crates/member/Cargo.toml",
+                "[package]\nname=\"member\"\nversion=\"0.1.0\"\n",
+            ),
+            (
+                "ws/crates/standalone/Cargo.toml",
+                "[package]\nname=\"standalone\"\nversion=\"0.1.0\"\n",
+            ),
+        ] {
+            let path = dir.path().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        assert_eq!(
+            rust_manifest_paths(dir.path()).unwrap(),
+            vec!["ws/Cargo.toml", "ws/crates/standalone/Cargo.toml"]
+        );
+    }
+
+    #[test]
+    fn manifest_discovery_cap_is_an_error_not_a_non_rust_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("aaa")).unwrap();
+        for n in 0..=MAX_FILES_SCANNED {
+            std::fs::write(dir.path().join(format!("aaa/{n:04}.rs")), "").unwrap();
+        }
+        std::fs::create_dir_all(dir.path().join("zzz")).unwrap();
+        std::fs::write(
+            dir.path().join("zzz/Cargo.toml"),
+            "[package]\nname='nested'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        assert_eq!(
+            rust_manifest_paths(dir.path()).unwrap_err(),
+            "embedded manifest discovery bound exceeded"
+        );
+    }
+}
+
 impl EmbeddedScan {
     /// Walk `repo_root`, bounded and sorted, and build the reference maps.
     pub(crate) fn scan(repo_root: &Path) -> EmbeddedScan {
         let mut scan = EmbeddedScan::default();
         let mut files: Vec<String> = Vec::new();
-        let walker = ignore::WalkBuilder::new(repo_root)
-            .require_git(false)
-            .sort_by_file_path(|a, b| a.cmp(b))
-            .filter_entry(|e| {
-                e.file_name()
-                    .to_str()
-                    .map(|n| !(e.depth() > 0 && SKIP_DIRS.contains(&n)))
-                    .unwrap_or(true)
-            })
-            .build();
+        let walker = pinned_walk(repo_root).build();
         for entry in walker {
-            let Ok(entry) = entry else {
-                continue;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    scan.errors.insert("walk: unreadable".to_string());
+                    continue;
+                }
             };
             if !entry.file_type().is_some_and(|t| t.is_file()) {
                 continue;
@@ -606,17 +864,11 @@ impl EmbeddedScan {
             let full = repo_root.join(rel);
             let len = match std::fs::metadata(&full) {
                 Ok(m) => m.len(),
-                Err(e) => {
-                    scan.errors.insert(format!("{rel}: {e}"));
+                Err(_) => {
+                    scan.errors.insert(format!("{rel}: unreadable"));
                     continue;
                 }
             };
-            if len > MAX_FILE_BYTES {
-                scan.bounded = Some(format!(
-                    "embedded scan bound exceeded: {rel} is {len} bytes (max {MAX_FILE_BYTES})"
-                ));
-                return scan;
-            }
             total += len;
             if total > MAX_TOTAL_BYTES {
                 scan.bounded = Some(format!(
@@ -624,15 +876,52 @@ impl EmbeddedScan {
                 ));
                 return scan;
             }
-            let src = match std::fs::read_to_string(&full) {
-                Ok(s) => s,
-                Err(e) => {
-                    scan.errors.insert(format!("{rel}: {e}"));
+            // Read under the aggregate byte budget even if a source grows
+            // between metadata and read. Oversized files need a byte prefilter,
+            // not a lexer, and token-free generated sources remain harmless.
+            use std::io::Read;
+            let bytes = match std::fs::File::open(&full).and_then(|file| {
+                let mut bytes = Vec::new();
+                file.take(MAX_TOTAL_BYTES - (total - len) + 1)
+                    .read_to_end(&mut bytes)?;
+                Ok(bytes)
+            }) {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    scan.errors.insert(format!("{rel}: unreadable"));
                     continue;
                 }
             };
-            if let Err(e) = scan.scan_file(repo_root, rel, &src, &mut crate_cache) {
-                scan.errors.insert(e);
+            total = total - len + bytes.len() as u64;
+            if total > MAX_TOTAL_BYTES {
+                scan.bounded = Some(format!(
+                    "embedded scan bound exceeded: more than {MAX_TOTAL_BYTES} bytes of .rs sources"
+                ));
+                return scan;
+            }
+            if bytes.len() as u64 > MAX_FILE_BYTES {
+                if !has_consumer_tokens(&String::from_utf8_lossy(&bytes)) {
+                    scan.skipped
+                        .insert(format!("skipped token-free oversized source {rel}"));
+                    continue;
+                }
+                scan.bounded = Some(format!(
+                    "embedded scan bound exceeded: {rel}: oversized (max {MAX_FILE_BYTES} bytes)"
+                ));
+                return scan;
+            }
+            let src = match String::from_utf8(bytes) {
+                Ok(src) => src,
+                Err(_) => {
+                    scan.errors.insert(format!("{rel}: nonUtf8"));
+                    continue;
+                }
+            };
+            if scan
+                .scan_file(repo_root, rel, &src, &mut crate_cache)
+                .is_err()
+            {
+                scan.errors.insert(format!("{rel}: unlexable"));
             }
         }
         scan
@@ -645,9 +934,7 @@ impl EmbeddedScan {
         src: &str,
         crate_cache: &mut BTreeMap<String, String>,
     ) -> Result<(), String> {
-        let has_include = src.contains("include_str!")
-            || src.contains("include_bytes!")
-            || src.contains("include!");
+        let has_include = src.contains("include");
         let has_runtime = RUNTIME_PREFILTER.iter().any(|p| src.contains(p));
         if UNMODELED_FILE_CONSUMERS.iter().any(|m| src.contains(m)) {
             // Over-approximation on purpose: a consumer we do not model could
@@ -667,7 +954,7 @@ impl EmbeddedScan {
             for mac in ["include_str", "include_bytes", "include"] {
                 let mut from = 0;
                 while let Some(start) = find_code_macro(src, from, mac, rel)? {
-                    let after = start + mac.len() + 1;
+                    let after = skip_trivia(src, start + mac.len(), rel)? + 1;
                     let j = skip_trivia(src, after, rel)?;
                     let opener = src.as_bytes().get(j).copied();
                     let Some(end) = (match opener {
@@ -681,8 +968,23 @@ impl EmbeddedScan {
                     };
                     let inner = &src[j + 1..end];
                     let target = match parse_include_arg(inner, rel)? {
-                        IncludeArg::Literal(l) => join_norm(parent_dir(rel), &l),
-                        IncludeArg::ManifestRel(r) => join_norm(&crate_root, &r),
+                        IncludeArg::Generated => None,
+                        IncludeArg::Literal(l) => {
+                            let target = join_norm(parent_dir(rel), &l);
+                            if target.is_none() {
+                                self.unresolved_reads
+                                    .insert(format!("{rel}: include escapes repo root"));
+                            }
+                            target
+                        }
+                        IncludeArg::ManifestRel(r) => {
+                            let target = join_norm(&crate_root, &r);
+                            if target.is_none() {
+                                self.unresolved_reads
+                                    .insert(format!("{rel}: include escapes repo root"));
+                            }
+                            target
+                        }
                         IncludeArg::Unresolved(form) => {
                             self.unresolved_reads
                                 .insert(format!("{rel}: unresolved {mac}! form: {form}"));
@@ -728,9 +1030,9 @@ impl EmbeddedScan {
     pub(crate) fn refs_for(&self, path: &str) -> Vec<EmbedRef> {
         let key = fold(path);
         let mut out: BTreeSet<EmbedRef> = self.refs.get(&key).cloned().unwrap_or_default();
-        let comps: Vec<&str> = path.split('/').filter(|c| !c.is_empty()).collect();
+
         for (includer, file) in &self.runtime {
-            if self.runtime_file_reads(file, path, &comps)
+            if self.runtime_file_reads(file, path)
                 && let Some(res) = &file.resolution
             {
                 out.insert(EmbedRef {
@@ -742,7 +1044,7 @@ impl EmbeddedScan {
         out.into_iter().collect()
     }
 
-    fn runtime_file_reads(&self, file: &RuntimeFile, path: &str, comps: &[&str]) -> bool {
+    fn runtime_file_reads(&self, file: &RuntimeFile, path: &str) -> bool {
         let want = fold(path);
         let matches_lit = |lit: &str| -> bool {
             let Some(norm) = normalize_repo_path(lit) else {
@@ -759,14 +1061,7 @@ impl EmbeddedScan {
         if file.literals.iter().any(|l| matches_lit(l)) {
             return true;
         }
-        // `Path::new("dir").join("name")` style: every path component appears
-        // as its own literal in the file.
-        comps.len() >= 2
-            && comps.iter().all(|c| {
-                file.literals
-                    .iter()
-                    .any(|l| fold(l.trim_matches('/')) == fold(c))
-            })
+        false
     }
 }
 
@@ -785,6 +1080,7 @@ pub(crate) struct EmbeddedDecision {
     pub evidence: Vec<String>,
     /// Candidate paths with no dependency found (cheap or annotated).
     pub no_dependency: BTreeSet<String>,
+    pub annotations: Vec<String>,
 }
 
 /// Candidate paths for the lookup: every changed non-source path, plus the
@@ -828,6 +1124,7 @@ pub(crate) fn decide_with_scan(
     is_cheap: impl Fn(&str) -> bool,
     d: &mut EmbeddedDecision,
 ) {
+    d.annotations = scan.skipped.iter().cloned().collect();
     let mut stems: BTreeSet<String> = BTreeSet::new();
     let mut needs: BTreeSet<String> = BTreeSet::new();
     let mut evidence: BTreeSet<String> = BTreeSet::new();
@@ -919,6 +1216,142 @@ mod tests {
     fn contracts_template() { assert!(message().contains("hi")); }
 }
 "#;
+
+    #[rstest::rstest]
+    #[case("ignored/lib.rs", false)]
+    #[case(".hidden/lib.rs", false)]
+    #[case("vendor/lib.rs", true)]
+    #[case("deps_src/lib.rs", true)]
+    #[case("third_party/lib.rs", true)]
+    fn walk_is_pinned_and_vendor_excluded(#[case] rel: &str, #[case] excluded: bool) {
+        let dir = tempdir().unwrap();
+        write(dir.path(), ".gitignore", "ignored/\n");
+        write(
+            dir.path(),
+            rel,
+            "#[test]\nfn pin() { include_str!(\"../x.txt\"); }\n",
+        );
+        let d = decide_for(dir.path(), &["x.txt"]);
+        assert_eq!(
+            d.stems,
+            if excluded {
+                vec![]
+            } else {
+                vec!["pin".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn oversized_consumer_refuses_with_stable_class() {
+        let dir = tempdir().unwrap();
+        let src = format!(
+            "{}\n#[test] fn t() {{ include_str!(\"../x.txt\"); }}",
+            " ".repeat(MAX_FILE_BYTES as usize)
+        );
+        write(dir.path(), "src/big.rs", &src);
+        let d = decide_for(dir.path(), &["x.txt"]);
+        assert!(d.refuse.as_deref().unwrap_or("").contains("oversized"));
+    }
+
+    #[test]
+    fn invalid_utf8_has_stable_error_class() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("bad.rs"), [0xff]).unwrap();
+        let d = decide_for(dir.path(), &["x.txt"]);
+        assert_eq!(
+            d.refuse.as_deref(),
+            Some("embedded scan could not read or lex 1 file(s) (first: bad.rs: nonUtf8)")
+        );
+    }
+
+    #[test]
+    fn manifest_include_preserves_spaces_inside_literals() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "Cargo.toml", "[package]\nname=\"fx\"\n");
+        write(
+            dir.path(),
+            "src/lib.rs",
+            r#"#[test] fn spaces() { include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/my docs/contract.md")); }"#,
+        );
+        let d = decide_for(dir.path(), &["my docs/contract.md"]);
+        assert_eq!(d.stems, vec!["spaces".to_string()]);
+    }
+
+    #[rstest::rstest]
+    #[case(
+        r#"std::path::Path::new("templates").join("nested/message.txt")"#,
+        "templates/nested/message.txt"
+    )]
+    #[case(r#"concat!("templates/me", "ssage.txt")"#, "templates/message.txt")]
+    #[case(
+        r#"std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates").join("message.txt")"#,
+        "templates/message.txt"
+    )]
+    fn runtime_path_expression_is_composed(#[case] expr: &str, #[case] path: &str) {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "Cargo.toml", "[package]\nname=\"fx\"\n");
+        write(
+            dir.path(),
+            "tests/read.rs",
+            &format!("#[test] fn composed() {{ let _ = std::fs::read_to_string({expr}); }}"),
+        );
+        let d = decide_for(dir.path(), &[path]);
+        assert_eq!(d.refuse, None);
+        assert_eq!(d.stems, vec!["composed".to_string()]);
+    }
+
+    #[test]
+    fn macro_spacing_and_comments_select_tests() {
+        let dir = tempdir().unwrap();
+        write(
+            dir.path(),
+            "src/lib.rs",
+            "#[test] fn spaced() { include_str /*comment*/ ! (\"../docs/a.md\"); }",
+        );
+        let d = decide_for(dir.path(), &["docs/a.md"]);
+        assert_eq!(d.stems, vec!["spaced".to_string()]);
+    }
+
+    #[test]
+    fn nested_runtime_parent_path_resolves_against_crate_root() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "backend/Cargo.toml", "[package]\nname=\"fx\"\n");
+        write(
+            dir.path(),
+            "backend/tests/read.rs",
+            r#"#[test] fn parent_read() { let _ = std::fs::read_to_string("../docs/contract.md"); }"#,
+        );
+        let d = decide_for(dir.path(), &["docs/contract.md"]);
+        assert_eq!(d.refuse, None);
+        assert_eq!(d.stems, vec!["parent_read".to_string()]);
+    }
+
+    #[test]
+    fn real_file_count_cap_refuses() {
+        let dir = tempdir().unwrap();
+        for n in 0..=MAX_FILES_SCANNED {
+            write(dir.path(), &format!("src/{n:04}.rs"), "");
+        }
+        let d = decide_for(dir.path(), &["docs/contract.md"]);
+        assert!(d.refuse.as_deref().unwrap_or("").contains(".rs files"));
+    }
+
+    #[test]
+    fn real_total_byte_cap_refuses() {
+        let dir = tempdir().unwrap();
+        let body = " ".repeat(MAX_FILE_BYTES as usize);
+        for n in 0..=(MAX_TOTAL_BYTES / MAX_FILE_BYTES) {
+            write(dir.path(), &format!("src/{n:04}.rs"), &body);
+        }
+        let d = decide_for(dir.path(), &["docs/contract.md"]);
+        assert!(
+            d.refuse
+                .as_deref()
+                .unwrap_or("")
+                .contains("bytes of .rs sources")
+        );
+    }
 
     #[test]
     fn production_accessor_resolves_inline_tests() {
@@ -1073,7 +1506,7 @@ mod tests {
     }
 
     #[test]
-    fn out_dir_include_is_unresolved() {
+    fn out_dir_include_is_generated_not_unresolved() {
         let dir = tempdir().unwrap();
         write(
             dir.path(),
@@ -1081,7 +1514,8 @@ mod tests {
             "pub const G: &str = include_str!(concat!(env!(\"OUT_DIR\"), \"/g.rs\"));\n",
         );
         let d = decide_for(dir.path(), &["data/x.csv"]);
-        assert!(d.refuse.is_some());
+        assert_eq!(d.refuse, None);
+        assert!(d.no_dependency.contains("data/x.csv"));
         let d = decide_for(dir.path(), &["docs/x.md"]);
         assert_eq!(d.refuse, None);
     }
@@ -1149,12 +1583,17 @@ mod tests {
     }
 
     #[test]
-    fn oversized_file_trips_per_file_cap() {
+    fn oversized_token_free_file_is_skipped() {
         let dir = tempdir().unwrap();
         let big = "// x\n".repeat((MAX_FILE_BYTES as usize / 5) + 10);
         write(dir.path(), "src/big.rs", &big);
         let scan = EmbeddedScan::scan(dir.path());
-        assert!(scan.bounded.as_deref().unwrap_or("").contains("bytes"));
+        assert_eq!(scan.bounded, None);
+        assert!(!scan.errors.iter().any(|e| e.contains("big.rs")));
+        assert!(
+            scan.skipped
+                .contains("skipped token-free oversized source src/big.rs")
+        );
     }
 
     #[test]
@@ -1221,7 +1660,9 @@ mod engine_tests {
 
     /// D5: on the engine tree the lookup reproduces every hand-written
     /// `INCLUDE_STR_MATERIAL` stem (table ⊆ lookup) and never emits a vacuous
-    /// file/binary stem. The engine itself keeps using the finer table.
+    /// file/binary stem. This lock is only for lookup-derived names; D3(d)
+    /// existing mapping stems retain the 0549-P3-2 exception (0550).
+    /// The engine itself keeps using the finer table.
     #[test]
     fn engine_lookup_covers_include_str_material_table() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1245,6 +1686,46 @@ mod engine_tests {
                 assert!(!got.contains(forbidden), "{path}: vacuous stem {forbidden}");
             }
         }
+    }
+
+    #[test]
+    fn engine_lookup_cheap_runtime_and_include_paths_have_table_entries() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let scan = EmbeddedScan::scan(root);
+        let mut missing = BTreeSet::new();
+        let walker = ignore::WalkBuilder::new(root)
+            .hidden(false)
+            .git_ignore(false)
+            .git_global(false)
+            .git_exclude(false)
+            .parents(false)
+            .require_git(false)
+            .filter_entry(|e| {
+                e.depth() == 0 || !SKIP_DIRS.contains(&e.file_name().to_str().unwrap_or(""))
+            })
+            .build();
+        for entry in walker {
+            let entry = entry.unwrap();
+            if !entry.file_type().is_some_and(|t| t.is_file()) {
+                continue;
+            }
+            let rel = entry
+                .path()
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            if super::super::non_code::is_non_code_cheap_path(Path::new(&rel))
+                && !scan.refs_for(&rel).is_empty()
+                && !INCLUDE_STR_MATERIAL.iter().any(|(p, _)| *p == rel)
+            {
+                missing.insert(rel);
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "cheap embedded/read paths missing table entries: {missing:?}"
+        );
     }
 
     /// D2: warm scan of the engine tree stays inside the latency budget

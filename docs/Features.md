@@ -202,3 +202,16 @@ Built for the modern developer's environment.
 | Optional | SCIP `--auto-scip` (rust-analyzer). Coverage / bridge / `init --operator-pack`. Bare `init` is not the operator pack. Team sync default-off. |
 | Hidden | `bridge`, `search-trigrams`, `internal` off default `--help`. `services` / `deploy` / `observability` callable and gated. `surfaces` is the catalog. |
 | Features | Default source install: no `embed-spa`, no `daemon`, no `usage-metrics`. Release `--all-features` embeds the SPA and includes LSP. |
+
+
+Fast verification of embedded Rust material (0549) applies to nested Rust
+repositories without a root `Cargo.toml`, using explicit manifest paths.
+The pinned scan includes hidden/ignored project sources and excludes vendored
+sources and build/state directories. Generated `OUT_DIR` includes are separate
+from unresolved repository reads. Oversized token-free sources are annotated and
+skipped; unreadable, unlexable, or consumer-bearing oversized sources refuse fast
+scope (or use explicitly authorized full fallback). Unreferenced legacy-material
+paths refuse even alongside mapped code. Lookup-derived function names retain the
+existing mapping file-level-stem limitation (0550); `__slow` assurance wording is
+owned by 0555. Dependency annotations appear in verbose plan step descriptions;
+dry-run JSON retains its existing fields.
