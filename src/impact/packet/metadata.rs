@@ -132,36 +132,65 @@ fn default_analysis_mode() -> String {
     "working_tree".to_string()
 }
 
-/// Compact `to_string` length of a field. `None` on serialize error; the
-/// running length is left unchanged so a failed field cannot look under-budget.
-fn field_json_len<T: Serialize>(value: &T) -> Option<usize> {
-    serde_json::to_string(value).ok().map(|s| s.len())
+/// Packet text exactly as the Ask prompt embeds it: `ai_insights` fenced,
+/// pretty JSON, backticks escaped. `build_user_prompt` and the
+/// `truncate_for_context` meter both call this, so they cannot drift.
+///
+/// This is the one place `impact` reaches into `crate::ai`; `ai::escape` is a
+/// std-only leaf, so there is no cycle.
+pub(crate) fn prompt_packet_text(packet: &ImpactPacket) -> Result<String, serde_json::Error> {
+    let mut view = packet.clone();
+    for insight in &mut view.ai_insights {
+        insight.content = crate::ai::fence_bridge_insight(&insight.content);
+    }
+    serde_json::to_string_pretty(&view).map(|json| crate::ai::escape_code_chunk(&json))
+}
+
+/// Bytes a serialized field contributes to the prompt when nested in `depth`
+/// containers. `None` on serialize error; the running length is left unchanged
+/// so a failed field cannot look under-budget.
+///
+/// The standalone pretty text indents inner lines from zero; nested in `depth`
+/// containers every line after the first sits `2 * depth` spaces further in
+/// (pretty JSON newlines are structural, string newlines are escaped). Each
+/// backtick grows from 1 byte to 2 under `escape_code_chunk`.
+fn field_prompt_len<T: Serialize>(value: &T, depth: usize) -> Option<usize> {
+    let text = serde_json::to_string_pretty(value).ok()?;
+    let newlines = text.bytes().filter(|&b| b == b'\n').count();
+    let backticks = text.bytes().filter(|&b| b == b'`').count();
+    Some(
+        text.len()
+            .saturating_add(newlines.saturating_mul(2 * depth))
+            .saturating_add(backticks),
+    )
 }
 
 #[cfg(test)]
 thread_local! {
     static FULL_PACKET_SERIALIZE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static FORCE_COMPACT_SERIALIZE_ERR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FORCE_PROMPT_SERIALIZE_ERR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static LAST_CONFIRM: std::cell::Cell<Option<(usize, usize)>> = const { std::cell::Cell::new(None) };
 }
 
-/// Full-packet compact JSON length (`to_string`, not pretty). The test meter
-/// increments only here, including `Err` (the call still happened).
-fn compact_packet_len(packet: &ImpactPacket) -> Result<usize, serde_json::Error> {
+/// Full-packet prompt text length in bytes. The test meter increments only
+/// here, including `Err` (the call still happened).
+pub(crate) fn prompt_packet_len(packet: &ImpactPacket) -> Result<usize, serde_json::Error> {
     #[cfg(test)]
     {
         FULL_PACKET_SERIALIZE_COUNT.with(|c| c.set(c.get().saturating_add(1)));
         // serde_json 1.0.151 writes value NaN/Inf as JSON null; this hook
         // still exercises the production Err path (warn + over-budget).
-        if FORCE_COMPACT_SERIALIZE_ERR.with(|c| c.replace(false)) {
+        if FORCE_PROMPT_SERIALIZE_ERR.with(|c| c.replace(false)) {
             return Err(serde::ser::Error::custom("NaN is not allowed in JSON"));
         }
     }
-    serde_json::to_string(packet).map(|s| s.len())
+    prompt_packet_text(packet).map(|s| s.len())
 }
 
 #[cfg(test)]
 fn reset_truncate_serialize_count() {
     FULL_PACKET_SERIALIZE_COUNT.with(|c| c.set(0));
+    LAST_CONFIRM.with(|c| c.set(None));
 }
 
 #[cfg(test)]
@@ -169,41 +198,102 @@ fn take_truncate_serialize_count() -> usize {
     FULL_PACKET_SERIALIZE_COUNT.with(|c| c.replace(0))
 }
 
-fn confirm_compact_len(packet: &ImpactPacket) {
-    if let Err(err) = compact_packet_len(packet) {
-        tracing::warn!(
-            error = %err,
-            "impact packet compact serialize failed; treating as over-budget"
-        );
+/// `(running, actual)` of the last confirm serialize, for drift tests.
+#[cfg(test)]
+pub(crate) fn take_last_confirm() -> Option<(usize, usize)> {
+    LAST_CONFIRM.with(|c| c.take())
+}
+
+/// Second full serialize after a strip. It compares nothing for control flow;
+/// it only warns when the running estimate fell below the true length.
+fn confirm_prompt_len(packet: &ImpactPacket, running: usize) {
+    match prompt_packet_len(packet) {
+        Ok(actual) => {
+            #[cfg(test)]
+            LAST_CONFIRM.with(|c| c.set(Some((running, actual))));
+            if running < actual {
+                tracing::warn!(
+                    running,
+                    actual,
+                    "impact packet prompt-length estimate under-counted"
+                );
+            }
+        }
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "impact packet prompt serialize failed; treating as over-budget"
+            );
+        }
     }
 }
 
-fn debit_running<T: Serialize>(running: &mut usize, old: &T, new: &T) {
-    let (Some(old_len), Some(new_len)) = (field_json_len(old), field_json_len(new)) else {
+fn debit_running<T: Serialize>(running: &mut usize, old: &T, new: &T, depth: usize) {
+    let (Some(old_len), Some(new_len)) =
+        (field_prompt_len(old, depth), field_prompt_len(new, depth))
+    else {
         return;
     };
     *running = running.saturating_sub(old_len).saturating_add(new_len);
 }
 
-fn debit_clear_vec<T: Serialize>(running: &mut usize, field: &mut Vec<T>) {
+fn debit_clear_vec<T: Serialize>(running: &mut usize, field: &mut Vec<T>, depth: usize) {
     if field.is_empty() {
         return;
     }
-    let old_len = field_json_len(field);
+    let old_len = field_prompt_len(field, depth);
     field.clear();
-    if let (Some(old_len), Some(new_len)) = (old_len, field_json_len(field)) {
+    if let (Some(old_len), Some(new_len)) = (old_len, field_prompt_len(field, depth)) {
         *running = running.saturating_sub(old_len).saturating_add(new_len);
     }
 }
 
-fn debit_take_opt<T: Serialize>(running: &mut usize, field: &mut Option<T>) {
+fn debit_take_opt<T: Serialize>(running: &mut usize, field: &mut Option<T>, depth: usize) {
     if field.is_none() {
         return;
     }
     let old = std::mem::take(field);
-    if let (Some(old_len), Some(new_len)) = (field_json_len(&old), field_json_len(field)) {
+    if let (Some(old_len), Some(new_len)) = (
+        field_prompt_len(&old, depth),
+        field_prompt_len(field, depth),
+    ) {
         *running = running.saturating_sub(old_len).saturating_add(new_len);
     }
+}
+
+/// `ai_insights` contribute their fenced view to the prompt, so the debit
+/// measures that, never the raw content.
+fn debit_clear_ai_insights(running: &mut usize, field: &mut Vec<super::AiInsight>, depth: usize) {
+    if field.is_empty() {
+        return;
+    }
+    let fenced: Vec<super::AiInsight> = field
+        .iter()
+        .map(|insight| super::AiInsight {
+            content: crate::ai::fence_bridge_insight(&insight.content),
+            ..insight.clone()
+        })
+        .collect();
+    let old_len = field_prompt_len(&fenced, depth);
+    field.clear();
+    if let (Some(old_len), Some(new_len)) = (old_len, field_prompt_len(field, depth)) {
+        *running = running.saturating_sub(old_len).saturating_add(new_len);
+    }
+}
+
+/// `blast_radius_skip` omits a `Some(empty)` value from the output, so it was
+/// never in the starting measure and must not be debited.
+fn debit_take_blast_radius(
+    running: &mut usize,
+    field: &mut Option<super::BlastRadius>,
+    depth: usize,
+) {
+    let was_serialized = !super::blast_radius_skip(field);
+    if !was_serialized {
+        *field = None;
+        return;
+    }
+    debit_take_opt(running, field, depth);
 }
 
 impl ImpactPacket {
@@ -568,18 +658,20 @@ impl ImpactPacket {
     /// 3. Strip temporal couplings
     /// 4. Strip hotspots
     ///
-    /// Compact `to_string` is the budget meter (not pretty). At most two
+    /// The prompt text length (pretty JSON with escaped backticks, see
+    /// [`prompt_packet_text`]) is the budget meter, in bytes. At most two
     /// full-packet serializes per call: one to decide work, one confirm if
     /// any strip ran. Per-phase early-exit uses a running length of
-    /// field-level compact JSON, not extra full-packet serializes.
+    /// field-level prompt bytes (value-only, nesting-depth aware), not extra
+    /// full-packet serializes.
     pub fn truncate_for_context(&mut self, target_chars: usize) -> bool {
-        let (mut running, measure_ok) = match compact_packet_len(self) {
+        let (mut running, measure_ok) = match prompt_packet_len(self) {
             Ok(n) if n <= target_chars => return false,
             Ok(n) => (n, true),
             Err(err) => {
                 tracing::warn!(
                     error = %err,
-                    "impact packet compact serialize failed; treating as over-budget"
+                    "impact packet prompt serialize failed; treating as over-budget"
                 );
                 (usize::MAX, false)
             }
@@ -600,12 +692,12 @@ impl ImpactPacket {
             res.stdout = "[TRUNCATED]".to_string();
             res.stderr = "[TRUNCATED]".to_string();
             res.truncated = true;
-            debit_running(&mut running, &old_stdout, &res.stdout);
-            debit_running(&mut running, &old_stderr, &res.stderr);
-            debit_running(&mut running, &old_truncated, &res.truncated);
+            debit_running(&mut running, &old_stdout, &res.stdout, 3);
+            debit_running(&mut running, &old_stderr, &res.stderr, 3);
+            debit_running(&mut running, &old_truncated, &res.truncated, 3);
         }
         if stripped && under(running) {
-            confirm_compact_len(self);
+            confirm_prompt_len(self, running);
             return true;
         }
 
@@ -624,12 +716,12 @@ impl ImpactPacket {
             let old_symbols = change.symbols.take();
             let old_imports = change.imports.take();
             let old_runtime = change.runtime_usage.take();
-            debit_running(&mut running, &old_symbols, &change.symbols);
-            debit_running(&mut running, &old_imports, &change.imports);
-            debit_running(&mut running, &old_runtime, &change.runtime_usage);
+            debit_running(&mut running, &old_symbols, &change.symbols, 3);
+            debit_running(&mut running, &old_imports, &change.imports, 3);
+            debit_running(&mut running, &old_runtime, &change.runtime_usage, 3);
         }
         if stripped && under(running) {
-            confirm_compact_len(self);
+            confirm_prompt_len(self, running);
             return true;
         }
 
@@ -666,53 +758,53 @@ impl ImpactPacket {
             || !self.dead_code_findings.is_empty();
         if phase3_touched {
             stripped = true;
-            debit_clear_vec(&mut running, &mut self.temporal_couplings);
-            debit_clear_vec(&mut running, &mut self.temporal_couplings_audit);
-            debit_clear_vec(&mut running, &mut self.discarded_tree_paths);
-            debit_clear_vec(&mut running, &mut self.structural_couplings);
-            debit_take_opt(&mut running, &mut self.blast_radius);
-            debit_clear_vec(&mut running, &mut self.centrality_risks);
-            debit_clear_vec(&mut running, &mut self.logging_coverage_delta);
-            debit_clear_vec(&mut running, &mut self.error_handling_delta);
-            debit_clear_vec(&mut running, &mut self.telemetry_coverage_delta);
-            debit_clear_vec(&mut running, &mut self.infrastructure_dirs);
-            debit_clear_vec(&mut running, &mut self.env_var_deps);
-            debit_clear_vec(&mut running, &mut self.test_coverage);
-            debit_take_opt(&mut running, &mut self.test_gaps);
-            debit_take_opt(&mut running, &mut self.affected_flows);
-            debit_clear_vec(&mut running, &mut self.runtime_usage_delta);
-            debit_clear_vec(&mut running, &mut self.signature_deltas);
-            debit_clear_vec(&mut running, &mut self.relevant_decisions);
-            debit_clear_vec(&mut running, &mut self.observability);
-            debit_clear_vec(&mut running, &mut self.affected_contracts);
-            debit_clear_vec(&mut running, &mut self.ai_insights);
-            debit_clear_vec(&mut running, &mut self.data_flow_matches);
-            debit_clear_vec(&mut running, &mut self.trace_config_drift);
-            debit_clear_vec(&mut running, &mut self.trace_env_vars);
-            debit_take_opt(&mut running, &mut self.sdk_dependencies_delta);
-            debit_clear_vec(&mut running, &mut self.deploy_manifest_changes);
-            debit_take_opt(&mut running, &mut self.ci_config_change);
-            debit_clear_vec(&mut running, &mut self.ci_predictions);
-            debit_clear_vec(&mut running, &mut self.service_impact);
-            debit_take_opt(&mut running, &mut self.service_map_delta);
-            debit_clear_vec(&mut running, &mut self.dead_code_findings);
+            debit_clear_vec(&mut running, &mut self.temporal_couplings, 1);
+            debit_clear_vec(&mut running, &mut self.temporal_couplings_audit, 1);
+            debit_clear_vec(&mut running, &mut self.discarded_tree_paths, 1);
+            debit_clear_vec(&mut running, &mut self.structural_couplings, 1);
+            debit_take_blast_radius(&mut running, &mut self.blast_radius, 1);
+            debit_clear_vec(&mut running, &mut self.centrality_risks, 1);
+            debit_clear_vec(&mut running, &mut self.logging_coverage_delta, 1);
+            debit_clear_vec(&mut running, &mut self.error_handling_delta, 1);
+            debit_clear_vec(&mut running, &mut self.telemetry_coverage_delta, 1);
+            debit_clear_vec(&mut running, &mut self.infrastructure_dirs, 1);
+            debit_clear_vec(&mut running, &mut self.env_var_deps, 1);
+            debit_clear_vec(&mut running, &mut self.test_coverage, 1);
+            debit_take_opt(&mut running, &mut self.test_gaps, 1);
+            debit_take_opt(&mut running, &mut self.affected_flows, 1);
+            debit_clear_vec(&mut running, &mut self.runtime_usage_delta, 1);
+            debit_clear_vec(&mut running, &mut self.signature_deltas, 1);
+            debit_clear_vec(&mut running, &mut self.relevant_decisions, 1);
+            debit_clear_vec(&mut running, &mut self.observability, 1);
+            debit_clear_vec(&mut running, &mut self.affected_contracts, 1);
+            debit_clear_ai_insights(&mut running, &mut self.ai_insights, 1);
+            debit_clear_vec(&mut running, &mut self.data_flow_matches, 1);
+            debit_clear_vec(&mut running, &mut self.trace_config_drift, 1);
+            debit_clear_vec(&mut running, &mut self.trace_env_vars, 1);
+            debit_take_opt(&mut running, &mut self.sdk_dependencies_delta, 1);
+            debit_clear_vec(&mut running, &mut self.deploy_manifest_changes, 1);
+            debit_take_opt(&mut running, &mut self.ci_config_change, 1);
+            debit_clear_vec(&mut running, &mut self.ci_predictions, 1);
+            debit_clear_vec(&mut running, &mut self.service_impact, 1);
+            debit_take_opt(&mut running, &mut self.service_map_delta, 1);
+            debit_clear_vec(&mut running, &mut self.dead_code_findings, 1);
         }
         if stripped && under(running) {
-            confirm_compact_len(self);
+            confirm_prompt_len(self, running);
             return true;
         }
 
         // Phase 4: Strip hotspots and the window label that describes them.
         if !self.hotspots.is_empty() {
             stripped = true;
-            debit_clear_vec(&mut running, &mut self.hotspots);
+            debit_clear_vec(&mut running, &mut self.hotspots, 1);
         }
         if self.hotspot_provenance.is_some() {
             stripped = true;
-            debit_take_opt(&mut running, &mut self.hotspot_provenance);
+            debit_take_opt(&mut running, &mut self.hotspot_provenance, 1);
         }
         if stripped && under(running) {
-            confirm_compact_len(self);
+            confirm_prompt_len(self, running);
             return true;
         }
 
@@ -728,18 +820,18 @@ impl ImpactPacket {
             let old_symbols = change.symbols.take();
             let old_imports = change.imports.take();
             let old_runtime = change.runtime_usage.take();
-            debit_running(&mut running, &old_symbols, &change.symbols);
-            debit_running(&mut running, &old_imports, &change.imports);
-            debit_running(&mut running, &old_runtime, &change.runtime_usage);
+            debit_running(&mut running, &old_symbols, &change.symbols, 3);
+            debit_running(&mut running, &old_imports, &change.imports, 3);
+            debit_running(&mut running, &old_runtime, &change.runtime_usage, 3);
         }
 
         if stripped {
-            confirm_compact_len(self);
+            confirm_prompt_len(self, running);
         }
         true
     }
 
-    /// Reset the thread-local full-packet compact-serialize count, run
+    /// Reset the thread-local full-packet prompt-serialize count, run
     /// [`Self::truncate_for_context`], and return `(truncated, serialize_count)`.
     #[cfg(test)]
     pub(crate) fn truncate_for_context_metered(&mut self, target_chars: usize) -> (bool, usize) {
@@ -748,10 +840,13 @@ impl ImpactPacket {
         (truncated, take_truncate_serialize_count())
     }
 
-    /// Next full-packet compact serialize returns `Err` (serde_json maps
+    /// Next full-packet prompt serialize returns `Err` (serde_json maps
     /// packet NaN/Inf floats to `null`, so tests inject the failure).
     #[cfg(test)]
     pub(crate) fn force_next_truncate_serialize_error() {
-        FORCE_COMPACT_SERIALIZE_ERR.with(|c| c.set(true));
+        FORCE_PROMPT_SERIALIZE_ERR.with(|c| c.set(true));
     }
 }
+
+#[cfg(test)]
+mod prompt_meter_tests;
