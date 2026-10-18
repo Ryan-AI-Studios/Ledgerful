@@ -832,9 +832,10 @@ fn overlay_fast_classifier_packet(
     mut packet: crate::impact::packet::ImpactPacket,
 ) -> miette::Result<crate::impact::packet::ImpactPacket> {
     let live = crate::git::status::collect_changed_files_for_filter(layout)?;
+    let rust = repo_is_rust(layout.root.as_std_path());
     let mut changes: Vec<crate::impact::packet::ChangedFile> = live
         .into_iter()
-        .filter(|c| is_material_or_cheap_verify_path(&c.path))
+        .filter(|c| is_material_or_cheap_verify_path(&c.path, rust))
         .map(file_change_to_changed_file)
         .collect();
     changes.sort_by(|a, b| a.path.cmp(&b.path));
@@ -866,8 +867,24 @@ fn file_change_to_changed_file(
     }
 }
 
-fn is_material_or_cheap_verify_path(path: &std::path::Path) -> bool {
-    is_material_verify_path(path) || crate::verify::plan::is_non_code_cheap_path(path)
+fn is_material_or_cheap_verify_path(path: &std::path::Path, rust: bool) -> bool {
+    is_material_for_profile(path, rust) || crate::verify::plan::is_non_code_cheap_path(path)
+}
+
+/// 0549 D8 applies where the embedded lookup runs (Rust profile); other
+/// profiles keep the legacy allowlist.
+fn is_material_for_profile(path: &std::path::Path, rust: bool) -> bool {
+    if rust {
+        is_material_verify_path(path)
+    } else {
+        is_legacy_material_verify_path(path)
+    }
+}
+
+fn repo_is_rust(repo_root: &std::path::Path) -> bool {
+    crate::platform::repository::detect_repository(repo_root)
+        .rust
+        .is_some()
 }
 
 /// Live overlay + classifier for `--scope fast` dirty trees. Shared by Some-packet
@@ -959,7 +976,11 @@ fn classify_working_tree_material(repo_root: &std::path::Path) -> WorkingTreeMat
     let Ok(changes) = crate::git::status::get_repo_status(&repo) else {
         return WorkingTreeMaterial::Unavailable;
     };
-    if changes.iter().any(|c| is_material_verify_path(&c.path)) {
+    let rust = repo_is_rust(repo_root);
+    if changes
+        .iter()
+        .any(|c| is_material_for_profile(&c.path, rust))
+    {
         WorkingTreeMaterial::Dirty
     } else {
         WorkingTreeMaterial::Clean
@@ -969,9 +990,11 @@ fn classify_working_tree_material(repo_root: &std::path::Path) -> WorkingTreeMat
 /// True when the working tree has **material** changes that verify should not
 /// ignore when there is no saved impact packet (0135 final codex P1).
 ///
-/// Material = source-like extensions or known shared-infra basenames. Ignores
-/// `.ledgerful/**` (also default ignore) and PATH/test fixtures such as a
-/// root `cargo.bat` used by empty-repo integration tests.
+/// Material = any changed path except an explicit exemption list (0549 D8,
+/// overturning the 0321 extension allowlist so a dirty `.txt` template or
+/// `.csv` fixture is not mistaken for a clean tree): `.ledgerful/**`,
+/// PATH/test shims such as a root `cargo.bat`, and `.git/`, `target/`,
+/// `node_modules/` trees.
 ///
 /// On git discovery/status failure, returns false so clean EmptyChanges still
 /// works in non-git fixtures (Unavailable ≠ Dirty).
@@ -1064,78 +1087,22 @@ fn is_material_verify_path(path: &std::path::Path) -> bool {
     {
         return false;
     }
-    // 0203-D: packaging templates (including `.rb`) are material so a
-    // template-only diff is not LiveEmpty.
-    if norm == "packaging" || norm.starts_with("packaging/") {
-        return true;
+    // 0549 D8: VCS and build-output trees are never material.
+    const EXEMPT_DIRS: &[&str] = &[".git", "target", "node_modules"];
+    if norm
+        .split('/')
+        .next()
+        .is_some_and(|first| EXEMPT_DIRS.contains(&first))
+    {
+        return false;
     }
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    // Shared-infra basenames that already force full under --scope fast when
-    // present in a packet (see plan::touches_shared_infra).
-    const INFRA: &[&str] = &[
-        "cargo.toml",
-        "cargo.lock",
-        "package.json",
-        "package-lock.json",
-        "pnpm-lock.yaml",
-        "yarn.lock",
-        "go.mod",
-        "go.sum",
-        "pyproject.toml",
-        "requirements.txt",
-        "poetry.lock",
-        "dockerfile",
-        "docker-compose.yml",
-        "docker-compose.yaml",
-        "makefile",
-    ];
-    if INFRA.iter().any(|b| name == *b) {
-        return true;
-    }
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    matches!(
-        ext.as_str(),
-        "rs" | "ts"
-            | "tsx"
-            | "js"
-            | "jsx"
-            | "mjs"
-            | "cjs"
-            | "py"
-            | "go"
-            | "java"
-            | "kt"
-            | "kts"
-            // D2 C/C++ (aligned with analysis/semantic index support)
-            | "c"
-            | "h"
-            | "cpp"
-            | "cc"
-            | "cxx"
-            | "hpp"
-            | "hh"
-            | "hxx"
-            | "h++"
-            | "toml"
-            | "yaml"
-            | "yml"
-            | "json"
-            | "md"
-            | "css"
-            | "scss"
-            | "html"
-            | "sql"
-            | "sh"
-            | "ps1"
-    )
+    true
+}
+
+/// Pre-0549 extension allowlist, kept for repositories where the embedded
+/// lookup does not run (no Rust profile; non-Rust embedding is 0570).
+fn is_legacy_material_verify_path(path: &std::path::Path) -> bool {
+    crate::verify::plan::is_legacy_material_path(path)
 }
 
 fn manual_step(command: String, timeout_secs: u64) -> VerificationStep {
@@ -1173,7 +1140,20 @@ mod material_verify_path_tests {
         )));
         assert!(!is_material_verify_path(Path::new(".ledgerful/state/x")));
         assert!(!is_material_verify_path(Path::new("cargo.bat")));
-        assert!(!is_material_verify_path(Path::new("notes.txt")));
+        assert!(!is_material_verify_path(Path::new("target/debug/x.rs")));
+        assert!(!is_material_verify_path(Path::new("node_modules/a/b.js")));
+        assert!(!is_material_verify_path(Path::new(".git/HEAD")));
+    }
+
+    #[test]
+    fn non_source_templates_and_data_are_material_0549() {
+        // 0549 D8: the 0321 `notes.txt` lock is deliberately overturned; an
+        // embedded template or fixture must not read as a clean tree.
+        assert!(is_material_verify_path(Path::new("notes.txt")));
+        assert!(is_material_verify_path(Path::new("templates/message.txt")));
+        assert!(is_material_verify_path(Path::new("data/x.csv")));
+        assert!(is_material_verify_path(Path::new("assets/logo.png")));
+        assert!(is_material_verify_path(Path::new("tests/fixtures/a.bin")));
     }
 
     #[test]
