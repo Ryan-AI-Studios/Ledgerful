@@ -25,6 +25,16 @@ fn test_cloud_fallback_env_missing() {
     assert!(cloud_fallback_env("DEFINITELY_MISSING_KEY").is_none());
 }
 
+/// A loopback URL whose port nothing listens on. Not `127.0.0.1:1`: under WSL
+/// mirrored networking ports 1, 2 and 9 hang to the client timeout instead of
+/// refusing, which breaks the fail-fast assertions.
+fn refused_local_url() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local addr").port();
+    drop(listener);
+    format!("http://127.0.0.1:{port}")
+}
+
 fn test_config(base_url: &str) -> LocalModelConfig {
     // Isolate from this repo's real `.env` (which may have real OpenRouter/Gemini
     // keys for manual use) so cloud_fallback_env() can't make these tests flaky.
@@ -120,7 +130,7 @@ fn complete_closed_port_local_fails_fast() {
     use std::time::Instant;
 
     let _iso = isolate_cloud_env();
-    let mut config = test_config("http://127.0.0.1:1");
+    let mut config = test_config(&refused_local_url());
     config.timeout_secs = 300;
     let start = Instant::now();
     let result = complete(
@@ -169,7 +179,7 @@ fn complete_cloud_fallback_uses_short_budget_when_override_none() {
     let _orm = TempEnv::set("OPENROUTER_MODEL", "test/model");
     let _orb = TempEnv::set("OPENROUTER_BASE_URL", &openrouter.base_url());
 
-    let mut config = test_config("http://127.0.0.1:1"); // local unreachable
+    let mut config = test_config(&refused_local_url()); // local unreachable
     config.timeout_secs = 300;
 
     let start = Instant::now();
@@ -332,7 +342,7 @@ fn complete_other_status_error() {
 #[serial_test::serial(env)]
 fn complete_connection_refused() {
     let _iso = isolate_cloud_env();
-    let config = test_config("http://127.0.0.1:1");
+    let config = test_config(&refused_local_url());
     let result = complete(
         &config,
         &test_messages(),
@@ -405,7 +415,7 @@ fn completions_ping_success() {
 
 #[test]
 fn completions_ping_transport_failure() {
-    let config = test_config("http://127.0.0.1:1");
+    let config = test_config(&refused_local_url());
     let result = ping_completions(&config);
     assert!(result.is_err());
     assert!(!result.unwrap_err().is_empty(), "error should not be empty");
@@ -431,7 +441,7 @@ fn completions_ping_non_200() {
 fn transport_error_includes_cause() {
     let _iso = isolate_cloud_env();
     // Use a port that nothing is listening on
-    let config = test_config("http://127.0.0.1:1");
+    let config = test_config(&refused_local_url());
     let result = complete(
         &config,
         &test_messages(),
@@ -1072,7 +1082,7 @@ fn complete_first_byte_timeout_connection_refused() {
     // Isolate cloud keys so fallback cannot mask the local refused path.
     let _iso = isolate_cloud_env();
 
-    let config = test_config("http://127.0.0.1:1");
+    let config = test_config(&refused_local_url());
     let start = Instant::now();
     let result = complete_with_first_byte_timeout(
         &config,
