@@ -165,6 +165,8 @@ jobs:
             archive: zip
             binary: ledgerful.exe
             target: ""
+            # Static CRT: a clean image (winget validation) has no VC++ Redistributable.
+            rustflags: "-C target-feature=+crt-static"
           - os: macos-15
             asset: ledgerful-x86_64-apple-darwin
             archive: tar
@@ -178,6 +180,8 @@ jobs:
 
     env:
       RUSTUP_TOOLCHAIN: stable
+      # Job level so Swatinem/rust-cache keys on it; empty on the non-Windows legs.
+      RUSTFLAGS: ${{ matrix.rustflags }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -244,6 +248,19 @@ jobs:
           $archivePath = "dist/$archiveName"
           $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $archiveName" | Set-Content -Path "$archivePath.sha256" -Encoding ascii
+      - name: Assert Windows exe imports no MSVC runtime
+        if: matrix.archive == 'zip'
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $objdump = "C:/Program Files/LLVM/bin/llvm-objdump.exe"
+          & $objdump --version | Select-Object -First 2
+          $exe = "dist/${{ matrix.asset }}/${{ matrix.binary }}"
+          $imports = & $objdump -p $exe | Select-String "DLL Name:" | ForEach-Object { ($_ -replace '.*DLL Name:\s*', '').Trim() } | Sort-Object -Unique
+          if (-not $imports) { throw "No imports parsed from $exe; the guard would pass vacuously" }
+          $imports | ForEach-Object { "import: $_" }
+          $banned = $imports | Where-Object { $_ -match '^(VCRUNTIME140|MSVCP140|ucrtbase|api-ms-win-crt-)' }
+          if ($banned) { throw "Windows exe still imports the MSVC runtime: $($banned -join ', ')" }
       - name: Attest build provenance
         # actions/attest requires a public repo or GitHub Enterprise Cloud.
         # Repo is public; keep the private-repo fallback below in case visibility changes.
