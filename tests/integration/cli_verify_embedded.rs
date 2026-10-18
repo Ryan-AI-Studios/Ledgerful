@@ -510,3 +510,16 @@ fn benign_noncheap_exact_outcome(#[case] path: &str) {
     assert_eq!(v["scopeExecuted"], "fast");
     assert!(nextest_command(&v).is_none());
 }
+
+
+#[test]
+fn malformed_root_manifest_cannot_produce_empty_cheap_green() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    init_fixture(root);
+    write(root, "Cargo.toml", "not valid toml {{{");
+    git_add_and_commit(root, "malformed manifest fixture");
+    write(root, "docs/guide.md", "changed guide");
+    let v = dry_run_json(root, &[]);
+    assert!(v["refused"] == true || v["steps"].as_array().is_some_and(|s| s.iter().any(|step| step["command"].as_str().unwrap_or("").contains("cargo"))), "manifest presence must not disappear into a non-Rust empty plan: {v}");
+}

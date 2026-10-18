@@ -639,8 +639,8 @@ fn collect_literals(src: &str, rel: &str) -> Result<(BTreeSet<String>, usize), S
                                     .strip_prefix(MANIFEST_MARKER)
                                     .map(|p| p.trim_start_matches(['/', '\\']).to_string())
                                     .unwrap_or(value);
-                                if normalize_repo_path(&value).is_some()
-                                    && !value.starts_with('/')
+                                if !value.starts_with('/')
+                                    && !value.starts_with('\\')
                                     && value.as_bytes().get(1) != Some(&b':')
                                 {
                                     lits.insert(value);
@@ -1007,6 +1007,9 @@ impl EmbeddedScan {
         }
         if has_runtime {
             let (literals, dynamic) = collect_literals(src, rel)?;
+            if literals.iter().any(|p| join_norm("", p).is_none() && join_norm(&crate_root, p).is_none()) {
+                self.unresolved_reads.insert(format!("{rel}: runtime literal escapes repo root"));
+            }
             if dynamic > 0 && in_test_scope {
                 self.unresolved_reads.insert(format!(
                     "{rel}: {dynamic} non-literal runtime read(s) in test scope"
@@ -1046,22 +1049,10 @@ impl EmbeddedScan {
 
     fn runtime_file_reads(&self, file: &RuntimeFile, path: &str) -> bool {
         let want = fold(path);
-        let matches_lit = |lit: &str| -> bool {
-            let Some(norm) = normalize_repo_path(lit) else {
-                return false;
-            };
-            if norm.is_empty() {
-                return false;
-            }
-            if fold(&norm) == want {
-                return true;
-            }
-            !file.crate_root.is_empty() && fold(&format!("{}/{}", file.crate_root, norm)) == want
-        };
-        if file.literals.iter().any(|l| matches_lit(l)) {
-            return true;
-        }
-        false
+        file.literals.iter().any(|lit| {
+            [join_norm("", lit), join_norm(&file.crate_root, lit)]
+                .into_iter().flatten().any(|path| !path.is_empty() && fold(&path) == want)
+        })
     }
 }
 

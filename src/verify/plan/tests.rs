@@ -3578,7 +3578,7 @@ fn mapped_production_includer_cannot_rescue_unmapped_changed_source() {
     conn.execute_batch("CREATE TABLE project_files (id INTEGER PRIMARY KEY, file_path TEXT);
         CREATE TABLE project_symbols (id INTEGER PRIMARY KEY, symbol_name TEXT, file_id INTEGER);
         CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, tested_symbol_id INTEGER, tested_file_id INTEGER);
-        INSERT INTO project_files VALUES (1, 'src/reader.rs'), (2, 'tests/reader.rs');
+        INSERT INTO project_files VALUES (1, 'src/reader.rs'), (2, 'src/check.rs');
         INSERT INTO project_symbols VALUES (1, 'reader_contract', 2);
         INSERT INTO test_mapping VALUES (1, 2, NULL, 1);").unwrap();
     let pure = plan_at(&root, &packet_with_paths(&["templates/x.txt"]), Some(&conn), &rust_profile());
