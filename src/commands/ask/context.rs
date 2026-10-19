@@ -1033,4 +1033,77 @@ mod tests {
         assert_eq!(packet_target_after_diff(32_768, Some(&big)), 16_384);
         assert_eq!(packet_target_after_diff(10, Some(&big)), 5);
     }
+
+    /// Inline copy of the pre-0544 packet pipeline (fence, pretty, escape).
+    fn reference_prompt_len(packet: &ImpactPacket) -> usize {
+        let mut view = packet.clone();
+        for insight in &mut view.ai_insights {
+            insight.content = crate::ai::fence_bridge_insight(&insight.content);
+        }
+        let json = serde_json::to_string_pretty(&view).expect("serialize reference");
+        crate::ai::escape_code_chunk(&json).len()
+    }
+
+    /// 0544: packet text plus the charged diff stays inside `char_limit` when the
+    /// diff charge is under the half-floor. The compact meter let a packet that
+    /// fit compactly but not pretty through. The 0533 all-backtick clamp case
+    /// (charge above `char_limit / 2`) is excluded: the clamp keeps the packet at
+    /// `char_limit / 2` and the marker overshoot stays in the 20 percent reserve.
+    #[test]
+    fn ask_packet_target_holds_the_pretty_prompt_with_a_backtick_diff() {
+        let char_limit = 32_768;
+        let diff = "`".repeat(4_096);
+        let charge = diff.len() + diff.bytes().filter(|&b| b == b'`').count();
+        assert!(
+            charge <= char_limit / 2,
+            "fixture must stay under the half-floor"
+        );
+        let packet_target = packet_target_after_diff(char_limit, Some(&diff));
+
+        let mut packet = ImpactPacket::default();
+        let mut i = 0;
+        while reference_prompt_len(&packet) <= packet_target {
+            packet.changes.push(crate::impact::packet::ChangedFile {
+                path: std::path::PathBuf::from(format!("src/module_{i}.rs")),
+                status: "Modified".to_string(),
+                old_path: None,
+                is_staged: false,
+                symbols: Some(vec![crate::index::symbols::Symbol {
+                    name: format!("function_{i}"),
+                    kind: crate::index::symbols::SymbolKind::Function,
+                    is_public: true,
+                    cognitive_complexity: None,
+                    cyclomatic_complexity: None,
+                    line_start: None,
+                    line_end: None,
+                    qualified_name: None,
+                    byte_start: None,
+                    byte_end: None,
+                    entrypoint_kind: None,
+                    metadata: std::collections::BTreeMap::new(),
+                }]),
+                imports: None,
+                runtime_usage: None,
+                analysis_status: Default::default(),
+                analysis_warnings: Vec::new(),
+                api_routes: Vec::new(),
+                data_models: Vec::new(),
+                ci_gates: Vec::new(),
+            });
+            i += 1;
+        }
+        let compact = serde_json::to_string(&packet).expect("compact").len();
+        assert!(
+            compact <= packet_target,
+            "fixture must fit compactly ({compact} vs {packet_target}) so the old meter kept it"
+        );
+
+        assert!(packet.truncate_for_context(packet_target));
+
+        let packet_len = reference_prompt_len(&packet);
+        assert!(
+            packet_len + charge <= char_limit,
+            "packet {packet_len} plus diff charge {charge} exceeds {char_limit}"
+        );
+    }
 }

@@ -164,6 +164,12 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
     // Probability map size when extract_dataset succeeds (0144 dry-run stdout).
     let mut bayesian_dataset_keys: Option<usize> = None;
 
+    // One material snapshot feeds prediction, overlay, and JSON. Nested Rust
+    // discovery is only needed here if strict and legacy materiality differ.
+    let detect_rust = scope.is_fast() && !manual_requested && config_plan.is_none();
+    let (working_material, rust_crates) =
+        classify_working_tree_material(layout.root.as_std_path(), detect_rust);
+
     // 3. Build Plan
     let (plan, steps) = match command_str {
         Some(ref cmd) => (
@@ -186,12 +192,12 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                 // (stale Temporal dump / optional-embed 10060). Do not set
                 // ctx.no_predict — that also gates storage/packet warnings.
                 // Manual --command and [[verify.steps]] never reach here.
-                let prediction =
-                    if dry_run && !working_tree_has_material_changes(layout.root.as_std_path()) {
-                        crate::verify::predict::PredictionResult::default()
-                    } else {
-                        OutcomePredictor::predict(&mut ctx)?
-                    };
+                let prediction = if dry_run && !working_tree_has_material_changes(working_material)
+                {
+                    crate::verify::predict::PredictionResult::default()
+                } else {
+                    OutcomePredictor::predict(&mut ctx)?
+                };
                 let rules = crate::policy::load::load_rules(&layout)?;
 
                 let mut plan = match &ctx.packet {
@@ -203,9 +209,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                         // a saved impact packet still lists changes (phantom packet).
                         // Kept here (not in plan.rs) so Layout::new(".") unit tests
                         // stay hermetic without a live git short-circuit.
-                        if scope.is_fast()
-                            && !working_tree_has_material_changes(layout.root.as_std_path())
-                        {
+                        if scope.is_fast() && !working_tree_has_material_changes(working_material) {
                             crate::verify::plan::build_empty_changes_plan(&profile)
                         } else if scope.is_fast() {
                             // 0203-B: classify from live git paths (replace
@@ -221,6 +225,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                                 conn,
                                 auto_index,
                                 allow_full_fallback,
+                                rust_crates,
                             )
                         } else {
                             let conn = ctx.storage.as_ref().map(|s| s.get_connection());
@@ -249,7 +254,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                         );
                         let empty_packet = crate::impact::packet::ImpactPacket::default();
                         if scope.is_fast() {
-                            if working_tree_has_material_changes(layout.root.as_std_path()) {
+                            if working_tree_has_material_changes(working_material) {
                                 let conn = ctx.storage.as_ref().map(|s| s.get_connection());
                                 build_fast_scoped_from_overlay_or_fail_closed(
                                     None,
@@ -261,6 +266,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                                     conn,
                                     auto_index,
                                     allow_full_fallback,
+                                    rust_crates,
                                 )
                             } else {
                                 let conn = ctx.storage.as_ref().map(|s| s.get_connection());
@@ -450,7 +456,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                     .unwrap_or_else(|| "fast scope unavailable; refusing full suite".to_string());
                 let prediction_skipped = command_str.is_none()
                     && matches!(
-                        classify_working_tree_material(layout.root.as_std_path()),
+                        working_material,
                         WorkingTreeMaterial::Clean | WorkingTreeMaterial::Unavailable
                     );
                 emit_verify_dry_run_json(
@@ -460,7 +466,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                     true,
                     bayesian_matched_steps,
                     bayesian_dataset_keys,
-                    layout.root.as_std_path(),
+                    working_material,
                     prediction_skipped,
                 )?;
                 return Err(miette::miette!("{reason}"));
@@ -501,7 +507,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
         if json {
             let prediction_skipped = command_str.is_none()
                 && matches!(
-                    classify_working_tree_material(layout.root.as_std_path()),
+                    working_material,
                     WorkingTreeMaterial::Clean | WorkingTreeMaterial::Unavailable
                 );
             return emit_verify_dry_run_json(
@@ -511,7 +517,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                 false,
                 bayesian_matched_steps,
                 bayesian_dataset_keys,
-                layout.root.as_std_path(),
+                working_material,
                 prediction_skipped,
             );
         }
@@ -827,14 +833,28 @@ fn print_fallback_announcement(reason: &str, refused: bool) {
 ///
 /// Replaces `packet.changes` (does not union). Sets `head_hash` from
 /// live HEAD. Does not persist the overlay or write `latest-impact.json`.
+#[cfg(test)]
 fn overlay_fast_classifier_packet(
     layout: &crate::state::layout::Layout,
+    packet: crate::impact::packet::ImpactPacket,
+) -> miette::Result<crate::impact::packet::ImpactPacket> {
+    let (_, rust) = classify_working_tree_material(layout.root.as_std_path(), true);
+    overlay_fast_classifier_packet_with_rust(
+        layout,
+        packet,
+        rust.is_some_and(crate::verify::plan::RustCrates::is_strict),
+    )
+}
+
+fn overlay_fast_classifier_packet_with_rust(
+    layout: &crate::state::layout::Layout,
     mut packet: crate::impact::packet::ImpactPacket,
+    rust: bool,
 ) -> miette::Result<crate::impact::packet::ImpactPacket> {
     let live = crate::git::status::collect_changed_files_for_filter(layout)?;
     let mut changes: Vec<crate::impact::packet::ChangedFile> = live
         .into_iter()
-        .filter(|c| is_material_or_cheap_verify_path(&c.path))
+        .filter(|c| is_material_or_cheap_verify_path(&c.path, rust))
         .map(file_change_to_changed_file)
         .collect();
     changes.sort_by(|a, b| a.path.cmp(&b.path));
@@ -866,8 +886,18 @@ fn file_change_to_changed_file(
     }
 }
 
-fn is_material_or_cheap_verify_path(path: &std::path::Path) -> bool {
-    is_material_verify_path(path) || crate::verify::plan::is_non_code_cheap_path(path)
+fn is_material_or_cheap_verify_path(path: &std::path::Path, rust: bool) -> bool {
+    is_material_for_profile(path, rust) || crate::verify::plan::is_non_code_cheap_path(path)
+}
+
+/// 0549 D8 applies where the embedded lookup runs (Rust profile); other
+/// profiles keep the legacy allowlist.
+fn is_material_for_profile(path: &std::path::Path, rust: bool) -> bool {
+    if rust {
+        is_material_verify_path(path)
+    } else {
+        is_legacy_material_verify_path(path)
+    }
 }
 
 /// Live overlay + classifier for `--scope fast` dirty trees. Shared by Some-packet
@@ -883,15 +913,30 @@ fn build_fast_scoped_from_overlay_or_fail_closed(
     conn: Option<&rusqlite::Connection>,
     auto_index: bool,
     allow_full_fallback: bool,
+    rust_crates: Option<crate::verify::plan::RustCrates>,
 ) -> crate::verify::plan::VerificationPlan {
     let base = snapshot.cloned().unwrap_or_default();
-    let overlaid = match overlay_fast_classifier_packet(layout, base) {
+    let overlaid = match overlay_fast_classifier_packet_with_rust(
+        layout,
+        base,
+        rust_crates.is_some_and(crate::verify::plan::RustCrates::is_strict),
+    ) {
         Ok(packet) => packet,
         Err(err) => {
             warn!("fast-scope live overlay failed: {err}");
+            // Unknown alone does not reject a successfully observed cheap-only
+            // packet. When the live paths are unavailable, though, a stale
+            // cheap snapshot cannot prove that strict material is untouched.
+            // Keep status-lock / unreadable-Git failures closed before either
+            // the saved-packet route or an authorized full fallback.
+            if let Some(crate::verify::plan::RustCrates::Unknown(class)) = rust_crates {
+                return crate::verify::plan::refuse_plan_for_trigger(&format!(
+                    "Rust detection inconclusive: {class}"
+                ));
+            }
             match snapshot {
                 Some(packet) => {
-                    return crate::verify::plan::build_plan_scoped_with_options(
+                    return crate::verify::plan::build_plan_scoped_with_rust_crates(
                         packet,
                         rules,
                         predicted,
@@ -902,6 +947,7 @@ fn build_fast_scoped_from_overlay_or_fail_closed(
                         layout,
                         auto_index,
                         allow_full_fallback,
+                        rust_crates,
                     );
                 }
                 None => {
@@ -929,7 +975,7 @@ fn build_fast_scoped_from_overlay_or_fail_closed(
             }
         }
     };
-    crate::verify::plan::build_plan_scoped_with_options(
+    crate::verify::plan::build_plan_scoped_with_rust_crates(
         &overlaid,
         rules,
         predicted,
@@ -940,6 +986,7 @@ fn build_fast_scoped_from_overlay_or_fail_closed(
         layout,
         auto_index,
         allow_full_fallback,
+        rust_crates,
     )
 }
 
@@ -952,34 +999,88 @@ enum WorkingTreeMaterial {
     Unavailable,
 }
 
-fn classify_working_tree_material(repo_root: &std::path::Path) -> WorkingTreeMaterial {
+fn classify_working_tree_material(
+    repo_root: &std::path::Path,
+    detect_nested: bool,
+) -> (WorkingTreeMaterial, Option<crate::verify::plan::RustCrates>) {
     let Ok(repo) = crate::git::repo::open_repo(repo_root) else {
-        return WorkingTreeMaterial::Unavailable;
+        return (WorkingTreeMaterial::Unavailable, None);
     };
     let Ok(changes) = crate::git::status::get_repo_status(&repo) else {
-        return WorkingTreeMaterial::Unavailable;
+        return if detect_nested {
+            (
+                WorkingTreeMaterial::Dirty,
+                Some(crate::verify::plan::RustCrates::Unknown("unreadable")),
+            )
+        } else {
+            (WorkingTreeMaterial::Unavailable, None)
+        };
     };
-    if changes.iter().any(|c| is_material_verify_path(&c.path)) {
-        WorkingTreeMaterial::Dirty
+    classify_material_changes(
+        repo_root,
+        &changes,
+        detect_nested,
+        crate::verify::plan::repo_has_rust_crates,
+    )
+}
+
+/// The only discovery trigger. A missing memo means NotNeeded, not a request
+/// for a later planning stage to walk. The injected FnOnce also makes the
+/// at-most-once rule observable without global counters or environment state.
+///
+/// A dirty path whose strict and legacy materiality differ always triggers
+/// discovery: without it, a `.txt` template would read as a clean tree. When
+/// there is no root `Cargo.toml`, a dirty **cheap-set** path (docs, README,
+/// LICENSE, packaging) triggers it too: that is the only class that can
+/// otherwise fall into the cheap plan and return a zero-step green for
+/// referenced material (0549 DoD-2). A repo with a root manifest still never
+/// walks on a docs-only edit, and a non-Rust repo is not walked for ordinary
+/// source changes.
+fn classify_material_changes(
+    repo_root: &std::path::Path,
+    changes: &[crate::git::FileChange],
+    detect_rust: bool,
+    detect: impl FnOnce(&std::path::Path) -> crate::verify::plan::RustCrates,
+) -> (WorkingTreeMaterial, Option<crate::verify::plan::RustCrates>) {
+    let cheap_without_root = !repo_root.join("Cargo.toml").is_file()
+        && changes
+            .iter()
+            .any(|change| crate::verify::plan::is_non_code_cheap_path(&change.path));
+    let rust = if detect_rust
+        && (cheap_without_root
+            || changes.iter().any(|change| {
+                is_material_verify_path(&change.path)
+                    != is_legacy_material_verify_path(&change.path)
+            })) {
+        Some(detect(repo_root))
     } else {
-        WorkingTreeMaterial::Clean
+        None
+    };
+    if changes.iter().any(|change| {
+        is_material_for_profile(
+            &change.path,
+            rust.is_some_and(crate::verify::plan::RustCrates::is_strict),
+        )
+    }) {
+        (WorkingTreeMaterial::Dirty, rust)
+    } else {
+        (WorkingTreeMaterial::Clean, rust)
     }
 }
 
 /// True when the working tree has **material** changes that verify should not
 /// ignore when there is no saved impact packet (0135 final codex P1).
 ///
-/// Material = source-like extensions or known shared-infra basenames. Ignores
-/// `.ledgerful/**` (also default ignore) and PATH/test fixtures such as a
-/// root `cargo.bat` used by empty-repo integration tests.
+/// Material = any changed path except an explicit exemption list (0549 D8,
+/// overturning the 0321 extension allowlist so a dirty `.txt` template or
+/// `.csv` fixture is not mistaken for a clean tree): `.ledgerful/**`,
+/// PATH/test shims such as a root `cargo.bat`, and `.git/`, `target/`,
+/// `node_modules/` trees.
 ///
 /// On git discovery/status failure, returns false so clean EmptyChanges still
 /// works in non-git fixtures (Unavailable ≠ Dirty).
-fn working_tree_has_material_changes(repo_root: &std::path::Path) -> bool {
-    matches!(
-        classify_working_tree_material(repo_root),
-        WorkingTreeMaterial::Dirty
-    )
+fn working_tree_has_material_changes(material: WorkingTreeMaterial) -> bool {
+    matches!(material, WorkingTreeMaterial::Dirty)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -990,10 +1091,9 @@ fn emit_verify_dry_run_json(
     refused: bool,
     matched_steps: Option<usize>,
     dataset_keys: Option<usize>,
-    repo_root: &std::path::Path,
+    material: WorkingTreeMaterial,
     prediction_gate: bool,
 ) -> Result<()> {
-    let material = classify_working_tree_material(repo_root);
     let git_available = !matches!(material, WorkingTreeMaterial::Unavailable);
     let clean_tree = match material {
         WorkingTreeMaterial::Clean => Some(true),
@@ -1054,9 +1154,6 @@ fn emit_verify_dry_run_json(
 fn is_material_verify_path(path: &std::path::Path) -> bool {
     let norm = path.to_string_lossy().replace('\\', "/");
     let norm = norm.trim_start_matches("./");
-    if norm.starts_with(".ledgerful/") || norm == ".ledgerful" {
-        return false;
-    }
     // PATH/test shim used by empty-repo verify tests — not product source.
     if norm.eq_ignore_ascii_case("cargo.bat")
         || norm.eq_ignore_ascii_case("cargo.cmd")
@@ -1064,78 +1161,22 @@ fn is_material_verify_path(path: &std::path::Path) -> bool {
     {
         return false;
     }
-    // 0203-D: packaging templates (including `.rb`) are material so a
-    // template-only diff is not LiveEmpty.
-    if norm == "packaging" || norm.starts_with("packaging/") {
-        return true;
+    // 0549 D8: VCS and build-output trees are never material.
+    const EXEMPT_DIRS: &[&str] = &[".ledgerful", ".git", "target", "node_modules"];
+    if norm.split('/').next().is_some_and(|first| {
+        EXEMPT_DIRS
+            .iter()
+            .any(|exempt| crate::verify::plan::path_component_matches(first, exempt))
+    }) {
+        return false;
     }
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    // Shared-infra basenames that already force full under --scope fast when
-    // present in a packet (see plan::touches_shared_infra).
-    const INFRA: &[&str] = &[
-        "cargo.toml",
-        "cargo.lock",
-        "package.json",
-        "package-lock.json",
-        "pnpm-lock.yaml",
-        "yarn.lock",
-        "go.mod",
-        "go.sum",
-        "pyproject.toml",
-        "requirements.txt",
-        "poetry.lock",
-        "dockerfile",
-        "docker-compose.yml",
-        "docker-compose.yaml",
-        "makefile",
-    ];
-    if INFRA.iter().any(|b| name == *b) {
-        return true;
-    }
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    matches!(
-        ext.as_str(),
-        "rs" | "ts"
-            | "tsx"
-            | "js"
-            | "jsx"
-            | "mjs"
-            | "cjs"
-            | "py"
-            | "go"
-            | "java"
-            | "kt"
-            | "kts"
-            // D2 C/C++ (aligned with analysis/semantic index support)
-            | "c"
-            | "h"
-            | "cpp"
-            | "cc"
-            | "cxx"
-            | "hpp"
-            | "hh"
-            | "hxx"
-            | "h++"
-            | "toml"
-            | "yaml"
-            | "yml"
-            | "json"
-            | "md"
-            | "css"
-            | "scss"
-            | "html"
-            | "sql"
-            | "sh"
-            | "ps1"
-    )
+    true
+}
+
+/// Pre-0549 extension allowlist, kept for repositories where the embedded
+/// lookup does not run (no Rust profile; non-Rust embedding is 0570).
+fn is_legacy_material_verify_path(path: &std::path::Path) -> bool {
+    crate::verify::plan::is_legacy_material_path(path)
 }
 
 fn manual_step(command: String, timeout_secs: u64) -> VerificationStep {
@@ -1173,7 +1214,20 @@ mod material_verify_path_tests {
         )));
         assert!(!is_material_verify_path(Path::new(".ledgerful/state/x")));
         assert!(!is_material_verify_path(Path::new("cargo.bat")));
-        assert!(!is_material_verify_path(Path::new("notes.txt")));
+        assert!(!is_material_verify_path(Path::new("target/debug/x.rs")));
+        assert!(!is_material_verify_path(Path::new("node_modules/a/b.js")));
+        assert!(!is_material_verify_path(Path::new(".git/HEAD")));
+    }
+
+    #[test]
+    fn non_source_templates_and_data_are_material_0549() {
+        // 0549 D8: the 0321 `notes.txt` lock is deliberately overturned; an
+        // embedded template or fixture must not read as a clean tree.
+        assert!(is_material_verify_path(Path::new("notes.txt")));
+        assert!(is_material_verify_path(Path::new("templates/message.txt")));
+        assert!(is_material_verify_path(Path::new("data/x.csv")));
+        assert!(is_material_verify_path(Path::new("assets/logo.png")));
+        assert!(is_material_verify_path(Path::new("tests/fixtures/a.bin")));
     }
 
     #[test]
@@ -1245,6 +1299,104 @@ mod overlay_fast_tests {
             }],
             ..ImpactPacket::default()
         }
+    }
+
+    fn unknown_live_plan(
+        root: &Path,
+        snapshot: Option<&ImpactPacket>,
+        profile: &crate::platform::repository::RepositoryProfile,
+        allow_full: bool,
+    ) -> crate::verify::plan::VerificationPlan {
+        let layout = Layout::new(camino::Utf8Path::from_path(root).unwrap());
+        super::build_fast_scoped_from_overlay_or_fail_closed(
+            snapshot,
+            &layout,
+            &crate::policy::rules::Rules::default(),
+            &[],
+            &crate::config::model::VerifyConfig::default(),
+            profile,
+            None,
+            false,
+            allow_full,
+            Some(crate::verify::plan::RustCrates::Unknown("unreadable")),
+        )
+    }
+
+    #[rstest::rstest]
+    #[case("docs/example.txt", false)]
+    #[case("LICENSE", false)]
+    #[case("notes.txt", true)]
+    fn unknown_detection_uses_actual_live_path_cheapness(
+        #[case] path: &str,
+        #[case] refused: bool,
+    ) {
+        let dir = tempdir().unwrap();
+        init_repo_with_commit(dir.path());
+        let changed = dir.path().join(path);
+        fs::create_dir_all(changed.parent().unwrap()).unwrap();
+        fs::write(changed, "changed").unwrap();
+        let snapshot = snapshot_with_src();
+        let plan = unknown_live_plan(
+            dir.path(),
+            Some(&snapshot),
+            &crate::platform::repository::RepositoryProfile::default(),
+            false,
+        );
+        assert_eq!(plan.refused, refused, "{:?}", plan.fallback_reason);
+        assert!(plan.steps.is_empty());
+        if refused {
+            assert!(
+                plan.fallback_reason
+                    .as_deref()
+                    .unwrap()
+                    .contains("Rust detection inconclusive: unreadable")
+            );
+        } else {
+            assert_eq!(plan.fallback_reason, None);
+        }
+    }
+
+    #[test]
+    fn unknown_detection_with_failed_overlay_does_not_trust_cheap_snapshot() {
+        let dir = tempdir().unwrap(); // intentionally not a Git repository
+        let snapshot = ImpactPacket {
+            changes: vec![ChangedFile {
+                path: "README.md".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let plan = unknown_live_plan(
+            dir.path(),
+            Some(&snapshot),
+            &crate::platform::repository::RepositoryProfile::default(),
+            true,
+        );
+        assert!(plan.refused);
+        assert!(plan.steps.is_empty());
+        assert!(
+            plan.fallback_reason
+                .as_deref()
+                .unwrap()
+                .contains("Rust detection inconclusive: unreadable")
+        );
+    }
+
+    #[test]
+    fn unknown_detection_cheap_live_path_keeps_broken_root_manifest_guard() {
+        let dir = tempdir().unwrap();
+        init_repo_with_commit(dir.path());
+        fs::write(dir.path().join("Cargo.toml"), "not valid toml {{{").unwrap();
+        fs::write(dir.path().join("LICENSE"), "changed").unwrap();
+        let profile = crate::platform::repository::detect_repository(dir.path());
+        let plan = unknown_live_plan(dir.path(), None, &profile, false);
+        assert!(plan.refused);
+        assert!(
+            plan.fallback_reason
+                .as_deref()
+                .unwrap()
+                .contains("malformed Cargo.toml")
+        );
     }
 
     #[test]
@@ -1435,9 +1587,17 @@ mod execute_verify_json_gate_tests {
         let gate = &prod[window_start..predict_at];
         assert!(
             gate.contains("dry_run")
-                && gate.contains("working_tree_has_material_changes")
-                && gate.contains("as_std_path()"),
-            "clean dry-run must gate predict with dry_run + as_std_path material check; nearby: {gate:?}"
+                && gate.contains("working_tree_has_material_changes(working_material)"),
+            "clean dry-run must gate predict with dry_run + the material snapshot; nearby: {gate:?}"
+        );
+        // 0549 D8 hoists ONE material snapshot and feeds it to prediction,
+        // overlay, and JSON, so the gate argument is no longer the raw
+        // `layout.root.as_std_path()` this test used to look for. Assert the
+        // equivalent fact instead: that snapshot is still classified from the
+        // real repo root path, not from an abstract flag.
+        assert!(
+            prod.contains("classify_working_tree_material(layout.root.as_std_path(), detect_rust)"),
+            "material snapshot must be classified from the real repo root path"
         );
         let extract_at = prod
             .find("probability::extract_dataset")
@@ -1446,5 +1606,129 @@ mod execute_verify_json_gate_tests {
             predict_at < extract_at,
             "extract_dataset must remain after the predict arm"
         );
+    }
+}
+
+#[cfg(test)]
+mod rust_detection_trigger_tests {
+    use super::*;
+    use crate::verify::plan::RustCrates;
+    use std::cell::Cell;
+    use std::path::{Path, PathBuf};
+
+    fn change(path: &str) -> crate::git::FileChange {
+        crate::git::FileChange {
+            path: PathBuf::from(path),
+            change_type: crate::git::ChangeType::Modified,
+            is_staged: false,
+        }
+    }
+
+    #[rstest::rstest]
+    #[case(&[], true)]
+    #[case(&["README.md"], true)]
+    #[case(&["docs/guide.md", "data/a.json", "data/b.yaml", "data/c.sql"], true)]
+    #[case(&["message.txt"], false)]
+    fn not_needed_never_calls_discovery(#[case] paths: &[&str], #[case] enabled: bool) {
+        let tmp = tempfile::tempdir().unwrap();
+        // Even root presence cannot bypass the single materiality trigger.
+        std::fs::write(tmp.path().join("Cargo.toml"), "[package]\nname=\"fx\"\n").unwrap();
+        let changes: Vec<_> = paths.iter().map(|p| change(p)).collect();
+        let (_, memo) = classify_material_changes(tmp.path(), &changes, enabled, |_| {
+            panic!("NotNeeded must not discover Rust");
+        });
+        assert_eq!(memo, None);
+    }
+
+    #[rstest::rstest]
+    #[case("Target/x.rs")]
+    #[case("Node_Modules/a.js")]
+    #[case(".LEDGERFUL/state/x.db")]
+    #[case(".GIT/HEAD")]
+    fn leading_exempt_components_share_platform_case_policy(#[case] path: &str) {
+        assert_eq!(is_material_verify_path(Path::new(path)), !cfg!(windows));
+        assert!(is_material_verify_path(Path::new("targeted/x.rs")));
+    }
+
+    #[test]
+    fn multiple_strict_paths_compute_one_unknown_memo_and_stay_dirty() {
+        let calls = Cell::new(0);
+        let (material, memo) = classify_material_changes(
+            Path::new("unused"),
+            &[change("a.txt"), change("b.csv")],
+            true,
+            |_| {
+                calls.set(calls.get() + 1);
+                RustCrates::Unknown("unreadable")
+            },
+        );
+        assert_eq!(calls.get(), 1);
+        assert_eq!(material, WorkingTreeMaterial::Dirty);
+        assert_eq!(memo, Some(RustCrates::Unknown("unreadable")));
+    }
+
+    #[test]
+    fn absent_rust_keeps_non_source_legacy_clean() {
+        let (material, memo) =
+            classify_material_changes(Path::new("unused"), &[change("notes.txt")], true, |_| {
+                RustCrates::Absent
+            });
+        assert_eq!(material, WorkingTreeMaterial::Clean);
+        assert_eq!(memo, Some(RustCrates::Absent));
+    }
+
+    #[test]
+    fn no_root_manifest_triggers_detection_for_a_docs_only_change() {
+        // 0549 DoD-2: a nested-only repo must not return a zero-step green for
+        // a referenced document. With no root manifest the root-based profile
+        // cannot rule out crates below the root, so discovery must run even
+        // though a `.md` edit matches strict *and* legacy materiality.
+        let tmp = tempfile::tempdir().unwrap();
+        let calls = Cell::new(0);
+        let (material, memo) =
+            classify_material_changes(tmp.path(), &[change("docs/contract.md")], true, |_| {
+                calls.set(calls.get() + 1);
+                RustCrates::Present
+            });
+        assert_eq!(calls.get(), 1);
+        assert_eq!(material, WorkingTreeMaterial::Dirty);
+        assert_eq!(memo, Some(RustCrates::Present));
+    }
+
+    #[test]
+    fn root_manifest_keeps_a_docs_only_change_from_walking() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "[package]\nname=\"fx\"\n").unwrap();
+        let (material, memo) =
+            classify_material_changes(tmp.path(), &[change("docs/contract.md")], true, |_| {
+                panic!("a root manifest plus a docs-only edit must not walk");
+            });
+        assert_eq!(material, WorkingTreeMaterial::Dirty);
+        assert_eq!(memo, None);
+    }
+
+    #[test]
+    fn no_root_manifest_still_respects_detect_rust_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (material, memo) =
+            classify_material_changes(tmp.path(), &[change("docs/contract.md")], false, |_| {
+                panic!("detect_rust=false must not walk")
+            });
+        assert_eq!(material, WorkingTreeMaterial::Dirty);
+        assert_eq!(memo, None);
+    }
+
+    #[test]
+    fn no_root_manifest_does_not_walk_for_a_non_cheap_legacy_only_change() {
+        // `notes/guide.md` is legacy material (`.md`) but not cheap-set, so it
+        // reaches the mapping/refusal route instead of the cheap plan. Walking
+        // here would only add cost and could over-refuse a non-Rust repo.
+        let tmp = tempfile::tempdir().unwrap();
+        let (material, memo) =
+            classify_material_changes(tmp.path(), &[change("notes/guide.md")], true, |_| {
+                panic!("a non-cheap legacy-only change must not walk")
+            });
+        assert_eq!(material, WorkingTreeMaterial::Dirty);
+        assert_eq!(memo, None);
     }
 }

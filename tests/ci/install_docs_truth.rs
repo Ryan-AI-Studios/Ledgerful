@@ -289,6 +289,139 @@ fn release_and_smoke_jobs_set_rustup_toolchain_before_steps() {
     assert_job_level_rustup_toolchain(smoke, "smoke.yml", "install-smoke");
 }
 
+/// 0546: the Windows release exe must not import the MSVC runtime, because a clean
+/// image (winget validation) lacks the VC++ Redistributable.
+const WINDOWS_STATIC_CRT_RUSTFLAGS: &str = "-C target-feature=+crt-static";
+const JOB_RUSTFLAGS_LINE: &str = "      RUSTFLAGS: ${{ matrix.rustflags }}";
+const WINDOWS_CRT_GUARD_STEP: &str = "      - name: Assert Windows exe imports no MSVC runtime";
+
+fn matrix_entry_lines<'a>(body: &[&'a str], asset: &str) -> Vec<&'a str> {
+    let asset_line = format!("            asset: {asset}");
+    let Some(asset_at) = body.iter().position(|line| *line == asset_line) else {
+        return Vec::new();
+    };
+    let start = body[..asset_at]
+        .iter()
+        .rposition(|line| line.starts_with("          - "))
+        .unwrap_or(0);
+    let end = body[asset_at..]
+        .iter()
+        .position(|line| line.starts_with("          - ") || !line.starts_with("   "))
+        .map_or(body.len(), |off| asset_at + off);
+    body[start..end].to_vec()
+}
+
+#[test]
+fn release_windows_leg_builds_with_static_crt_and_guards_imports() {
+    let release = include_str!("../../.github/workflows/release.yml");
+    let body = job_lines(release, "build");
+    assert!(!body.is_empty(), "release.yml is missing job build");
+
+    let windows = matrix_entry_lines(&body, "ledgerful-x86_64-pc-windows-msvc");
+    let want_field = format!("            rustflags: \"{WINDOWS_STATIC_CRT_RUSTFLAGS}\"");
+    assert!(
+        windows.contains(&want_field.as_str()),
+        "Windows matrix entry must set {want_field}"
+    );
+    for asset in [
+        "ledgerful-x86_64-unknown-linux-gnu",
+        "ledgerful-x86_64-apple-darwin",
+        "ledgerful-aarch64-apple-darwin",
+    ] {
+        let entry = matrix_entry_lines(&body, asset);
+        assert!(
+            !entry.is_empty(),
+            "release.yml is missing matrix entry {asset}"
+        );
+        assert!(
+            !entry.iter().any(|line| line.contains("crt-static")),
+            "{asset} must not get the Windows static CRT flag"
+        );
+    }
+
+    // The `RUSTFLAGS: ${{ matrix.rustflags }}` literal is deliberate; adding `|| ''` as a safety
+    // net for an undefined matrix key would need this assertion updated with it.
+    let env_lines = contiguous_job_env_lines(release, "build");
+    assert!(
+        env_lines.contains(&JOB_RUSTFLAGS_LINE),
+        "build job env must set RUSTFLAGS at job level so rust-cache keys on it"
+    );
+    assert!(
+        env_lines.contains(&JOB_RUSTUP_TOOLCHAIN_LINE),
+        "build job env must keep RUSTUP_TOOLCHAIN: stable contiguous with RUSTFLAGS"
+    );
+
+    let package_at = body
+        .iter()
+        .position(|line| *line == "      - name: Package Windows");
+    let guard_at = body.iter().position(|line| *line == WINDOWS_CRT_GUARD_STEP);
+    let attest_at = body
+        .iter()
+        .position(|line| *line == "      - name: Attest build provenance");
+    match (package_at, guard_at, attest_at) {
+        (Some(package), Some(guard), Some(attest)) => assert!(
+            package < guard && guard < attest,
+            "the CRT import guard must run after Package Windows and before attestation and upload"
+        ),
+        _ => panic!(
+            "release.yml build job is missing Package Windows, the CRT guard, or attestation"
+        ),
+    }
+
+    // The guard body must stay load-bearing: a renamed-but-gutted step must fail this test.
+    let guard = step_lines(&body, WINDOWS_CRT_GUARD_STEP);
+    for needle in [
+        "        if: matrix.archive == 'zip'",
+        "        shell: pwsh",
+        "llvm-objdump",
+        "throw \"No imports parsed",
+        "throw \"Windows exe still imports the MSVC runtime",
+    ] {
+        assert!(
+            guard.iter().any(|line| line.contains(needle)),
+            "the CRT guard step lost `{needle}`"
+        );
+    }
+    let banned_line = guard
+        .iter()
+        .find(|line| line.contains("$banned ="))
+        .copied()
+        .unwrap_or_default();
+    for name in [
+        "VCRUNTIME140",
+        "MSVCP140",
+        "CONCRT140",
+        "VCOMP140",
+        "VCCORLIB140",
+        "ucrtbase",
+        "api-ms-win-crt-",
+    ] {
+        assert!(
+            banned_line.contains(name),
+            "the CRT guard no longer bans {name}: {banned_line}"
+        );
+    }
+
+    // The installed tools are not shipped, so they must not inherit the static CRT flag.
+    let install = step_lines(&body, "      - name: Install cargo-auditable + cargo-audit");
+    assert!(
+        install.contains(&"          RUSTFLAGS: \"\""),
+        "the cargo install step must reset the job-level RUSTFLAGS"
+    );
+}
+
+/// Lines of the workflow step whose `- name:` line equals `header`, up to the next step.
+fn step_lines<'a>(body: &[&'a str], header: &str) -> Vec<&'a str> {
+    let Some(start) = body.iter().position(|line| *line == header) else {
+        return Vec::new();
+    };
+    let end = body[start + 1..]
+        .iter()
+        .position(|line| line.starts_with("      - "))
+        .map_or(body.len(), |off| start + 1 + off);
+    body[start..end].to_vec()
+}
+
 #[test]
 fn strategy_nested_rustup_toolchain_is_outside_the_job_env_map() {
     let source = [

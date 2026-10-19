@@ -1105,26 +1105,22 @@ mod tests {
     }
 
     fn fixture_tar_gz(stem: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().join(stem);
-        fs::create_dir_all(&root).unwrap();
+        // In process, entries in the order given: system `tar` archives in
+        // readdir order, which decides whether a decoy precedes the target.
+        let mut builder = tar::Builder::new(Vec::new());
         for (rel, bytes) in files {
-            let path = root.join(rel);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).unwrap();
-            }
-            fs::write(path, bytes).unwrap();
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o644);
+            header.set_entry_type(tar::EntryType::Regular);
+            builder
+                .append_data(&mut header, format!("{stem}/{rel}"), *bytes)
+                .expect("append tar entry");
         }
-        let archive = tmp.path().join("archive.tar.gz");
-        let status = Command::new("tar")
-            .arg("-czf")
-            .arg(&archive)
-            .arg(stem)
-            .current_dir(tmp.path())
-            .status()
-            .expect("spawn tar");
-        assert!(status.success(), "tar -czf fixture failed");
-        fs::read(&archive).expect("read fixture archive")
+        let raw = builder.into_inner().expect("finish tar");
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&raw).expect("gzip write");
+        encoder.finish().expect("gzip finish")
     }
 
     fn fixture_linux_release_tar_gz(payload: &[u8]) -> Vec<u8> {

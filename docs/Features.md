@@ -145,7 +145,7 @@ Move beyond blind test runs with intelligent, data-driven verification.
 *   **Predictive CI Gate Analysis**: Predict Continuous Integration failures locally before pushing, leveraging semantic similarity to historical failures.
 *   **Probabilistic Reordering**: A Bayesian engine reorders local verification steps descending by failure probability when sufficient history exists, minimizing the time to first failure (fmt stays before clippy; scoped nextest shares history via a stable step key).
 *   **Config provenance (0323 / 0342 / 0362):** `config verify` attributes file/env/default via `origin`/`location` (no secret values). Human unscoped names the four-section health catalog (Backend, Semantic, Ask, Gate) and clap next (`--verbose`, `config view --section`). Config-backed semantic concurrency rows emit origin; Auto/derived rows omit it; Inherited keeps `source: inherited` with file origin. Empty/whitespace TOML `base_url` origin agrees with `resolve_string` (no trim): whitespace is file, empty after env/dotenv miss is default and is omitted without `--verbose`. `config schema` names the source file and distinguishes declared-optional from unknown requiredness. Empty `.env.example` `KEY=` stays not required (0216). Human `config diff` prints reference paths. `config view` stays a redacted Config dump; unscoped human Next names `--section`/`--key` and `config verify --verbose`.
-*   **Scoped Test Selection**: `verify --scope fast` uses the `test_mapping` index to run only the tests covering changed files via nextest filtersets. Quoted `-E '…'` and `-E "…"` filtersets (`test()` / `+`) prepare as Direct argv; unquoted `\` skips the next character (POSIX); unescaped unquoted metas still refuse. When mapping cannot scope, it **refuses** (exit ≠ 0) rather than silently running the full suite; shared infrastructure still falls back to full; operators can opt in with `--allow-full-fallback`. The pre-push hook uses `--scope fast` (~33s vs ~6m20s for full).
+*   **Scoped Test Selection**: `verify --scope fast` uses the `test_mapping` index to run only the tests covering changed files via nextest filtersets. Quoted `-E '…'` and `-E "…"` filtersets (`test()` / `+`) prepare as Direct argv; unquoted `\` skips the next character (POSIX); unescaped unquoted metas still refuse. Changed non-code files (documents, templates, fixtures) that Rust tests embed via `include_str!` / `include_bytes!` / `include!` or read by literal path run the embedding tests too (bounded lexical lookup, 0549; non-Rust embedding is not covered). When mapping cannot scope, it **refuses** (exit ≠ 0) rather than silently running the full suite; shared infrastructure still falls back to full; operators can opt in with `--allow-full-fallback`. The pre-push hook uses `--scope fast` (~33s vs ~6m20s for full).
 *   **Transaction Provenance Binding**: Bind a verification run to a ledger transaction via `verify --tx-id <id>`, or let auto-binding attach it when running inside a `commit-msg` hook (detected via `COMMIT_EDITMSG` + `.git/index.lock`). Once bound, `/api/ledger/:txId` surfaces real `tests_run` and `flakes` counts for that transaction — not zeros.
 *   **Failure Explanation Engine**: Generates concise, technical rationales for predicted failures using a local LLM backend.
 *   **Dynamic Verification Plans**: Deterministic plans generated from a blend of explicit configuration (`mode = "explicit"`), stack-aware automatic policy (`mode = "auto"`), structural impact, and historical outcomes.
@@ -202,3 +202,49 @@ Built for the modern developer's environment.
 | Optional | SCIP `--auto-scip` (rust-analyzer). Coverage / bridge / `init --operator-pack`. Bare `init` is not the operator pack. Team sync default-off. |
 | Hidden | `bridge`, `search-trigrams`, `internal` off default `--help`. `services` / `deploy` / `observability` callable and gated. `surfaces` is the catalog. |
 | Features | Default source install: no `embed-spa`, no `daemon`, no `usage-metrics`. Release `--all-features` embeds the SPA and includes LSP. |
+
+
+Fast verification of embedded Rust material (0549) detects nested Rust
+repositories without a root `Cargo.toml`, but refuses referenced material there.
+Add a root workspace manifest or use a checkout rooted at the crate to enable
+automatic verification. `-C` alone changes the execution directory but retains
+the Git work root. Repository profiles remain root-based.
+The pinned scan includes hidden/ignored project sources and excludes vendored
+sources and build/state directories. Generated `OUT_DIR` includes are separate
+from unresolved repository reads. Oversized token-free sources are annotated and
+skipped after a bounded streaming inspection (8 MiB maximum). Scan bounds refuse
+non-cheap material; cheap docs keep their previous behavior with an explicit
+"embedded lookup bounded: not verified" annotation. Unreadable/unlexable sources
+refuse. File-consuming macros with literal paths affect matching candidates;
+literal-less consumers remain repo-wide uncertainty. Unreferenced legacy-material
+paths refuse even alongside mapped code. Lookup-derived stems are function names. Production includers without inline
+tests use fresh per-includer test_mapping rows (D3(d)); those mapping-derived
+stems retain the file-level-stem limitation (0549-P3-2, owner 0550); `__slow` assurance wording is
+owned by 0555. Dependency annotations appear in verbose plan step descriptions;
+dry-run JSON retains its existing fields. Helper-mediated reads remain a known
+limitation: "no direct include/read found by the lexical lookup" does not prove
+that no test depends on an unreferenced file. Unreferenced non-cheap material in
+the engine checkout refuses.
+
+Rust detection for fast verification is memoized and runs when a dirty path
+differs between strict and legacy materiality, or when the repository has no
+root Cargo.toml and a cheap-set path (docs, README, LICENSE, packaging) is dirty
+(the only class that can otherwise return a zero-step green). In a repository
+with a root manifest, docs-only edits do not trigger a discovery walk, and a
+non-Rust repo is not walked for ordinary source changes. Full scope and explicit
+commands do no discovery.
+An inconclusive result keeps strict materiality and refuses paths that need
+it; cheap-only and empty plans retain their existing behavior. A malformed or
+unreadable root manifest refuses a non-empty fast plan, including cheap docs.
+A root package.json with a valid nested Cargo.toml takes strict materiality
+when that trigger applies. Directory pruning is depth-agnostic: target,
+vendor, deps_src, third_party, node_modules, .git, .ledgerful, .venv and venv
+are excluded at any depth (case-insensitively on Windows).
+
+Non-literal production reads without inline tests are an accepted limitation:
+a production loader can read a changed template dynamically while fast
+verification omits its integration test. Helper-mediated literal reads have
+the same limitation (0549-P3-5, owner 0550); the owner must re-decide this
+tradeoff. A zero-step plan has no step description to annotate, and dry-run
+JSON adds no annotation field. Generated OUT_DIR runtime reads, like includes,
+do not create unresolved repository reads.

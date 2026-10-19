@@ -427,6 +427,16 @@ without special flags and tier selection lives entirely in `nextest.toml`.
 existing `__slow` suffix. If a slow test is renamed and the suffix is dropped,
 it silently re-enters the fast tier and breaks the `<60s` PR target.
 
+### Test hermeticity
+
+A test must pass on every host that runs the lane, including WSL. Do not rely
+on loopback ports 1, 2 or 9 refusing quickly (WSL mirrored networking hangs
+them until the client timeout); bind `127.0.0.1:0`, drop the listener and use
+that port. Do not rely on `$HOME` or `USERPROFILE` config: a user template
+under `~/.ledgerful` is read when a project has no config, so pin
+`LEDGERFUL_DEFAULT_CONFIG` to a missing path. Build archive fixtures in process
+instead of shelling out to `tar`, whose entry order follows the file system.
+
 ### Running tiers locally
 
 ```bash

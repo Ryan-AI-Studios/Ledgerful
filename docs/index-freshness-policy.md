@@ -109,7 +109,7 @@ Additive `surfaces[]` (0313) reports derived-table provenance. `mapping` /
 **not** use that HEAD: it classifies stored `semantic_file_hash` and
 `snippet_embedding` paths against the current semantic walk, and compares each
 stored `semantic_file_hash` with the current file content (`contentHash`, 0536).
-A file edited after indexing is `stale`. The search/Ask `isStale` overlay does not walk the tree or hash content (0537): it stats the stored paths, so it is stale only when a stored file is gone. A stored file that still exists but fell out of the walk set (newly gitignored) is visible only here and in change-context.
+A file edited after indexing is `stale`, unless the file fails to chunk on the next `index --semantic`: that run clears its stored hash and snippets (0545), so it is no longer drifted and is retried each run. The search/Ask `isStale` overlay does not walk the tree or hash content (0537): it stats the stored paths, so it is stale only when a stored file is gone. A stored file that still exists but fell out of the walk set (newly gitignored) is visible only here and in change-context.
 It does **not** run the lexical content-hash walk. `surfaces.files` reuses
 the Full `--check` byte walk. Mapping/route/embeddings lag cannot flip
 `FreshPopulated`. `--strict` exits 1 when any surface is `stale`.

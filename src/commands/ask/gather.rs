@@ -874,6 +874,13 @@ mod tests {
     use std::process::Command;
     use tempfile::tempdir;
 
+    mod env_guard {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/integration/common/env_guard.rs"
+        ));
+    }
+
     fn git(cwd: &Path, args: &[&str]) -> std::process::Output {
         Command::new("git")
             .args(args)
@@ -919,6 +926,18 @@ mod tests {
         query: &str,
         auto_scan: bool,
     ) -> GatherResult {
+        // Without a project config `load_config` reads the user template under
+        // `$HOME`; a stale one lacks `.ledgerful/**` and makes the tree read dirty.
+        // Point it at a missing file so the built-in default applies. Callers are
+        // `serial(env)`.
+        let template_dir = tempdir().expect("template tempdir");
+        let _template_pin = env_guard::TempEnv::set(
+            "LEDGERFUL_DEFAULT_CONFIG",
+            &template_dir
+                .path()
+                .join("missing-default-config.toml")
+                .to_string_lossy(),
+        );
         let root = camino::Utf8Path::from_path(dir).expect("utf8 path");
         let layout = Layout::new(root);
         layout.ensure_state_dir().expect("state dir");
@@ -1781,6 +1800,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn gather_live_tree_clean_wall_overrides_dirty_cached_packet() {
         let dir = tempdir().expect("tempdir");
         init_repo_with_commit(dir.path());
@@ -1807,6 +1827,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn gather_watch_ignored_target_dirt_is_live_clean() {
         let dir = tempdir().expect("tempdir");
         init_repo_with_commit(dir.path());
@@ -1829,6 +1850,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn gather_git_err_does_not_take_live_clean_wall() {
         let dir = tempdir().expect("tempdir");
         let gathered = gather_with_saved_packet(
@@ -1846,6 +1868,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn gather_dirty_tree_empty_snapshot_is_not_live_clean() {
         let dir = tempdir().expect("tempdir");
         init_repo_with_commit(dir.path());
@@ -1871,6 +1894,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn gather_dirty_tree_loads_cached_packet() {
         let dir = tempdir().expect("tempdir");
         init_repo_with_commit(dir.path());
