@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use super::envelope::{error_response, json_response, text_response};
+use super::envelope::{error_response, json_response, json_stdout_response, text_response};
 use super::spawn::{
     MCP_ASK_CHILD_TIMEOUT_FLAG, MCP_ASK_CHILD_TIMEOUT_SECS, MCP_TOOL_TIMEOUT_SECS,
     run_ledgerful_tool,
@@ -224,8 +224,7 @@ pub(super) fn handle_scan(_params: Value) -> Value {
         return error_response(String::from_utf8_lossy(&out.stderr));
     }
 
-    let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    text_response(&text)
+    json_stdout_response("scan", &out.stdout)
 }
 
 /// Build CLI args for MCP `search` (RT-A4: `--` before the untrusted query).
@@ -254,12 +253,12 @@ pub(super) fn handle_search(params: Value) -> Value {
         Err(e) => return error_response(&e),
     };
 
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     if !out.status.success() {
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
         return error_response(format!("Search failed: {}\n{}", stdout, stderr));
     }
-    text_response(&stdout)
+    json_stdout_response("search", &out.stdout)
 }
 
 pub(super) fn handle_ledger_search(params: Value) -> Value {
@@ -354,12 +353,12 @@ pub(super) fn handle_endpoints_changed(_params: Value) -> Value {
         Err(e) => return error_response(&e),
     };
 
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     if !out.status.success() {
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
         return error_response(format!("Endpoints failed: {}\n{}", stdout, stderr));
     }
-    text_response(&stdout)
+    json_stdout_response("endpoints_changed", &out.stdout)
 }
 
 pub(super) fn handle_security_boundaries(_params: Value) -> Value {
@@ -368,15 +367,15 @@ pub(super) fn handle_security_boundaries(_params: Value) -> Value {
         Err(e) => return error_response(&e),
     };
 
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     if !out.status.success() {
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
         return error_response(format!(
             "Security boundaries failed: {}\n{}",
             stdout, stderr
         ));
     }
-    text_response(&stdout)
+    json_stdout_response("security_boundaries", &out.stdout)
 }
 
 pub(super) fn handle_dead_code(params: Value) -> Value {

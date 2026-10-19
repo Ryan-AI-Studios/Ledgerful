@@ -44,12 +44,12 @@ pub const INVENTORY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         name: "scan",
-        description: "Assess the impact and risk of uncommitted changes in the repository. MCP scan stays a full-impact dump without paths/include_governance in v1 — use CLI or change_context for prospective.",
+        description: "Assess the impact and risk of uncommitted changes in the repository. Success text is structured JSON (scan --impact --json) after a one-line provenance frame: strip that line, then parse the rest. MCP scan stays a full-impact dump without paths/include_governance in v1 — use CLI or change_context for prospective.",
         schema_json: r#"{"type": "object", "properties": {}}"#,
     },
     ToolDescriptor {
         name: "search",
-        description: "High-precision regex and text discovery for code symbols. Returns a single JSON object (schemaVersion 1) with results[]. Refreshes the local index when stale; may take multi-seconds on large repos.",
+        description: "High-precision regex and text discovery for code symbols. Success text is structured JSON (schemaVersion 1, results[]) after a one-line provenance frame: strip that line, then parse the rest. Refreshes the local index when stale; may take multi-seconds on large repos.",
         schema_json: r#"{
             "type": "object",
             "properties": {
@@ -125,12 +125,12 @@ pub const INVENTORY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         name: "endpoints_changed",
-        description: "List API endpoints affected by current changes. Tool text is the CLI endpoints --changed --json envelope (schemaVersion 1, results[]).",
+        description: "List API endpoints affected by current changes. Success text is the structured CLI endpoints --changed --json envelope (schemaVersion 1, results[]) after a one-line provenance frame: strip that line, then parse the rest.",
         schema_json: r#"{"type": "object", "properties": {}}"#,
     },
     ToolDescriptor {
         name: "security_boundaries",
-        description: "Inspect security policy boundaries and their risk status.",
+        description: "Inspect security policy boundaries and their risk status. Success text is structured security boundaries --json after a one-line provenance frame: strip that line, then parse the rest.",
         schema_json: r#"{"type": "object", "properties": {}}"#,
     },
     ToolDescriptor {
