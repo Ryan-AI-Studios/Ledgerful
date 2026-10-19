@@ -781,13 +781,28 @@ fn repo_targets(root: &Path, rel: &str, crate_root: &str, raw: &str) -> BTreeSet
     let raw = raw.replace('\\', "/");
     let mut targets = BTreeSet::new();
     if raw.starts_with('/') || raw.as_bytes().get(1) == Some(&b':') {
-        let root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-        let root = root.to_string_lossy().replace('\\', "/");
-        let prefix = format!("{}/", root.trim_end_matches('/'));
-        if fold(&raw).starts_with(&fold(&prefix))
-            && let Some(path) = normalize_repo_path(&raw[prefix.len()..])
-        {
-            targets.insert(path);
+        // Compare against both the root as given and its canonical form. On
+        // Windows a temp root can be an 8.3 short path (CI runners use one)
+        // while `dunce::canonicalize` expands it (or vice versa); the literal
+        // in the source may use either form. Requiring an exact match against
+        // one form silently drops an in-repo absolute include.
+        let mut roots = vec![root.to_string_lossy().replace('\\', "/")];
+        if let Ok(canon) = dunce::canonicalize(root) {
+            let canon = canon.to_string_lossy().replace('\\', "/");
+            if !roots
+                .iter()
+                .any(|candidate| fold(candidate) == fold(&canon))
+            {
+                roots.push(canon);
+            }
+        }
+        for root in roots {
+            let prefix = format!("{}/", root.trim_end_matches('/'));
+            if fold(&raw).starts_with(&fold(&prefix))
+                && let Some(path) = normalize_repo_path(&raw[prefix.len()..])
+            {
+                targets.insert(path);
+            }
         }
     } else {
         for base in [parent_dir(rel), crate_root, ""] {
@@ -2045,6 +2060,41 @@ fn main() { let _ = std::fs::read_to_string(concat!(env!("OUT_DIR"), "/generated
         );
         let d = decide_for(dir.path(), &["docs/a.md"]);
         assert_eq!(d.stems, vec!["absolute".to_string()]);
+    }
+
+    #[test]
+    fn absolute_target_matches_a_non_canonical_repo_root() {
+        // CI Windows temp roots can be 8.3 short paths while `canonicalize`
+        // expands them (and a source literal may use either form). Resolve an
+        // absolute in-repo include when the root is given in a form that does
+        // not textually share a prefix with its canonical path.
+        let dir = tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir_all(real.join("docs")).unwrap();
+        std::fs::write(real.join("docs/a.md"), "v1").unwrap();
+        let root_arg = {
+            #[cfg(unix)]
+            {
+                let link = dir.path().join("link");
+                std::os::unix::fs::symlink(&real, &link).unwrap();
+                link
+            }
+            #[cfg(windows)]
+            {
+                std::path::PathBuf::from(format!(r"\\?\{}", real.display()))
+            }
+        };
+        assert_ne!(
+            dunce::canonicalize(&root_arg).unwrap(),
+            root_arg,
+            "fixture root must differ from its canonical form"
+        );
+        let raw = root_arg
+            .join("docs/a.md")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let targets = repo_targets(&root_arg, "src/lib.rs", "", &raw);
+        assert!(targets.contains("docs/a.md"), "{targets:?}");
     }
 
     #[test]
