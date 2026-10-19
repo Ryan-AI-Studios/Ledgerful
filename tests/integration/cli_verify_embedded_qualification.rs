@@ -6,10 +6,6 @@
 //! cargo nextest run --test integration --run-ignored only -E 'test(embedded_qualification)'
 //! ```
 //!
-//! Nested-only Rust (no root `Cargo.toml`) is a **refusal** case, covered by
-//! `cli_verify_embedded::nested_rust_repo_referenced_material_refuses_with_crate_guidance`;
-//! its real nextest failure is the `document` case run in a crate-rooted checkout.
-//!
 //! Expected wall-clock: roughly 1-3 minutes per platform (five verify runs).
 
 use crate::common::{git_add_and_commit, setup_git_repo};
@@ -20,13 +16,24 @@ use std::process::{Command, Output};
 use tempfile::tempdir;
 
 fn run(cwd: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_ledgerful"))
+    let start = std::time::Instant::now();
+    let output = Command::new(env!("CARGO_BIN_EXE_ledgerful"))
         .args(args)
         .current_dir(cwd)
         .env("LEDGERFUL_NON_INTERACTIVE", "1")
         .env_remove("LEDGERFUL_STATE_DIR")
         .output()
-        .expect("spawn ledgerful")
+        .expect("spawn ledgerful");
+    eprintln!(
+        "0549 receipt {}",
+        serde_json::json!({
+            "args": args, "platform": std::env::consts::OS,
+            "exitCode": output.status.code(), "elapsedMs": start.elapsed().as_millis(),
+            "stdout": String::from_utf8_lossy(&output.stdout),
+            "stderr": String::from_utf8_lossy(&output.stderr)
+        })
+    );
+    output
 }
 
 fn text(out: &Output) -> String {
@@ -35,6 +42,18 @@ fn text(out: &Output) -> String {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     )
+}
+
+fn commit_if_dirty(root: &Path, message: &str) {
+    let status = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    if !status.stdout.is_empty() {
+        git_add_and_commit(root, message);
+    }
 }
 
 fn write(root: &Path, rel: &str, body: &str) {
@@ -83,30 +102,40 @@ fn init_fixture(root: &Path) {
 }
 
 #[rstest]
-#[case("document", "docs/contract.md", "v2\n", "contracts_document")]
-#[case("template", "templates/message.txt", "bye\n", "contracts_template")]
-#[case("mixed", "templates/message.txt", "bye\n", "contracts_template")]
-#[case("bytes", "data/value.bin", "bye\n", "material_value")]
-#[case("include", "data/value.inc", "2\n", "material_value")]
-#[case("manifest", "data/value.txt", "bye\n", "material_value")]
-#[case("runtime", "data/value.txt", "bye\n", "material_value")]
+#[case("document", "docs/contract.md", "v2\n", "contracts_document", false)]
+#[case(
+    "template",
+    "templates/message.txt",
+    "bye\n",
+    "contracts_template",
+    false
+)]
+#[case("mixed", "templates/message.txt", "bye\n", "contracts_template", false)]
+#[case("bytes", "data/value.bin", "bye\n", "material_value", false)]
+#[case("include", "data/value.inc", "2\n", "material_value", false)]
+#[case("manifest", "data/value.txt", "bye\n", "material_value", false)]
+#[case("runtime", "data/value.txt", "bye\n", "material_value", false)]
+#[case("nested", "docs/contract.md", "v2\n", "contracts_document", true)]
 #[ignore = "0549 D9: real cargo/nextest qualification; run manually per platform (owner: 0549)"]
 fn embedded_qualification_mutations_fail_and_repairs_pass(
     #[case] kind: &str,
     #[case] material: &str,
     #[case] mutation: &str,
     #[case] failing_test: &str,
+    #[case] nested: bool,
 ) {
     let tmp = tempdir().unwrap();
     let root = &tmp.path().join("space ü fixture");
     fs::create_dir_all(root).unwrap();
+    assert!(root.to_string_lossy().contains('ü'));
+    assert!(!root.to_string_lossy().contains('\u{fffd}'));
     init_fixture(root);
     let original = match kind {
         "bytes" => {
             write(
                 root,
                 "src/lib.rs",
-                "#[test]\nfn material_value() { assert_eq!(include_bytes!(\"../data/value.bin\"), b\"hi\\n\"); }\n",
+                "#[test]\nfn material_value() { assert_eq!(include_bytes!(\"../data/value.bin\").as_slice(), b\"hi\\n\"); }\n",
             );
             "hi\n"
         }
@@ -114,7 +143,7 @@ fn embedded_qualification_mutations_fail_and_repairs_pass(
             write(
                 root,
                 "src/lib.rs",
-                "const VALUE: u32 = include!(\"../data/value.inc\");\n#[test]\nfn material_value() { assert_eq!(VALUE, 1); }\n",
+                "#[cfg(test)]\nconst VALUE: u32 = include!(\"../data/value.inc\");\n#[test]\nfn material_value() { assert_eq!(VALUE, 1); }\n",
             );
             "1\n"
         }
@@ -134,22 +163,61 @@ fn embedded_qualification_mutations_fail_and_repairs_pass(
             );
             "hi\n"
         }
-        "document" => "v1\n",
+        "document" | "nested" => "v1\n",
         _ => "hi\n",
     };
     write(root, material, original);
+    if nested {
+        fs::create_dir_all(root.join("backend")).unwrap();
+        fs::rename(root.join("Cargo.toml"), root.join("backend/Cargo.toml")).unwrap();
+        fs::rename(root.join("src"), root.join("backend/src")).unwrap();
+        write(
+            root,
+            "backend/src/contracts.rs",
+            &ACCESSOR
+                .replace("../docs/", "../../docs/")
+                .replace("../templates/", "../../templates/"),
+        );
+        git_add_and_commit(root, "nested-only parent");
+        write(root, material, mutation);
+        let refused = run(root, &["verify", "--scope", "fast", "--dry-run", "--json"]);
+        let nested_plan: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
+        assert_eq!(refused.status.code(), Some(1), "{nested_plan}");
+        assert_eq!(nested_plan["refused"], true, "{nested_plan}");
+        assert!(
+            nested_plan["fallbackReason"]
+                .as_str()
+                .unwrap()
+                .contains("root workspace"),
+            "{nested_plan}"
+        );
+        eprintln!("0549 nested-only refusal: {nested_plan}");
+        write(root, material, original);
+        // Qualify the same nested crate through the specified recovery:
+        // a root workspace manifest, with no command or profile rewriting.
+        write(
+            root,
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"backend\"]\nresolver = \"2\"\n",
+        );
+    }
+    let cargo_root = if nested {
+        root.join("backend")
+    } else {
+        root.to_path_buf()
+    };
     let fmt = Command::new("cargo")
         .args(["fmt", "--all"])
-        .current_dir(root)
+        .current_dir(&cargo_root)
         .output()
         .unwrap();
     assert!(fmt.status.success(), "{}", text(&fmt));
-    git_add_and_commit(root, "qualification parent");
+    commit_if_dirty(root, "qualification parent");
     let parent = run(root, &["verify", "--scope", "full"]);
     assert!(parent.status.success(), "parent {kind}: {}", text(&parent));
     // Cargo creates its lockfile during the oracle. Include it in the
     // passing parent so the mutation does not become a shared-infra edit.
-    git_add_and_commit(root, "qualification built parent");
+    commit_if_dirty(root, "qualification built parent");
     write(root, material, mutation);
     if kind == "mixed" {
         // A real source edit beside the template; index before editing so

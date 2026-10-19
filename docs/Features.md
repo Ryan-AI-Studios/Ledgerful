@@ -204,14 +204,47 @@ Built for the modern developer's environment.
 | Features | Default source install: no `embed-spa`, no `daemon`, no `usage-metrics`. Release `--all-features` embeds the SPA and includes LSP. |
 
 
-Fast verification of embedded Rust material (0549) applies to nested Rust
-repositories without a root `Cargo.toml`, using explicit manifest paths.
+Fast verification of embedded Rust material (0549) detects nested Rust
+repositories without a root `Cargo.toml`, but refuses referenced material there.
+Add a root workspace manifest or use a checkout rooted at the crate to enable
+automatic verification. `-C` alone changes the execution directory but retains
+the Git work root. Repository profiles remain root-based.
 The pinned scan includes hidden/ignored project sources and excludes vendored
 sources and build/state directories. Generated `OUT_DIR` includes are separate
 from unresolved repository reads. Oversized token-free sources are annotated and
-skipped; unreadable, unlexable, or consumer-bearing oversized sources refuse fast
-scope (or use explicitly authorized full fallback). Unreferenced legacy-material
-paths refuse even alongside mapped code. Lookup-derived function names retain the
-existing mapping file-level-stem limitation (0550); `__slow` assurance wording is
+skipped after a bounded streaming inspection (8 MiB maximum). Scan bounds refuse
+non-cheap material; cheap docs keep their previous behavior with an explicit
+"embedded lookup bounded: not verified" annotation. Unreadable/unlexable sources
+refuse. File-consuming macros with literal paths affect matching candidates;
+literal-less consumers remain repo-wide uncertainty. Unreferenced legacy-material
+paths refuse even alongside mapped code. Lookup-derived stems are function names. Production includers without inline
+tests use fresh per-includer test_mapping rows (D3(d)); those mapping-derived
+stems retain the file-level-stem limitation (0549-P3-2, owner 0550); `__slow` assurance wording is
 owned by 0555. Dependency annotations appear in verbose plan step descriptions;
-dry-run JSON retains its existing fields.
+dry-run JSON retains its existing fields. Helper-mediated reads remain a known
+limitation: "no direct include/read found by the lexical lookup" does not prove
+that no test depends on an unreferenced file. Unreferenced non-cheap material in
+the engine checkout refuses.
+
+Rust detection for fast verification is memoized and runs when a dirty path
+differs between strict and legacy materiality, or when the repository has no
+root Cargo.toml and a cheap-set path (docs, README, LICENSE, packaging) is dirty
+(the only class that can otherwise return a zero-step green). In a repository
+with a root manifest, docs-only edits do not trigger a discovery walk, and a
+non-Rust repo is not walked for ordinary source changes. Full scope and explicit
+commands do no discovery.
+An inconclusive result keeps strict materiality and refuses paths that need
+it; cheap-only and empty plans retain their existing behavior. A malformed or
+unreadable root manifest refuses a non-empty fast plan, including cheap docs.
+A root package.json with a valid nested Cargo.toml takes strict materiality
+when that trigger applies. Directory pruning is depth-agnostic: target,
+vendor, deps_src, third_party, node_modules, .git, .ledgerful, .venv and venv
+are excluded at any depth (case-insensitively on Windows).
+
+Non-literal production reads without inline tests are an accepted limitation:
+a production loader can read a changed template dynamically while fast
+verification omits its integration test. Helper-mediated literal reads have
+the same limitation (0549-P3-5, owner 0550); the owner must re-decide this
+tradeoff. A zero-step plan has no step description to annotate, and dry-run
+JSON adds no annotation field. Generated OUT_DIR runtime reads, like includes,
+do not create unresolved repository reads.

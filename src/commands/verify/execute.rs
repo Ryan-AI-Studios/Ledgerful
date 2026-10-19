@@ -166,7 +166,9 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
 
     // One material snapshot feeds prediction, overlay, and JSON. Nested Rust
     // discovery is only needed here if strict and legacy materiality differ.
-    let (working_material, rust_crates) = classify_working_tree_material(layout.root.as_std_path());
+    let detect_rust = scope.is_fast() && !manual_requested && config_plan.is_none();
+    let (working_material, rust_crates) =
+        classify_working_tree_material(layout.root.as_std_path(), detect_rust);
 
     // 3. Build Plan
     let (plan, steps) = match command_str {
@@ -836,7 +838,7 @@ fn overlay_fast_classifier_packet(
     layout: &crate::state::layout::Layout,
     packet: crate::impact::packet::ImpactPacket,
 ) -> miette::Result<crate::impact::packet::ImpactPacket> {
-    let (_, rust) = classify_working_tree_material(layout.root.as_std_path());
+    let (_, rust) = classify_working_tree_material(layout.root.as_std_path(), true);
     overlay_fast_classifier_packet_with_rust(
         layout,
         packet,
@@ -922,6 +924,16 @@ fn build_fast_scoped_from_overlay_or_fail_closed(
         Ok(packet) => packet,
         Err(err) => {
             warn!("fast-scope live overlay failed: {err}");
+            // Unknown alone does not reject a successfully observed cheap-only
+            // packet. When the live paths are unavailable, though, a stale
+            // cheap snapshot cannot prove that strict material is untouched.
+            // Keep status-lock / unreadable-Git failures closed before either
+            // the saved-packet route or an authorized full fallback.
+            if let Some(crate::verify::plan::RustCrates::Unknown(class)) = rust_crates {
+                return crate::verify::plan::refuse_plan_for_trigger(&format!(
+                    "Rust detection inconclusive: {class}"
+                ));
+            }
             match snapshot {
                 Some(packet) => {
                     return crate::verify::plan::build_plan_scoped_with_rust_crates(
@@ -989,26 +1001,64 @@ enum WorkingTreeMaterial {
 
 fn classify_working_tree_material(
     repo_root: &std::path::Path,
+    detect_nested: bool,
 ) -> (WorkingTreeMaterial, Option<crate::verify::plan::RustCrates>) {
     let Ok(repo) = crate::git::repo::open_repo(repo_root) else {
         return (WorkingTreeMaterial::Unavailable, None);
     };
     let Ok(changes) = crate::git::status::get_repo_status(&repo) else {
-        return (WorkingTreeMaterial::Unavailable, None);
+        return if detect_nested {
+            (
+                WorkingTreeMaterial::Dirty,
+                Some(crate::verify::plan::RustCrates::Unknown("unreadable")),
+            )
+        } else {
+            (WorkingTreeMaterial::Unavailable, None)
+        };
     };
-    let rust = if repo_root.join("Cargo.toml").is_file() {
-        Some(crate::verify::plan::RustCrates::Present)
-    } else if changes
-        .iter()
-        .any(|c| is_material_verify_path(&c.path) != is_legacy_material_verify_path(&c.path))
-    {
-        Some(crate::verify::plan::repo_has_rust_crates(repo_root))
+    classify_material_changes(
+        repo_root,
+        &changes,
+        detect_nested,
+        crate::verify::plan::repo_has_rust_crates,
+    )
+}
+
+/// The only discovery trigger. A missing memo means NotNeeded, not a request
+/// for a later planning stage to walk. The injected FnOnce also makes the
+/// at-most-once rule observable without global counters or environment state.
+///
+/// A dirty path whose strict and legacy materiality differ always triggers
+/// discovery: without it, a `.txt` template would read as a clean tree. When
+/// there is no root `Cargo.toml`, a dirty **cheap-set** path (docs, README,
+/// LICENSE, packaging) triggers it too: that is the only class that can
+/// otherwise fall into the cheap plan and return a zero-step green for
+/// referenced material (0549 DoD-2). A repo with a root manifest still never
+/// walks on a docs-only edit, and a non-Rust repo is not walked for ordinary
+/// source changes.
+fn classify_material_changes(
+    repo_root: &std::path::Path,
+    changes: &[crate::git::FileChange],
+    detect_rust: bool,
+    detect: impl FnOnce(&std::path::Path) -> crate::verify::plan::RustCrates,
+) -> (WorkingTreeMaterial, Option<crate::verify::plan::RustCrates>) {
+    let cheap_without_root = !repo_root.join("Cargo.toml").is_file()
+        && changes
+            .iter()
+            .any(|change| crate::verify::plan::is_non_code_cheap_path(&change.path));
+    let rust = if detect_rust
+        && (cheap_without_root
+            || changes.iter().any(|change| {
+                is_material_verify_path(&change.path)
+                    != is_legacy_material_verify_path(&change.path)
+            })) {
+        Some(detect(repo_root))
     } else {
         None
     };
-    if changes.iter().any(|c| {
+    if changes.iter().any(|change| {
         is_material_for_profile(
-            &c.path,
+            &change.path,
             rust.is_some_and(crate::verify::plan::RustCrates::is_strict),
         )
     }) {
@@ -1104,9 +1154,6 @@ fn emit_verify_dry_run_json(
 fn is_material_verify_path(path: &std::path::Path) -> bool {
     let norm = path.to_string_lossy().replace('\\', "/");
     let norm = norm.trim_start_matches("./");
-    if norm.starts_with(".ledgerful/") || norm == ".ledgerful" {
-        return false;
-    }
     // PATH/test shim used by empty-repo verify tests — not product source.
     if norm.eq_ignore_ascii_case("cargo.bat")
         || norm.eq_ignore_ascii_case("cargo.cmd")
@@ -1115,12 +1162,12 @@ fn is_material_verify_path(path: &std::path::Path) -> bool {
         return false;
     }
     // 0549 D8: VCS and build-output trees are never material.
-    const EXEMPT_DIRS: &[&str] = &[".git", "target", "node_modules"];
-    if norm
-        .split('/')
-        .next()
-        .is_some_and(|first| EXEMPT_DIRS.contains(&first))
-    {
+    const EXEMPT_DIRS: &[&str] = &[".ledgerful", ".git", "target", "node_modules"];
+    if norm.split('/').next().is_some_and(|first| {
+        EXEMPT_DIRS
+            .iter()
+            .any(|exempt| crate::verify::plan::path_component_matches(first, exempt))
+    }) {
         return false;
     }
     true
@@ -1252,6 +1299,104 @@ mod overlay_fast_tests {
             }],
             ..ImpactPacket::default()
         }
+    }
+
+    fn unknown_live_plan(
+        root: &Path,
+        snapshot: Option<&ImpactPacket>,
+        profile: &crate::platform::repository::RepositoryProfile,
+        allow_full: bool,
+    ) -> crate::verify::plan::VerificationPlan {
+        let layout = Layout::new(camino::Utf8Path::from_path(root).unwrap());
+        super::build_fast_scoped_from_overlay_or_fail_closed(
+            snapshot,
+            &layout,
+            &crate::policy::rules::Rules::default(),
+            &[],
+            &crate::config::model::VerifyConfig::default(),
+            profile,
+            None,
+            false,
+            allow_full,
+            Some(crate::verify::plan::RustCrates::Unknown("unreadable")),
+        )
+    }
+
+    #[rstest::rstest]
+    #[case("docs/example.txt", false)]
+    #[case("LICENSE", false)]
+    #[case("notes.txt", true)]
+    fn unknown_detection_uses_actual_live_path_cheapness(
+        #[case] path: &str,
+        #[case] refused: bool,
+    ) {
+        let dir = tempdir().unwrap();
+        init_repo_with_commit(dir.path());
+        let changed = dir.path().join(path);
+        fs::create_dir_all(changed.parent().unwrap()).unwrap();
+        fs::write(changed, "changed").unwrap();
+        let snapshot = snapshot_with_src();
+        let plan = unknown_live_plan(
+            dir.path(),
+            Some(&snapshot),
+            &crate::platform::repository::RepositoryProfile::default(),
+            false,
+        );
+        assert_eq!(plan.refused, refused, "{:?}", plan.fallback_reason);
+        assert!(plan.steps.is_empty());
+        if refused {
+            assert!(
+                plan.fallback_reason
+                    .as_deref()
+                    .unwrap()
+                    .contains("Rust detection inconclusive: unreadable")
+            );
+        } else {
+            assert_eq!(plan.fallback_reason, None);
+        }
+    }
+
+    #[test]
+    fn unknown_detection_with_failed_overlay_does_not_trust_cheap_snapshot() {
+        let dir = tempdir().unwrap(); // intentionally not a Git repository
+        let snapshot = ImpactPacket {
+            changes: vec![ChangedFile {
+                path: "README.md".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let plan = unknown_live_plan(
+            dir.path(),
+            Some(&snapshot),
+            &crate::platform::repository::RepositoryProfile::default(),
+            true,
+        );
+        assert!(plan.refused);
+        assert!(plan.steps.is_empty());
+        assert!(
+            plan.fallback_reason
+                .as_deref()
+                .unwrap()
+                .contains("Rust detection inconclusive: unreadable")
+        );
+    }
+
+    #[test]
+    fn unknown_detection_cheap_live_path_keeps_broken_root_manifest_guard() {
+        let dir = tempdir().unwrap();
+        init_repo_with_commit(dir.path());
+        fs::write(dir.path().join("Cargo.toml"), "not valid toml {{{").unwrap();
+        fs::write(dir.path().join("LICENSE"), "changed").unwrap();
+        let profile = crate::platform::repository::detect_repository(dir.path());
+        let plan = unknown_live_plan(dir.path(), None, &profile, false);
+        assert!(plan.refused);
+        assert!(
+            plan.fallback_reason
+                .as_deref()
+                .unwrap()
+                .contains("malformed Cargo.toml")
+        );
     }
 
     #[test]
@@ -1451,7 +1596,7 @@ mod execute_verify_json_gate_tests {
         // equivalent fact instead: that snapshot is still classified from the
         // real repo root path, not from an abstract flag.
         assert!(
-            prod.contains("classify_working_tree_material(layout.root.as_std_path())"),
+            prod.contains("classify_working_tree_material(layout.root.as_std_path(), detect_rust)"),
             "material snapshot must be classified from the real repo root path"
         );
         let extract_at = prod
@@ -1461,5 +1606,129 @@ mod execute_verify_json_gate_tests {
             predict_at < extract_at,
             "extract_dataset must remain after the predict arm"
         );
+    }
+}
+
+#[cfg(test)]
+mod rust_detection_trigger_tests {
+    use super::*;
+    use crate::verify::plan::RustCrates;
+    use std::cell::Cell;
+    use std::path::{Path, PathBuf};
+
+    fn change(path: &str) -> crate::git::FileChange {
+        crate::git::FileChange {
+            path: PathBuf::from(path),
+            change_type: crate::git::ChangeType::Modified,
+            is_staged: false,
+        }
+    }
+
+    #[rstest::rstest]
+    #[case(&[], true)]
+    #[case(&["README.md"], true)]
+    #[case(&["docs/guide.md", "data/a.json", "data/b.yaml", "data/c.sql"], true)]
+    #[case(&["message.txt"], false)]
+    fn not_needed_never_calls_discovery(#[case] paths: &[&str], #[case] enabled: bool) {
+        let tmp = tempfile::tempdir().unwrap();
+        // Even root presence cannot bypass the single materiality trigger.
+        std::fs::write(tmp.path().join("Cargo.toml"), "[package]\nname=\"fx\"\n").unwrap();
+        let changes: Vec<_> = paths.iter().map(|p| change(p)).collect();
+        let (_, memo) = classify_material_changes(tmp.path(), &changes, enabled, |_| {
+            panic!("NotNeeded must not discover Rust");
+        });
+        assert_eq!(memo, None);
+    }
+
+    #[rstest::rstest]
+    #[case("Target/x.rs")]
+    #[case("Node_Modules/a.js")]
+    #[case(".LEDGERFUL/state/x.db")]
+    #[case(".GIT/HEAD")]
+    fn leading_exempt_components_share_platform_case_policy(#[case] path: &str) {
+        assert_eq!(is_material_verify_path(Path::new(path)), !cfg!(windows));
+        assert!(is_material_verify_path(Path::new("targeted/x.rs")));
+    }
+
+    #[test]
+    fn multiple_strict_paths_compute_one_unknown_memo_and_stay_dirty() {
+        let calls = Cell::new(0);
+        let (material, memo) = classify_material_changes(
+            Path::new("unused"),
+            &[change("a.txt"), change("b.csv")],
+            true,
+            |_| {
+                calls.set(calls.get() + 1);
+                RustCrates::Unknown("unreadable")
+            },
+        );
+        assert_eq!(calls.get(), 1);
+        assert_eq!(material, WorkingTreeMaterial::Dirty);
+        assert_eq!(memo, Some(RustCrates::Unknown("unreadable")));
+    }
+
+    #[test]
+    fn absent_rust_keeps_non_source_legacy_clean() {
+        let (material, memo) =
+            classify_material_changes(Path::new("unused"), &[change("notes.txt")], true, |_| {
+                RustCrates::Absent
+            });
+        assert_eq!(material, WorkingTreeMaterial::Clean);
+        assert_eq!(memo, Some(RustCrates::Absent));
+    }
+
+    #[test]
+    fn no_root_manifest_triggers_detection_for_a_docs_only_change() {
+        // 0549 DoD-2: a nested-only repo must not return a zero-step green for
+        // a referenced document. With no root manifest the root-based profile
+        // cannot rule out crates below the root, so discovery must run even
+        // though a `.md` edit matches strict *and* legacy materiality.
+        let tmp = tempfile::tempdir().unwrap();
+        let calls = Cell::new(0);
+        let (material, memo) =
+            classify_material_changes(tmp.path(), &[change("docs/contract.md")], true, |_| {
+                calls.set(calls.get() + 1);
+                RustCrates::Present
+            });
+        assert_eq!(calls.get(), 1);
+        assert_eq!(material, WorkingTreeMaterial::Dirty);
+        assert_eq!(memo, Some(RustCrates::Present));
+    }
+
+    #[test]
+    fn root_manifest_keeps_a_docs_only_change_from_walking() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "[package]\nname=\"fx\"\n").unwrap();
+        let (material, memo) =
+            classify_material_changes(tmp.path(), &[change("docs/contract.md")], true, |_| {
+                panic!("a root manifest plus a docs-only edit must not walk");
+            });
+        assert_eq!(material, WorkingTreeMaterial::Dirty);
+        assert_eq!(memo, None);
+    }
+
+    #[test]
+    fn no_root_manifest_still_respects_detect_rust_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (material, memo) =
+            classify_material_changes(tmp.path(), &[change("docs/contract.md")], false, |_| {
+                panic!("detect_rust=false must not walk")
+            });
+        assert_eq!(material, WorkingTreeMaterial::Dirty);
+        assert_eq!(memo, None);
+    }
+
+    #[test]
+    fn no_root_manifest_does_not_walk_for_a_non_cheap_legacy_only_change() {
+        // `notes/guide.md` is legacy material (`.md`) but not cheap-set, so it
+        // reaches the mapping/refusal route instead of the cheap plan. Walking
+        // here would only add cost and could over-refuse a non-Rust repo.
+        let tmp = tempfile::tempdir().unwrap();
+        let (material, memo) =
+            classify_material_changes(tmp.path(), &[change("notes/guide.md")], true, |_| {
+                panic!("a non-cheap legacy-only change must not walk")
+            });
+        assert_eq!(material, WorkingTreeMaterial::Dirty);
+        assert_eq!(memo, None);
     }
 }
