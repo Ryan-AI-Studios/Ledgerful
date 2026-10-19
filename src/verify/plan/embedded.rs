@@ -26,12 +26,12 @@ pub(crate) const MAX_FILES_SCANNED: usize = 2500;
 pub(crate) const MAX_FILE_BYTES: u64 = 512 * 1024;
 /// Maximum total bytes read per scan.
 pub(crate) const MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+pub(crate) const MAX_OVERSIZED_INSPECT_BYTES: u64 = 8 * 1024 * 1024;
+pub(crate) const MAX_WALK_ENTRIES: usize = 200_000;
+pub(crate) const MAX_OVERSIZED_FILES: usize = 64;
+pub(crate) const MAX_STREAMED_BYTES: u64 = 128 * 1024 * 1024;
 
-/// Lookup stems above this count get a `broad stem set (N)` annotation.
-pub(crate) const BROAD_STEM_THRESHOLD: usize = 50;
-
-/// Directory names never walked. Compared case-insensitively on Windows
-/// (`Target/`, `Node_Modules/`) by [`is_skipped_dir`].
+/// Directory names never walked.
 const SKIP_DIRS: &[&str] = &[
     "target",
     ".git",
@@ -40,14 +40,13 @@ const SKIP_DIRS: &[&str] = &[
     "vendor",
     "deps_src",
     "third_party",
+    ".venv",
+    "venv",
 ];
 
 /// Extensions the index maps as source; every other changed path is a
 /// non-code candidate for the embedded lookup.
-const SOURCE_EXTS: &[&str] = &[
-    "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "java", "kt", "kts", "c", "h", "cpp",
-    "cc", "cxx", "hpp", "hh", "hxx", "h++",
-];
+const SOURCE_EXTS: &[&str] = crate::index::orchestrator::SUPPORTED_EXTENSIONS;
 
 /// How a reference maps to tests.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -78,8 +77,11 @@ struct RuntimeFile {
 /// Result of one bounded scan of the repo's Rust sources.
 #[derive(Debug, Default)]
 pub(crate) struct EmbeddedScan {
+    #[cfg(test)]
+    scanned_sources: BTreeSet<String>,
     refs: BTreeMap<String, BTreeSet<EmbedRef>>,
     runtime: BTreeMap<String, RuntimeFile>,
+    consumers: BTreeMap<String, BTreeSet<String>>,
     /// Set when a cap was hit; the reason names the cap.
     pub bounded: Option<String>,
     /// Oversized sources proven to contain no file-consumer tokens.
@@ -89,10 +91,6 @@ pub(crate) struct EmbeddedScan {
     /// Non-literal compile-time include forms (except generated `OUT_DIR`) and
     /// non-literal runtime reads in test scope (sorted, `file: form`).
     pub unresolved_reads: BTreeSet<String>,
-    /// Unmodeled file consumers that carry a literal path, attributed per
-    /// candidate: `(consumer file, repo-relative target)`; a candidate equal
-    /// to or under the target is refused naming the file.
-    consumers: BTreeSet<(String, String)>,
 }
 
 fn fold(path: &str) -> String {
@@ -374,7 +372,11 @@ fn resolve_whole_file(layout: &TestLayout, is_test_file: bool) -> Resolution {
     inline.sort();
     inline.dedup();
     if inline.is_empty() {
-        Resolution::NeedsMapping
+        if layout.fns.is_empty() {
+            Resolution::NeedsMapping
+        } else {
+            tests_or_none(all_names(layout))
+        }
     } else {
         Resolution::Tests(inline)
     }
@@ -539,10 +541,11 @@ fn literal_path_prefix(
         let Some(part) = literal_path_expression(&src[open + 1..end], rel, depth + 1)? else {
             return Ok(None);
         };
-        let absolute = part.starts_with('/')
+        if part.starts_with('/')
             || part.starts_with('\\')
-            || part.as_bytes().get(1) == Some(&b':');
-        if absolute || value.is_empty() {
+            || part.as_bytes().get(1) == Some(&b':')
+            || value.is_empty()
+        {
             value = part;
         } else {
             value.push('/');
@@ -607,13 +610,8 @@ fn nearest_crate_root(repo_root: &Path, rel: &str, cache: &mut BTreeMap<String, 
 const RUNTIME_PREFILTER: &[&str] = &["read_to_string", "fs::read", "File::open"];
 /// Substrings of file-consuming macros the scan does not resolve
 /// (`sqlx::query_file!`, askama `#[template(path = ..)]`, `include_dir!`, rust-embed).
-const UNMODELED_FILE_CONSUMERS: &[&str] = &[
-    "_file!(",
-    "_file_as!(",
-    "template(path",
-    "include_dir!",
-    "RustEmbed",
-];
+const UNMODELED_FILE_CONSUMERS: &[&str] =
+    &["_file", "template", "include_dir", "RustEmbed", "folder"];
 const READ_CALLS: &[&str] = &["read_to_string", "fs::read", "File::open"];
 
 /// Literals that are arguments of a runtime file read (`read_to_string`,
@@ -641,7 +639,8 @@ fn collect_literals(src: &str, rel: &str) -> Result<(BTreeSet<String>, usize), S
                         let arg = &src[after + 1..end];
                         if let Some(value) = literal_path_expression(arg, rel, 0)? {
                             if value.starts_with(GENERATED_MARKER) {
-                                dynamic += 1;
+                                // Build output cannot name a changed repository
+                                // path and contributes no unresolved read.
                             } else {
                                 let value = value
                                     .strip_prefix(MANIFEST_MARKER)
@@ -669,15 +668,12 @@ fn collect_literals(src: &str, rel: &str) -> Result<(BTreeSet<String>, usize), S
     Ok((lits, dynamic))
 }
 
-/// Shared skip-set test for every walker (production scan and drift tests).
-pub(crate) fn is_skipped_dir(name: &str) -> bool {
-    SKIP_DIRS.iter().any(|d| {
-        if cfg!(windows) {
-            d.eq_ignore_ascii_case(name)
-        } else {
-            *d == name
-        }
-    })
+pub(crate) fn path_component_matches(actual: &str, expected: &str) -> bool {
+    if cfg!(windows) {
+        actual.eq_ignore_ascii_case(expected)
+    } else {
+        actual == expected
+    }
 }
 
 fn pinned_walk(root: &Path) -> ignore::WalkBuilder {
@@ -690,59 +686,19 @@ fn pinned_walk(root: &Path) -> ignore::WalkBuilder {
         .parents(false)
         .require_git(false)
         .sort_by_file_path(|a, b| a.cmp(b))
-        .filter_entry(|e| e.depth() == 0 || !is_skipped_dir(e.file_name().to_str().unwrap_or("")));
+        .filter_entry(|e| {
+            e.depth() == 0
+                || !SKIP_DIRS.iter().any(|skip| {
+                    let name = e.file_name().to_str().unwrap_or("");
+                    path_component_matches(name, skip)
+                })
+        });
     walk
 }
 
-/// Upper bound for streaming inspection of an oversized `.rs` file.
-pub(crate) const MAX_OVERSIZED_INSPECT_BYTES: u64 = 8 * 1024 * 1024;
-
-enum OversizedError {
-    TooLarge,
-    Unreadable,
-}
-
-/// Stream `path` in 64 KiB chunks (with token-length overlap) and report
-/// whether any consumer token occurs. Never loads the whole file.
-fn oversized_has_tokens(path: &Path, len: u64) -> Result<bool, OversizedError> {
-    use std::io::Read;
-    if len > MAX_OVERSIZED_INSPECT_BYTES {
-        return Err(OversizedError::TooLarge);
-    }
-    let mut file = std::fs::File::open(path).map_err(|_| OversizedError::Unreadable)?;
-    let overlap = 32usize; // longer than every prefilter token
-    let mut buf = vec![0u8; 64 * 1024];
-    let mut carry: Vec<u8> = Vec::new();
-    let mut inspected = 0u64;
-    loop {
-        let n = file
-            .read(&mut buf)
-            .map_err(|_| OversizedError::Unreadable)?;
-        if n == 0 {
-            return Ok(false);
-        }
-        inspected += n as u64;
-        if inspected > MAX_OVERSIZED_INSPECT_BYTES {
-            return Err(OversizedError::TooLarge);
-        }
-        let mut window = std::mem::take(&mut carry);
-        window.extend_from_slice(&buf[..n]);
-        if has_consumer_tokens(&String::from_utf8_lossy(&window)) {
-            return Ok(true);
-        }
-        let keep = window.len().saturating_sub(overlap);
-        carry = window[keep..].to_vec();
-    }
-}
-
-fn has_consumer_tokens(src: &str) -> bool {
-    src.contains("include")
-        || RUNTIME_PREFILTER.iter().any(|p| src.contains(p))
-        || UNMODELED_FILE_CONSUMERS.iter().any(|p| src.contains(p))
-}
-
-/// Tri-state Rust-crate detection (0549 D8). `Unknown` fails closed: callers
-/// treat it as strict material and refuse fast scope with the named class.
+/// Presence-only Rust detection for strict material filtering. Root profiles
+/// stay unchanged; nested crates require a root workspace or crate-rooted checkout.
+/// Failure to inspect a tree is not evidence that Rust is present.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RustCrates {
     Present,
@@ -751,21 +707,51 @@ pub(crate) enum RustCrates {
 }
 
 impl RustCrates {
-    /// Strict (D8) material applies unless Rust is provably absent.
     pub(crate) fn is_strict(self) -> bool {
-        !matches!(self, RustCrates::Absent)
+        !matches!(self, Self::Absent)
     }
 }
 
-/// Detect Rust crates: root manifest fast path, else a bounded pinned walk.
-/// `profile.rust` stays root-based; this only drives material strictness and
-/// the lookup. An inconclusive walk is `Unknown`, never `Absent`.
+fn inspect_manifest(path: &Path) -> RustCrates {
+    use std::io::Read;
+    let result = std::fs::File::open(path).and_then(|file| {
+        let mut bytes = Vec::new();
+        file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
+        Ok(bytes)
+    });
+    let Ok(bytes) = result else {
+        return RustCrates::Unknown("unreadable");
+    };
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return RustCrates::Unknown("oversized");
+    }
+    let Ok(text) = std::str::from_utf8(&bytes) else {
+        return RustCrates::Unknown("nonUtf8");
+    };
+    let Ok(value) = toml::from_str::<toml::Value>(text) else {
+        return RustCrates::Unknown("malformed Cargo.toml");
+    };
+    if !value.get("package").is_some_and(toml::Value::is_table)
+        && !value.get("workspace").is_some_and(toml::Value::is_table)
+    {
+        return RustCrates::Unknown("malformed Cargo.toml");
+    }
+    RustCrates::Present
+}
+
 pub(crate) fn repo_has_rust_crates(root: &Path) -> RustCrates {
-    if root.join("Cargo.toml").is_file() {
-        return RustCrates::Present;
+    let root_manifest = root.join("Cargo.toml");
+    match root_manifest.try_exists() {
+        Ok(true) => return inspect_manifest(&root_manifest),
+        Err(_) => return RustCrates::Unknown("unreadable"),
+        Ok(false) => {}
     }
     let mut rust_files = 0;
-    for entry in pinned_walk(root).build() {
+    let mut found = false;
+    for (seen, entry) in pinned_walk(root).build().enumerate() {
+        if seen >= MAX_WALK_ENTRIES {
+            return RustCrates::Unknown("oversized");
+        }
         let Ok(entry) = entry else {
             return RustCrates::Unknown("unreadable");
         };
@@ -773,7 +759,10 @@ pub(crate) fn repo_has_rust_crates(root: &Path) -> RustCrates {
             continue;
         }
         if entry.file_name() == "Cargo.toml" {
-            return RustCrates::Present;
+            match inspect_manifest(entry.path()) {
+                RustCrates::Present => found = true,
+                inconclusive => return inconclusive,
+            }
         }
         if entry.path().extension().and_then(|e| e.to_str()) == Some("rs") {
             rust_files += 1;
@@ -782,61 +771,309 @@ pub(crate) fn repo_has_rust_crates(root: &Path) -> RustCrates {
             }
         }
     }
-    RustCrates::Absent
-}
-/// Repo-relative target of a literal include/consumer path. Absolute paths
-/// under `repo_root` are normalized; anything that cannot name a repo file
-/// (absolute outside the repo, `..` escaping the root) is `None`.
-fn repo_relative_target(repo_root: &Path, base_dir: &str, lit: &str) -> Option<String> {
-    let norm = lit.replace('\\', "/");
-    let is_abs = norm.starts_with('/') || norm.as_bytes().get(1) == Some(&b':');
-    if !is_abs {
-        return join_norm(base_dir, &norm);
-    }
-    let root = repo_root.to_string_lossy().replace('\\', "/");
-    let root = root.trim_end_matches('/').to_string();
-    let (a, r) = if cfg!(windows) {
-        (norm.to_ascii_lowercase(), root.to_ascii_lowercase())
+    if found {
+        RustCrates::Present
     } else {
-        (norm.clone(), root.clone())
-    };
-    let rest = a.strip_prefix(&r)?.strip_prefix('/')?;
-    let rest = &norm[norm.len() - rest.len()..];
-    normalize_repo_path(rest)
+        RustCrates::Absent
+    }
+}
+fn repo_targets(root: &Path, rel: &str, crate_root: &str, raw: &str) -> BTreeSet<String> {
+    let raw = raw.replace('\\', "/");
+    let mut targets = BTreeSet::new();
+    if raw.starts_with('/') || raw.as_bytes().get(1) == Some(&b':') {
+        let root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let root = root.to_string_lossy().replace('\\', "/");
+        let prefix = format!("{}/", root.trim_end_matches('/'));
+        if fold(&raw).starts_with(&fold(&prefix))
+            && let Some(path) = normalize_repo_path(&raw[prefix.len()..])
+        {
+            targets.insert(path);
+        }
+    } else {
+        for base in [parent_dir(rel), crate_root, ""] {
+            if let Some(path) = join_norm(base, &raw) {
+                targets.insert(path);
+            }
+        }
+    }
+    targets
 }
 
-/// First string literal at or after `from` in `s` (comments skipped).
-fn first_literal(s: &str, rel: &str) -> Result<Option<String>, String> {
-    let mut set = BTreeSet::new();
-    let b = s.as_bytes();
+// Consumer macros use direct literal arguments. A literal-less form remains a
+// repo-wide uncertainty; matching directories are over-approximated by prefix.
+fn consumer_paths(inner: &str, rel: &str) -> Result<Vec<String>, String> {
+    let mut paths = Vec::new();
     let mut i = 0;
+    let b = inner.as_bytes();
     while i < b.len() {
-        if (b[i] == b'"' || (b[i] == b'r' && (i == 0 || !is_ident_byte(b[i - 1]))))
-            && let Some((lit, _)) = take_string_literal(s, i, rel)?
-        {
-            set.insert(lit);
+        i = skip_trivia(inner, i, rel)?;
+        if i == b.len() {
             break;
         }
-        if let Some(next) = consume_skipped(s, i, rel)? {
-            i = next.max(i + 1);
-            continue;
+        if let Some((value, end)) = literal_path_prefix(inner, i, rel, 0)? {
+            paths.push(value);
+            i = end;
+        } else {
+            // An unmodeled nested expression is not a literal path argument.
+            while i < b.len() && b[i] != b',' {
+                if let Some(end) = consume_skipped(inner, i, rel)? {
+                    i = end;
+                } else if matches!(b[i], b'(' | b'[' | b'{') {
+                    i = find_matching_delimiter(inner, i, rel)?
+                        .map(|e| e + 1)
+                        .unwrap_or(b.len());
+                } else {
+                    i += inner[i..].chars().next().map(char::len_utf8).unwrap_or(1);
+                }
+            }
         }
-        i += s[i..].chars().next().map(char::len_utf8).unwrap_or(1);
+        i = skip_trivia(inner, i, rel)?;
+        if b.get(i) == Some(&b',') {
+            i += 1;
+        } else if i < b.len() {
+            return Ok(Vec::new());
+        }
     }
-    Ok(set.into_iter().next())
+    Ok(paths)
 }
 
+impl EmbeddedScan {
+    fn add_consumer(
+        &mut self,
+        root: &Path,
+        rel: &str,
+        crate_root: &str,
+        kind: &str,
+        paths: Vec<String>,
+    ) {
+        if paths.is_empty() {
+            self.unresolved_reads
+                .insert(format!("{rel}: literal-less {kind}"));
+            return;
+        }
+        for path in paths {
+            let variable_suffix = |name: &str| {
+                path.strip_prefix(name)
+                    .filter(|tail| tail.is_empty() || tail.starts_with(['/', '\\']))
+            };
+            if path.starts_with(GENERATED_MARKER) || variable_suffix("$OUT_DIR").is_some() {
+                self.skipped
+                    .insert(format!("{rel}: generated {kind} target ignored"));
+                continue;
+            }
+            let manifest = path
+                .strip_prefix(MANIFEST_MARKER)
+                .or_else(|| variable_suffix("$CARGO_MANIFEST_DIR"))
+                .or_else(|| variable_suffix("${CARGO_MANIFEST_DIR}"));
+            let targets = if let Some(suffix) = manifest {
+                join_norm(crate_root, suffix.trim_start_matches(['/', '\\']))
+                    .into_iter()
+                    .collect()
+            } else if path.contains('$') {
+                self.unresolved_reads
+                    .insert(format!("{rel}: unresolved {kind} environment path"));
+                continue;
+            } else {
+                repo_targets(root, rel, crate_root, &path)
+            };
+            if targets.is_empty() {
+                self.skipped
+                    .insert(format!("{rel}: outside-repo {kind} target ignored"));
+            } else {
+                for target in targets {
+                    self.consumers
+                        .entry(fold(&target))
+                        .or_default()
+                        .insert(format!("{rel}: {kind}"));
+                }
+            }
+        }
+    }
+
+    fn scan_consumers(
+        &mut self,
+        root: &Path,
+        rel: &str,
+        crate_root: &str,
+        src: &str,
+    ) -> Result<(), String> {
+        let b = src.as_bytes();
+        let mut i = 0;
+        let mut derive_embed = false;
+        let mut folder = false;
+        while i < b.len() {
+            if let Some(end) = consume_skipped(src, i, rel)? {
+                i = end;
+                continue;
+            }
+            if b[i] == b'#' {
+                let open = skip_trivia(src, i + 1, rel)?;
+                if b.get(open) == Some(&b'[')
+                    && let Some(end) = end_of_bracket(src, open, rel)?
+                {
+                    let inner = &src[open + 1..end];
+                    let mut at = skip_trivia(inner, 0, rel)?;
+                    let start = at;
+                    while at < inner.len() && is_ident_byte(inner.as_bytes()[at]) {
+                        at += 1;
+                    }
+                    let name = &inner[start..at];
+                    if name == "derive" && inner[at..].contains("RustEmbed") {
+                        derive_embed = true;
+                    }
+                    if name == "folder" {
+                        folder = true;
+                        at = skip_trivia(inner, at, rel)?;
+                        let paths = if inner.as_bytes().get(at) == Some(&b'=') {
+                            consumer_paths(&inner[at + 1..], rel)?
+                        } else {
+                            Vec::new()
+                        };
+                        self.add_consumer(root, rel, crate_root, "folder", paths);
+                    } else if name == "template" {
+                        let mut paths = Vec::new();
+                        while at < inner.len() {
+                            if let Some(end) = consume_skipped(inner, at, rel)? {
+                                at = end;
+                                continue;
+                            }
+                            if inner[at..].starts_with("path")
+                                && (at == 0 || !is_ident_byte(inner.as_bytes()[at - 1]))
+                            {
+                                let equal = skip_trivia(inner, at + 4, rel)?;
+                                if inner.as_bytes().get(equal) == Some(&b'=') {
+                                    let value = skip_trivia(inner, equal + 1, rel)?;
+                                    if let Some((path, end)) =
+                                        take_string_literal(inner, value, rel)?
+                                    {
+                                        paths.push(path);
+                                        at = end;
+                                        continue;
+                                    }
+                                }
+                            }
+                            at += inner[at..].chars().next().map(char::len_utf8).unwrap_or(1);
+                        }
+                        self.add_consumer(root, rel, crate_root, "template(path)", paths);
+                    }
+                    i = end + 1;
+                    continue;
+                }
+            }
+            if is_ident_byte(b[i]) && (i == 0 || !is_ident_byte(b[i - 1])) {
+                let start = i;
+                while i < b.len() && is_ident_byte(b[i]) {
+                    i += 1;
+                }
+                let name = &src[start..i];
+                if name.ends_with("_file") || name.ends_with("_file_as") || name == "include_dir" {
+                    let bang = skip_trivia(src, i, rel)?;
+                    if b.get(bang) == Some(&b'!') {
+                        let open = skip_trivia(src, bang + 1, rel)?;
+                        if matches!(b.get(open), Some(b'(' | b'{' | b'['))
+                            && let Some(end) = find_matching_delimiter(src, open, rel)?
+                        {
+                            self.add_consumer(
+                                root,
+                                rel,
+                                crate_root,
+                                name,
+                                consumer_paths(&src[open + 1..end], rel)?,
+                            );
+                            i = end + 1;
+                        } else {
+                            self.add_consumer(root, rel, crate_root, name, Vec::new());
+                        }
+                    }
+                }
+                continue;
+            }
+            i += src[i..].chars().next().map(char::len_utf8).unwrap_or(1);
+        }
+        if derive_embed && !folder {
+            self.add_consumer(root, rel, crate_root, "RustEmbed", Vec::new());
+        }
+        Ok(())
+    }
+}
+/// Inspect oversized generated Rust without retaining the whole file. The
+/// overlap keeps markers split across chunk boundaries visible.
+#[derive(Default)]
+struct StreamBudget {
+    files: usize,
+    bytes: u64,
+}
+
+fn oversized_contains_consumer(
+    path: &Path,
+    budget: &mut StreamBudget,
+) -> std::io::Result<Option<bool>> {
+    budget.files += 1;
+    if budget.files > MAX_OVERSIZED_FILES || budget.bytes >= MAX_STREAMED_BYTES {
+        return Ok(None);
+    }
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut chunk = [0u8; 64 * 1024];
+    let mut overlap = Vec::new();
+    let mut inspected = 0u64;
+    let tokens: Vec<&str> = std::iter::once("include")
+        .chain(RUNTIME_PREFILTER.iter().copied())
+        .chain(UNMODELED_FILE_CONSUMERS.iter().copied())
+        .collect();
+    let keep = tokens.iter().map(|t| t.len()).max().unwrap_or(1) - 1;
+    loop {
+        let remaining =
+            (MAX_OVERSIZED_INSPECT_BYTES - inspected).min(MAX_STREAMED_BYTES - budget.bytes);
+        if remaining == 0 {
+            // Distinguish exact EOF from a file exceeding either byte bound.
+            let mut probe = [0u8; 1];
+            return Ok(if file.read(&mut probe)? == 0 {
+                Some(false)
+            } else {
+                None
+            });
+        }
+        let read_len = chunk.len().min(remaining as usize);
+        let n = file.read(&mut chunk[..read_len])?;
+        if n == 0 {
+            return Ok(Some(false));
+        }
+        inspected += n as u64;
+        budget.bytes += n as u64;
+        if inspected > MAX_OVERSIZED_INSPECT_BYTES {
+            return Ok(None);
+        }
+        overlap.extend_from_slice(&chunk[..n]);
+        // ASCII markers survive lossy decoding unchanged, including across
+        // chunk boundaries. str::contains avoids a debug byte-window loop for
+        // every marker on large token-free generated files.
+        let text = String::from_utf8_lossy(&overlap);
+        if tokens.iter().any(|token| text.contains(token)) {
+            return Ok(Some(true));
+        }
+        if overlap.len() > keep {
+            overlap.drain(..overlap.len() - keep);
+        }
+    }
+}
 impl EmbeddedScan {
     /// Walk `repo_root`, bounded and sorted, and build the reference maps.
     pub(crate) fn scan(repo_root: &Path) -> EmbeddedScan {
         let mut scan = EmbeddedScan::default();
         let mut files: Vec<String> = Vec::new();
         let walker = pinned_walk(repo_root).build();
-        for entry in walker {
+        for (seen, entry) in walker.enumerate() {
+            if seen >= MAX_WALK_ENTRIES {
+                scan.bounded = Some(format!(
+                    "embedded scan bound exceeded: {MAX_WALK_ENTRIES} walk entries"
+                ));
+                return scan;
+            }
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(_) => {
-                    scan.errors.insert("walk: unreadable".to_string());
+                    scan.errors.insert("<walk>: unreadable".to_string());
                     continue;
                 }
             };
@@ -851,7 +1088,16 @@ impl EmbeddedScan {
                 continue;
             };
             let rel = relp.to_string_lossy().replace('\\', "/");
+            #[cfg(test)]
+            scan.scanned_sources.insert(rel.clone());
             files.push(rel);
+            if files.len() > MAX_FILES_SCANNED {
+                scan.bounded = Some(format!(
+                    "embedded scan bound exceeded: {} .rs files (max {MAX_FILES_SCANNED})",
+                    files.len()
+                ));
+                return scan;
+            }
         }
         files.sort();
         if files.len() > MAX_FILES_SCANNED {
@@ -862,6 +1108,7 @@ impl EmbeddedScan {
             return scan;
         }
         let mut total: u64 = 0;
+        let mut stream_budget = StreamBudget::default();
         let mut crate_cache: BTreeMap<String, String> = BTreeMap::new();
         for rel in &files {
             let full = repo_root.join(rel);
@@ -873,30 +1120,23 @@ impl EmbeddedScan {
                 }
             };
             if len > MAX_FILE_BYTES {
-                // Oversized: stream-search for consumer tokens; never load the
-                // whole file, and do not count inspected bytes toward the total.
-                match oversized_has_tokens(&full, len) {
-                    Ok(false) => {
+                match oversized_contains_consumer(&full, &mut stream_budget) {
+                    Ok(Some(false)) => {
                         scan.skipped
                             .insert(format!("skipped token-free oversized source {rel}"));
+                        continue;
                     }
-                    Ok(true) => {
+                    Ok(_) => {
                         scan.bounded = Some(format!(
-                            "embedded scan bound exceeded: {rel}: oversized (max {MAX_FILE_BYTES} bytes)"
+                            "embedded scan bound exceeded: {rel}: oversized (file ceiling {MAX_OVERSIZED_INSPECT_BYTES}; max {MAX_OVERSIZED_FILES} oversized files / {MAX_STREAMED_BYTES} streamed bytes)"
                         ));
                         return scan;
                     }
-                    Err(OversizedError::TooLarge) => {
-                        scan.bounded = Some(format!(
-                            "embedded scan bound exceeded: {rel}: oversized (max {MAX_OVERSIZED_INSPECT_BYTES} bytes inspectable)"
-                        ));
-                        return scan;
-                    }
-                    Err(OversizedError::Unreadable) => {
+                    Err(_) => {
                         scan.errors.insert(format!("{rel}: unreadable"));
+                        continue;
                     }
                 }
-                continue;
             }
             total += len;
             if total > MAX_TOTAL_BYTES {
@@ -911,7 +1151,7 @@ impl EmbeddedScan {
             use std::io::Read;
             let bytes = match std::fs::File::open(&full).and_then(|file| {
                 let mut bytes = Vec::new();
-                file.take(MAX_TOTAL_BYTES - (total - len) + 1)
+                file.take((MAX_TOTAL_BYTES - (total - len) + 1).min(MAX_FILE_BYTES + 1))
                     .read_to_end(&mut bytes)?;
                 Ok(bytes)
             }) {
@@ -929,7 +1169,14 @@ impl EmbeddedScan {
                 return scan;
             }
             if bytes.len() as u64 > MAX_FILE_BYTES {
-                // Grew between metadata and read: treat as oversized with tokens.
+                total -= bytes.len() as u64;
+                if oversized_contains_consumer(&full, &mut stream_budget)
+                    .is_ok_and(|result| result == Some(false))
+                {
+                    scan.skipped
+                        .insert(format!("skipped token-free oversized source {rel}"));
+                    continue;
+                }
                 scan.bounded = Some(format!(
                     "embedded scan bound exceeded: {rel}: oversized (max {MAX_FILE_BYTES} bytes)"
                 ));
@@ -952,116 +1199,6 @@ impl EmbeddedScan {
         scan
     }
 
-    /// Code-aware detection of file-consuming macros/derives the scan does not
-    /// resolve. A literal path attributes the consumer to matching candidates;
-    /// a consumer with no literal path is a repo-wide unresolved read.
-    fn scan_consumers(
-        &mut self,
-        repo_root: &Path,
-        rel: &str,
-        src: &str,
-        crate_cache: &mut BTreeMap<String, String>,
-    ) -> Result<(), String> {
-        let b = src.as_bytes();
-        let crate_root = nearest_crate_root(repo_root, rel, crate_cache);
-        let add = |this: &mut Self, lit: &str, dir_hint: Option<&str>| {
-            let mut any = false;
-            for base in [parent_dir(rel), crate_root.as_str(), ""] {
-                if let Some(t) = repo_relative_target(repo_root, base, lit) {
-                    this.consumers.insert((rel.to_string(), t));
-                    any = true;
-                }
-                if let Some(hint) = dir_hint
-                    && let Some(t) = repo_relative_target(repo_root, base, &format!("{hint}/{lit}"))
-                {
-                    this.consumers.insert((rel.to_string(), t));
-                    any = true;
-                }
-            }
-            if !any {
-                this.skipped
-                    .insert(format!("{rel}: consumer target outside the repo ignored"));
-            }
-        };
-        let mut rust_embed_without_folder = false;
-        let mut i = 0;
-        while i < b.len() {
-            if let Some(next) = consume_skipped(src, i, rel)? {
-                i = next.max(i + 1);
-                continue;
-            }
-            // Attribute: `#[derive(RustEmbed)]`, `#[folder = ".."]`, `#[template(path = "..")]`.
-            if b[i] == b'#' {
-                let j = skip_trivia(src, i + 1, rel)?;
-                if j < b.len()
-                    && b[j] == b'['
-                    && let Some(close) = end_of_bracket(src, j, rel)?
-                {
-                    let body = &src[j + 1..close];
-                    let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
-                    if compact.contains("RustEmbed") {
-                        rust_embed_without_folder = true;
-                    }
-                    if compact.starts_with("folder=") {
-                        if let Some(lit) = first_literal(body, rel)? {
-                            rust_embed_without_folder = false;
-                            add(self, &lit, None);
-                        }
-                    } else if compact.starts_with("template(") && compact.contains("path=") {
-                        match first_literal(body, rel)? {
-                            Some(lit) => add(self, &lit, Some("templates")),
-                            None => {
-                                self.unresolved_reads.insert(format!(
-                                    "{rel}: file-consuming template without a literal path"
-                                ));
-                            }
-                        }
-                    }
-                    i = close + 1;
-                    continue;
-                }
-            }
-            // Macro: `<ident>_file!(..)`, `<ident>_file_as!(..)`, `include_dir!(..)`.
-            if b[i].is_ascii_alphabetic() || b[i] == b'_' {
-                let start = i;
-                while i < b.len() && is_ident_byte(b[i]) {
-                    i += 1;
-                }
-                let ident = &src[start..i];
-                let is_consumer = ident.ends_with("_file")
-                    || ident.ends_with("_file_as")
-                    || ident == "include_dir";
-                if is_consumer && (start == 0 || !is_ident_byte(b[start - 1])) {
-                    let bang = skip_trivia(src, i, rel)?;
-                    if bang < b.len() && b[bang] == b'!' {
-                        let open = skip_trivia(src, bang + 1, rel)?;
-                        if open < b.len()
-                            && matches!(b[open], b'(' | b'{')
-                            && let Some(end) = find_matching_delimiter(src, open, rel)?
-                        {
-                            match first_literal(&src[open + 1..end], rel)? {
-                                Some(lit) => add(self, &lit, None),
-                                None => {
-                                    self.unresolved_reads.insert(format!(
-                                        "{rel}: file-consuming macro `{ident}!` without a literal path"
-                                    ));
-                                }
-                            }
-                            i = end + 1;
-                        }
-                    }
-                }
-                continue;
-            }
-            i += src[i..].chars().next().map(char::len_utf8).unwrap_or(1);
-        }
-        if rust_embed_without_folder {
-            self.unresolved_reads
-                .insert(format!("{rel}: RustEmbed derive without a literal folder"));
-        }
-        Ok(())
-    }
-
     fn scan_file(
         &mut self,
         repo_root: &Path,
@@ -1071,16 +1208,17 @@ impl EmbeddedScan {
     ) -> Result<(), String> {
         let has_include = src.contains("include");
         let has_runtime = RUNTIME_PREFILTER.iter().any(|p| src.contains(p));
-        if UNMODELED_FILE_CONSUMERS.iter().any(|m| src.contains(m)) {
-            self.scan_consumers(repo_root, rel, src, crate_cache)?;
-        }
-        if !has_include && !has_runtime {
+        let has_consumer = UNMODELED_FILE_CONSUMERS.iter().any(|m| src.contains(m));
+        if !has_include && !has_runtime && !has_consumer {
             return Ok(());
         }
         let is_test_file = is_test_file_path(rel);
         let layout = analyze_tests(src, rel)?;
         let in_test_scope = is_test_file || !layout.fns.is_empty() || !layout.cfg_items.is_empty();
         let crate_root = nearest_crate_root(repo_root, rel, crate_cache);
+        if has_consumer {
+            self.scan_consumers(repo_root, rel, &crate_root, src)?;
+        }
 
         if has_include {
             for mac in ["include_str", "include_bytes", "include"] {
@@ -1102,20 +1240,27 @@ impl EmbeddedScan {
                     let target = match parse_include_arg(inner, rel)? {
                         IncludeArg::Generated => None,
                         IncludeArg::Literal(l) => {
-                            let target = repo_relative_target(repo_root, parent_dir(rel), &l);
+                            let target = if l.starts_with('/')
+                                || l.starts_with('\\')
+                                || l.as_bytes().get(1) == Some(&b':')
+                            {
+                                repo_targets(repo_root, rel, &crate_root, &l)
+                                    .into_iter()
+                                    .next()
+                            } else {
+                                join_norm(parent_dir(rel), &l)
+                            };
                             if target.is_none() {
-                                self.skipped.insert(format!(
-                                    "{rel}: include target outside the repo ignored"
-                                ));
+                                self.skipped
+                                    .insert(format!("{rel}: outside-repo include target ignored"));
                             }
                             target
                         }
                         IncludeArg::ManifestRel(r) => {
-                            let target = repo_relative_target(repo_root, &crate_root, &r);
+                            let target = join_norm(&crate_root, &r);
                             if target.is_none() {
-                                self.skipped.insert(format!(
-                                    "{rel}: include target outside the repo ignored"
-                                ));
+                                self.skipped
+                                    .insert(format!("{rel}: outside-repo include target ignored"));
                             }
                             target
                         }
@@ -1145,9 +1290,8 @@ impl EmbeddedScan {
                 .iter()
                 .any(|p| join_norm("", p).is_none() && join_norm(&crate_root, p).is_none())
             {
-                self.skipped.insert(format!(
-                    "{rel}: runtime read target outside the repo ignored"
-                ));
+                self.unresolved_reads
+                    .insert(format!("{rel}: runtime literal escapes repo root"));
             }
             if dynamic > 0 && in_test_scope {
                 self.unresolved_reads.insert(format!(
@@ -1261,6 +1405,29 @@ pub(crate) fn decide_with_scan(
     let mut needs: BTreeSet<String> = BTreeSet::new();
     let mut evidence: BTreeSet<String> = BTreeSet::new();
     let mut refuse: Vec<String> = Vec::new();
+    if let Some(b) = &scan.bounded {
+        let cheap: Vec<&String> = candidates.iter().filter(|path| is_cheap(path)).collect();
+        let non_cheap: Vec<&String> = candidates.iter().filter(|path| !is_cheap(path)).collect();
+        // D4: a bound refuses the non-cheap candidates individually; cheap
+        // candidates keep their 0203 behavior with an annotation even when
+        // they share the packet with a non-cheap candidate.
+        for path in &non_cheap {
+            refuse.push(format!("{path}: {b}"));
+        }
+        if !cheap.is_empty() {
+            d.annotations
+                .push(format!("embedded lookup bounded: not verified ({b})"));
+            d.no_dependency.extend(cheap.into_iter().cloned());
+        }
+        refuse.sort();
+        refuse.dedup();
+        d.refuse = if refuse.is_empty() {
+            None
+        } else {
+            Some(refuse.join("; "))
+        };
+        return;
+    }
     if let Some(e) = scan.errors.iter().next() {
         refuse.push(format!(
             "embedded scan could not read or lex {} file(s) (first: {e})",
@@ -1269,27 +1436,21 @@ pub(crate) fn decide_with_scan(
     }
     if refuse.is_empty() {
         for path in candidates {
-            // Unmodeled consumer with a literal path matching this candidate.
             let key = fold(path);
-            for (file, target) in &scan.consumers {
-                let t = fold(target);
-                if key == t || key.starts_with(&format!("{t}/")) {
-                    refuse.push(format!(
-                        "{path} is consumed by {file} through a file-consuming macro the lookup does not model"
-                    ));
-                }
+            let consumer = scan
+                .consumers
+                .iter()
+                .find(|(target, _)| key == **target || key.starts_with(&format!("{target}/")));
+            if let Some((_, readers)) = consumer {
+                refuse.push(format!(
+                    "{path}: unmodeled file consumer ({})",
+                    readers.iter().cloned().collect::<Vec<_>>().join(", ")
+                ));
+                continue;
             }
             let refs = scan.refs_for(path);
             if refs.is_empty() {
-                if let Some(b) = &scan.bounded {
-                    if is_cheap(path) {
-                        d.annotations
-                            .push("embedded lookup bounded: not verified".to_string());
-                        d.no_dependency.insert(path.clone());
-                    } else {
-                        refuse.push(b.clone());
-                    }
-                } else if is_cheap(path) {
+                if is_cheap(path) {
                     d.no_dependency.insert(path.clone());
                 } else if let Some(u) = scan.unresolved_reads.iter().next() {
                     refuse.push(format!(
@@ -1318,13 +1479,11 @@ pub(crate) fn decide_with_scan(
             }
         }
     }
-    d.annotations.sort();
-    d.annotations.dedup();
-    if stems.len() > BROAD_STEM_THRESHOLD {
-        d.annotations
-            .push(format!("broad stem set ({})", stems.len()));
-    }
     d.stems = stems.into_iter().collect();
+    if d.stems.len() > 50 {
+        d.annotations
+            .push(format!("broad stem set ({})", d.stems.len()));
+    }
     d.needs_mapping = needs.into_iter().collect();
     d.evidence = evidence.into_iter().collect();
     refuse.sort();
@@ -1341,6 +1500,66 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn source_extensions_match_the_index_predicate() {
+        let mismatches: Vec<_> = crate::index::orchestrator::SUPPORTED_EXTENSIONS
+            .iter()
+            .chain(crate::index::orchestrator::BINARY_EXTENSIONS.iter())
+            .chain(["md", "json", "mjs", "cjs", "kt", "kts"].iter())
+            .filter(|ext| {
+                let path = format!("file.{ext}");
+                is_source_path(Path::new(&path)) != crate::index::topology::is_source_file(&path)
+            })
+            .collect();
+        assert!(mismatches.is_empty(), "index source parity: {mismatches:?}");
+    }
+
+    #[test]
+    fn generated_runtime_read_does_not_mark_unrelated_material_unresolved() {
+        let dir = tempdir().unwrap();
+        write(
+            dir.path(),
+            "src/lib.rs",
+            "#[test] fn generated() { let _ = std::fs::read_to_string(concat!(env!(\"OUT_DIR\"), \"/x\")); }",
+        );
+        let decision = decide_for(dir.path(), &["assets/logo.png"]);
+        assert!(decision.refuse.is_none(), "{:?}", decision.refuse);
+        assert!(decision.stems.is_empty());
+    }
+
+    #[test]
+    fn top_level_test_runtime_literal_selects_its_function() {
+        let dir = tempdir().unwrap();
+        write(
+            dir.path(),
+            "src/lib.rs",
+            "#[test] fn direct_reader() { let _ = std::fs::read_to_string(\"docs/a.md\"); }",
+        );
+        let decision = decide_for(dir.path(), &["docs/a.md"]);
+        assert_eq!(decision.stems, vec!["direct_reader"]);
+        assert!(decision.needs_mapping.is_empty());
+    }
+
+    #[test]
+    fn broad_lookup_stem_set_has_a_visible_annotation() {
+        let dir = tempdir().unwrap();
+        let tests = (0..51)
+            .map(|n| format!("#[test] fn t_{n}() {{}}\n"))
+            .collect::<String>();
+        write(
+            dir.path(),
+            "tests/all.rs",
+            &format!("const D: &str = include_str!(\"../doc.txt\");\n{tests}"),
+        );
+        let decision = decide_for(dir.path(), &["doc.txt"]);
+        assert_eq!(decision.stems.len(), 51);
+        assert!(
+            decision
+                .annotations
+                .contains(&"broad stem set (51)".to_string())
+        );
+    }
 
     fn write(root: &Path, rel: &str, body: &str) {
         let p = root.join(rel);
@@ -1393,6 +1612,63 @@ mod tests {
                 vec!["pin".to_string()]
             }
         );
+    }
+
+    #[test]
+    fn dot_ignore_does_not_hide_embedded_includer() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), ".ignore", "ignored/\n");
+        write(
+            dir.path(),
+            "ignored/lib.rs",
+            "#[test] fn ignored_contract() { let _ = include_str!(\"../contract.txt\"); }\n",
+        );
+        let d = decide_for(dir.path(), &["contract.txt"]);
+        assert_eq!(d.refuse, None);
+        assert_eq!(d.stems, vec!["ignored_contract".to_string()]);
+    }
+
+    #[test]
+    fn parent_gitignore_does_not_hide_embedded_includer() {
+        let parent = tempdir().unwrap();
+        write(parent.path(), ".gitignore", "repo/ignored/\n");
+        let root = parent.path().join("repo");
+        write(
+            &root,
+            "ignored/lib.rs",
+            "#[test] fn parent_ignored_contract() { let _ = include_str!(\"../contract.txt\"); }\n",
+        );
+        let d = decide_for(&root, &["contract.txt"]);
+        assert_eq!(d.refuse, None);
+        assert_eq!(d.stems, vec!["parent_ignored_contract".to_string()]);
+    }
+
+    #[test]
+    fn build_rs_out_dir_include_and_runtime_do_not_hide_repository_material() {
+        let dir = tempdir().unwrap();
+        write(
+            dir.path(),
+            "build.rs",
+            r#"
+const GENERATED: &str = include_str!(concat!(env!("OUT_DIR"), "/generated.txt"));
+fn main() { let _ = std::fs::read_to_string(concat!(env!("OUT_DIR"), "/generated.txt")); }
+"#,
+        );
+        write(
+            dir.path(),
+            "src/lib.rs",
+            "#[test] fn repository_contract() { let _ = include_str!(\"../templates/message.txt\"); }\n",
+        );
+        let scan = EmbeddedScan::scan(dir.path());
+        assert!(
+            scan.unresolved_reads.is_empty(),
+            "{:?}",
+            scan.unresolved_reads
+        );
+        let d = decide_for(dir.path(), &["templates/message.txt", "data/unrelated.csv"]);
+        assert_eq!(d.refuse, None);
+        assert_eq!(d.stems, vec!["repository_contract".to_string()]);
+        assert!(d.no_dependency.contains("data/unrelated.csv"));
     }
 
     #[test]
@@ -1481,21 +1757,171 @@ mod tests {
     }
 
     #[test]
+    fn oversized_stream_detects_split_token_and_exact_ceiling() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("generated.rs");
+        let mut body = vec![b' '; MAX_FILE_BYTES as usize + 1];
+        body[65533..65540].copy_from_slice(b"include");
+        std::fs::write(&path, &body).unwrap();
+        assert_eq!(
+            oversized_contains_consumer(&path, &mut StreamBudget::default()).unwrap(),
+            Some(true)
+        );
+        std::fs::write(&path, vec![b' '; MAX_OVERSIZED_INSPECT_BYTES as usize]).unwrap();
+        assert_eq!(
+            oversized_contains_consumer(&path, &mut StreamBudget::default()).unwrap(),
+            Some(false)
+        );
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b" ")
+            .unwrap();
+        assert_eq!(
+            oversized_contains_consumer(&path, &mut StreamBudget::default()).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn aggregate_streaming_caps_are_enforced() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("large.rs");
+        std::fs::write(&path, vec![b' '; MAX_FILE_BYTES as usize + 1]).unwrap();
+        let mut file_budget = StreamBudget {
+            files: MAX_OVERSIZED_FILES,
+            bytes: 0,
+        };
+        assert_eq!(
+            oversized_contains_consumer(&path, &mut file_budget).unwrap(),
+            None
+        );
+        let mut byte_budget = StreamBudget {
+            files: 0,
+            bytes: MAX_STREAMED_BYTES - 16,
+        };
+        assert_eq!(
+            oversized_contains_consumer(&path, &mut byte_budget).unwrap(),
+            None
+        );
+        assert_eq!(byte_budget.bytes, MAX_STREAMED_BYTES);
+        for n in 0..=MAX_OVERSIZED_FILES {
+            std::fs::copy(&path, dir.path().join(format!("{n:03}.rs"))).unwrap();
+        }
+        let scan = EmbeddedScan::scan(dir.path());
+        assert!(
+            scan.bounded
+                .as_deref()
+                .unwrap_or("")
+                .contains("oversized files")
+        );
+        let cheap = decide(dir.path(), &["docs/guide.md".to_string()], |_| true);
+        assert!(cheap.refuse.is_none());
+        assert!(
+            cheap
+                .annotations
+                .iter()
+                .any(|a| a.contains("bounded: not verified"))
+        );
+        assert!(decide_for(dir.path(), &["data/x.csv"]).refuse.is_some());
+    }
+
+    #[test]
+    fn nested_vendor_and_virtualenv_directories_are_pruned() {
+        let dir = tempdir().unwrap();
+        for skip in [
+            "vendor",
+            "deps_src",
+            "third_party",
+            "target",
+            ".venv",
+            "venv",
+        ] {
+            write(
+                dir.path(),
+                &format!("nested/{skip}/tests/ref.rs"),
+                "#[test] fn vendored() { include_str!(\"../../../guide.md\"); }",
+            );
+        }
+        let scan = EmbeddedScan::scan(dir.path());
+        assert!(scan.refs_for("guide.md").is_empty());
+        assert!(scan.errors.is_empty());
+    }
+
+    #[rstest::rstest]
+    #[case(
+        r#"include_dir!("$CARGO_MANIFEST_DIR/assets");"#,
+        "assets/logo.png",
+        true
+    )]
+    #[case(
+        r#"include_dir!("$CARGO_MANIFEST_DIR/assets");"#,
+        "other/logo.png",
+        false
+    )]
+    #[case(r#"include_dir!("$OUT_DIR/generated");"#, "assets/logo.png", false)]
+    #[case(
+        r#"include_dir!(concat!(env!("OUT_DIR"), "/generated"));"#,
+        "assets/logo.png",
+        false
+    )]
+    #[case(r#"include_dir!("$CUSTOM_ASSETS/path");"#, "assets/logo.png", true)]
+    #[case(
+        r#"#[folder = "$CARGO_MANIFEST_DIR/assets"] #[derive(RustEmbed)] struct Assets;"#,
+        "assets/logo.png",
+        true
+    )]
+    #[case(
+        r#"#[folder = "assets"] #[derive(RustEmbed)] struct Assets;"#,
+        "other/logo.png",
+        false
+    )]
+    #[case(
+        r#"#[folder = "assets"] #[derive(RustEmbed)] struct Assets;"#,
+        "assets/logo.png",
+        true
+    )]
+    fn consumer_environment_paths_are_conservative(
+        #[case] src: &str,
+        #[case] path: &str,
+        #[case] refused: bool,
+    ) {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "Cargo.toml", "[package]\nname='fx'\n");
+        write(dir.path(), "lib.rs", src);
+        let d = decide_for(dir.path(), &[path]);
+        assert_eq!(d.refuse.is_some(), refused, "{:?}", d.refuse);
+        if refused {
+            assert!(d.refuse.as_deref().unwrap().contains("lib.rs"));
+        }
+    }
+
+    #[test]
+    fn every_nested_manifest_is_inspected() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "aaa/Cargo.toml", "[package]\nname='first'\n");
+        write(dir.path(), "zzz/Cargo.toml", "broken [");
+        assert_eq!(
+            repo_has_rust_crates(dir.path()),
+            RustCrates::Unknown("malformed Cargo.toml")
+        );
+        std::fs::write(dir.path().join("zzz/Cargo.toml"), [0xff]).unwrap();
+        assert_eq!(
+            repo_has_rust_crates(dir.path()),
+            RustCrates::Unknown("nonUtf8")
+        );
+    }
+
+    #[test]
     fn real_file_count_cap_refuses() {
         let dir = tempdir().unwrap();
         for n in 0..=MAX_FILES_SCANNED {
             write(dir.path(), &format!("src/{n:04}.rs"), "");
         }
-        let d = decide_for(dir.path(), &["data/x.csv"]);
+        let d = decide_for(dir.path(), &["data/value.txt"]);
         assert!(d.refuse.as_deref().unwrap_or("").contains(".rs files"));
-        // Cheap docs keep 0203 behavior with an explicit annotation (D2).
-        let d = decide_for(dir.path(), &["docs/contract.md"]);
-        assert_eq!(d.refuse, None);
-        assert!(
-            d.annotations
-                .iter()
-                .any(|a| a.contains("bounded: not verified"))
-        );
     }
 
     #[test]
@@ -1505,7 +1931,7 @@ mod tests {
         for n in 0..=(MAX_TOTAL_BYTES / MAX_FILE_BYTES) {
             write(dir.path(), &format!("src/{n:04}.rs"), &body);
         }
-        let d = decide_for(dir.path(), &["data/x.csv"]);
+        let d = decide_for(dir.path(), &["data/value.txt"]);
         assert!(
             d.refuse
                 .as_deref()
@@ -1569,6 +1995,38 @@ mod tests {
             d.annotations
                 .iter()
                 .any(|a| a.contains("embedded lookup bounded: not verified"))
+        );
+    }
+
+    #[test]
+    fn bounded_mixed_batch_refuses_only_the_non_cheap_candidates() {
+        // D4: a `Bounded` scan refuses non-cheap candidates by name while a
+        // cheap sibling keeps its 0203 outcome and annotation.
+        let scan = EmbeddedScan {
+            bounded: Some("embedded scan bound exceeded".to_string()),
+            ..Default::default()
+        };
+        let mut d = EmbeddedDecision::default();
+        decide_with_scan(
+            &scan,
+            &["docs/guide.md".to_string(), "data/x.csv".to_string()],
+            cheap,
+            &mut d,
+        );
+        let reason = d.refuse.expect("non-cheap candidate must refuse");
+        assert!(reason.contains("data/x.csv"), "{reason}");
+        assert!(!reason.contains("docs/guide.md"), "{reason}");
+        assert!(
+            d.annotations
+                .iter()
+                .any(|a| a.contains("embedded lookup bounded: not verified")),
+            "{:?}",
+            d.annotations
+        );
+        assert!(
+            d.no_dependency.iter().any(|path| path == "docs/guide.md"),
+            "{:?}",
+            d.no_dependency
         );
     }
 
@@ -1808,102 +2266,13 @@ mod tests {
     }
 
     #[test]
-    fn source_exts_cover_every_index_language_extension() {
-        use crate::index::languages::types::Language;
-        for ext in [
-            "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "java", "kt", "kts", "c",
-            "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "h++", "md", "json", "txt", "toml", "cu",
-            "m", "mm", "class",
-        ] {
-            if let Some(lang) = Language::from_extension(ext)
-                && lang != Language::Markdown
-            {
-                assert!(
-                    is_source_path(Path::new(&format!("x.{ext}"))),
-                    "{ext} is indexed as {lang:?} but missing from SOURCE_EXTS"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn skip_set_is_case_insensitive_only_on_windows() {
-        assert!(is_skipped_dir("target"));
-        assert_eq!(is_skipped_dir("Target"), cfg!(windows));
-        assert!(!is_skipped_dir("src"));
-    }
-
-    #[test]
-    fn oversized_stream_finds_token_across_chunk_boundary_and_skips_clean() {
-        let dir = tempdir().unwrap();
-        let mut body = "x".repeat(64 * 1024 - 5);
-        body.push_str("include_str!(\"a\")");
-        body.push_str(&"y".repeat(MAX_FILE_BYTES as usize));
-        write(dir.path(), "src/big.rs", &body);
-        let hit = oversized_has_tokens(&dir.path().join("src/big.rs"), body.len() as u64);
-        assert!(matches!(hit, Ok(true)));
-        let clean = "z".repeat(MAX_FILE_BYTES as usize + 10);
-        write(dir.path(), "src/clean.rs", &clean);
-        let miss = oversized_has_tokens(&dir.path().join("src/clean.rs"), clean.len() as u64);
-        assert!(matches!(miss, Ok(false)));
-    }
-
-    #[test]
-    fn rust_crate_detection_is_tri_state_and_fails_closed() {
-        let root_manifest = tempdir().unwrap();
-        write(
-            root_manifest.path(),
-            "Cargo.toml",
-            "[package]\nname=\"x\"\n",
-        );
-        assert_eq!(
-            repo_has_rust_crates(root_manifest.path()),
-            RustCrates::Present
-        );
-
-        let nested = tempdir().unwrap();
-        write(
-            nested.path(),
-            "backend/Cargo.toml",
-            "[package]\nname=\"x\"\n",
-        );
-        assert_eq!(repo_has_rust_crates(nested.path()), RustCrates::Present);
-
-        let none = tempdir().unwrap();
-        write(none.path(), "app.py", "print(1)\n");
-        assert_eq!(repo_has_rust_crates(none.path()), RustCrates::Absent);
-
-        assert!(RustCrates::Present.is_strict());
-        assert!(RustCrates::Unknown("unreadable").is_strict());
-        assert!(!RustCrates::Absent.is_strict());
-    }
-
-    #[test]
-    fn broad_stem_set_is_annotated() {
-        let dir = tempdir().unwrap();
-        let mut body = String::new();
-        for n in 0..=BROAD_STEM_THRESHOLD {
-            body.push_str(&format!("#[test]\nfn t{n}() {{}}\n"));
-        }
-        body.push_str("const D: &str = include_str!(\"../data/x.csv\");\n");
-        write(dir.path(), "tests/t.rs", &body);
-        let d = decide_for(dir.path(), &["data/x.csv"]);
-        assert!(d.stems.len() > BROAD_STEM_THRESHOLD);
-        assert!(
-            d.annotations
-                .iter()
-                .any(|a| a.starts_with("broad stem set"))
-        );
-    }
-
-    #[test]
     fn caps_yield_bounded_refusal() {
         let scan = EmbeddedScan {
             bounded: Some("embedded scan bound exceeded: test".to_string()),
             ..Default::default()
         };
         let mut d = EmbeddedDecision::default();
-        decide_with_scan(&scan, &["data/x.csv".to_string()], cheap, &mut d);
+        decide_with_scan(&scan, &["data/x.txt".to_string()], cheap, &mut d);
         assert!(d.refuse.as_deref().unwrap_or("").contains("bound exceeded"));
     }
 
@@ -1983,6 +2352,79 @@ mod engine_tests {
     use super::*;
     use crate::verify::plan::non_code::INCLUDE_STR_MATERIAL;
 
+    #[test]
+    #[ignore = "0549 release qualification: worst-case bounded scan latency; owner track0549"]
+    fn embedded_cap_latency_qualification() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = " ".repeat(MAX_TOTAL_BYTES as usize / MAX_FILES_SCANNED);
+        for n in 0..MAX_FILES_SCANNED {
+            std::fs::write(dir.path().join(format!("{n:04}.rs")), &body).unwrap();
+        }
+        let _warm = EmbeddedScan::scan(dir.path());
+        let start = std::time::Instant::now();
+        let decision = decide(dir.path(), &["docs/guide.md".to_string()], |_| true);
+        assert!(decision.refuse.is_none(), "{:?}", decision.refuse);
+        eprintln!(
+            "0549 cap latency: files={} bytes={} elapsed_ms={}",
+            MAX_FILES_SCANNED,
+            body.len() * MAX_FILES_SCANNED,
+            start.elapsed().as_millis()
+        );
+    }
+
+    #[test]
+    #[ignore = "0549 release qualification: streaming and non-Rust traversal latency"]
+    fn embedded_streaming_and_traversal_latency_qualification() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = vec![b' '; MAX_FILE_BYTES as usize + 1];
+        for n in 0..=MAX_OVERSIZED_FILES {
+            std::fs::write(dir.path().join(format!("{n:03}.rs")), &body).unwrap();
+        }
+        let _ = EmbeddedScan::scan(dir.path());
+        let start = std::time::Instant::now();
+        let scan = EmbeddedScan::scan(dir.path());
+        assert!(scan.bounded.is_some());
+        eprintln!(
+            "0549 many-oversized latency: files={} elapsed_ms={}",
+            MAX_OVERSIZED_FILES + 1,
+            start.elapsed().as_millis()
+        );
+        let bytes_tree = tempfile::tempdir().unwrap();
+        let big = vec![b' '; MAX_OVERSIZED_INSPECT_BYTES as usize];
+        for n in 0..=(MAX_STREAMED_BYTES / MAX_OVERSIZED_INSPECT_BYTES) {
+            std::fs::write(bytes_tree.path().join(format!("{n:03}.rs")), &big).unwrap();
+        }
+        let start = std::time::Instant::now();
+        let byte_scan = EmbeddedScan::scan(bytes_tree.path());
+        assert!(
+            byte_scan
+                .bounded
+                .as_deref()
+                .unwrap_or("")
+                .contains("streamed bytes")
+        );
+        let cheap = decide(bytes_tree.path(), &["docs/guide.md".to_string()], |_| true);
+        assert!(cheap.refuse.is_none());
+        let strict = decide(bytes_tree.path(), &["data/x.csv".to_string()], |_| false);
+        assert!(strict.refuse.is_some());
+        eprintln!(
+            "0549 aggregate streamed-byte cap: elapsed_ms={}",
+            start.elapsed().as_millis()
+        );
+        let tree = tempfile::tempdir().unwrap();
+        for n in 0..100_000 {
+            std::fs::write(tree.path().join(format!("{n:06}.txt")), b"").unwrap();
+        }
+        let start = std::time::Instant::now();
+        let scan = EmbeddedScan::scan(tree.path());
+        assert!(scan.bounded.is_none());
+        assert_eq!(repo_has_rust_crates(tree.path()), RustCrates::Absent);
+        eprintln!(
+            "0549 non-Rust traversal: entries=100000 elapsed_ms={}",
+            start.elapsed().as_millis()
+        );
+    }
+
     /// D5: on the engine tree the lookup reproduces every hand-written
     /// `INCLUDE_STR_MATERIAL` stem (table ⊆ lookup) and never emits a vacuous
     /// file/binary stem. This lock is only for lookup-derived names; D3(d)
@@ -2017,18 +2459,11 @@ mod engine_tests {
     fn engine_lookup_cheap_runtime_and_include_paths_have_table_entries() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let scan = EmbeddedScan::scan(root);
+        assert!(scan.bounded.is_none(), "{:?}", scan.bounded);
+        assert!(scan.errors.is_empty(), "{:?}", scan.errors);
         let mut missing = BTreeSet::new();
-        let walker = ignore::WalkBuilder::new(root)
-            .hidden(false)
-            .git_ignore(false)
-            .git_global(false)
-            .git_exclude(false)
-            .parents(false)
-            .require_git(false)
-            .filter_entry(|e| {
-                e.depth() == 0 || !is_skipped_dir(e.file_name().to_str().unwrap_or(""))
-            })
-            .build();
+        let mut walker_sources = BTreeSet::new();
+        let walker = pinned_walk(root).build();
         for entry in walker {
             let entry = entry.unwrap();
             if !entry.file_type().is_some_and(|t| t.is_file()) {
@@ -2040,6 +2475,9 @@ mod engine_tests {
                 .unwrap()
                 .to_string_lossy()
                 .replace('\\', "/");
+            if entry.path().extension().and_then(|e| e.to_str()) == Some("rs") {
+                walker_sources.insert(rel.clone());
+            }
             if super::super::non_code::is_non_code_cheap_path(Path::new(&rel))
                 && !scan.refs_for(&rel).is_empty()
                 && !INCLUDE_STR_MATERIAL.iter().any(|(p, _)| *p == rel)
@@ -2047,6 +2485,10 @@ mod engine_tests {
                 missing.insert(rel);
             }
         }
+        assert_eq!(
+            walker_sources, scan.scanned_sources,
+            "drift and lookup source sets diverged"
+        );
         assert!(
             missing.is_empty(),
             "cheap embedded/read paths missing table entries: {missing:?}"

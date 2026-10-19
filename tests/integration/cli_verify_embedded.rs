@@ -73,6 +73,23 @@ fn dry_run_json(cwd: &Path, extra: &[&str]) -> serde_json::Value {
     })
 }
 
+fn dry_run_refusal_json(cwd: &Path, extra: &[&str]) -> serde_json::Value {
+    let mut args = vec!["verify", "--scope", "fast", "--json", "--dry-run"];
+    args.extend_from_slice(extra);
+    let out = spawn_verify(cwd, &args);
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(1), "{value}");
+    assert_eq!(value["refused"], true, "{value}");
+    assert_eq!(value["scopeExecuted"], "refused", "{value}");
+    assert!(
+        value["fallbackReason"]
+            .as_str()
+            .is_some_and(|reason| !reason.is_empty()),
+        "{value}"
+    );
+    value
+}
+
 fn nextest_command(v: &serde_json::Value) -> Option<String> {
     v["steps"]
         .as_array()?
@@ -176,14 +193,14 @@ fn unreferenced_asset_with_dynamic_test_reads_refuses() {
     git_add_and_commit(root, "dyn");
     write(root, "assets/logo.png", "png\n");
 
-    let v = dry_run_json(root, &[]);
+    let v = dry_run_refusal_json(root, &[]);
     assert_eq!(v["scopeExecuted"], "refused", "{v}");
     assert_eq!(v["refused"], true, "{v}");
     assert!(
         v["fallbackReason"]
             .as_str()
             .unwrap_or("")
-            .contains("unresolved reads"),
+            .contains("tests/dyn.rs"),
         "{v}"
     );
 }
@@ -202,13 +219,13 @@ fn embedded_untestable_include_refuses_with_reason() {
     git_add_and_commit(root, "shared");
     write(root, "docs/shared.md", "two\n");
 
-    let v = dry_run_json(root, &[]);
+    let v = dry_run_refusal_json(root, &[]);
     assert_eq!(v["scopeExecuted"], "refused", "{v}");
     assert!(
         v["fallbackReason"]
             .as_str()
             .unwrap_or("")
-            .contains("no #[test]"),
+            .contains("tests/common/mod.rs"),
         "{v}"
     );
 }
@@ -330,8 +347,15 @@ fn embedded_stems_do_not_mask_an_unmapped_source_change() {
 ",
     );
 
-    let v = dry_run_json(root, &["--auto-index"]);
+    let v = dry_run_refusal_json(root, &["--auto-index"]);
     assert_eq!(v["refused"], true, "{v}");
+    assert!(
+        v["fallbackReason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("test_mapping"),
+        "{v}"
+    );
 }
 
 #[test]
@@ -363,7 +387,7 @@ mod tests {
 ",
     );
 
-    let v = dry_run_json(root, &["--auto-index"]);
+    let v = dry_run_refusal_json(root, &["--auto-index"]);
     assert_eq!(v["refused"], true, "{v}");
     assert!(
         v["fallbackReason"]
@@ -401,6 +425,113 @@ fn non_rust_repo_keeps_legacy_material_definition() {
 }
 
 #[rstest::rstest]
+#[case("malformed_root")]
+#[case("oversized_nested")]
+#[case("bounded_walk")]
+fn rust_detection_inconclusive_never_turns_dirty_material_into_green(#[case] kind: &str) {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    if kind == "malformed_root" {
+        write(root, "Cargo.toml", "[package\nnot valid TOML\n");
+    } else if kind == "oversized_nested" {
+        write(root, "backend/Cargo.toml", &" ".repeat(600 * 1024));
+    } else {
+        for n in 0..2501 {
+            write(root, &format!("aaa/{n:04}.rs"), "");
+        }
+        write(
+            root,
+            "zzz/Cargo.toml",
+            "[package]\nname='fx'\nversion='0.1.0'\n",
+        );
+    }
+    git_add_and_commit(root, "inconclusive detection baseline");
+    write(root, "templates/message.txt", "dirty\n");
+    let out = spawn_verify(root, &["verify", "--scope", "fast", "--dry-run", "--json"]);
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(1), "{kind}: {value}");
+    assert_eq!(value["cleanTree"], false, "{kind}: {value}");
+    assert_eq!(value["refused"], true, "{kind}: {value}");
+    assert!(
+        value["fallbackReason"]
+            .as_str()
+            .unwrap()
+            .contains("Rust detection inconclusive"),
+        "{kind}: {value}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn unreadable_nested_manifest_refuses_with_named_class() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    write(
+        root,
+        "backend/Cargo.toml",
+        "[package]\nname='fx'\nversion='0.1.0'\n",
+    );
+    git_add_and_commit(root, "nested parent");
+    let _locked = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(root.join("backend/Cargo.toml"))
+        .unwrap();
+    write(root, "message.txt", "dirty");
+    let out = spawn_verify(root, &["verify", "--scope", "fast", "--dry-run", "--json"]);
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(1), "{value}");
+    assert_eq!(value["cleanTree"], false, "{value}");
+    assert!(
+        value["fallbackReason"]
+            .as_str()
+            .unwrap()
+            .contains("unreadable"),
+        "{value}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_nested_manifest_refuses_with_named_class() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    write(
+        root,
+        "backend/Cargo.toml",
+        "[package]\nname='fx'\nversion='0.1.0'\n",
+    );
+    git_add_and_commit(root, "nested parent");
+    fs::set_permissions(
+        root.join("backend/Cargo.toml"),
+        fs::Permissions::from_mode(0),
+    )
+    .unwrap();
+    write(root, "message.txt", "dirty");
+    let out = spawn_verify(root, &["verify", "--scope", "fast", "--dry-run", "--json"]);
+    fs::set_permissions(
+        root.join("backend/Cargo.toml"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(1), "{value}");
+    assert_eq!(value["cleanTree"], false, "{value}");
+    assert!(
+        value["fallbackReason"]
+            .as_str()
+            .unwrap()
+            .contains("unreadable"),
+        "{value}"
+    );
+}
+
+#[rstest::rstest]
 #[case("docs/contract.md", "contracts_document")]
 #[case("templates/message.txt", "contracts_template")]
 fn nested_rust_repo_referenced_material_refuses_with_crate_guidance(
@@ -427,17 +558,67 @@ fn nested_rust_repo_referenced_material_refuses_with_crate_guidance(
     git_add_and_commit(root, "nested Rust");
     write(root, path, "mutation");
     let _ = stem;
-    let v = dry_run_json(root, &[]);
+    let out = spawn_verify(root, &["verify", "--scope", "fast", "--json", "--dry-run"]);
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["refused"], true, "{v}");
-    let reason = v["fallbackReason"].as_str().unwrap_or("");
-    assert!(reason.contains("only below the repo root"), "{v}");
     assert!(
-        reason.contains("root workspace Cargo.toml") && !reason.contains("-C"),
-        "remediation must not point at -C: {v}"
+        v["fallbackReason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("add a root workspace Cargo.toml"),
+        "{v}"
     );
-    // A real (non-dry-run) refusal exits 1 before running anything.
-    let real = spawn_verify(root, &["verify", "--scope", "fast"]);
-    assert_eq!(real.status.code(), Some(1));
+}
+
+#[test]
+fn nested_mixed_source_and_referenced_doc_refuses_instead_of_dropping_the_doc() {
+    // 0549 P1 (round 6): a nested-only repo with a mapped-source sibling must
+    // not silently drop the referenced document on the same route. Either the
+    // includer's test is selected or the plan refuses; here the nested-only
+    // policy refuses and names the remediation.
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    write(
+        root,
+        "backend/Cargo.toml",
+        "[package]\nname=\"fx\"\nversion=\"0.1.0\"\n",
+    );
+    write(
+        root,
+        "backend/src/lib.rs",
+        "pub mod alpha;\npub mod render;\n",
+    );
+    write(
+        root,
+        "backend/src/render.rs",
+        &ACCESSOR
+            .replace("../docs", "../../docs")
+            .replace("../templates", "../../templates"),
+    );
+    write(
+        root,
+        "backend/src/alpha.rs",
+        "pub fn a() -> u32 { 1 }\n#[cfg(test)] mod tests { #[test] fn alpha_ok() {} }\n",
+    );
+    write(root, "docs/contract.md", "v1");
+    write(root, "templates/message.txt", "hi");
+    git_add_and_commit(root, "nested mixed");
+    write(root, "backend/src/new_mod.rs", "pub fn n() -> u32 { 2 }\n");
+    write(root, "docs/contract.md", "v2");
+    let out = spawn_verify(root, &["verify", "--scope", "fast", "--json", "--dry-run"]);
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["refused"], true, "{v}");
+    assert_eq!(v["scopeExecuted"], "refused", "{v}");
+    assert!(
+        v["fallbackReason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("add a root workspace Cargo.toml"),
+        "{v}"
+    );
 }
 
 #[rstest::rstest]
@@ -517,19 +698,147 @@ fn benign_noncheap_exact_outcome(#[case] path: &str) {
 }
 
 #[test]
-fn malformed_root_manifest_cannot_produce_empty_cheap_green() {
+fn polyglot_nested_rust_uses_strict_template_materiality() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    write(
+        root,
+        "package.json",
+        "{\"name\":\"polyglot\",\"version\":\"1.0.0\"}\n",
+    );
+    write(
+        root,
+        "backend/Cargo.toml",
+        "[package]\nname='fx'\nversion='0.1.0'\n",
+    );
+    write(
+        root,
+        "backend/src/lib.rs",
+        "#[test] fn template_value() { let _ = include_str!(\"../../templates/message.txt\"); }\n",
+    );
+    write(root, "templates/message.txt", "parent\n");
+    git_add_and_commit(root, "polyglot parent");
+    write(root, "templates/message.txt", "mutation\n");
+    let out = spawn_verify(root, &["verify", "--scope", "fast", "--dry-run", "--json"]);
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(1), "{value}");
+    assert_eq!(value["cleanTree"], false, "{value}");
+    assert_eq!(value["scopeExecuted"], "refused", "{value}");
+    assert!(
+        value["fallbackReason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("root workspace"),
+        "{value}"
+    );
+}
+
+#[rstest::rstest]
+#[case("docs/guide.md", true)]
+#[case("", false)]
+fn malformed_root_manifest_refuses_nonempty_cheap_but_not_empty_tree(
+    #[case] dirty_path: &str,
+    #[case] refuses: bool,
+) {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    write(root, "Cargo.toml", "[package\nmalformed\n");
+    write(root, "docs/guide.md", "parent\n");
+    git_add_and_commit(root, "malformed root baseline");
+    if !dirty_path.is_empty() {
+        write(root, dirty_path, "mutation\n");
+    }
+    let out = spawn_verify(root, &["verify", "--scope", "fast", "--dry-run", "--json"]);
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(if refuses { 1 } else { 0 }),
+        "{value}"
+    );
+    assert_eq!(value["refused"], refuses, "{value}");
+    assert_eq!(value["cleanTree"], !refuses, "{value}");
+    if refuses {
+        assert!(
+            value["fallbackReason"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Rust detection inconclusive: malformed Cargo.toml"),
+            "{value}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_directory_does_not_trigger_discovery_for_cheap_or_full_scope() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    // Git ignores the inaccessible directory, but the pinned Rust walker
+    // would enter it if a legacy-material doc edit incorrectly triggered it.
+    write(root, ".gitignore", "blocked/\n");
+    write(root, "docs/guide.md", "parent\n");
+    git_add_and_commit(root, "cheap legacy baseline");
+    write(
+        root,
+        "blocked/backend/Cargo.toml",
+        "[package]\nname='fx'\nversion='0.1.0'\n",
+    );
+    let blocked = root.join("blocked");
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0)).unwrap();
+    write(root, "docs/guide.md", "mutation\n");
+    // Restore permissions before assertions so failures cannot strand temp
+    // directories or obscure the original command outcome during cleanup.
+    let fast = spawn_verify(root, &["verify", "--scope", "fast", "--dry-run", "--json"]);
+    let full = spawn_verify(root, &["verify", "--scope", "full", "--dry-run", "--json"]);
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700)).unwrap();
+    for (scope, out) in [("fast", fast), ("full", full)] {
+        let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(out.status.code(), Some(0), "{scope}: {value}");
+        assert_eq!(value["refused"], false, "{scope}: {value}");
+        assert!(value.get("fallbackReason").is_none(), "{scope}: {value}");
+    }
+}
+
+#[test]
+fn literal_less_file_consumer_refuses_and_names_candidate_and_consumer() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     init_fixture(root);
-    write(root, "Cargo.toml", "not valid toml {{{");
-    git_add_and_commit(root, "malformed manifest fixture");
-    write(root, "docs/guide.md", "changed guide");
-    let v = dry_run_json(root, &[]);
-    assert!(
-        v["refused"] == true
-            || v["steps"].as_array().is_some_and(|s| s
-                .iter()
-                .any(|step| step["command"].as_str().unwrap_or("").contains("cargo"))),
-        "manifest presence must not disappear into a non-Rust empty plan: {v}"
+    write(
+        root,
+        "tests/consumer.rs",
+        "#[test] fn consumer() { let _ = include_dir!(directory_variable); }\n",
     );
+    git_add_and_commit(root, "literal-less consumer parent");
+    write(root, "assets/logo.png", "mutation\n");
+    let value = dry_run_refusal_json(root, &[]);
+    let reason = value["fallbackReason"].as_str().unwrap();
+    assert!(reason.contains("assets/logo.png"), "{value}");
+    assert!(reason.contains("include_dir"), "{value}");
+    assert!(reason.contains("tests/consumer.rs"), "{value}");
+}
+
+#[rstest::rstest]
+#[case("docs/example.txt")]
+#[case("LICENSE")]
+fn unknown_nested_manifest_keeps_actual_cheap_only_cli_plan(#[case] path: &str) {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    write(root, "backend/Cargo.toml", &" ".repeat(600 * 1024));
+    write(root, path, "parent\n");
+    git_add_and_commit(root, "oversized nested manifest with cheap parent");
+    write(root, path, "mutation\n");
+    let out = spawn_verify(root, &["verify", "--scope", "fast", "--dry-run", "--json"]);
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(0), "{value}");
+    assert_eq!(value["cleanTree"], false, "{value}");
+    assert_eq!(value["refused"], false, "{value}");
+    assert_eq!(value["scopeExecuted"], "fast", "{value}");
+    assert!(value.get("fallbackReason").is_none(), "{value}");
+    assert!(nextest_command(&value).is_none(), "{value}");
 }

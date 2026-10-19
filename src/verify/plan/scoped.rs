@@ -242,6 +242,41 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
         return build_plan_with_scope(packet, rules, predicted, config, profile, scope, repo_root);
     }
 
+    // A broken root manifest is an execution precondition, not a discovery
+    // failure. Preserve the empty-packet contract and root-based profile; this
+    // guard precedes SharedInfra so malformed Cargo.toml cannot become a
+    // zero-step full fallback. No manifest walk or profile injection occurs.
+    if !packet.changes.is_empty()
+        && profile.rust.is_none()
+        && profile
+            .evidence
+            .contains(&crate::platform::repository::DetectionEvidence::FoundCargoToml)
+    {
+        let class = if profile.warnings.iter().any(|warning| {
+            matches!(
+                warning,
+                crate::platform::repository::DetectionWarning::UnreadableManifest(details) if details.starts_with("Cargo.toml:")
+            )
+        }) {
+            "unreadable Cargo.toml"
+        } else {
+            "malformed Cargo.toml"
+        };
+        return super::refuse_plan(&format!("Rust detection inconclusive: {class}"));
+    }
+
+    // None is the memoized NotNeeded state. Only execution owns the discovery
+    // trigger; planning never turns it into a second directory walk.
+    let detected = rust_crates.unwrap_or(embedded::RustCrates::Absent);
+    if let embedded::RustCrates::Unknown(class) = detected
+        && packet
+            .changes
+            .iter()
+            .any(|change| !is_non_code_cheap_path(&change.path))
+    {
+        return super::refuse_plan(&format!("Rust detection inconclusive: {class}"));
+    }
+
     // 1. SharedInfra — justified full suite (unchanged from 0061).
     if touches_shared_infra(packet) {
         let mut plan =
@@ -267,60 +302,8 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
     // dozens of unrelated tests per README edit. Non-cheap paths (fixtures,
     // templates, data) are looked up everywhere, including this tree.
     let engine_tree = work_root_is_engine_tree(repo_root);
-    // Tri-state, fail closed (0549 D8): a manifest that exists but yields no Rust
-    // profile (malformed), or an inconclusive crate walk, must never degrade to
-    // a 0-step non-Rust green.
-    let detected = rust_crates.unwrap_or_else(|| {
-        if profile.rust.is_some() {
-            embedded::RustCrates::Present
-        } else {
-            embedded::repo_has_rust_crates(repo_root)
-        }
-    });
-    if profile.rust.is_none()
-        && profile
-            .evidence
-            .contains(&crate::platform::repository::DetectionEvidence::FoundCargoToml)
-    {
-        let class = if profile.warnings.iter().any(|w| {
-            matches!(
-                w,
-                crate::platform::repository::DetectionWarning::UnreadableManifest(_)
-            )
-        }) {
-            "unreadable Cargo.toml"
-        } else {
-            "malformed Cargo.toml"
-        };
-        return mapping_cannot_scope_outcome(
-            &format!("Rust detection inconclusive: {class}"),
-            allow_full_fallback,
-            packet,
-            rules,
-            predicted,
-            config,
-            profile,
-            scope,
-            repo_root,
-        );
-    }
-    if let embedded::RustCrates::Unknown(class) = detected
-        && !packet.changes.is_empty()
-    {
-        return mapping_cannot_scope_outcome(
-            &format!("Rust detection inconclusive: {class}"),
-            allow_full_fallback,
-            packet,
-            rules,
-            predicted,
-            config,
-            profile,
-            scope,
-            repo_root,
-        );
-    }
-    let lookup_active =
-        (profile.rust.is_some() || detected.is_strict()) && !packet.changes.is_empty();
+    let lookup_active = (profile.rust.is_some() || detected == embedded::RustCrates::Present)
+        && !packet.changes.is_empty();
     let emb: EmbeddedDecision = if lookup_active {
         let candidates: Vec<String> = embedded::candidate_paths(packet)
             .into_iter()
@@ -332,22 +315,12 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
     } else {
         EmbeddedDecision::default()
     };
-    // Nested-only Rust (no root manifest): cargo steps cannot run at the root and
-    // Ledgerful does not rewrite commands, so a referenced path refuses honestly.
-    if profile.rust.is_none()
-        && lookup_active
+    if detected == embedded::RustCrates::Present
+        && !repo_root.join("Cargo.toml").is_file()
         && (!emb.stems.is_empty() || !emb.needs_mapping.is_empty())
     {
-        return mapping_cannot_scope_outcome(
+        return super::refuse_plan(
             "Rust crates found only below the repo root (no root Cargo.toml); add a root workspace Cargo.toml or run verify from a checkout rooted at the crate",
-            allow_full_fallback,
-            packet,
-            rules,
-            predicted,
-            config,
-            profile,
-            scope,
-            repo_root,
         );
     }
     if let Some(trigger) = &emb.refuse {
@@ -395,7 +368,10 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
     }
     if emb.needs_mapping.is_empty()
         && (all_non_code_cheap(packet)
-            || (lookup_active && pure_non_source && legacy_unreferenced.is_empty()))
+            || (lookup_active
+                && pure_non_source
+                && legacy_unreferenced.is_empty()
+                && (!engine_tree || !emb.stems.is_empty())))
     {
         return build_non_code_cheap_plan(
             packet,
@@ -427,20 +403,7 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
 
     // 0549 D3(d): production includers without inline tests are resolved
     // through `test_mapping` under the same freshness gate as changed code.
-    let mapping_packet: std::borrow::Cow<'_, ImpactPacket> = if emb.needs_mapping.is_empty() {
-        std::borrow::Cow::Borrowed(packet)
-    } else {
-        let mut eff = packet.clone();
-        for includer in &emb.needs_mapping {
-            eff.changes.push(crate::impact::packet::ChangedFile {
-                path: std::path::PathBuf::from(includer),
-                status: "Modified".to_string(),
-                ..Default::default()
-            });
-        }
-        std::borrow::Cow::Owned(eff)
-    };
-    let packet_for_mapping: &ImpactPacket = mapping_packet.as_ref();
+    let packet_for_mapping = packet;
 
     if let Some(c) = conn {
         let mut freshness = classify_test_mapping_freshness(c, packet_for_mapping);
@@ -536,6 +499,7 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
             );
         }
     }
+    let mut includer_stems = Vec::new();
     for includer in &emb.needs_mapping {
         let single = ImpactPacket {
             changes: vec![crate::impact::packet::ChangedFile {
@@ -546,10 +510,9 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
             head_hash: packet.head_hash.clone(),
             ..ImpactPacket::default()
         };
-        if conn
-            .and_then(|c| query_scoped_test_files(c, &single))
-            .is_none()
-        {
+        if let Some(stems) = conn.and_then(|c| query_scoped_test_files(c, &single)) {
+            includer_stems.extend(stems);
+        } else {
             return mapping_cannot_scope_outcome(
                 &format!("embedded path is read by {includer}, which has no test_mapping rows"),
                 allow_full_fallback,
@@ -565,10 +528,15 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
     }
     // P1-1: embedded stems never stand in for unmapped changed source; the
     // code-change mapping must scope on its own before they are unioned.
-    let mut scoped_stems = conn.and_then(|c| query_scoped_test_files(c, packet_for_mapping));
-    if let Some(stems) = scoped_stems.as_mut()
-        && !emb.stems.is_empty()
-    {
+    let mut scoped_stems = if has_source {
+        conn.and_then(|c| query_scoped_test_files(c, packet))
+    } else if !includer_stems.is_empty() || !emb.stems.is_empty() {
+        Some(Vec::new())
+    } else {
+        conn.and_then(|c| query_scoped_test_files(c, packet))
+    };
+    if let Some(stems) = scoped_stems.as_mut() {
+        stems.extend(includer_stems);
         stems.extend(emb.stems.iter().cloned());
         stems.sort();
         stems.dedup();
@@ -765,13 +733,29 @@ fn union_bump_manifests_if_needed(packet: &ImpactPacket, stems: &mut Vec<String>
 
 /// Append the lookup evidence (`path -> includer -> tests`) to a step description.
 fn with_embedded_note(base: String, emb: &EmbeddedDecision) -> String {
-    if emb.stems.is_empty() && emb.needs_mapping.is_empty() {
-        return base;
+    let mut description = base;
+    if !emb.stems.is_empty() || !emb.needs_mapping.is_empty() {
+        description.push_str(&format!(
+            " plus embedded-material tests ({})",
+            emb.evidence.join("; ")
+        ));
     }
-    format!(
-        "{base} plus embedded-material tests ({})",
-        emb.evidence.join("; ")
-    )
+    let unreferenced: Vec<&str> = emb
+        .no_dependency
+        .iter()
+        .filter(|path| !is_non_code_cheap_path(Path::new(path.as_str())))
+        .map(String::as_str)
+        .collect();
+    if !unreferenced.is_empty() {
+        description.push_str(&format!(
+            " (no direct include/read found by the lexical lookup for: {})",
+            unreferenced.join(", ")
+        ));
+    }
+    if !emb.annotations.is_empty() {
+        description.push_str(&format!(" ({})", emb.annotations.join("; ")));
+    }
+    description
 }
 
 fn non_code_nextest_description(packaging: bool, include_str: bool) -> String {
@@ -931,4 +915,189 @@ fn run_incremental_index_for_changed_files(
     // Return ownership of storage so it is dropped cleanly.
     let _ = indexer.into_storage().shutdown();
     Ok(())
+}
+
+#[cfg(test)]
+mod rust_detection_memo_tests {
+    use super::*;
+    use crate::impact::packet::ChangedFile;
+    use crate::platform::repository::{RepositoryProfile, detect_repository};
+
+    fn plan(
+        root: &camino::Utf8Path,
+        path: Option<&str>,
+        profile: &RepositoryProfile,
+        memo: Option<embedded::RustCrates>,
+        scope: VerifyScope,
+    ) -> VerificationPlan {
+        let packet = ImpactPacket {
+            changes: path
+                .into_iter()
+                .map(|path| ChangedFile {
+                    path: path.into(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        build_plan_scoped_with_rust_crates(
+            &packet,
+            &Rules::default(),
+            &[],
+            &VerifyConfig::default(),
+            profile,
+            scope,
+            None,
+            &crate::state::layout::Layout::new(root),
+            false,
+            false,
+            memo,
+        )
+    }
+
+    #[rstest::rstest]
+    #[case(None)]
+    #[case(Some("README.md"))]
+    fn unknown_memo_does_not_refuse_empty_or_cheap_packet(#[case] path: Option<&str>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        // A scanner would reject this unlexable Rust input. Unknown cheap-only
+        // planning must not scan it or turn the memo into a refusal.
+        std::fs::write(tmp.path().join("bad.rs"), [0xff]).unwrap();
+        let plan = plan(
+            root,
+            path,
+            &RepositoryProfile::default(),
+            Some(embedded::RustCrates::Unknown("unreadable")),
+            VerifyScope::Fast,
+        );
+        assert!(!plan.refused, "{:?}", plan.fallback_reason);
+        assert!(plan.steps.is_empty(), "{:?}", plan.steps);
+    }
+
+    #[test]
+    fn not_needed_memo_is_not_recomputed_from_nested_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        std::fs::create_dir(tmp.path().join("nested")).unwrap();
+        std::fs::write(tmp.path().join("nested/Cargo.toml"), "not valid toml {{{").unwrap();
+        let plan = plan(
+            root,
+            Some("notes.txt"),
+            &RepositoryProfile::default(),
+            None,
+            VerifyScope::Fast,
+        );
+        assert!(plan.refused);
+        let reason = plan.fallback_reason.as_deref().unwrap_or("");
+        assert!(reason.contains("test_mapping unavailable"), "{reason}");
+        assert!(!reason.contains("Rust detection inconclusive"), "{reason}");
+    }
+
+    #[test]
+    fn unknown_strict_packet_refuses_before_shared_infrastructure_fallback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let plan = plan(
+            root,
+            Some("Cargo.toml"),
+            &RepositoryProfile::default(),
+            Some(embedded::RustCrates::Unknown("oversized")),
+            VerifyScope::Fast,
+        );
+        assert!(plan.refused);
+        assert!(plan.steps.is_empty());
+        assert!(
+            plan.fallback_reason
+                .as_deref()
+                .unwrap()
+                .contains("Rust detection inconclusive: oversized")
+        );
+    }
+
+    #[rstest::rstest]
+    #[case(None, false)]
+    #[case(Some("README.md"), true)]
+    #[case(Some("Cargo.toml"), true)]
+    fn malformed_root_guard_is_nonempty_and_precedes_full_fallback(
+        #[case] path: Option<&str>,
+        #[case] refused: bool,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "not valid toml {{{").unwrap();
+        let profile = detect_repository(tmp.path());
+        assert!(profile.rust.is_none());
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let plan = plan(root, path, &profile, None, VerifyScope::Fast);
+        assert_eq!(plan.refused, refused, "{:?}", plan.fallback_reason);
+        if refused {
+            assert!(
+                plan.fallback_reason
+                    .as_deref()
+                    .unwrap()
+                    .contains("malformed Cargo.toml")
+            );
+        }
+        assert!(plan.steps.is_empty());
+    }
+
+    #[test]
+    fn unreadable_root_manifest_has_named_class() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A manifest directory is a portable read failure without ACL or root
+        // permission assumptions; profile detection records unreadable evidence.
+        std::fs::create_dir(tmp.path().join("Cargo.toml")).unwrap();
+        let profile = detect_repository(tmp.path());
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let plan = plan(root, Some("README.md"), &profile, None, VerifyScope::Fast);
+        assert!(plan.refused);
+        assert!(
+            plan.fallback_reason
+                .as_deref()
+                .unwrap()
+                .contains("unreadable Cargo.toml")
+        );
+    }
+
+    #[test]
+    fn full_scope_ignores_unknown_detection_and_root_manifest_guard() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "not valid toml {{{").unwrap();
+        let profile = detect_repository(tmp.path());
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let plan = plan(
+            root,
+            Some("README.md"),
+            &profile,
+            Some(embedded::RustCrates::Unknown("unreadable")),
+            VerifyScope::Full,
+        );
+        assert!(!plan.refused, "{:?}", plan.fallback_reason);
+        assert!(profile.rust.is_none());
+        assert!(
+            plan.steps
+                .iter()
+                .all(|step| !step.command.starts_with("cargo "))
+        );
+        let packet = ImpactPacket {
+            changes: vec![ChangedFile {
+                path: "README.md".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let baseline = build_plan_with_scope(
+            &packet,
+            &Rules::default(),
+            &[],
+            &VerifyConfig::default(),
+            &profile,
+            VerifyScope::Full,
+            root.as_std_path(),
+        );
+        assert_eq!(
+            plan, baseline,
+            "Rust discovery must not alter the normal full plan"
+        );
+    }
 }

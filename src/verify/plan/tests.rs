@@ -3945,6 +3945,8 @@ fn embedded_engine_edit_refusal_rate_qualification() {
         "docs/agent-output-contract.md",
         "tests/fixtures/qualification.csv",
         "tests/fixtures/qualification.txt",
+        "assets/qualification.png",
+        "docs/api/openapi.json",
     ];
     let mut refused = 0;
     for path in cohort {
@@ -3956,4 +3958,315 @@ fn embedded_engine_edit_refusal_rate_qualification() {
         );
     }
     eprintln!("0549 engine edit refusal rate: {refused}/{}", cohort.len());
+}
+
+#[rstest::rstest]
+#[case("png", false)]
+#[case("csv", false)]
+#[case("json", true)]
+fn helper_mediated_read_residual_is_explicit(#[case] extension: &str, #[case] refuses: bool) {
+    let helper_test = format!(
+        "#[test] fn helper_reader() {{ let _ = fx::load(std::path::Path::new(\"tests/fixtures/value.{extension}\")); }}"
+    );
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname='fx'\n"),
+        (
+            "src/lib.rs",
+            "pub fn load(p: &std::path::Path) -> String { std::fs::read_to_string(p).unwrap_or_default() }",
+        ),
+        ("tests/reader.rs", &helper_test),
+    ]);
+    let plan = plan_at(
+        &root,
+        &packet_with_paths(&[&format!("tests/fixtures/value.{extension}")]),
+        None,
+        &rust_profile(),
+    );
+    assert_eq!(plan.refused, refuses, "{:?}", plan.fallback_reason);
+    if !refuses {
+        assert!(nextest_step(&plan).is_none());
+        assert!(plan.steps.iter().any(|s| {
+            s.description
+                .contains("no direct include/read found by the lexical lookup")
+        }));
+    }
+}
+
+#[test]
+fn full_planning_retains_root_profile_without_nested_discovery() {
+    let (_tmp, root) = foreign_fixture(&[("backend/Cargo.toml", "malformed [")]);
+    let profile = crate::platform::repository::detect_repository(root.as_std_path());
+    assert!(profile.rust.is_none());
+    let plan = build_plan_scoped_with_options(
+        &packet_with_paths(&["message.txt"]),
+        &Rules::default(),
+        &[],
+        &crate::config::model::VerifyConfig::default(),
+        &profile,
+        VerifyScope::Full,
+        None,
+        &crate::state::layout::Layout::new(&root),
+        false,
+        false,
+    );
+    assert!(!plan.refused, "full must not perform nested discovery");
+    assert!(plan.steps.iter().all(|s| !s.command.starts_with("cargo ")));
+    assert!(profile.rust.is_none());
+}
+
+#[test]
+fn embedded_nested_profile_and_documentation_contract_locks() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    fn collect_production_rust(dir: &Path, files: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_dir() {
+                if entry.file_name() != "tests" {
+                    collect_production_rust(&path, files);
+                }
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs")
+                && entry.file_name() != "tests.rs"
+            {
+                files.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    for dir in ["src/verify", "src/commands/verify"] {
+        collect_production_rust(&root.join(dir), &mut files);
+    }
+    files.sort();
+    assert!(files.iter().any(|p| p.ends_with("embedded.rs")));
+    for path in files {
+        let rel = path
+            .strip_prefix(root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let text = fs::read_to_string(&path).unwrap();
+        let bytes = text.as_bytes();
+        let mut at = 0;
+        while at < bytes.len() {
+            // Ignore strings/comments, including inline unit-test assertion
+            // strings. A forbidden production identifier still fails the lock.
+            if let Some(end) = consume_skipped(&text, at, &rel).unwrap() {
+                at = end;
+                continue;
+            }
+            if is_ident_byte(bytes[at]) {
+                let start = at;
+                while at < bytes.len() && is_ident_byte(bytes[at]) {
+                    at += 1;
+                }
+                let token = &text[start..at];
+                for forbidden in [
+                    "bind_nested_manifests",
+                    "nested_rust_profile",
+                    "ensure_rust_profile_for_manifests",
+                    "shell_words",
+                    "rust_manifest_paths",
+                ] {
+                    assert_ne!(
+                        token, forbidden,
+                        "{rel}: removed nested-profile/dependency identifier {forbidden}"
+                    );
+                }
+            } else {
+                at += text[at..].chars().next().map(char::len_utf8).unwrap_or(1);
+            }
+        }
+    }
+    for path in ["docs/Features.md", "docs/verify-performance.md"] {
+        let text = std::fs::read_to_string(root.join(path)).unwrap();
+        for forbidden in ["manifest paths", "bind manifest", "explicit manifest"] {
+            assert!(
+                !text.contains(forbidden),
+                "{path}: obsolete nested-command claim {forbidden}"
+            );
+        }
+    }
+}
+
+#[rstest::rstest]
+#[case("no_database")]
+#[case("empty_mapping")]
+#[case("packet_head_missing")]
+fn embedded_production_mapping_freshness_refuses_without_trust(#[case] state: &str) {
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname='fx'\n"),
+        (
+            "src/reader.rs",
+            "pub fn text() -> &'static str { include_str!(\"../templates/message.txt\") }\n",
+        ),
+    ]);
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    let mut packet = packet_with_paths(&["templates/message.txt"]);
+    if state == "empty_mapping" {
+        conn.execute_batch("CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, tested_symbol_id INTEGER, tested_file_id INTEGER);").unwrap();
+        assert_eq!(
+            classify_test_mapping_freshness(&conn, &packet),
+            MappingFreshness::Empty
+        );
+    } else if state == "packet_head_missing" {
+        seed_mapping_row(&conn);
+        seed_index_head(&conn, "indexed-parent");
+        packet.head_hash = None;
+        assert_eq!(
+            classify_test_mapping_freshness(&conn, &packet),
+            MappingFreshness::PacketHeadMissing
+        );
+    }
+    let database = (state != "no_database").then_some(&conn);
+    let plan = plan_at(&root, &packet, database, &rust_profile());
+    assert!(plan.refused, "{state}: {:?}", plan.steps);
+    assert!(plan.steps.is_empty());
+    let reason = plan.fallback_reason.as_deref().unwrap_or("");
+    let expected = match state {
+        "no_database" => "test_mapping unavailable",
+        "empty_mapping" => "test_mapping is empty",
+        _ => "test_mapping freshness unverifiable",
+    };
+    assert!(reason.contains(expected), "{state}: {reason}");
+}
+
+#[test]
+fn embedded_external_test_mapping_cannot_rescue_unmapped_new_source() {
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname='fx'\n"),
+        (
+            "src/reader.rs",
+            "pub fn text() -> &'static str { include_str!(\"../templates/message.txt\") }\n",
+        ),
+        ("src/new.rs", "pub fn new_source() {}\n"),
+        (
+            "tests/render_it.rs",
+            "#[test] fn external_reader_contract() {}\n",
+        ),
+    ]);
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("CREATE TABLE project_files (id INTEGER PRIMARY KEY, file_path TEXT);
+        CREATE TABLE project_symbols (id INTEGER PRIMARY KEY, symbol_name TEXT, file_id INTEGER);
+        CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, tested_symbol_id INTEGER, tested_file_id INTEGER);
+        INSERT INTO project_files VALUES (1, 'src/reader.rs'), (2, 'tests/render_it.rs');
+        INSERT INTO project_symbols VALUES (1, 'external_reader_contract', 2);
+        INSERT INTO test_mapping VALUES (1, 2, NULL, 1);").unwrap();
+    let pure = plan_at(
+        &root,
+        &packet_with_paths(&["templates/message.txt"]),
+        Some(&conn),
+        &rust_profile(),
+    );
+    assert!(!pure.refused, "{:?}", pure.fallback_reason);
+    // D3(d)'s existing file-level stem exception is deliberate (0549-P3-2).
+    assert!(
+        nextest_step(&pure)
+            .unwrap()
+            .command
+            .contains("test(render_it)")
+    );
+    let mixed = plan_at(
+        &root,
+        &packet_with_paths(&["src/new.rs", "templates/message.txt"]),
+        Some(&conn),
+        &rust_profile(),
+    );
+    assert!(mixed.refused, "{:?}", mixed.steps);
+    assert!(mixed.steps.is_empty());
+    assert!(
+        mixed
+            .fallback_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("changed source")
+    );
+}
+
+#[test]
+fn mixed_mapped_source_preserves_unreferenced_csv_and_scan_annotations() {
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname='fx'\n"),
+        (
+            "src/alpha.rs",
+            "pub fn a() {}\n#[cfg(test)] mod tests { #[test] fn alpha_ok() {} }\n",
+        ),
+    ]);
+    fs::write(
+        root.join("src/generated.rs"),
+        " ".repeat(super::embedded::MAX_FILE_BYTES as usize + 1),
+    )
+    .unwrap();
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("CREATE TABLE project_files (id INTEGER PRIMARY KEY, file_path TEXT);
+        CREATE TABLE project_symbols (id INTEGER PRIMARY KEY, symbol_name TEXT, file_id INTEGER);
+        CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, tested_symbol_id INTEGER, tested_file_id INTEGER);
+        INSERT INTO project_files VALUES (1, 'src/alpha.rs');
+        INSERT INTO project_symbols VALUES (1, 'alpha_ok', 1);
+        INSERT INTO test_mapping VALUES (1, 1, NULL, 1);").unwrap();
+    let plan = plan_at(
+        &root,
+        &packet_with_paths(&["src/alpha.rs", "data/x.csv"]),
+        Some(&conn),
+        &rust_profile(),
+    );
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+    let nextest = nextest_step(&plan).unwrap();
+    assert!(nextest.command.contains("test(alpha_ok)"));
+    assert!(
+        nextest
+            .description
+            .contains("no direct include/read found by the lexical lookup for: data/x.csv"),
+        "{}",
+        nextest.description
+    );
+    assert!(
+        nextest
+            .description
+            .contains("skipped token-free oversized source src/generated.rs"),
+        "{}",
+        nextest.description
+    );
+    assert!(
+        !nextest.description.contains("plus embedded-material tests"),
+        "unreferenced material must not claim embedded tests: {}",
+        nextest.description
+    );
+}
+
+#[rstest::rstest]
+#[case("assets/logo.png", false)]
+#[case("docs/guide.md", true)]
+fn non_rust_zero_step_profile_has_no_annotation_step(#[case] changed: &str, #[case] bounded: bool) {
+    let (_tmp, root) = foreign_fixture(&[("backend/Cargo.toml", "[package]\nname='fx'\n")]);
+    if bounded {
+        fs::create_dir(root.join("src")).unwrap();
+        let file = fs::File::create(root.join("src/generated.rs")).unwrap();
+        file.set_len(super::embedded::MAX_OVERSIZED_INSPECT_BYTES + 1)
+            .unwrap();
+    }
+    let profile = crate::platform::repository::detect_repository(root.as_std_path());
+    assert!(
+        profile.rust.is_none(),
+        "root-based profile must stay unchanged"
+    );
+    let plan = super::scoped::build_plan_scoped_with_rust_crates(
+        &packet_with_paths(&[changed]),
+        &Rules::default(),
+        &[],
+        &crate::config::model::VerifyConfig::default(),
+        &profile,
+        VerifyScope::Fast,
+        None,
+        &crate::state::layout::Layout::new(&root),
+        false,
+        false,
+        Some(super::embedded::RustCrates::Present),
+    );
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+    assert_eq!(plan.fallback_reason, None);
+    assert!(
+        plan.steps.is_empty(),
+        "zero-step profiles have nowhere to attach annotations: {:?}",
+        plan.steps
+    );
 }
