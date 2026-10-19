@@ -509,7 +509,7 @@ fn unreadable_nested_manifest_refuses_with_named_class() {
     git_add_and_commit(root, "nested parent");
     fs::set_permissions(
         root.join("backend/Cargo.toml"),
-        fs::Permissions::from_mode(0),
+        fs::Permissions::from_mode(0o000),
     )
     .unwrap();
     write(root, "message.txt", "dirty");
@@ -788,7 +788,7 @@ fn unreadable_directory_does_not_trigger_discovery_for_cheap_or_full_scope() {
         "[package]\nname='fx'\nversion='0.1.0'\n",
     );
     let blocked = root.join("blocked");
-    fs::set_permissions(&blocked, fs::Permissions::from_mode(0)).unwrap();
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000)).unwrap();
     write(root, "docs/guide.md", "mutation\n");
     // Restore permissions before assertions so failures cannot strand temp
     // directories or obscure the original command outcome during cleanup.
