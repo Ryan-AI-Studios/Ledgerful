@@ -416,3 +416,32 @@ is `now` (warn/`other` is not 0295 hygiene; do not collapse it). It does **not**
 block `readyForPublish`. While present it increments `dashboard_failures`
 (−20 health) and can occupy a sidecar `topFindings` slot (cap 5). That is
 intended, not a regression. `doctor --fix` has no action for this code.
+
+Source selection (0554) inspects exactly one config source, mirroring the runtime
+loader: an existing project config (even malformed) suppresses template
+inspection; otherwise the first selected default candidate is inspected in this
+order: `LEDGERFUL_DEFAULT_CONFIG`, then USERPROFILE, then HOME. A missing
+selected template falls back to the built-in template with no finding. An empty
+or non-UTF-8 selector is attributed, not searched further. Inactive templates
+are never opened, so no finding is not an audit of every stored template.
+Message and remediation name the fixed source label (`project config in the
+Ledgerful state directory`, `template selected by LEDGERFUL_DEFAULT_CONFIG`,
+`user template USERPROFILE/.ledgerful/default-config.toml`, or the HOME form),
+never a resolved path.
+
+`config-inspection-incomplete` (0554) is **warn / other**, `sessionPriority`
+`now`, and never blocks readiness. It means the selected source could not be
+fully inspected, not that it is clean. Reason tokens are `metadata`, `read`,
+`encoding`, `parse`, and `invalid-key-type`; the last names only the two
+container names and three allowlisted key paths with a wrong TOML type. Its
+remediation is one line: inspect the source's accessibility/read, encoding,
+TOML and provider-key types; doctor may have continued with default
+configuration after a config-load failure; rerun `ledgerful doctor --json`.
+When the project config is malformed, `legacy-config` reports
+`Failed to load project config in the Ledgerful state directory (read|parse|validation|other)`.
+
+Write-bearing `doctor --fix` plans (pin, `bumpMinSig`, ack) require an existing
+regular project config. Otherwise `--fix --yes` exits 1 with a fixed refusal before
+any config write, and the dry-run preview carries `fix.blocked: true` plus
+`fix.refusal`. A refused apply leaves the prior `doctor-results.json` byte-identical.
+A clean preview is not a write-access guarantee: write permission is checked only at apply time.

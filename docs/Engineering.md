@@ -554,7 +554,11 @@ unit-tested.
 ## Init Secret and Binary-Alias Safety
 
 Starter config generation has a separate security boundary from trusted
-runtime-default loading. Init selects `LEDGERFUL_DEFAULT_CONFIG`, then the
+runtime-default loading. Doctor's plaintext-key diagnostic (0554) follows the
+runtime selection, not init's sanitation: an existing project config suppresses
+template inspection; otherwise `LEDGERFUL_DEFAULT_CONFIG`, then USERPROFILE, then
+HOME selects the single candidate. Findings never include values or resolved
+paths. Init selects `LEDGERFUL_DEFAULT_CONFIG`, then the
 user-level template, then the built-in template; it uses `toml_edit` to remove
 shared-policy secret keys and credentialed structured URLs while preserving
 unrelated formatting. Sanitized TOML is reparsed as `Config`, checked again for

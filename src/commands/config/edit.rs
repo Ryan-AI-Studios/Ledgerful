@@ -70,10 +70,23 @@ fn config_set_in(layout: &Layout, key_value: &str, quiet: bool) -> Result<()> {
         ));
     }
 
+    let (mut doc, config_path) = load_config_doc(layout)?;
+    apply_set_to_doc(&mut doc, &path, rhs)?;
+    write_config_doc(&config_path, &doc)?;
+
+    if !quiet {
+        println!("Set {key_path_str} = {rhs} in {}", config_path);
+    }
+    Ok(())
+}
+
+/// Apply one `dotted.path = rhs` assignment to an editable document.
+///
+/// Shared by the default-allowing setter and the existing-only doctor path so
+/// both keep identical leaf-replacement and decor-preservation semantics.
+fn apply_set_to_doc(doc: &mut toml_edit::DocumentMut, path: &[String], rhs: &str) -> Result<()> {
     let leaf_key = path[path.len() - 1].as_str();
     let parent_path: Vec<&str> = path[..path.len() - 1].iter().map(|s| s.as_str()).collect();
-
-    let (mut doc, config_path) = load_config_doc(layout)?;
 
     let root = doc.as_table_mut();
     let parent = navigate_or_create(root, &parent_path)?;
@@ -110,12 +123,148 @@ fn config_set_in(layout: &Layout, key_value: &str, quiet: bool) -> Result<()> {
         parent.insert(leaf_key, new_item);
     }
 
-    write_config_doc(&config_path, &doc)?;
+    Ok(())
+}
 
-    if !quiet {
-        println!("Set {key_path_str} = {rhs} in {}", config_path);
+/// Fixed refusal for every doctor-owned config write that cannot proceed
+/// against an existing, regular, parseable project config. Never carries OS,
+/// path or parser detail.
+pub(crate) const DOCTOR_CONFIG_REFUSAL: &str = "Doctor config fixes require a readable regular project config with valid TOML and supported fix target types. Write access is checked when applying. If the project config in the Ledgerful state directory is missing, run ledgerful init; otherwise repair its contents, type or permissions. Inspect the project config, then rerun ledgerful doctor --fix --yes.";
+
+/// The only key paths doctor may write through the existing-only setter.
+const DOCTOR_OWNED_SET_PATHS: &[&str] = &[
+    "intent.trusted_public_keys",
+    "intent.min_sig_version",
+    "doctor.acknowledged_codes",
+];
+
+fn doctor_refusal() -> miette::Report {
+    miette::miette!("{}", DOCTOR_CONFIG_REFUSAL)
+}
+
+/// Load the project config for a doctor write without ever materializing a
+/// template. Only a present regular file is read; every failure is the fixed
+/// refusal. `before_read` runs after metadata qualification and immediately
+/// before the read so tests can inject disappearance at that exact point.
+fn load_existing_config_doc(
+    layout: &Layout,
+    before_read: &dyn Fn(&camino::Utf8Path),
+) -> Result<(toml_edit::DocumentMut, camino::Utf8PathBuf)> {
+    let config_path = layout.config_file();
+    let meta = std::fs::metadata(config_path.as_std_path()).map_err(|_| doctor_refusal())?;
+    if !meta.is_file() {
+        return Err(doctor_refusal());
+    }
+    before_read(&config_path);
+    let content =
+        std::fs::read_to_string(config_path.as_std_path()).map_err(|_| doctor_refusal())?;
+    let doc = content
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|_| doctor_refusal())?;
+    Ok((doc, config_path))
+}
+
+fn write_existing_config_doc(
+    config_path: &camino::Utf8Path,
+    doc: &toml_edit::DocumentMut,
+    write: &dyn Fn(&camino::Utf8Path, &str) -> std::io::Result<()>,
+) -> Result<()> {
+    write(config_path, &doc_to_string(doc)).map_err(|_| doctor_refusal())
+}
+
+/// Existing-only `key=value` setter for doctor writes.
+///
+/// Restricted to [`DOCTOR_OWNED_SET_PATHS`]. Errors are mapped to the fixed
+/// refusal. Public `config set` keeps its default-materializing behavior.
+pub(crate) fn execute_existing_config_set_in_quiet(layout: &Layout, key_value: &str) -> Result<()> {
+    execute_existing_config_set_with_hooks(layout, key_value, &|_| {}, &|path, content| {
+        std::fs::write(path.as_std_path(), content)
+    })
+}
+
+/// Hook-injectable form of [`execute_existing_config_set_in_quiet`].
+pub(crate) fn execute_existing_config_set_with_hooks(
+    layout: &Layout,
+    key_value: &str,
+    before_read: &dyn Fn(&camino::Utf8Path),
+    write: &dyn Fn(&camino::Utf8Path, &str) -> std::io::Result<()>,
+) -> Result<()> {
+    let eq_pos = key_value.find('=').ok_or_else(doctor_refusal)?;
+    let key_path_str = key_value[..eq_pos].trim();
+    let rhs = key_value[eq_pos + 1..].trim();
+    if !DOCTOR_OWNED_SET_PATHS.contains(&key_path_str) || rhs.is_empty() {
+        return Err(doctor_refusal());
+    }
+    let path = split_key_path(key_path_str).map_err(|_| doctor_refusal())?;
+
+    let (mut doc, config_path) = load_existing_config_doc(layout, before_read)?;
+    apply_set_to_doc(&mut doc, &path, rhs).map_err(|_| doctor_refusal())?;
+    write_existing_config_doc(&config_path, &doc, write)
+}
+
+/// Read `[doctor] acknowledged_codes` from an existing document.
+///
+/// Missing table or key means an empty list. A present non-table `doctor`, a
+/// non-array value, or any non-string element is the fixed refusal.
+pub(crate) fn read_ack_codes(doc: &toml_edit::DocumentMut) -> Result<Vec<String>> {
+    let Some(doctor) = doc.get("doctor") else {
+        return Ok(Vec::new());
+    };
+    let doctor = doctor.as_table().ok_or_else(doctor_refusal)?;
+    let Some(codes) = doctor.get("acknowledged_codes") else {
+        return Ok(Vec::new());
+    };
+    let array = codes.as_array().ok_or_else(doctor_refusal)?;
+    array
+        .iter()
+        .map(|v| v.as_str().map(str::to_string).ok_or_else(doctor_refusal))
+        .collect()
+}
+
+/// Write `[doctor] acknowledged_codes` into an existing document, preserving
+/// the existing value's decor (prefix/suffix and inline comment).
+fn set_ack_codes(doc: &mut toml_edit::DocumentMut, codes: &[String]) -> Result<()> {
+    let doctor =
+        navigate_or_create(doc.as_table_mut(), &["doctor"]).map_err(|_| doctor_refusal())?;
+    let mut array = toml_edit::Array::new();
+    for code in codes {
+        array.push(code.as_str());
+    }
+    let mut value = toml_edit::Value::Array(array);
+    match doctor.get_mut("acknowledged_codes") {
+        Some(toml_edit::Item::Value(existing)) => {
+            *value.decor_mut() = existing.decor().clone();
+            *existing = value;
+        }
+        _ => {
+            doctor.insert("acknowledged_codes", toml_edit::Item::Value(value));
+        }
     }
     Ok(())
+}
+
+/// Existing-only acknowledgment edit: read, normalize, add `code`, and write
+/// within one document instance. Sorted, deduplicated, unknown codes kept.
+pub(crate) fn execute_existing_config_ack_with_hooks(
+    layout: &Layout,
+    code: &str,
+    before_read: &dyn Fn(&camino::Utf8Path),
+    write: &dyn Fn(&camino::Utf8Path, &str) -> std::io::Result<()>,
+) -> Result<()> {
+    let (mut doc, config_path) = load_existing_config_doc(layout, before_read)?;
+    let mut codes = read_ack_codes(&doc)?;
+    codes.push(code.to_string());
+    codes.sort();
+    codes.dedup();
+    set_ack_codes(&mut doc, &codes)?;
+    write_existing_config_doc(&config_path, &doc, write)
+}
+
+/// Production form of [`execute_existing_config_ack_with_hooks`].
+pub(crate) fn execute_existing_config_ack_in_quiet(layout: &Layout, code: &str) -> Result<()> {
+    execute_existing_config_ack_with_hooks(layout, code, &|_| {}, &|path, content| {
+        std::fs::write(path.as_std_path(), content)
+    })
 }
 
 /// Entry point for the `ledgerful config unset` subcommand.
@@ -730,6 +879,99 @@ mod tests {
         assert_eq!(
             build_priority_clear_confirmation(),
             "Provider priority list cleared. Legacy backend selection will be used."
+        );
+    }
+
+    fn seeded_layout(contents: &str) -> (tempfile::TempDir, Layout) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = camino::Utf8Path::from_path(tmp.path())
+            .expect("utf8")
+            .to_path_buf();
+        let layout = Layout::new(&root);
+        layout.ensure_state_dir().expect("state dir");
+        std::fs::write(layout.config_file(), contents).expect("seed");
+        (tmp, layout)
+    }
+
+    #[test]
+    fn user_template_secret_disappears_after_precheck() {
+        // Metadata qualifies, then the file vanishes before the read. The
+        // callback runs exactly there; the edit must refuse and must not
+        // recreate the project config from a template.
+        let (_tmp, layout) = seeded_layout("[core]\nstrict = false\n");
+        let callback_ran = std::cell::Cell::new(false);
+        let before_read = |path: &camino::Utf8Path| {
+            callback_ran.set(true);
+            std::fs::remove_file(path.as_std_path()).expect("remove");
+        };
+        let err = execute_existing_config_set_with_hooks(
+            &layout,
+            "intent.min_sig_version=2",
+            &before_read,
+            &|path, content| std::fs::write(path.as_std_path(), content),
+        )
+        .unwrap_err();
+        assert!(callback_ran.get(), "disappearance hook must run");
+        assert_eq!(format!("{err}"), DOCTOR_CONFIG_REFUSAL);
+        assert!(!layout.config_file().exists(), "no template recreation");
+    }
+
+    #[test]
+    fn user_template_secret_write_denied_keeps_bytes_and_refuses() {
+        let original = "[core]\nstrict = false\n";
+        let (_tmp, layout) = seeded_layout(original);
+        let writer_reached = std::cell::Cell::new(false);
+        let err = execute_existing_config_set_with_hooks(
+            &layout,
+            "intent.min_sig_version=2",
+            &|_| {},
+            &|_, _| {
+                writer_reached.set(true);
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "denied",
+                ))
+            },
+        )
+        .unwrap_err();
+        assert!(writer_reached.get(), "writer must be reached");
+        assert_eq!(format!("{err}"), DOCTOR_CONFIG_REFUSAL);
+        assert_eq!(
+            std::fs::read_to_string(layout.config_file()).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn user_template_secret_existing_only_rejects_other_paths() {
+        let original = "[core]\nstrict = false\n";
+        let (_tmp, layout) = seeded_layout(original);
+        let err = execute_existing_config_set_in_quiet(&layout, "core.strict=true").unwrap_err();
+        assert_eq!(format!("{err}"), DOCTOR_CONFIG_REFUSAL);
+        assert_eq!(
+            std::fs::read_to_string(layout.config_file()).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn user_template_secret_ack_decor_preserved_on_commented_array() {
+        let (_tmp, layout) =
+            seeded_layout("[doctor]\n# ack list\nacknowledged_codes = [ \"Alpha\" ] # keep\n");
+        execute_existing_config_ack_in_quiet(&layout, "Beta").expect("ack");
+        let written = std::fs::read_to_string(layout.config_file()).unwrap();
+        assert!(
+            written.contains("# ack list"),
+            "table comment lost: {written}"
+        );
+        assert!(written.contains("# keep"), "inline comment lost: {written}");
+        let parsed: toml::Table = written.parse().unwrap();
+        assert_eq!(
+            parsed["doctor"]["acknowledged_codes"],
+            toml::Value::Array(vec![
+                toml::Value::String("Alpha".into()),
+                toml::Value::String("Beta".into()),
+            ])
         );
     }
 }

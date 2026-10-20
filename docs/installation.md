@@ -346,7 +346,11 @@ present. Set `LEDGERFUL_DEFAULT_CONFIG` to point at another template for
 one-off initialization.
 
 Template precedence is the explicit environment path, then the user-level
-template, then the built-in template. Init parses the selected TOML before
+template, then the built-in template. Doctor inspects only the source the runtime
+selects (an existing project config first, then the template in that order) for
+plaintext provider keys, and never opens an inactive template. A missing
+override falls back to the built-in template and does not search the home
+template. Init parses the selected TOML before
 publication and omits secret-bearing assignments and credentialed connection
 URLs. A malformed custom template fails closed and does not create a partial
 repo config. Existing repo configs are never replaced.

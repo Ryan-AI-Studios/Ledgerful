@@ -788,6 +788,37 @@ fn write_doctor_results_block_before_warn_under_reverse_alpha_codes() {
 }
 
 #[test]
+fn user_template_secret_sidecar_six_warnings_displace_deterministically() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = Utf8Path::from_path(tmp.path()).expect("utf8 path");
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().expect("ensure_state_dir");
+
+    // Six actionable warns, input reversed, plus one optional warn that is excluded.
+    // Sort by code, then take(5): w-06 is displaced deterministically.
+    let findings = vec![
+        DoctorFinding::warn("w-06", DoctorCategory::Index, "sixth"),
+        DoctorFinding::warn("w-05", DoctorCategory::Index, "fifth"),
+        DoctorFinding::warn("w-04", DoctorCategory::Index, "fourth"),
+        DoctorFinding::warn("opt-warn", DoctorCategory::Optional, "optional excluded"),
+        DoctorFinding::warn("w-03", DoctorCategory::Index, "third"),
+        DoctorFinding::warn("w-02", DoctorCategory::Index, "second"),
+        DoctorFinding::warn("w-01", DoctorCategory::Index, "first"),
+    ];
+    write_doctor_results(&layout, &findings).expect("write");
+    let path = layout.state_subdir().join("doctor-results.json");
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path.as_std_path()).unwrap()).unwrap();
+    let codes: Vec<&str> = json["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .map(|f| f["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes, ["w-01", "w-02", "w-03", "w-04", "w-05"]);
+}
+
+#[test]
 fn write_doctor_results_remediation_round_trip() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = Utf8Path::from_path(tmp.path()).expect("utf8 path");
@@ -860,6 +891,60 @@ fn write_doctor_results_findings_cap_five() {
         "first 4 must be blocks: {findings_arr:?}"
     );
     assert_eq!(findings_arr[4]["severity"], "warn");
+}
+
+/// 0554 DoD-5: six actionable (non-optional warn) findings must displace
+/// deterministically under the cap-five sidecar selection. Pins the exact
+/// retained/displaced contents, not only the counts.
+#[test]
+fn write_doctor_results_six_actionable_warnings_displace_deterministically() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = Utf8Path::from_path(tmp.path()).expect("utf8 path");
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().expect("ensure_state_dir");
+
+    let codes = ["warn-a", "warn-b", "warn-c", "warn-d", "warn-e", "warn-f"];
+    let findings: Vec<DoctorFinding> = codes
+        .iter()
+        .map(|code| DoctorFinding::warn(*code, DoctorCategory::Index, format!("msg {code}")))
+        .collect();
+    write_doctor_results(&layout, &findings).expect("write");
+
+    let path = layout.state_subdir().join("doctor-results.json");
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path.as_std_path()).unwrap()).unwrap();
+
+    // The formula counts every non-optional warn even when the list is capped.
+    assert_eq!(json["warn"].as_u64(), Some(6));
+    assert_eq!(json["failures"].as_u64(), Some(6));
+    let findings_arr = json["findings"].as_array().expect("findings");
+    let selected: Vec<&str> = findings_arr
+        .iter()
+        .map(|f| f["code"].as_str().expect("code"))
+        .collect();
+    assert_eq!(
+        selected,
+        ["warn-a", "warn-b", "warn-c", "warn-d", "warn-e"],
+        "sidecar keeps the first five codes by deterministic order"
+    );
+    assert_eq!(findings_arr[0]["message"], "msg warn-a");
+    assert!(
+        findings_arr.iter().all(|f| f["severity"] == "warn"),
+        "all retained entries are actionable warns: {findings_arr:?}"
+    );
+    assert!(
+        !selected.contains(&"warn-f"),
+        "sixth actionable warn is displaced, not counted out of the list: {selected:?}"
+    );
+
+    // Same input, same selection: only the timestamp may differ.
+    write_doctor_results(&layout, &findings).expect("rewrite");
+    let again: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path.as_std_path()).unwrap()).unwrap();
+    assert_eq!(
+        again["findings"], json["findings"],
+        "selection is deterministic"
+    );
 }
 
 #[test]
@@ -1274,6 +1359,14 @@ fn legacy_findings_silent_on_clean_repo() {
     let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
     let layout = Layout::new(root);
     layout.ensure_state_dir().unwrap();
+    // 0554 DoD-isolation: seed a valid regular project config so the plaintext
+    // scanner selects the project source. Without it this in-process check
+    // falls through to the ambient USERPROFILE/HOME template on the host.
+    std::fs::write(
+        layout.config_file().as_std_path(),
+        "[core]\nstrict = false\n",
+    )
+    .unwrap();
     std::fs::write(root.join(".gitignore"), "target/\n.ledgerful/\n").unwrap();
     std::fs::create_dir_all(root.join(".git").join("hooks")).unwrap();
     std::fs::write(

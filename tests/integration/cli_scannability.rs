@@ -3,7 +3,8 @@
 //! config help examples.
 
 use crate::common::{
-    DirGuard, TempEnv, git_add_and_commit, non_interactive, run_cli, setup_git_repo,
+    DirGuard, TempEnv, git_add_and_commit, non_interactive, run_cli, run_cli_isolated,
+    setup_git_repo,
 };
 use ledgerful::commands::init::execute_init;
 use ledgerful::config::model::Config;
@@ -113,7 +114,7 @@ fn doctor_first_meaningful_line_is_aggregate() {
     fs::write(root.join("dummy.txt"), "content").unwrap();
     git_add_and_commit(root, "initial");
 
-    let (stdout, _stderr, code) = run_cli(root, &["doctor"]);
+    let (stdout, _stderr, code) = run_cli_isolated(root, &["doctor"]);
     // Soft failures (e.g. not-configured embedding) still exit 0.
     assert_eq!(
         code, 0,

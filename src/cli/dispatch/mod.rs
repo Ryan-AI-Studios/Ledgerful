@@ -558,22 +558,14 @@ fn is_global_command(cmd: &Commands) -> bool {
     )
 }
 
-/// Pure warn-message for config parse fallback (DoD-7). Unit-tested so the
-/// warn! site stays honest without pulling a tracing-subscriber harness.
-fn config_load_fallback_warn_message(
-    path: impl std::fmt::Display,
-    err: impl std::fmt::Display,
-) -> String {
-    format!("Failed to parse config at {path}: {err}. Using defaults.")
-}
+/// Fixed startup warning on config load failure. Names neither the file nor
+/// the parse stage: loader wrapping cannot prove those details. Doctor
+/// reports the selected source separately.
+const CONFIG_LOAD_FALLBACK_WARN: &str = "Configuration load failed. Using default configuration.";
 
-/// Pure warn-message for global/user config parse fallback (mirrors startup).
-fn global_config_load_fallback_warn_message(
-    path: impl std::fmt::Display,
-    err: impl std::fmt::Display,
-) -> String {
-    format!("Failed to parse global rollup config at {path}: {err}. Using defaults.")
-}
+/// Fixed global rollup warning on user config load failure (mirrors startup).
+const GLOBAL_CONFIG_LOAD_FALLBACK_WARN: &str =
+    "Global rollup configuration load failed. Using default configuration.";
 
 pub(super) fn load_startup_config(
     layout: &crate::state::layout::Layout,
@@ -600,11 +592,8 @@ pub(super) fn load_startup_config(
     // unknown keys are reported via doctor / serde_ignored (DoD-8).
     match crate::config::load::load_config(layout) {
         Ok(cfg) => Ok(cfg),
-        Err(e) => {
-            tracing::warn!(
-                "{}",
-                config_load_fallback_warn_message(layout.config_file(), &e)
-            );
+        Err(_) => {
+            tracing::warn!("{CONFIG_LOAD_FALLBACK_WARN}");
             Ok(Default::default())
         }
     }
@@ -629,11 +618,8 @@ pub(super) fn load_user_config() -> Result<crate::config::model::Config> {
     );
     match crate::config::load::load_config(&layout) {
         Ok(cfg) => Ok(cfg),
-        Err(e) => {
-            tracing::warn!(
-                "{}",
-                global_config_load_fallback_warn_message(layout.config_file(), &e)
-            );
+        Err(_) => {
+            tracing::warn!("{GLOBAL_CONFIG_LOAD_FALLBACK_WARN}");
             Ok(Default::default())
         }
     }
@@ -752,29 +738,22 @@ mod rename_tests {
         assert!(!config.core.strict);
     }
 
-    /// DoD-7: fallback warn message names path and "Using defaults".
+    /// DoD-7 (0554): fallback warn is a fixed neutral constant. It names no
+    /// file, parse stage or error text, and says default configuration.
     #[test]
-    fn config_load_fallback_warn_message_includes_path_and_defaults() {
-        let msg = config_load_fallback_warn_message(
-            "/tmp/repo/.ledgerful/config.toml",
-            "TOML parse error at line 1",
+    fn config_load_fallback_warn_message_is_fixed_and_neutral() {
+        assert_eq!(
+            CONFIG_LOAD_FALLBACK_WARN,
+            "Configuration load failed. Using default configuration."
         );
-        assert!(
-            msg.contains("/tmp/repo/.ledgerful/config.toml"),
-            "must include path: {msg}"
+        assert_eq!(
+            GLOBAL_CONFIG_LOAD_FALLBACK_WARN,
+            "Global rollup configuration load failed. Using default configuration."
         );
-        assert!(
-            msg.contains("Using defaults"),
-            "must say Using defaults: {msg}"
-        );
-        assert!(
-            msg.contains("TOML parse error"),
-            "must include error fragment: {msg}"
-        );
-        assert!(
-            msg.contains("Failed to parse config"),
-            "must identify parse failure: {msg}"
-        );
+        for msg in [CONFIG_LOAD_FALLBACK_WARN, GLOBAL_CONFIG_LOAD_FALLBACK_WARN] {
+            assert!(!msg.contains(".ledgerful"), "must not name a path: {msg}");
+            assert!(!msg.contains("TOML"), "must not name a parse stage: {msg}");
+        }
     }
 
     /// DoD-10: global command path must not rename the legacy state directory.

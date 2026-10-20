@@ -1,4 +1,13 @@
-use crate::common::{DirGuard, setup_git_repo};
+//! Setup wizard fixtures.
+//!
+//! 0554 DoD-isolation: setup runs `init` (which reads the selected default
+//! template) and `doctor` (which inspects the effective template source). The
+//! wizard callers therefore run as isolated children with a synthetic home and
+//! a known-missing default template, so no fixture can read the host template.
+//! The single in-process caller is the CwdGuard drop-time contract, which a
+//! child cannot observe; its assertion does not depend on template content.
+
+use crate::common::{DirGuard, run_cli_isolated, setup_git_repo};
 use ledgerful::commands::setup::execute_setup;
 use std::fs;
 use tempfile::tempdir;
@@ -10,10 +19,11 @@ fn setup_yes_creates_full_layout() {
 
     setup_git_repo(tmp.path());
 
-    let _guard = DirGuard::from_utf8(root);
-
-    let result = execute_setup(true, false);
-    assert!(result.is_ok());
+    let (out, err, code) = run_cli_isolated(tmp.path(), &["setup", "--yes"]);
+    assert_eq!(
+        code, 0,
+        "setup --yes must succeed; stdout={out} stderr={err}"
+    );
 
     let cg_dir = root.join(".ledgerful");
     assert!(cg_dir.exists());
@@ -33,15 +43,19 @@ fn setup_yes_is_idempotent__slow() {
 
     setup_git_repo(tmp.path());
 
-    let _guard = DirGuard::from_utf8(root);
-
     // First run
-    let result = execute_setup(true, false);
-    assert!(result.is_ok());
+    let (out, err, code) = run_cli_isolated(tmp.path(), &["setup", "--yes"]);
+    assert_eq!(
+        code, 0,
+        "first setup --yes must succeed; stdout={out} stderr={err}"
+    );
 
     // Second run — should not error
-    let result = execute_setup(true, false);
-    assert!(result.is_ok());
+    let (out, err, code) = run_cli_isolated(tmp.path(), &["setup", "--yes"]);
+    assert_eq!(
+        code, 0,
+        "second setup --yes must succeed; stdout={out} stderr={err}"
+    );
 
     // Hooks should not be duplicated
     let pre_commit = fs::read_to_string(root.join(".git").join("hooks").join("pre-commit"))
@@ -60,12 +74,13 @@ fn setup_yes_skip_scan_skips_report() {
 
     setup_git_repo(tmp.path());
 
-    let _guard = DirGuard::from_utf8(root);
-
     // First run creates the .ledgerful/ layout (without an impact report,
     // because --skip-scan is on).
-    let result = execute_setup(true, true);
-    assert!(result.is_ok());
+    let (out, err, code) = run_cli_isolated(tmp.path(), &["setup", "--yes", "--skip-scan"]);
+    assert_eq!(
+        code, 0,
+        "setup --yes --skip-scan must succeed; stdout={out} stderr={err}"
+    );
 
     let cg_dir = root.join(".ledgerful");
     assert!(cg_dir.join("config.toml").exists());
@@ -81,8 +96,11 @@ fn setup_yes_skip_scan_skips_report() {
     fs::write(&report, sentinel).unwrap();
     let mtime_before = fs::metadata(&report).unwrap().modified().unwrap();
 
-    let result = execute_setup(true, true);
-    assert!(result.is_ok());
+    let (out, err, code) = run_cli_isolated(tmp.path(), &["setup", "--yes", "--skip-scan"]);
+    assert_eq!(
+        code, 0,
+        "second setup --yes --skip-scan must succeed; stdout={out} stderr={err}"
+    );
 
     // The pre-existing report must still exist and be byte-identical.
     assert!(
@@ -109,11 +127,12 @@ fn setup_existing_state_yes_prints_using_existing__slow() {
 
     setup_git_repo(tmp.path());
 
-    let _guard = DirGuard::from_utf8(root);
-
     // First run — initializes fresh layout
-    let result = execute_setup(true, false);
-    assert!(result.is_ok());
+    let (out, err, code) = run_cli_isolated(tmp.path(), &["setup", "--yes"]);
+    assert_eq!(
+        code, 0,
+        "first setup --yes must succeed; stdout={out} stderr={err}"
+    );
 
     let cg_dir = root.join(".ledgerful");
     assert!(cg_dir.exists());
@@ -121,10 +140,14 @@ fn setup_existing_state_yes_prints_using_existing__slow() {
 
     // Second run with yes=true on existing state — should not error
     // and should leave the existing layout intact (H3 fix exercised here).
-    let result = execute_setup(true, false);
+    let (out, err, code) = run_cli_isolated(tmp.path(), &["setup", "--yes"]);
+    assert_eq!(
+        code, 0,
+        "second setup run on existing state should succeed; stdout={out} stderr={err}"
+    );
     assert!(
-        result.is_ok(),
-        "second setup run on existing state should succeed"
+        out.contains("Using existing setup."),
+        "existing state must be reported, got: {out}"
     );
 
     // Layout must still be there and hooks must remain unduplicated.
@@ -148,12 +171,11 @@ fn setup_no_git_repo_succeeds() {
     // gix::discover fails (see src/commands/init/execute.rs). The first-scan
     // step is gated on a fresh gix::discover check, so it gracefully
     // skips with a "Skipping first scan" warning rather than erroring.
-    let _guard = DirGuard::from_utf8(root);
-
-    let result = execute_setup(true, false);
-    assert!(
-        result.is_ok(),
-        "setup should succeed in a no-git tempdir (first scan must be skipped, not errored)"
+    let (out, err, code) = run_cli_isolated(tmp.path(), &["setup", "--yes"]);
+    assert_eq!(
+        code, 0,
+        "setup should succeed in a no-git tempdir (first scan must be skipped, not errored); \
+         stdout={out} stderr={err}"
     );
 
     let cg_dir = root.join(".ledgerful");
@@ -171,6 +193,10 @@ fn setup_no_git_repo_succeeds() {
 /// that redirects `execute_doctor`/`execute_scan` to the same root), the
 /// wizard's bookkeeping would silently diverge from `init`/`index` and
 /// leave two disconnected `.ledgerful/` trees.
+///
+/// Runs as an isolated child (0554 DoD-isolation). The in-process CwdGuard
+/// drop-time contract is covered by
+/// [`setup_in_process_restores_cwd_after_subdir_run`].
 #[test]
 fn setup_run_from_subdir_uses_git_root() {
     let tmp = tempdir().unwrap();
@@ -183,33 +209,11 @@ fn setup_run_from_subdir_uses_git_root() {
     std::fs::create_dir_all(sub_dir.as_std_path()).unwrap();
 
     // Run the wizard from inside the subdirectory — not the git root.
-    let _guard = DirGuard::from_utf8(&sub_dir);
-
-    let result = execute_setup(true, false);
-    assert!(
-        result.is_ok(),
-        "setup should succeed when run from a subdirectory of a git work tree"
-    );
-
-    // MED-1: pin the CwdGuard's drop-time cwd-restoration contract. After
-    // `execute_setup` returns, the wizard's internal `CwdGuard` has dropped
-    // and must have restored cwd back to the subdirectory the test started
-    // from. This assertion runs *before* the outer `DirGuard` (declared
-    // above) drops at end-of-test, so a regression that silently leaked
-    // the cwd change (e.g. by removing the `Drop` impl) would fail here.
-    //
-    // Compare canonicalized paths: on macOS the temp dir lives behind a
-    // symlink (/var -> /private/var), so `current_dir()` returns the
-    // resolved /private/var/... form while `sub_dir` keeps the /var/... form
-    // — they'd differ even when CWD was correctly restored. Canonicalizing
-    // both sides makes the assertion stable across platforms.
-    let current = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
-    let expected = std::fs::canonicalize(sub_dir.as_std_path()).unwrap();
+    let (out, err, code) = run_cli_isolated(sub_dir.as_std_path(), &["setup", "--yes"]);
     assert_eq!(
-        current, expected,
-        "CwdGuard must restore the original cwd on drop; the wizard's \
-         internal guard entered at the git root and should have switched \
-         back to the subdir the caller invoked it from"
+        code, 0,
+        "setup should succeed when run from a subdirectory of a git work tree; \
+         stdout={out} stderr={err}"
     );
 
     // The .ledgerful tree must live at the git root (where init/index
@@ -254,5 +258,44 @@ fn setup_run_from_subdir_uses_git_root() {
         !sub_report.exists(),
         "first-scan must not write the report to a cwd-based .ledgerful tree ({})",
         sub_report,
+    );
+}
+
+/// In-process-only companion for the CwdGuard drop-time contract (0554
+/// DoD-isolation census). A child process cannot observe the wizard's internal
+/// guard, so this is the one setup caller that runs in-process. It asserts only
+/// cwd restoration, which is independent of template content; `--skip-scan`
+/// keeps it cheap.
+#[test]
+fn setup_in_process_restores_cwd_after_subdir_run() {
+    let tmp = tempdir().unwrap();
+    let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+
+    setup_git_repo(tmp.path());
+
+    let sub_dir = root.join("sub");
+    std::fs::create_dir_all(sub_dir.as_std_path()).unwrap();
+
+    let _guard = DirGuard::from_utf8(&sub_dir);
+
+    let result = execute_setup(true, true);
+    assert!(
+        result.is_ok(),
+        "in-process setup should succeed when run from a subdirectory"
+    );
+
+    // MED-1: pin the CwdGuard's drop-time cwd-restoration contract. After
+    // `execute_setup` returns, the wizard's internal `CwdGuard` has dropped
+    // and must have restored cwd back to the subdirectory the test started
+    // from. Compare canonicalized paths: on macOS the temp dir lives behind a
+    // symlink (/var -> /private/var), so `current_dir()` returns the resolved
+    // /private/var/... form while `sub_dir` keeps the /var/... form.
+    let current = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
+    let expected = std::fs::canonicalize(sub_dir.as_std_path()).unwrap();
+    assert_eq!(
+        current, expected,
+        "CwdGuard must restore the original cwd on drop; the wizard's \
+         internal guard entered at the git root and should have switched \
+         back to the subdir the caller invoked it from"
     );
 }

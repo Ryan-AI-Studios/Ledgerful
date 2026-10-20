@@ -35,7 +35,7 @@ Optional step 0: `ledgerful configure --json` is the config-HITL catalog (does n
 
 | # | Command | Role |
 |---|---|---|
-| 1 | `ledgerful doctor --json` | Env readiness (`readyForPublish`). Skip phantom / sig-pin / v1 ceremony unless signing or `require_signing`. Ack via `[doctor] acknowledged_codes` or `doctor --fix --yes` (pins keys only; never `ledger re-sign --all`). |
+| 1 | `ledgerful doctor --json` | Env readiness (`readyForPublish`). Skip phantom / sig-pin / v1 ceremony unless signing or `require_signing`. Ack via `[doctor] acknowledged_codes` or `doctor --fix --yes` (pins keys only; never `ledger re-sign --all`). Write-bearing fixes need an existing regular project config: check `fix.blocked` in dry-run JSON before acting (0554). |
 | 2 | `ledgerful change-context --json` | Default pre-edit packet. Does **not** rewrite `latest-impact.json`. Plan: `--paths src/foo.rs`. Omitted `--timeout` uses `[impact] prospective_budget_secs` (default 25). `--timeout N` overrides; `--timeout 0` disables. History walks honor `[hotspots] history_budget_secs` (default 45) independently. |
 | 3 | `ledgerful ledger status --compact` or `--json` | Pending / drift; names `workRoot`. Other repo: `-C` / `--directory`. |
 | 4 | `ledgerful search …` (prefer `--auto-index` when stale) | Discovery, not full impact. |
