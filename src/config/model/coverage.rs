@@ -377,7 +377,7 @@ fn default_mega_batch_threshold() -> usize {
     1000
 }
 fn default_ignore_patterns() -> Vec<String> {
-    vec![
+    let mut patterns = vec![
         "target".to_string(),
         "target/**".to_string(),
         ".git".to_string(),
@@ -394,7 +394,13 @@ fn default_ignore_patterns() -> Vec<String> {
         ".agents/**".to_string(),
         ".ledgerful".to_string(),
         ".ledgerful/**".to_string(),
-    ]
+    ];
+    // 0562: the retired state-directory pair is derived at runtime so that
+    // every warn-and-default site (`Config::default()`) carries the full
+    // internal-state floor without a TOML literal or any on-disk text.
+    patterns.push(crate::state::layout::LEGACY_STATE_DIR.to_string());
+    patterns.push(format!("{}/**", crate::state::layout::LEGACY_STATE_DIR));
+    patterns
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -881,6 +887,58 @@ mod tests {
         // Regression: existing patterns still present
         assert!(config.ignore_patterns.iter().any(|p| p == "target/**"));
         assert!(config.ignore_patterns.iter().any(|p| p == ".git/**"));
+    }
+
+    #[test]
+    fn config_template_does_not_materialize_retired_state_dir() {
+        use crate::config::defaults::DEFAULT_CONFIG;
+        use crate::state::layout::{LEGACY_STATE_DIR, STATE_DIR};
+
+        let parsed: crate::config::Config = toml::from_str(DEFAULT_CONFIG).expect("built-in TOML");
+        let patterns = &parsed.watch.ignore_patterns;
+        assert_eq!(patterns.len(), 16, "built-in list stays at 16 entries");
+        assert!(patterns.iter().any(|p| p == STATE_DIR));
+        assert!(patterns.iter().any(|p| p == &format!("{STATE_DIR}/**")));
+        assert!(
+            !patterns.iter().any(|p| p == LEGACY_STATE_DIR),
+            "the retired state dir must never be materialized: {patterns:?}"
+        );
+        assert!(
+            !patterns
+                .iter()
+                .any(|p| p == &format!("{LEGACY_STATE_DIR}/**")),
+            "the retired state glob must never be materialized: {patterns:?}"
+        );
+        // Unchanged order: the TOML list is the prefix of the field default.
+        assert_eq!(patterns.as_slice(), &default_ignore_patterns()[..16]);
+    }
+
+    #[test]
+    fn default_ignore_patterns_include_retired_state_dir() {
+        use crate::config::defaults::DEFAULT_CONFIG;
+        use crate::state::layout::LEGACY_STATE_DIR;
+
+        let config = crate::config::Config::default();
+        let patterns = &config.watch.ignore_patterns;
+        assert!(patterns.iter().any(|p| p == LEGACY_STATE_DIR));
+        assert!(
+            patterns
+                .iter()
+                .any(|p| p == &format!("{LEGACY_STATE_DIR}/**"))
+        );
+
+        let parsed: crate::config::Config = toml::from_str(DEFAULT_CONFIG).expect("built-in TOML");
+        let builtin = &parsed.watch.ignore_patterns;
+        assert_eq!(
+            &patterns[..builtin.len()],
+            builtin.as_slice(),
+            "the parsed built-in list is a strict prefix of the field default"
+        );
+        assert_eq!(
+            patterns.len(),
+            builtin.len() + 2,
+            "only the retired pair is added"
+        );
     }
 
     #[test]

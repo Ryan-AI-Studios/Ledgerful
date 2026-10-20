@@ -959,6 +959,107 @@ mod tests {
         gathered
     }
 
+    /// Parseable stale template: an explicit list that omits the internal-state
+    /// entries. `target` is the selection marker (self-certification).
+    const STALE_TEMPLATE: &str = "[watch]\nignore_patterns = [\"target\", \"target/**\"]\n";
+
+    /// Variant of [`gather_with_saved_packet`] that pins a **parseable** stale
+    /// template instead of a missing path, so the selected source is the stale
+    /// list rather than the built-in default.
+    fn gather_with_stale_template(
+        dir: &Path,
+        packet: Option<&ImpactPacket>,
+        query: &str,
+        auto_scan: bool,
+    ) -> (GatherResult, Config) {
+        let template_dir = tempdir().expect("template tempdir");
+        let template_path = template_dir.path().join("stale-default-config.toml");
+        fs::write(&template_path, STALE_TEMPLATE).expect("write stale template");
+        // Named guard: it must outlive the gather call, which reloads config
+        // through `collect_changed_files_for_filter`.
+        let _template_pin =
+            env_guard::TempEnv::set("LEDGERFUL_DEFAULT_CONFIG", &template_path.to_string_lossy());
+        let root = camino::Utf8Path::from_path(dir).expect("utf8 path");
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().expect("state dir");
+        let db_path = layout.state_subdir().join("ledger.db");
+        let storage = StorageManager::init(db_path.as_std_path()).expect("storage init");
+        // Explicit internal-state file: the fixture the defect turns into dirt.
+        fs::write(layout.state_subdir().join("probe.txt"), "state\n").expect("write state probe");
+        if let Some(pkt) = packet {
+            storage.save_packet(pkt).expect("save_packet");
+        }
+        // Self-certification: the stale template is the effective source.
+        let config = crate::config::load_config(&layout).expect("load stale template");
+        let gathered = gather_impact_and_bridge(
+            &storage,
+            &layout,
+            &config,
+            &Some(query.to_string()),
+            auto_scan,
+        )
+        .expect("gather");
+        storage.shutdown().expect("shutdown");
+        (gathered, config)
+    }
+
+    /// The stale template was selected (not the warn-and-default fallback) and
+    /// the effective list now carries the live internal-state pair.
+    fn assert_stale_template_selected(config: &Config) {
+        let patterns = &config.watch.ignore_patterns;
+        assert!(
+            patterns.iter().any(|p| p == "target"),
+            "stale template marker missing — fallback was used: {patterns:?}"
+        );
+        let state_dir = crate::state::layout::STATE_DIR;
+        assert!(
+            patterns.iter().any(|p| p == state_dir),
+            "live state dir missing from the effective list: {patterns:?}"
+        );
+        assert!(
+            patterns.iter().any(|p| p == &format!("{state_dir}/**")),
+            "live state glob missing from the effective list: {patterns:?}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn gather_stale_template_internal_state_is_live_clean() {
+        let dir = tempdir().expect("tempdir");
+        init_repo_with_commit(dir.path());
+        let (gathered, config) =
+            gather_with_stale_template(dir.path(), None, "what is change-context", false);
+        assert_stale_template_selected(&config);
+        assert!(
+            gathered.live_tree_clean,
+            "internal state must not read as user-source dirt"
+        );
+        assert!(gathered.is_global);
+        assert!(gathered.latest_packet.changes.is_empty());
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn gather_stale_template_real_source_dirt_is_not_live_clean() {
+        let dir = tempdir().expect("tempdir");
+        init_repo_with_commit(dir.path());
+        fs::create_dir_all(dir.path().join("src")).expect("mkdir src");
+        fs::write(dir.path().join("src/new.rs"), "pub fn new() {}\n").expect("write source");
+        let (gathered, config) = gather_with_stale_template(
+            dir.path(),
+            Some(&dirty_cached_packet()),
+            "what is change-context",
+            false,
+        );
+        assert_stale_template_selected(&config);
+        assert!(
+            !gathered.live_tree_clean,
+            "real untracked source must keep the tree dirty"
+        );
+        assert!(!gathered.is_global);
+        assert_eq!(gathered.latest_packet.changes.len(), 1);
+    }
+
     #[test]
     #[allow(non_snake_case)]
     fn gather_tantivy_chunks__token_score_beats_full_query__keeps_max() {

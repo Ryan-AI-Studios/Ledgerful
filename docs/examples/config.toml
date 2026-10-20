@@ -4,7 +4,10 @@ auto_fix = false
 
 [watch]
 debounce_ms = 1000
-ignore_patterns = ["dist/**", "coverage/**"]
+# This list replaces the built-in default when the key is present; omitting the
+# key keeps the default. Ledgerful always adds its own state entries to the
+# effective list, so no state entry needs to be written here.
+ignore_patterns = ["dist/**", "coverage/**", ".ledgerful", ".ledgerful/**"]
 
 [gemini]
 # Prefer GEMINI_API_KEY in the environment or local .env.

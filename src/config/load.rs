@@ -89,6 +89,11 @@ fn finalize_loaded(mut config: Config, unknown: Vec<String>) -> Result<(Config, 
     // Sanitize verify steps: warn and filter invalid ones rather than failing hard
     sanitize_verify_steps(&mut config);
 
+    // 0562: every config source (project, override, USERPROFILE, HOME,
+    // built-in) converges here. The floor is additive and in-memory; it runs
+    // before validation so user-supplied invalid globs still fail as today.
+    crate::config::floor::apply_internal_state_ignore_floor(&mut config);
+
     validate_config(&config)?;
 
     Ok((config, unknown))
@@ -417,6 +422,108 @@ x = 1
         assert!(
             !message.contains(&resolved),
             "resolved path leaked: {message}"
+        );
+    }
+
+    fn floor_entries() -> Vec<String> {
+        crate::config::floor::internal_state_ignore_entries().to_vec()
+    }
+
+    #[test]
+    fn stale_template_list_gets_internal_state_floor() {
+        let (config, unknown) = finalize_config(
+            "[watch]\nignore_patterns = [\"target\", \"dist/**\"]\n".to_string(),
+            Vec::new(),
+        )
+        .expect("stale template parses");
+        assert!(unknown.is_empty());
+        let patterns = config.watch.ignore_patterns;
+        assert_eq!(&patterns[..2], ["target", "dist/**"]);
+        assert_eq!(&patterns[2..], floor_entries().as_slice());
+    }
+
+    #[test]
+    fn stale_project_config_list_gets_internal_state_floor() {
+        let (_tmp, layout) = project_layout(Some("[watch]\nignore_patterns = [\"target\"]\n"));
+        let config = load_config(&layout).expect("project config loads");
+        let patterns = config.watch.ignore_patterns;
+        assert_eq!(patterns[0], "target");
+        assert_eq!(&patterns[1..], floor_entries().as_slice());
+    }
+
+    #[test]
+    fn shared_worktree_project_config_gets_internal_state_floor() {
+        let tmp = tempdir().unwrap();
+        let base = Utf8Path::from_path(tmp.path()).unwrap();
+        let work_root = base.join("worktree");
+        let shared_state = base.join("main-state");
+        fs::create_dir_all(&work_root).unwrap();
+        fs::create_dir_all(&shared_state).unwrap();
+        fs::write(
+            shared_state.join("config.toml"),
+            "[watch]\nignore_patterns = [\"target\"]\n",
+        )
+        .unwrap();
+
+        let layout = Layout::from_roots(&work_root, &shared_state);
+        let config = load_config(&layout).expect("shared project config loads");
+        let patterns = config.watch.ignore_patterns;
+        assert_eq!(patterns[0], "target");
+        assert_eq!(&patterns[1..], floor_entries().as_slice());
+    }
+
+    #[test]
+    fn empty_watch_ignore_list_gets_internal_state_floor() {
+        let (config, _) =
+            finalize_config("[watch]\nignore_patterns = []\n".to_string(), Vec::new())
+                .expect("empty list parses");
+        assert_eq!(config.watch.ignore_patterns, floor_entries());
+    }
+
+    #[test]
+    fn builtin_default_ignore_list_is_not_reordered() {
+        use crate::config::defaults::DEFAULT_CONFIG;
+
+        let parsed: Config = toml::from_str(DEFAULT_CONFIG).expect("built-in TOML");
+        let builtin = parsed.watch.ignore_patterns;
+        assert_eq!(builtin.len(), 16);
+
+        let (config, _) =
+            finalize_config(DEFAULT_CONFIG.to_string(), Vec::new()).expect("built-in");
+        assert_eq!(&config.watch.ignore_patterns[..16], builtin.as_slice());
+        assert_eq!(
+            config.watch.ignore_patterns,
+            Config::default().watch.ignore_patterns,
+            "the floored built-in equals the serde field default"
+        );
+    }
+
+    #[test]
+    fn malformed_template_content_still_returns_parse_error() {
+        let error = finalize_config("not = [ valid".to_string(), Vec::new())
+            .expect_err("malformed content must fail");
+        assert!(
+            matches!(
+                error.downcast_ref::<ConfigError>(),
+                Some(ConfigError::ParseFailed { .. })
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn invalid_glob_still_fails_validation_after_floor() {
+        let error = finalize_config(
+            "[watch]\nignore_patterns = [\"[\"]\n".to_string(),
+            Vec::new(),
+        )
+        .expect_err("an invalid user glob must still fail");
+        assert!(
+            matches!(
+                error.downcast_ref::<ConfigError>(),
+                Some(ConfigError::ValidationFailed { .. })
+            ),
+            "floor must not mask a user error: {error:?}"
         );
     }
 }
