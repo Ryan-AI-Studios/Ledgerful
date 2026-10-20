@@ -5,7 +5,7 @@ use std::fs;
 use std::time::SystemTime;
 use tempfile::tempdir;
 
-use crate::common::{git_add_and_commit, run_cli, setup_git_repo};
+use crate::common::{git_add_and_commit, run_cli_isolated, setup_git_repo};
 use std::process::Command;
 
 fn stale_verify_block() -> String {
@@ -98,7 +98,7 @@ fn doctor_hook_refresh_dry_run__stale__isolated_preview_no_writes() {
     let before = fs::read_to_string(&hook).expect("before");
 
     let (stdout, stderr, code) =
-        run_cli(tmp.path(), &["doctor", "--apply-hook-refresh", "--dry-run"]);
+        run_cli_isolated(tmp.path(), &["doctor", "--apply-hook-refresh", "--dry-run"]);
     assert_isolated_preview(&stdout, &stderr, code);
     assert!(
         stdout.contains("DRY-RUN Would refresh"),
@@ -126,7 +126,7 @@ fn doctor_hook_refresh_dry_run__already_current__not_noop() {
     );
 
     let (stdout, stderr, code) =
-        run_cli(tmp.path(), &["doctor", "--apply-hook-refresh", "--dry-run"]);
+        run_cli_isolated(tmp.path(), &["doctor", "--apply-hook-refresh", "--dry-run"]);
     assert_isolated_preview(&stdout, &stderr, code);
     assert!(
         stdout.contains("Already current:"),
@@ -145,7 +145,7 @@ fn doctor_hook_refresh_json_dry_run__pretty_envelope() {
     let root = Utf8Path::from_path(tmp.path()).expect("utf8");
     write_pre_push(root, &stale_verify_block());
 
-    let (stdout, stderr, code) = run_cli(
+    let (stdout, stderr, code) = run_cli_isolated(
         tmp.path(),
         &["doctor", "--json", "--apply-hook-refresh", "--dry-run"],
     );
@@ -187,7 +187,8 @@ fn doctor_hook_refresh_dry_run__linked_worktree_prefix_collision__no_dash_main()
     let main_root = Utf8Path::from_path(&main).expect("utf8");
     write_pre_push(main_root, &stale_verify_block());
 
-    let (stdout, stderr, code) = run_cli(&linked, &["doctor", "--apply-hook-refresh", "--dry-run"]);
+    let (stdout, stderr, code) =
+        run_cli_isolated(&linked, &["doctor", "--apply-hook-refresh", "--dry-run"]);
     assert_isolated_preview(&stdout, &stderr, code);
     assert!(
         !stdout.contains("-main/"),
@@ -198,7 +199,7 @@ fn doctor_hook_refresh_dry_run__linked_worktree_prefix_collision__no_dash_main()
         "{stdout}"
     );
 
-    let (jout, jerr, jcode) = run_cli(
+    let (jout, jerr, jcode) = run_cli_isolated(
         &linked,
         &["doctor", "--json", "--apply-hook-refresh", "--dry-run"],
     );
@@ -223,7 +224,8 @@ fn doctor_hook_refresh_dry_run__linked_worktree_prefix_collision__no_dash_main()
 fn doctor_hook_refresh_json_without_dry_run__still_rejected() {
     let tmp = tempdir().unwrap();
     setup_git_repo(tmp.path());
-    let (stdout, stderr, code) = run_cli(tmp.path(), &["doctor", "--json", "--apply-hook-refresh"]);
+    let (stdout, stderr, code) =
+        run_cli_isolated(tmp.path(), &["doctor", "--json", "--apply-hook-refresh"]);
     assert_ne!(code, 0, "must reject; stdout={stdout}; stderr={stderr}");
     let combined = format!("{stdout}{stderr}");
     assert!(
@@ -242,7 +244,7 @@ fn doctor_hook_refresh_dry_run__missing_hooks__warn_noop() {
     }
 
     let (stdout, stderr, code) =
-        run_cli(tmp.path(), &["doctor", "--apply-hook-refresh", "--dry-run"]);
+        run_cli_isolated(tmp.path(), &["doctor", "--apply-hook-refresh", "--dry-run"]);
     assert_isolated_preview(&stdout, &stderr, code);
     assert!(stdout.contains("WARN:"), "{stdout}");
     assert!(
@@ -258,7 +260,7 @@ fn doctor_hook_refresh_dry_run__husky__refused() {
     fs::create_dir_all(tmp.path().join(".husky")).expect("husky");
 
     let (stdout, stderr, code) =
-        run_cli(tmp.path(), &["doctor", "--apply-hook-refresh", "--dry-run"]);
+        run_cli_isolated(tmp.path(), &["doctor", "--apply-hook-refresh", "--dry-run"]);
     assert_isolated_preview(&stdout, &stderr, code);
     assert!(stdout.contains("REFUSED:"), "{stdout}");
     assert!(stdout.contains("husky"), "{stdout}");
@@ -280,7 +282,7 @@ fn doctor_hook_refresh_dry_run__seeded_results_untouched() {
         .unwrap_or(SystemTime::UNIX_EPOCH);
 
     let (stdout, stderr, code) =
-        run_cli(tmp.path(), &["doctor", "--apply-hook-refresh", "--dry-run"]);
+        run_cli_isolated(tmp.path(), &["doctor", "--apply-hook-refresh", "--dry-run"]);
     assert_isolated_preview(&stdout, &stderr, code);
     let after = fs::read(&results).expect("read after");
     assert_eq!(after, before, "doctor-results.json must not be rewritten");
@@ -314,14 +316,14 @@ require_signing = true
     )
     .expect("config");
 
-    let (health_out, health_err, health_code) = run_cli(tmp.path(), &["doctor", "--json"]);
+    let (health_out, health_err, health_code) = run_cli_isolated(tmp.path(), &["doctor", "--json"]);
     assert_eq!(
         health_code, 1,
         "health path must still block; stdout={health_out}; stderr={health_err}"
     );
 
     let (stdout, stderr, code) =
-        run_cli(tmp.path(), &["doctor", "--apply-hook-refresh", "--dry-run"]);
+        run_cli_isolated(tmp.path(), &["doctor", "--apply-hook-refresh", "--dry-run"]);
     assert_isolated_preview(&stdout, &stderr, code);
 }
 
@@ -332,7 +334,7 @@ fn doctor_hook_refresh_write_path__still_continues_health() {
     let root = Utf8Path::from_path(tmp.path()).expect("utf8");
     write_pre_push(root, &stale_verify_block());
 
-    let (stdout, stderr, _code) = run_cli(tmp.path(), &["doctor", "--apply-hook-refresh"]);
+    let (stdout, stderr, _code) = run_cli_isolated(tmp.path(), &["doctor", "--apply-hook-refresh"]);
     assert!(
         !stdout.contains("Dry-run completed. No hook files were modified."),
         "write path must not print dry-run footer: {stdout}"

@@ -893,6 +893,60 @@ fn write_doctor_results_findings_cap_five() {
     assert_eq!(findings_arr[4]["severity"], "warn");
 }
 
+/// 0554 DoD-5: six actionable (non-optional warn) findings must displace
+/// deterministically under the cap-five sidecar selection. Pins the exact
+/// retained/displaced contents, not only the counts.
+#[test]
+fn write_doctor_results_six_actionable_warnings_displace_deterministically() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = Utf8Path::from_path(tmp.path()).expect("utf8 path");
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().expect("ensure_state_dir");
+
+    let codes = ["warn-a", "warn-b", "warn-c", "warn-d", "warn-e", "warn-f"];
+    let findings: Vec<DoctorFinding> = codes
+        .iter()
+        .map(|code| DoctorFinding::warn(*code, DoctorCategory::Index, format!("msg {code}")))
+        .collect();
+    write_doctor_results(&layout, &findings).expect("write");
+
+    let path = layout.state_subdir().join("doctor-results.json");
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path.as_std_path()).unwrap()).unwrap();
+
+    // The formula counts every non-optional warn even when the list is capped.
+    assert_eq!(json["warn"].as_u64(), Some(6));
+    assert_eq!(json["failures"].as_u64(), Some(6));
+    let findings_arr = json["findings"].as_array().expect("findings");
+    let selected: Vec<&str> = findings_arr
+        .iter()
+        .map(|f| f["code"].as_str().expect("code"))
+        .collect();
+    assert_eq!(
+        selected,
+        ["warn-a", "warn-b", "warn-c", "warn-d", "warn-e"],
+        "sidecar keeps the first five codes by deterministic order"
+    );
+    assert_eq!(findings_arr[0]["message"], "msg warn-a");
+    assert!(
+        findings_arr.iter().all(|f| f["severity"] == "warn"),
+        "all retained entries are actionable warns: {findings_arr:?}"
+    );
+    assert!(
+        !selected.contains(&"warn-f"),
+        "sixth actionable warn is displaced, not counted out of the list: {selected:?}"
+    );
+
+    // Same input, same selection: only the timestamp may differ.
+    write_doctor_results(&layout, &findings).expect("rewrite");
+    let again: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path.as_std_path()).unwrap()).unwrap();
+    assert_eq!(
+        again["findings"], json["findings"],
+        "selection is deterministic"
+    );
+}
+
 #[test]
 fn write_doctor_results_has_no_github_latest_key() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -1305,6 +1359,14 @@ fn legacy_findings_silent_on_clean_repo() {
     let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
     let layout = Layout::new(root);
     layout.ensure_state_dir().unwrap();
+    // 0554 DoD-isolation: seed a valid regular project config so the plaintext
+    // scanner selects the project source. Without it this in-process check
+    // falls through to the ambient USERPROFILE/HOME template on the host.
+    std::fs::write(
+        layout.config_file().as_std_path(),
+        "[core]\nstrict = false\n",
+    )
+    .unwrap();
     std::fs::write(root.join(".gitignore"), "target/\n.ledgerful/\n").unwrap();
     std::fs::create_dir_all(root.join(".git").join("hooks")).unwrap();
     std::fs::write(

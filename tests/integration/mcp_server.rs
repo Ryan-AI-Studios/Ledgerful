@@ -1207,6 +1207,69 @@ mod tests {
             );
         }
 
+        /// Attribution sentinel (0554 DoD-4): the sidecar is produced from an
+        /// override template whose FILENAME carries an attribution sentinel and
+        /// whose body carries a credential. Neither may reach change_context.
+        #[test]
+        fn user_template_secret_mcp_change_context_override_attribution_free() {
+            const ATTR: &str = "MCP-ATTR-SENTINEL-0554";
+            const CRED: &str = "MCP-CRED-SENTINEL-0554";
+            let tmp = repaired_fixture();
+            let home = tmp.path().join("home");
+            std::fs::create_dir_all(&home).expect("synthetic home");
+            // No project config, so the override template is the selected source.
+            let _ = std::fs::remove_file(tmp.path().join(".ledgerful").join("config.toml"));
+            // Outside the repo tree so the template is not a working-tree change.
+            let outside = tempfile::tempdir().expect("template dir");
+            let template = outside.path().join(format!("{ATTR}.toml"));
+            std::fs::write(&template, format!("api_key = \"{CRED}\"\n[[broken\n"))
+                .expect("write override template");
+
+            let doctor = Command::new(get_mcp_binary())
+                .current_dir(tmp.path())
+                .arg("-C")
+                .arg(tmp.path())
+                .args(["doctor", "--json"])
+                .env_remove("GEMINI_API_KEY")
+                .env_remove("OLLAMA_CLOUD_API_KEY")
+                .env_remove("OLLAMA_API_KEY")
+                .env("USERPROFILE", &home)
+                .env("HOME", &home)
+                .env("LEDGERFUL_DEFAULT_CONFIG", &template)
+                .output()
+                .expect("run doctor for override sidecar fixture");
+            assert!(
+                doctor.status.success(),
+                "{}",
+                String::from_utf8_lossy(&doctor.stderr)
+            );
+            let sidecar = std::fs::read_to_string(
+                tmp.path()
+                    .join(".ledgerful")
+                    .join("state")
+                    .join("doctor-results.json"),
+            )
+            .expect("doctor sidecar fixture");
+            assert!(
+                sidecar.contains("config-inspection-incomplete"),
+                "override fixture must carry the inspection gap: {sidecar}"
+            );
+            for needle in [ATTR, CRED] {
+                assert!(!sidecar.contains(needle), "sidecar leaked {needle}");
+            }
+
+            let mut session = spawn_session(tmp.path());
+            session.initialize();
+            let result = session.call_tool("change_context", json!({}));
+            let text = serde_json::to_string(&result).expect("serialize response");
+            for needle in [ATTR, CRED] {
+                assert!(
+                    !text.contains(needle),
+                    "change_context leaked {needle}: {text}"
+                );
+            }
+        }
+
         #[test]
         fn test_silent_child_times_out_and_is_reaped_within_bound() {
             let tmp = tempdir().expect("tempdir");

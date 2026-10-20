@@ -332,7 +332,7 @@ fn flame_and_explain_against_temp_db() {
 
     // Explain path: seed is in the same DB; sentence must include a number.
     let bin = env!("CARGO_BIN_EXE_ledgerful");
-    let out = Command::new(bin)
+    let out = crate::common::isolated_command(bin, &crate::common::synthetic_home(tmp.path()))
         .args(["timings", "--explain", "verify", "--json"])
         .current_dir(tmp.path())
         .output()
@@ -399,7 +399,7 @@ fn explain_no_prior_week_baseline_clause() {
     let _guard = DirGuard::new(tmp.path());
     // Capture via binary so we assert the real CLI sentence.
     let bin = env!("CARGO_BIN_EXE_ledgerful");
-    let out = Command::new(bin)
+    let out = crate::common::isolated_command(bin, &crate::common::synthetic_home(tmp.path()))
         .args(["timings", "--explain", "index", "--json"])
         .current_dir(tmp.path())
         .output()
@@ -436,7 +436,7 @@ fn explain_small_sample_empty_prior_appends_token() {
     }
     let _guard = DirGuard::new(tmp.path());
     let bin = env!("CARGO_BIN_EXE_ledgerful");
-    let out = Command::new(bin)
+    let out = crate::common::isolated_command(bin, &crate::common::synthetic_home(tmp.path()))
         .args(["timings", "--explain", "index", "--json"])
         .current_dir(tmp.path())
         .output()

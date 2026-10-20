@@ -395,7 +395,7 @@ mod tests {
     }
 
     #[test]
-    fn user_template_secret_missing_config_ack_refuses_without_materializing() {
+    fn user_template_secret_ack_code_missing_config_refuses_without_materializing() {
         let (_tmp, layout) = fresh_layout();
         let err = ack_code(&layout, CODE_PHANTOM_PROMOTED_WITHOUT_VERIFY).unwrap_err();
         assert_eq!(format!("{err}"), DOCTOR_CONFIG_REFUSAL);
