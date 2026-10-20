@@ -482,6 +482,7 @@ fn semantic_json_result_omits_zero_purge_and_false_hnsw() {
         up_to_date: true,
         hnsw_rebuilt: None,
         chunk_failed_files: None,
+        chunk_failure_outcomes: None,
     };
     let s = serde_json::to_string(&result).expect("serialize");
     assert!(s.contains("\"schemaVersion\":1"));
@@ -506,6 +507,7 @@ fn semantic_json_result_includes_purge_and_hnsw_when_set() {
         up_to_date: false,
         hnsw_rebuilt: Some(true),
         chunk_failed_files: None,
+        chunk_failure_outcomes: None,
     };
     let s = serde_json::to_string(&result).expect("serialize");
     assert!(s.contains("\"purgedForeign\":3"));

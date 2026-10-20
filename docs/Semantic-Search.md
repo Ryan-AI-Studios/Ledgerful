@@ -69,38 +69,45 @@ bootstrap so the index never silently stays empty.
   `index --semantic` (query/Ask keep ranking pre-header vectors until
   that run). Hash-current files with zero snippet rows still re-process
   unless the chunker produces zero chunks (declaration-only `mod x;`).
-  A file that reads but fails to chunk after its content changed loses its stored
-  hash and snippets (so `index --check` stops reporting it drifted) and is retried
-  on every run; if its stored hash still matches, the index is kept (0545). Rows
-  are cleared only when the stored hash is known to differ or is absent. A read
-  failure (file unreadable) never clears rows (0545). The stored-hash **lookup
-  itself** is a separate failure class (0553): when it fails during chunk-failure
-  cleanup, rows are kept, the file stays drifted, and the run reports one
-  aggregate WARN naming how many cleanup files were unknown (`lookup-unknown`).
-  Preserved rows are not fresh - search/Ask can return snippets for content that
-  changed until a later successful lookup and chunk - so `index --check` (and
-  `--strict`, which already exits 1 on any stale surface) keeps reporting the
-  drift. The frozen `N file(s) failed to chunk and will be retried` progress line
-  can claim rows were cleared where content changed even when an unknown lookup
-  kept them; the cleanup WARN and the preserved drift are the evidence until 0569
-  corrects that wording - the frozen line under-reports cleanup lookup-unknown
-  files; wording remains 0569's.
+  A file that reads but fails to chunk is reported by cleanup outcome: rows cleared
+  because the stored hash was absent or different (0545) lose their snippets and hash,
+  so `index --check` stops reporting them drifted and the next run re-processes them;
+  a file whose stored hash still matches the failing content keeps its index and is
+  normally **skipped** by later incremental runs (`index --semantic --full` or a
+  content change retries it), except that a hash-current file with zero stored
+  snippets is re-processed on every run unless the chunker produces zero chunks
+  (declaration-only `mod x;`); a cleanup failure keeps the file drifted and is
+  re-processed next run; if the stored-hash lookup fails during chunk-failure cleanup,
+  rows are kept and counted as unchecked, one aggregate WARN is printed, and
+  `index --check` keeps reporting drift until a later successful run. Preserved rows
+  are not fresh: search/Ask can return snippets for content that changed until a later
+  successful lookup and chunk. A read failure (file unreadable) never clears rows
+  (0545). The progress line reports the per-outcome classes described under Progress
+  below.
 - **Lookup failures on the warm path (0553):** a lookup error during warm
   candidate discovery reprocesses that file with debug-only detail and no
   `lookup_unknown` count or WARN; it never aborts discovery. Persistent lookup
   failures can therefore repeat parse/embed work for every candidate on each warm
   run (the fail-open snippet-presence check included). The aggregate stderr WARN
-  counts chunk-failure cleanup unknowns only, and `--json` stdout is unchanged.
+  counts chunk-failure cleanup unknowns only, and a warm-path lookup error adds
+  no JSON field.
 - **Force rebuild:** `index --semantic --full` always wins over `-i`.
 - **After repo absolute-path move / isolation cleanup:** prefer
   `index --semantic --full` once so foreign keys purge and relative keys rewrite.
 - **Progress:** interactive TTY keeps indicatif parse/embed bars + HNSW spinner.
   Non-TTY / agent runs (`CI`, `LEDGERFUL_NON_INTERACTIVE`, non-TTY stdin) emit
   product phase lines and throttled counters on stdout (mode early, parse,
-  embed, HNSW, complete, plus one line when files failed to chunk) — not tracing INFO (which default human QUIET hides).
+  embed, HNSW, complete, plus one line when files failed to chunk) — not tracing
+  INFO (which default human QUIET hides). That chunk-failure line reports the
+  per-outcome breakdown on **stdout** — cleared / cleanup failed / kept /
+  unchecked — for the files that failed to chunk; 0553's aggregate lookup WARN
+  stays on stderr.
 - **Machine mode:** `index --semantic --json` suppresses all human progress;
   success prints **one** final JSON object (`schemaVersion`, `mode`, `reason`,
-  counts, `upToDate`, optional `purgedForeign` / `hnswRebuilt` / `chunkFailedFiles`).
+  counts, `upToDate`, optional `purgedForeign` / `hnswRebuilt` / `chunkFailedFiles` /
+  `chunkFailureOutcomes`). `chunkFailedFiles` remains the total in-root chunk-failure
+  count; the additive `chunkFailureOutcomes` object (`cleared`, `keptCurrent`,
+  `cleanupFailed`, `lookupUnknown`) accompanies it, and the four integers sum to it.
 - **HNSW rebuild:** large batches (≥ `semantic.hnsw_rebuild_threshold`, default
   500) drop and rebuild the HNSW index over the **whole** relation. The
   announce line uses total store size (existing + new), not batch-only undercount.
