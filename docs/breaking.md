@@ -18,6 +18,16 @@ This document tracks dependency and project-level compatibility concerns for the
 
 ## Project-Level Changes
 
+### Fallible semantic hash lookup (0553)
+
+**Breaking for library callers of `SemanticDiscovery` (0.x, in-tree only; no schema, migration or package-version change):**
+
+| Before | After |
+|---|---|
+| `is_file_hash_current(&self, path_key: &str, hash: &str) -> bool`, where a failed Cozo read was folded into `false` | `is_file_hash_current(...) -> Result<bool>`: `Err` means the lookup failed and nothing is known |
+| No direct way to read the stored hash | New `stored_file_hash(&self, path_key: &str) -> Result<Option<String>>` (`Ok(None)` = no stored row; `Err` = lookup failed) |
+| A read error's `false` authorized `clear_rows` to delete snippets and the stored hash | Callers handle `Err` explicitly; a lookup failure is never deletion authority (cleanup keeps rows and counts `lookup_unknown`) |
+
 ### Working-tree `--timeout` omitted is a 25s overall Instant (0419)
 
 **Breaking for scripts that treated omitted `--timeout` on working-tree `change-context` / `impact` / `scan --impact` as unbounded:**
