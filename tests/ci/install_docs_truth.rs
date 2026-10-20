@@ -1387,3 +1387,888 @@ fn audit_toml_ignore_matches_deny_advisories() {
         );
     }
 }
+
+// ---- 0568: advisory CI diagnostics ----
+//
+// `search-perf` and `mutation` both carry `continue-on-error: true`, so a failure never
+// blocks a merge. These fixtures pin the *conditions* that name the failure class, the copy
+// that class is allowed to claim, the advisory policy that has to survive them, and the
+// rust-cache comment. They are static: no probe, dispatch or induced failure runs them.
+
+/// A step outcome as the Actions `steps` context reports it.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum StepOutcome {
+    Success,
+    Failure,
+    Skipped,
+    Cancelled,
+}
+
+const STEP_OUTCOMES: [StepOutcome; 4] = [
+    StepOutcome::Success,
+    StepOutcome::Failure,
+    StepOutcome::Skipped,
+    StepOutcome::Cancelled,
+];
+
+/// The job-level `failure()` / `cancelled()` status plus the observable step outcomes.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+struct AdvisoryCtx {
+    failure: bool,
+    cancelled: bool,
+    build: StepOutcome,
+    gate: StepOutcome,
+    mutants: StepOutcome,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum SearchPerfWarning {
+    Setup,
+    Build,
+    Gate,
+    Cancelled,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum MutationWarning {
+    Setup,
+    Run,
+    Cancelled,
+}
+
+/// Step name, pinned `if:` literal, and the class that condition selects (spec 0568 §3.1).
+const SEARCH_PERF_WARNINGS: &[(&str, &str, SearchPerfWarning)] = &[
+    (
+        "Warn if search-perf setup failed",
+        "failure() && steps.build.outcome == 'skipped' && steps.gate.outcome == 'skipped'",
+        SearchPerfWarning::Setup,
+    ),
+    (
+        "Warn if search-perf build failed or timed out",
+        "failure() && steps.build.outcome == 'failure'",
+        SearchPerfWarning::Build,
+    ),
+    (
+        "Warn if search-perf gate failed or timed out",
+        "failure() && steps.gate.outcome == 'failure'",
+        SearchPerfWarning::Gate,
+    ),
+    (
+        "Warn if search-perf was cancelled",
+        "cancelled() && !failure()",
+        SearchPerfWarning::Cancelled,
+    ),
+];
+
+/// Step name, pinned `if:` literal, and the class that condition selects (spec 0568 §3.2).
+const MUTATION_WARNINGS: &[(&str, &str, MutationWarning)] = &[
+    (
+        "Warn if mutation setup failed",
+        "failure() && steps.mutants.outcome == 'skipped'",
+        MutationWarning::Setup,
+    ),
+    (
+        "Warn if mutation run failed or timed out",
+        "failure() && steps.mutants.outcome == 'failure'",
+        MutationWarning::Run,
+    ),
+    (
+        "Warn if mutation was cancelled",
+        "cancelled() && !failure()",
+        MutationWarning::Cancelled,
+    ),
+];
+
+/// The exact body text each `search-perf` warning step may emit, once after `::warning::`
+/// and once on the job summary.
+const SEARCH_PERF_WARNING_COPY: &[(&str, &str)] = &[
+    (
+        "Warn if search-perf setup failed",
+        "search-perf setup failed before the build or gate ran (checkout, artifact download, toolchain or cache restore; non-blocking). No perf result is claimed.",
+    ),
+    (
+        "Warn if search-perf build failed or timed out",
+        "search-perf build failed or timed out (45-minute step budget; non-blocking). If this step ran its full budget it is infrastructure, not a perf regression; otherwise read the step log.",
+    ),
+    (
+        "Warn if search-perf gate failed or timed out",
+        "search-perf gate failed or timed out (10-minute step budget; non-blocking). A gate that completed inside its budget is a perf or correctness result, see the search-perf-samples artifact. A gate that ran its full budget is infrastructure.",
+    ),
+    (
+        "Warn if search-perf was cancelled",
+        "search-perf was cancelled before it finished (non-blocking). A cancelled run produces no perf result, so no regression is claimed.",
+    ),
+];
+
+/// The exact body text each `mutation` warning step may emit.
+const MUTATION_WARNING_COPY: &[(&str, &str)] = &[
+    (
+        "Warn if mutation setup failed",
+        "mutation setup failed before cargo mutants ran (checkout, toolchain or tool install; non-blocking). No mutation result is claimed.",
+    ),
+    (
+        "Warn if mutation run failed or timed out",
+        "mutation run failed or timed out (120-minute step budget; non-blocking). A run that used its full budget is infrastructure; otherwise the mutants-report artifact records the outcome (surviving mutants, test timeouts, a failing baseline or an error).",
+    ),
+    (
+        "Warn if mutation was cancelled",
+        "mutation was cancelled before it finished (non-blocking). A cancelled run produces no mutation result.",
+    ),
+];
+
+/// The 0568 replacement for the two rust-cache comment lines (spec §3.3).
+const CACHE_COMMENT_LINES: &[&str] = &[
+    "          # Save dependency artifacts even when the build fails or times out.",
+    "          # A pull_request cache is scoped to that PR's ref, so it warms re-runs of",
+    "          # the same PR only; other PRs restore main's push/schedule cache. rust-cache",
+    "          # prunes workspace crates, so what a failed build saves is dependencies.",
+];
+
+const RUST_CACHE_PIN: &str = "6323deb102c322ba6fcbdcafc7e3dddab59af2b6";
+
+fn advisory_step_if(body: &[&str], header: &str) -> Option<String> {
+    step_lines(body, header)
+        .iter()
+        .find_map(|line| line.strip_prefix("        if: "))
+        .map(str::to_string)
+}
+
+fn advisory_step_outcome(id: &str, ctx: &AdvisoryCtx) -> StepOutcome {
+    match id {
+        "build" => ctx.build,
+        "gate" => ctx.gate,
+        "mutants" => ctx.mutants,
+        other => panic!("unknown steps context id `{other}`"),
+    }
+}
+
+fn advisory_eval_atom(atom: &str, ctx: &AdvisoryCtx, expr: &str) -> bool {
+    match atom {
+        "failure()" => return ctx.failure,
+        "cancelled()" => return ctx.cancelled,
+        "!failure()" => return !ctx.failure,
+        "!cancelled()" => return !ctx.cancelled,
+        _ => {}
+    }
+    let Some(rest) = atom.strip_prefix("steps.") else {
+        panic!("unhandled advisory condition atom `{atom}` in `{expr}`");
+    };
+    let Some((id, rest)) = rest.split_once(".outcome") else {
+        panic!("unhandled advisory condition atom `{atom}` in `{expr}`");
+    };
+    let rest = rest.trim();
+    let (want_equal, value) = if let Some(value) = rest.strip_prefix("==") {
+        (true, value)
+    } else if let Some(value) = rest.strip_prefix("!=") {
+        (false, value)
+    } else {
+        panic!("unhandled advisory condition operator in `{expr}`");
+    };
+    let value = value
+        .trim()
+        .strip_prefix('\'')
+        .and_then(|value| value.strip_suffix('\''))
+        .unwrap_or_else(|| panic!("unquoted outcome value in `{expr}`"));
+    let equal = match value {
+        "success" => advisory_step_outcome(id, ctx) == StepOutcome::Success,
+        "failure" => advisory_step_outcome(id, ctx) == StepOutcome::Failure,
+        "skipped" => advisory_step_outcome(id, ctx) == StepOutcome::Skipped,
+        "cancelled" => advisory_step_outcome(id, ctx) == StepOutcome::Cancelled,
+        other => panic!("unknown step outcome `{other}` in `{expr}`"),
+    };
+    if want_equal { equal } else { !equal }
+}
+
+/// Evaluate the restricted grammar these warnings use: `&&`-joined atoms over `failure()`,
+/// `cancelled()`, their negations, and `steps.<id>.outcome ==|!= '<value>'`. Anything else
+/// panics. The runner's implicit `success()` is modelled: an expression with no status
+/// function is ANDed with `!failure() && !cancelled()`.
+fn advisory_eval(expr: &str, ctx: &AdvisoryCtx) -> bool {
+    let has_status_function = ["success()", "failure()", "cancelled()", "always()"]
+        .iter()
+        .any(|needle| expr.contains(needle));
+    let inner = expr
+        .split(" && ")
+        .all(|atom| advisory_eval_atom(atom.trim(), ctx, expr));
+    if has_status_function {
+        inner
+    } else {
+        !ctx.failure && !ctx.cancelled && inner
+    }
+}
+
+fn advisory_selected<W: Copy>(
+    table: &[(&str, &str, W)],
+    exprs: &[String],
+    ctx: &AdvisoryCtx,
+) -> Vec<W> {
+    table
+        .iter()
+        .zip(exprs)
+        .filter(|(_, expr)| advisory_eval(expr.as_str(), ctx))
+        .map(|((_, _, warning), _)| *warning)
+        .collect()
+}
+
+// Sequential reachability for `search-perf`. Neither `build` nor `gate` carries an `if:`,
+// so a skipped `build` skips the gate, a non-skipped gate implies a successful build, and a
+// `failure`/`cancelled` outcome can only exist when the matching status function is true.
+fn advisory_search_perf_reachable(ctx: &AdvisoryCtx) -> bool {
+    if ctx.build == StepOutcome::Skipped && ctx.gate != StepOutcome::Skipped {
+        return false;
+    }
+    if ctx.gate == StepOutcome::Skipped
+        && !matches!(
+            ctx.build,
+            StepOutcome::Skipped | StepOutcome::Failure | StepOutcome::Cancelled
+        )
+    {
+        return false;
+    }
+    if ctx.gate != StepOutcome::Skipped && ctx.build != StepOutcome::Success {
+        return false;
+    }
+    if ctx.build == StepOutcome::Cancelled && !(ctx.cancelled && !ctx.failure) {
+        return false;
+    }
+    if ctx.gate == StepOutcome::Cancelled && !(ctx.cancelled && !ctx.failure) {
+        return false;
+    }
+    if ctx.build == StepOutcome::Failure && !ctx.failure {
+        return false;
+    }
+    if ctx.gate == StepOutcome::Failure && !ctx.failure {
+        return false;
+    }
+    if !ctx.failure
+        && !ctx.cancelled
+        && (ctx.build != StepOutcome::Success || ctx.gate != StepOutcome::Success)
+    {
+        return false;
+    }
+    true
+}
+
+// The mutation job has one outcome-bearing step, so its 16 tuples are 10 reachable rows plus
+// 6 unreachable ones.
+fn advisory_mutation_reachable(ctx: &AdvisoryCtx) -> bool {
+    if ctx.mutants == StepOutcome::Skipped && !(ctx.failure || ctx.cancelled) {
+        return false;
+    }
+    if ctx.mutants == StepOutcome::Cancelled && !(ctx.cancelled && !ctx.failure) {
+        return false;
+    }
+    if ctx.mutants == StepOutcome::Failure && !ctx.failure {
+        return false;
+    }
+    if !ctx.failure && !ctx.cancelled && ctx.mutants != StepOutcome::Success {
+        return false;
+    }
+    true
+}
+
+fn advisory_search_perf_states() -> Vec<AdvisoryCtx> {
+    let mut states = Vec::new();
+    for failure in [false, true] {
+        for cancelled in [false, true] {
+            for build in STEP_OUTCOMES {
+                for gate in STEP_OUTCOMES {
+                    states.push(AdvisoryCtx {
+                        failure,
+                        cancelled,
+                        build,
+                        gate,
+                        mutants: StepOutcome::Success,
+                    });
+                }
+            }
+        }
+    }
+    states
+}
+
+fn advisory_mutation_states() -> Vec<AdvisoryCtx> {
+    let mut states = Vec::new();
+    for failure in [false, true] {
+        for cancelled in [false, true] {
+            for mutants in STEP_OUTCOMES {
+                states.push(AdvisoryCtx {
+                    failure,
+                    cancelled,
+                    build: StepOutcome::Success,
+                    gate: StepOutcome::Success,
+                    mutants,
+                });
+            }
+        }
+    }
+    states
+}
+
+/// The 13 sequentially reachable `search-perf` traces, written out (never derived from the
+/// predicate) so the predicate can neither widen nor narrow silently.
+fn advisory_search_perf_pinned_reachable() -> Vec<AdvisoryCtx> {
+    let rows: [(bool, bool, StepOutcome, StepOutcome); 13] = [
+        (true, false, StepOutcome::Skipped, StepOutcome::Skipped),
+        (true, true, StepOutcome::Skipped, StepOutcome::Skipped),
+        (false, true, StepOutcome::Skipped, StepOutcome::Skipped),
+        (true, false, StepOutcome::Failure, StepOutcome::Skipped),
+        (true, true, StepOutcome::Failure, StepOutcome::Skipped),
+        (false, true, StepOutcome::Cancelled, StepOutcome::Skipped),
+        (true, false, StepOutcome::Success, StepOutcome::Failure),
+        (true, true, StepOutcome::Success, StepOutcome::Failure),
+        (false, true, StepOutcome::Success, StepOutcome::Cancelled),
+        (false, false, StepOutcome::Success, StepOutcome::Success),
+        (true, false, StepOutcome::Success, StepOutcome::Success),
+        (true, true, StepOutcome::Success, StepOutcome::Success),
+        (false, true, StepOutcome::Success, StepOutcome::Success),
+    ];
+    rows.into_iter()
+        .map(|(failure, cancelled, build, gate)| AdvisoryCtx {
+            failure,
+            cancelled,
+            build,
+            gate,
+            mutants: StepOutcome::Success,
+        })
+        .collect()
+}
+
+/// The 10 sequentially reachable mutation traces.
+fn advisory_mutation_pinned_reachable() -> Vec<AdvisoryCtx> {
+    let rows: [(bool, bool, StepOutcome); 10] = [
+        (false, false, StepOutcome::Success),
+        (true, false, StepOutcome::Success),
+        (true, false, StepOutcome::Failure),
+        (true, false, StepOutcome::Skipped),
+        (false, true, StepOutcome::Success),
+        (false, true, StepOutcome::Skipped),
+        (false, true, StepOutcome::Cancelled),
+        (true, true, StepOutcome::Success),
+        (true, true, StepOutcome::Failure),
+        (true, true, StepOutcome::Skipped),
+    ];
+    rows.into_iter()
+        .map(|(failure, cancelled, mutants)| AdvisoryCtx {
+            failure,
+            cancelled,
+            build: StepOutcome::Success,
+            gate: StepOutcome::Success,
+            mutants,
+        })
+        .collect()
+}
+
+/// The expected selection per reachable `search-perf` trace (spec §3.4 table). Written as an
+/// independent `match`; it never calls `advisory_eval`.
+fn advisory_search_perf_expected(ctx: &AdvisoryCtx) -> Vec<SearchPerfWarning> {
+    match (ctx.build, ctx.gate, ctx.failure, ctx.cancelled) {
+        (StepOutcome::Skipped, StepOutcome::Skipped, true, _) => vec![SearchPerfWarning::Setup],
+        (StepOutcome::Skipped, StepOutcome::Skipped, false, true) => {
+            vec![SearchPerfWarning::Cancelled]
+        }
+        (StepOutcome::Failure, StepOutcome::Skipped, true, _) => vec![SearchPerfWarning::Build],
+        (StepOutcome::Cancelled, StepOutcome::Skipped, false, true) => {
+            vec![SearchPerfWarning::Cancelled]
+        }
+        (StepOutcome::Success, StepOutcome::Failure, true, _) => vec![SearchPerfWarning::Gate],
+        (StepOutcome::Success, StepOutcome::Cancelled, false, true) => {
+            vec![SearchPerfWarning::Cancelled]
+        }
+        (StepOutcome::Success, StepOutcome::Success, false, false) => Vec::new(),
+        (StepOutcome::Success, StepOutcome::Success, true, _) => Vec::new(),
+        (StepOutcome::Success, StepOutcome::Success, false, true) => {
+            vec![SearchPerfWarning::Cancelled]
+        }
+        other => panic!("unmapped reachable search-perf state {other:?}"),
+    }
+}
+
+/// The expected selection per reachable mutation trace (spec §3.4 table).
+fn advisory_mutation_expected(ctx: &AdvisoryCtx) -> Vec<MutationWarning> {
+    match (ctx.mutants, ctx.failure, ctx.cancelled) {
+        (StepOutcome::Skipped, true, _) => vec![MutationWarning::Setup],
+        (StepOutcome::Skipped, false, true) => vec![MutationWarning::Cancelled],
+        (StepOutcome::Failure, true, _) => vec![MutationWarning::Run],
+        (StepOutcome::Cancelled, false, true) => vec![MutationWarning::Cancelled],
+        (StepOutcome::Success, false, false) => Vec::new(),
+        (StepOutcome::Success, true, _) => Vec::new(),
+        (StepOutcome::Success, false, true) => vec![MutationWarning::Cancelled],
+        other => panic!("unmapped reachable mutation state {other:?}"),
+    }
+}
+
+fn advisory_pinned_expressions<W>(
+    body: &[&str],
+    table: &[(&'static str, &'static str, W)],
+    job: &str,
+) -> (Vec<String>, Vec<&'static str>) {
+    let mut exprs = Vec::new();
+    let mut missing = Vec::new();
+    for (name, want, _) in table {
+        let header = format!("      - name: {name}");
+        match advisory_step_if(body, &header) {
+            Some(got) => {
+                assert_eq!(&got, want, "{job} step `{name}` condition drifted");
+                assert!(
+                    got.contains("failure()") || got.contains("cancelled()"),
+                    "{job} step `{name}` has no failure()/cancelled() status function: {got}"
+                );
+                exprs.push(got);
+            }
+            None => missing.push(*name),
+        }
+    }
+    (exprs, missing)
+}
+
+fn advisory_assert_step_timeouts(body: &[&str], job: &str, floor: usize) {
+    let mut blocks: Vec<Vec<&str>> = Vec::new();
+    let mut current: Option<Vec<&str>> = None;
+    for line in body {
+        if line.starts_with("      - ") {
+            if let Some(block) = current.take() {
+                blocks.push(block);
+            }
+            current = Some(vec![*line]);
+        } else if let Some(block) = current.as_mut() {
+            block.push(*line);
+        }
+    }
+    if let Some(block) = current {
+        blocks.push(block);
+    }
+    let steps = blocks.len();
+    assert!(
+        steps >= floor,
+        "{job} step scan found {steps} steps; floor is {floor}, so an empty scan cannot pass vacuously"
+    );
+    for (index, block) in blocks.iter().enumerate() {
+        let header = block.first().copied().unwrap_or_default();
+        assert!(
+            block
+                .iter()
+                .any(|line| line.starts_with("        timeout-minutes: ")),
+            "{job} step {} has no step-level timeout-minutes: {header}",
+            index + 1
+        );
+    }
+}
+
+fn advisory_assert_copy(
+    body: &[&str],
+    table: &[(&str, &str)],
+    job: &str,
+    expected_warnings: usize,
+) {
+    let joined = body.join("\n");
+    for (name, text) in table {
+        let header = format!("      - name: {name}");
+        let step = step_lines(body, &header);
+        assert!(!step.is_empty(), "{job} is missing warning step `{name}`");
+        let step = step.join("\n");
+        assert_eq!(
+            step.matches(text).count(),
+            2,
+            "{job} step `{name}` must print its text once as a ::warning:: and once on the step summary"
+        );
+        assert_eq!(
+            step.matches(&format!("::warning::{text}")).count(),
+            1,
+            "{job} step `{name}` must emit exactly one annotated ::warning::"
+        );
+        assert_eq!(
+            step.matches(&format!("{text}\" >> \"$GITHUB_STEP_SUMMARY\""))
+                .count(),
+            1,
+            "{job} step `{name}` must write the same text to $GITHUB_STEP_SUMMARY"
+        );
+        assert_eq!(
+            step.matches("::warning::").count(),
+            1,
+            "{job} step `{name}` must carry exactly one ::warning:: line"
+        );
+    }
+    assert_eq!(
+        joined.matches("::warning::").count(),
+        expected_warnings,
+        "{job} warning set must stay closed at {expected_warnings} literal ::warning:: lines"
+    );
+    assert_eq!(
+        joined.matches("$GITHUB_STEP_SUMMARY").count(),
+        expected_warnings,
+        "{job} must carry one summary line per warning"
+    );
+    assert_eq!(
+        body.iter()
+            .filter(|line| line.starts_with("      - name: Warn if "))
+            .count(),
+        expected_warnings,
+        "{job} must carry exactly {expected_warnings} warning steps"
+    );
+}
+
+#[test]
+fn advisory_jobs_keep_advisory_policy() {
+    let ci = include_str!("../../.github/workflows/ci.yml");
+    for job in ["search-perf", "mutation"] {
+        let body = job_lines(ci, job);
+        let header = format!("  {job}:");
+        assert_eq!(
+            body.first().copied(),
+            Some(header.as_str()),
+            "ci.yml is missing job {job}"
+        );
+        assert!(
+            body.contains(&"    continue-on-error: true"),
+            "{job} must stay advisory (continue-on-error: true)"
+        );
+        let steps_at = body
+            .iter()
+            .position(|line| *line == "    steps:")
+            .unwrap_or_else(|| panic!("{job} is missing a steps key"));
+        let prefix = &body[..steps_at];
+        assert!(
+            !prefix
+                .iter()
+                .any(|line| line.starts_with("    timeout-minutes:")),
+            "{job} must not gain a job-level timeout-minutes (0440)"
+        );
+        assert!(
+            !prefix.iter().any(|line| line.starts_with("    name:")),
+            "{job} must not gain a job-level name"
+        );
+        assert!(
+            !body
+                .iter()
+                .any(|line| line.starts_with("        continue-on-error:")),
+            "{job} must not set step-level continue-on-error, so outcome stays equal to conclusion"
+        );
+    }
+    let search = job_lines(ci, "search-perf");
+    assert!(
+        search.contains(&"    needs: [clippy, web-build]"),
+        "search-perf must keep needs: [clippy, web-build]"
+    );
+    assert!(
+        search.contains(&"    runs-on: windows-latest"),
+        "search-perf must keep runs-on: windows-latest"
+    );
+    let mutation = job_lines(ci, "mutation");
+    assert!(
+        mutation.contains(&"    if: github.event_name == 'schedule'"),
+        "mutation must stay schedule-only"
+    );
+    assert!(
+        mutation.contains(&"    runs-on: ubuntu-latest"),
+        "mutation must keep runs-on: ubuntu-latest"
+    );
+}
+
+#[test]
+fn advisory_jobs_bind_every_step_to_a_timeout() {
+    let ci = include_str!("../../.github/workflows/ci.yml");
+    for (job, floor) in [("search-perf", 9_usize), ("mutation", 7_usize)] {
+        let body = job_lines(ci, job);
+        assert!(!body.is_empty(), "ci.yml is missing job {job}");
+        advisory_assert_step_timeouts(&body, job, floor);
+    }
+}
+
+#[test]
+fn advisory_warning_conditions_partition_the_failure_states() {
+    let ci = include_str!("../../.github/workflows/ci.yml");
+    let search_body = job_lines(ci, "search-perf");
+    let mutation_body = job_lines(ci, "mutation");
+    assert!(!search_body.is_empty(), "ci.yml is missing job search-perf");
+    assert!(!mutation_body.is_empty(), "ci.yml is missing job mutation");
+
+    // 0. The evaluator must model the runner's implicit `success()` and refuse anything
+    //    outside the restricted grammar, or the table below proves nothing.
+    let failed = AdvisoryCtx {
+        failure: true,
+        cancelled: false,
+        build: StepOutcome::Success,
+        gate: StepOutcome::Success,
+        mutants: StepOutcome::Success,
+    };
+    assert!(
+        !advisory_eval("steps.build.outcome == 'success'", &failed),
+        "a condition without a status function must inherit the runner's implicit success()"
+    );
+    assert!(
+        advisory_eval("failure() && steps.build.outcome == 'success'", &failed),
+        "an explicit failure() must satisfy the status slot"
+    );
+    assert!(
+        !advisory_eval("cancelled() && !failure()", &failed),
+        "cancelled() must be false on a failed-but-not-cancelled job"
+    );
+    let foreign = std::panic::catch_unwind(|| {
+        advisory_eval(
+            "failure() && github.event_name == 'schedule'",
+            &AdvisoryCtx {
+                failure: true,
+                cancelled: false,
+                build: StepOutcome::Success,
+                gate: StepOutcome::Success,
+                mutants: StepOutcome::Success,
+            },
+        )
+    });
+    assert!(
+        foreign.is_err(),
+        "the evaluator must panic on an atom outside the restricted grammar"
+    );
+
+    // 1. Pin every warning `if:` literal, and prove each carries a status function
+    //    *before* the enumeration so a missing one cannot be masked.
+    let (search_exprs, missing) =
+        advisory_pinned_expressions(&search_body, SEARCH_PERF_WARNINGS, "search-perf");
+    assert!(
+        missing.is_empty(),
+        "search-perf is missing warning steps: {missing:?}"
+    );
+    let (mutation_exprs, missing) =
+        advisory_pinned_expressions(&mutation_body, MUTATION_WARNINGS, "mutation");
+    assert!(
+        missing.is_empty(),
+        "mutation is missing warning steps: {missing:?}"
+    );
+
+    // 2. Reachability: the predicate and the pinned list must agree exactly.
+    let search_states = advisory_search_perf_states();
+    assert_eq!(
+        search_states.len(),
+        64,
+        "search-perf state space is 2*2*4*4"
+    );
+    let mut search_reachable: Vec<AdvisoryCtx> = search_states
+        .iter()
+        .copied()
+        .filter(advisory_search_perf_reachable)
+        .collect();
+    search_reachable.sort_unstable();
+    let mut search_pinned = advisory_search_perf_pinned_reachable();
+    search_pinned.sort_unstable();
+    assert_eq!(
+        search_reachable, search_pinned,
+        "the reachability predicate and the pinned 13 search-perf states disagree"
+    );
+    assert_eq!(
+        search_states.len() - search_reachable.len(),
+        51,
+        "the 51 unreachable search-perf tuples stay classified, not asserted away"
+    );
+
+    let mutation_states = advisory_mutation_states();
+    assert_eq!(mutation_states.len(), 16, "mutation state space is 2*2*4");
+    let mut mutation_reachable: Vec<AdvisoryCtx> = mutation_states
+        .iter()
+        .copied()
+        .filter(advisory_mutation_reachable)
+        .collect();
+    mutation_reachable.sort_unstable();
+    let mut mutation_pinned = advisory_mutation_pinned_reachable();
+    mutation_pinned.sort_unstable();
+    assert_eq!(
+        mutation_reachable, mutation_pinned,
+        "the reachability predicate and the pinned 10 mutation states disagree"
+    );
+    assert_eq!(
+        mutation_states.len() - mutation_reachable.len(),
+        6,
+        "the 6 unreachable mutation tuples stay classified, not asserted away"
+    );
+
+    // 3. Total mapping: every reachable state selects exactly its expected set, and every
+    //    non-empty expectation is exactly one warning (that is the disjointness claim).
+    let mut search_warned = 0_usize;
+    for ctx in &search_reachable {
+        let expected = advisory_search_perf_expected(ctx);
+        let selected = advisory_selected(SEARCH_PERF_WARNINGS, &search_exprs, ctx);
+        assert_eq!(
+            selected, expected,
+            "search-perf state {ctx:?} selects the wrong warning set"
+        );
+        if expected.is_empty() {
+            assert!(
+                selected.is_empty(),
+                "search-perf state {ctx:?} must write no warning"
+            );
+        } else {
+            assert_eq!(
+                selected.len(),
+                1,
+                "search-perf state {ctx:?} must select exactly one bounded warning"
+            );
+            search_warned += 1;
+        }
+    }
+    assert_eq!(
+        search_warned, 10,
+        "10 of the 13 reachable search-perf states carry a warning"
+    );
+
+    let mut mutation_warned = 0_usize;
+    for ctx in &mutation_reachable {
+        let expected = advisory_mutation_expected(ctx);
+        let selected = advisory_selected(MUTATION_WARNINGS, &mutation_exprs, ctx);
+        assert_eq!(
+            selected, expected,
+            "mutation state {ctx:?} selects the wrong warning set"
+        );
+        if expected.is_empty() {
+            assert!(
+                selected.is_empty(),
+                "mutation state {ctx:?} must write no warning"
+            );
+        } else {
+            assert_eq!(
+                selected.len(),
+                1,
+                "mutation state {ctx:?} must select exactly one bounded warning"
+            );
+            mutation_warned += 1;
+        }
+    }
+    assert_eq!(
+        mutation_warned, 7,
+        "7 of the 10 reachable mutation states carry a warning"
+    );
+
+    // 4. The states the claim is scoped away from, stated instead of omitted.
+    let green = AdvisoryCtx {
+        failure: false,
+        cancelled: false,
+        build: StepOutcome::Success,
+        gate: StepOutcome::Success,
+        mutants: StepOutcome::Success,
+    };
+    assert!(
+        !advisory_eval("failure() && steps.build.outcome == 'skipped'", &green)
+            && advisory_selected(SEARCH_PERF_WARNINGS, &search_exprs, &green).is_empty(),
+        "a green search-perf run must produce zero warnings"
+    );
+    assert!(
+        advisory_selected(SEARCH_PERF_WARNINGS, &search_exprs, &failed).is_empty(),
+        "a failure after the last warning step (artifact upload) must produce zero warnings"
+    );
+
+    // `(build=failure, gate=failure)` cannot be produced by a runner: a failed build skips
+    // the gate. Both outcome branches select there, which is why disjointness is scoped by
+    // reachability rather than asserted over the raw Cartesian product.
+    let collision = AdvisoryCtx {
+        failure: true,
+        cancelled: false,
+        build: StepOutcome::Failure,
+        gate: StepOutcome::Failure,
+        mutants: StepOutcome::Success,
+    };
+    assert!(
+        !advisory_search_perf_reachable(&collision),
+        "(build=Failure, gate=Failure) is unreachable"
+    );
+    assert_eq!(
+        advisory_selected(SEARCH_PERF_WARNINGS, &search_exprs, &collision).len(),
+        2,
+        "the unreachable collision selects both outcome branches"
+    );
+}
+
+#[test]
+fn advisory_search_perf_warning_copy_is_pinned() {
+    let ci = include_str!("../../.github/workflows/ci.yml");
+    let body = job_lines(ci, "search-perf");
+    assert!(!body.is_empty(), "ci.yml is missing job search-perf");
+    advisory_assert_copy(&body, SEARCH_PERF_WARNING_COPY, "search-perf", 4);
+    assert!(
+        !body
+            .iter()
+            .any(|line| line.contains("missed its step budget")),
+        "search-perf step names must not claim a budget event the outcome cannot establish"
+    );
+}
+
+#[test]
+fn advisory_mutation_warning_copy_is_pinned() {
+    let ci = include_str!("../../.github/workflows/ci.yml");
+    let body = job_lines(ci, "mutation");
+    assert!(!body.is_empty(), "ci.yml is missing job mutation");
+    advisory_assert_copy(&body, MUTATION_WARNING_COPY, "mutation", 3);
+    assert!(
+        !ci.contains(
+            "::warning::mutation failed or timed out (120-minute step budget; non-blocking)"
+        ),
+        "the old catch-all mutation warning must be gone"
+    );
+    assert!(
+        !body
+            .iter()
+            .any(|line| line.contains("missed its step budget")),
+        "the mutation warning set must not keep the budget catch-all"
+    );
+    let mutants_at = body
+        .iter()
+        .position(|line| *line == "      - name: cargo mutants")
+        .expect("mutation job is missing the cargo mutants step");
+    assert_eq!(
+        body[mutants_at + 1],
+        "        id: mutants",
+        "the cargo mutants step must be addressable as steps.mutants"
+    );
+    assert_eq!(
+        body[mutants_at + 2],
+        "        timeout-minutes: 120",
+        "the cargo mutants step must keep its 120-minute budget"
+    );
+    assert!(
+        body[mutants_at + 3].starts_with(
+            "        run: cargo mutants --workspace --in-place --file 'src/ledger/**'"
+        ),
+        "the cargo mutants argv must stay unchanged"
+    );
+}
+
+#[test]
+fn advisory_cache_comment_states_pr_ref_scope_and_dependency_only() {
+    let ci = include_str!("../../.github/workflows/ci.yml");
+    let body = job_lines(ci, "search-perf");
+    assert!(!body.is_empty(), "ci.yml is missing job search-perf");
+    for line in CACHE_COMMENT_LINES {
+        assert!(
+            body.contains(line),
+            "the rust-cache comment must state the ref-scope/dependency-only fact: {line}"
+        );
+    }
+    for banned in [
+        "does not leave the next run cold",
+        "next run is not cold",
+        "Save target/",
+    ] {
+        assert!(
+            !ci.contains(banned),
+            "ci.yml must not repeat the over-promising cache claim: {banned}"
+        );
+    }
+    assert_eq!(
+        body.iter()
+            .filter(|line| line.trim() == "cache-on-failure: true")
+            .count(),
+        1,
+        "cache-on-failure: true must stay exactly once in the search-perf job"
+    );
+    assert_eq!(
+        body.iter()
+            .filter(|line| line.contains(RUST_CACHE_PIN))
+            .count(),
+        1,
+        "the rust-cache pin must stay exactly once in the search-perf job"
+    );
+    for banned in ["save-if", "prefix-key"] {
+        assert!(
+            !body.iter().any(|line| line.contains(banned)),
+            "the cache policy must not change: {banned} is not part of 0568"
+        );
+    }
+}

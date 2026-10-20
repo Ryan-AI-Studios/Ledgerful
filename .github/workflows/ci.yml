@@ -182,8 +182,10 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         timeout-minutes: 15
         with:
-          # Save target/ even when the build step below times out, so a cold
-          # compile that misses its budget does not leave the next run cold too.
+          # Save dependency artifacts even when the build fails or times out.
+          # A pull_request cache is scoped to that PR's ref, so it warms re-runs of
+          # the same PR only; other PRs restore main's push/schedule cache. rust-cache
+          # prunes workspace crates, so what a failed build saves is dependencies.
           cache-on-failure: true
       - name: Build release search perf test binaries
         id: build
@@ -203,20 +205,34 @@ jobs:
           grep -q "search_perf_warm_query_budget ... ok" search-perf-out/lib.txt
           cargo test --release --test integration search_correctness::search_perf_cli_cold_sample -- --ignored --exact --nocapture | tee search-perf-out/cli.txt
           grep -q "search_perf_cli_cold_sample ... ok" search-perf-out/cli.txt
-      - name: Warn if search-perf build missed its step budget
+      - name: Warn if search-perf setup failed
+        if: failure() && steps.build.outcome == 'skipped' && steps.gate.outcome == 'skipped'
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          echo "::warning::search-perf setup failed before the build or gate ran (checkout, artifact download, toolchain or cache restore; non-blocking). No perf result is claimed."
+          echo "search-perf setup failed before the build or gate ran (checkout, artifact download, toolchain or cache restore; non-blocking). No perf result is claimed." >> "$GITHUB_STEP_SUMMARY"
+      - name: Warn if search-perf build failed or timed out
         if: failure() && steps.build.outcome == 'failure'
         timeout-minutes: 15
         shell: bash
         run: |
           echo "::warning::search-perf build failed or timed out (45-minute step budget; non-blocking). If this step ran its full budget it is infrastructure, not a perf regression; otherwise read the step log."
           echo "search-perf build failed or timed out (45-minute step budget; non-blocking). If this step ran its full budget it is infrastructure, not a perf regression; otherwise read the step log." >> "$GITHUB_STEP_SUMMARY"
-      - name: Warn if search-perf gate failed
+      - name: Warn if search-perf gate failed or timed out
         if: failure() && steps.gate.outcome == 'failure'
         timeout-minutes: 15
         shell: bash
         run: |
           echo "::warning::search-perf gate failed or timed out (10-minute step budget; non-blocking). A gate that completed inside its budget is a perf or correctness result, see the search-perf-samples artifact. A gate that ran its full budget is infrastructure."
           echo "search-perf gate failed or timed out (10-minute step budget; non-blocking). A gate that completed inside its budget is a perf or correctness result, see the search-perf-samples artifact. A gate that ran its full budget is infrastructure." >> "$GITHUB_STEP_SUMMARY"
+      - name: Warn if search-perf was cancelled
+        if: cancelled() && !failure()
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          echo "::warning::search-perf was cancelled before it finished (non-blocking). A cancelled run produces no perf result, so no regression is claimed."
+          echo "search-perf was cancelled before it finished (non-blocking). A cancelled run produces no perf result, so no regression is claimed." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         timeout-minutes: 5
@@ -309,15 +325,30 @@ jobs:
         with:
           tool: cargo-mutants,nextest
       - name: cargo mutants
+        id: mutants
         timeout-minutes: 120
         run: cargo mutants --workspace --in-place --file 'src/ledger/**' --file 'crates/ledgerful-ledger/**' --file 'src/impact/**' --file 'src/verify/**'
-      - name: Warn if mutation missed its step budget
-        if: failure()
+      - name: Warn if mutation setup failed
+        if: failure() && steps.mutants.outcome == 'skipped'
         timeout-minutes: 15
         shell: bash
         run: |
-          echo "::warning::mutation failed or timed out (120-minute step budget; non-blocking)"
-          echo "mutation failed or timed out (120-minute step budget; non-blocking)" >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::mutation setup failed before cargo mutants ran (checkout, toolchain or tool install; non-blocking). No mutation result is claimed."
+          echo "mutation setup failed before cargo mutants ran (checkout, toolchain or tool install; non-blocking). No mutation result is claimed." >> "$GITHUB_STEP_SUMMARY"
+      - name: Warn if mutation run failed or timed out
+        if: failure() && steps.mutants.outcome == 'failure'
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          echo "::warning::mutation run failed or timed out (120-minute step budget; non-blocking). A run that used its full budget is infrastructure; otherwise the mutants-report artifact records the outcome (surviving mutants, test timeouts, a failing baseline or an error)."
+          echo "mutation run failed or timed out (120-minute step budget; non-blocking). A run that used its full budget is infrastructure; otherwise the mutants-report artifact records the outcome (surviving mutants, test timeouts, a failing baseline or an error)." >> "$GITHUB_STEP_SUMMARY"
+      - name: Warn if mutation was cancelled
+        if: cancelled() && !failure()
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          echo "::warning::mutation was cancelled before it finished (non-blocking). A cancelled run produces no mutation result."
+          echo "mutation was cancelled before it finished (non-blocking). A cancelled run produces no mutation result." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         timeout-minutes: 5
