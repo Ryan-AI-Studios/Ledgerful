@@ -520,12 +520,7 @@ mod tests {
         let original = "intent = \"not-a-table\"\n\n[doctor]\nacknowledged_codes = []\n";
         std::fs::write(layout.config_file(), original).expect("seed");
         let hex = "d".repeat(64);
-        let plan = plan_doctor_fix(
-            &[pin_finding(), phantom_finding()],
-            Some(&hex),
-            None,
-            false,
-        );
+        let plan = plan_doctor_fix(&[pin_finding(), phantom_finding()], Some(&hex), None, false);
         let mut preview = plan.clone();
         preview.dry_run = true;
         annotate_config_write_refusal(&layout, &mut preview);
@@ -549,6 +544,9 @@ mod tests {
         let plan = plan_doctor_fix(&[phantom_finding()], None, None, false);
         let err = apply_doctor_fix(&layout, &plan).unwrap_err();
         assert_eq!(format!("{err}"), DOCTOR_CONFIG_REFUSAL);
-        assert_eq!(std::fs::read_to_string(layout.config_file()).unwrap(), original);
+        assert_eq!(
+            std::fs::read_to_string(layout.config_file()).unwrap(),
+            original
+        );
     }
 }

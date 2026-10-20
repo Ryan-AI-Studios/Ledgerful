@@ -479,6 +479,32 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn user_template_secret_symlink_regular_target_inspected_directory_refused() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+        // Metadata follows the link: a regular target is inspected like a plain file.
+        let target = root.join("real-config.toml");
+        fs::write(&target, format!("[gemini]\napi_key = \"{SENTINEL}\"\n")).unwrap();
+        std::os::unix::fs::symlink(&target, layout.config_file()).unwrap();
+        assert_one_secret_finding(&layout, "gemini.api_key");
+
+        // A link to a directory is refused as metadata uncertainty, not inspected.
+        fs::remove_file(layout.config_file()).unwrap();
+        let dir_target = root.join("dir-target");
+        fs::create_dir(&dir_target).unwrap();
+        std::os::unix::fs::symlink(&dir_target, layout.config_file()).unwrap();
+        let findings = scan(&layout);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            findings[0].message,
+            format!("Plaintext provider-key inspection incomplete for {PROJECT_SOURCE}: metadata.")
+        );
+    }
+
     #[test]
     fn user_template_secret_project_read_reason_via_injected_read() {
         let (_tmp, layout) = layout_with_config("[core]\nstrict = false\n");

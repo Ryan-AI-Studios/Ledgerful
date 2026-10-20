@@ -364,10 +364,21 @@ mod tests {
     }
 
     #[test]
-    fn user_template_secret_resolver_relative_override_is_kept_verbatim() {
+    fn user_template_secret_relative_override_is_kept_verbatim() {
         let got = selected(&env_of(Some("relative/template.toml"), None, None)).unwrap();
         assert_eq!(got.0, TemplateOrigin::Override);
         assert_eq!(got.1.unwrap().as_str(), "relative/template.toml");
+    }
+
+    #[test]
+    fn user_template_secret_empty_home_resolves_relative_when_userprofile_absent() {
+        // Empty HOME with USERPROFILE absent: the Home origin resolves relative to cwd.
+        let got = selected(&env_of(None, None, Some(""))).unwrap();
+        assert_eq!(got.0, TemplateOrigin::Home);
+        assert_eq!(
+            got.1.unwrap(),
+            Utf8Path::new(".ledgerful").join(USER_DEFAULT_CONFIG_FILE)
+        );
     }
 
     #[test]
