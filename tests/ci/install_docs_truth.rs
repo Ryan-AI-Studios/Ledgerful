@@ -295,6 +295,103 @@ const WINDOWS_STATIC_CRT_RUSTFLAGS: &str = "-C target-feature=+crt-static";
 const JOB_RUSTFLAGS_LINE: &str = "      RUSTFLAGS: ${{ matrix.rustflags }}";
 const WINDOWS_CRT_GUARD_STEP: &str = "      - name: Assert Windows exe imports no MSVC runtime";
 
+const CRT_MISSING_INVOCATION: &str = "exactly one `$imports = & $objdump -p $exe | Select-String \"DLL Name:\" | ForEach-Object { ($_ -replace '.*DLL Name:\\s*', '').Trim() }` assignment";
+const CRT_MISSING_EMPTY_PARSE: &str =
+    "the fail-closed `if (-not $imports) { throw \"No imports parsed` guard";
+const CRT_MISSING_BANNED_FILTER: &str = "exactly one `$banned = $imports |` consumer carrying the pinned `^(VCRUNTIME140|...|api-ms-win-crt-)` alternation";
+const CRT_MISSING_BANNED_THROW: &str =
+    "the `if ($banned) { throw \"Windows exe still imports the MSVC runtime` guard";
+
+/// The `-replace` operand that strips `Select-String`'s `MatchInfo` residue (the `path:N:` prefix
+/// and leading spaces). The `^`-anchored banned alternation only matches a stripped import string,
+/// so `-replace 'DLL Name:', ''` leaves every element prefixed and silently empties `$banned`.
+const CRT_NORMALIZER_PATTERN: &str = ".*DLL Name:\\s*";
+
+/// The banned alternation with its `^` anchor **and closing quote**. The closing quote is part of
+/// the pin: `'...api-ms-win-crt-)$'` does not contain this literal, so an "exact match" end anchor
+/// (which can never match a real `.dll` import) is red instead of quietly disarming `$banned`.
+const CRT_BANNED_ALTERNATION: &str =
+    "'^(VCRUNTIME140|MSVCP140|CONCRT140|VCOMP140|VCCORLIB140|ucrtbase|api-ms-win-crt-)'";
+
+/// Requirements that cannot be satisfied by a string that merely names the tool.
+///
+/// PR #624 comment 4307427196: a bare `llvm-objdump` substring also matches the guard's
+/// own path literal and "not found" throw, so a step that kept the throws and dropped (or
+/// overwrote) the dump still passed. These requirements pin the dataflow instead: one
+/// import-dump assignment with its parse field and normalizer **operand**, exactly one
+/// `$banned` consumer carrying the **operand** of its `-match`, and both fail-closed throws
+/// as line prefixes.
+///
+/// The pin is deliberately **one physical line per requirement**: a multi-line re-wrap goes
+/// red by design (fail-closed), and the canonical `$var = ` spacing is byte-pinned
+/// (`$imports=@(...)` is not assignment-shaped and is fenced in track 0567's spec rather than
+/// counted as covered). Fixture C in `crt_guard_negative_fixtures` is the live `run: |` block
+/// only; the live assertion feeds the whole step, headers included, and no requirement below
+/// targets a step-level line.
+fn crt_guard_missing(guard: &[&str]) -> Vec<&'static str> {
+    let trimmed: Vec<&str> = guard.iter().map(|line| line.trim()).collect();
+
+    // Exactly one `$imports =` assignment. A second one after the dump overwrites the real
+    // result (the guard then filters a fake list) and is a false green, not a refactor.
+    let assignments: Vec<&str> = trimmed
+        .iter()
+        .copied()
+        .filter(|line| line.starts_with("$imports ="))
+        .collect();
+    let has_invocation = match assignments.as_slice() {
+        [line] => {
+            line.starts_with("$imports = & ")
+                && line.contains(" -p $exe")
+                && line.contains("Select-String")
+                && line.contains("DLL Name:")
+                && line.contains("-replace")
+                && line.contains(CRT_NORMALIZER_PATTERN)
+                && line.contains(".Trim()")
+                && !line.contains("Out-Null")
+        }
+        _ => false,
+    };
+
+    let has_empty_parse = trimmed
+        .iter()
+        .any(|line| line.starts_with("if (-not $imports) { throw \"No imports parsed"));
+
+    // Exactly one `$banned =` assignment, and that one consumes `$imports` through the pinned
+    // `^`-anchored alternation. A later `$banned = @()` overwrites the filter while the seven
+    // names stay on the original line, so the names assertion alone cannot see it.
+    let banned_assignments: Vec<&str> = trimmed
+        .iter()
+        .copied()
+        .filter(|line| line.starts_with("$banned ="))
+        .collect();
+    let has_banned_filter = match banned_assignments.as_slice() {
+        [line] => {
+            line.starts_with("$banned = $imports |")
+                && line.contains("-match")
+                && line.contains(CRT_BANNED_ALTERNATION)
+        }
+        _ => false,
+    };
+    let has_banned_throw = trimmed.iter().any(|line| {
+        line.starts_with("if ($banned) { throw \"Windows exe still imports the MSVC runtime")
+    });
+
+    let mut missing = Vec::new();
+    if !has_invocation {
+        missing.push(CRT_MISSING_INVOCATION);
+    }
+    if !has_empty_parse {
+        missing.push(CRT_MISSING_EMPTY_PARSE);
+    }
+    if !has_banned_filter {
+        missing.push(CRT_MISSING_BANNED_FILTER);
+    }
+    if !has_banned_throw {
+        missing.push(CRT_MISSING_BANNED_THROW);
+    }
+    missing
+}
+
 fn matrix_entry_lines<'a>(body: &[&'a str], asset: &str) -> Vec<&'a str> {
     let asset_line = format!("            asset: {asset}");
     let Some(asset_at) = body.iter().position(|line| *line == asset_line) else {
@@ -370,18 +467,14 @@ fn release_windows_leg_builds_with_static_crt_and_guards_imports() {
 
     // The guard body must stay load-bearing: a renamed-but-gutted step must fail this test.
     let guard = step_lines(&body, WINDOWS_CRT_GUARD_STEP);
-    for needle in [
-        "        if: matrix.archive == 'zip'",
-        "        shell: pwsh",
-        "llvm-objdump",
-        "throw \"No imports parsed",
-        "throw \"Windows exe still imports the MSVC runtime",
-    ] {
+    for needle in ["        if: matrix.archive == 'zip'", "        shell: pwsh"] {
         assert!(
             guard.iter().any(|line| line.contains(needle)),
             "the CRT guard step lost `{needle}`"
         );
     }
+    let missing = crt_guard_missing(&guard);
+    assert!(missing.is_empty(), "the CRT guard step lost: {missing:?}");
     let banned_line = guard
         .iter()
         .find(|line| line.contains("$banned ="))
@@ -407,6 +500,240 @@ fn release_windows_leg_builds_with_static_crt_and_guards_imports() {
     assert!(
         install.contains(&"          RUSTFLAGS: \"\""),
         "the cargo install step must reset the job-level RUSTFLAGS"
+    );
+}
+
+/// Negative fixtures for [`crt_guard_missing`] — the oracles that keep the Windows CRT guard
+/// assertion behaviour-shaped instead of tool-name-shaped (track 0567, PR #624 comment
+/// 4307427196).
+///
+/// Every fixture keeps the *other* correct lines (fixture **C** is the verbatim live
+/// `release.yml:259-271` `run: |` block, indentation stripped because the helper trims), so each
+/// exact `assert_eq!` stays a focused oracle: N1/N2/N6/N7/N8 fail only the invocation, N3/N4 only
+/// the parse/throw control, N5/N9/N10 only the banned filter.
+#[test]
+fn crt_guard_negative_fixtures() {
+    // C — verbatim live release.yml:259-271.
+    let control: &[&str] = &[
+        r##"$objdump = "C:/Program Files/LLVM/bin/llvm-objdump.exe""##,
+        r##"if (-not (Test-Path $objdump)) {"##,
+        r##"  $found = Get-Command llvm-objdump -ErrorAction SilentlyContinue"##,
+        r##"  if (-not $found) { throw "llvm-objdump not found at $objdump or on PATH; the Windows runner image changed, so install LLVM or switch the guard to dumpbin /dependents" }"##,
+        r##"  $objdump = $found.Source"##,
+        r##"}"##,
+        r##"& $objdump --version | Select-Object -First 2"##,
+        r##"$exe = "dist/${{ matrix.asset }}/${{ matrix.binary }}""##,
+        r##"$imports = & $objdump -p $exe | Select-String "DLL Name:" | ForEach-Object { ($_ -replace '.*DLL Name:\s*', '').Trim() } | Sort-Object -Unique"##,
+        r##"if (-not $imports) { throw "No imports parsed from $exe; the guard would pass vacuously" }"##,
+        r##"$imports | ForEach-Object { "import: $_" }"##,
+        r##"$banned = $imports | Where-Object { $_ -match '^(VCRUNTIME140|MSVCP140|CONCRT140|VCOMP140|VCCORLIB140|ucrtbase|api-ms-win-crt-)' }"##,
+        r##"if ($banned) { throw "Windows exe still imports the MSVC runtime: $($banned -join ', ')" }"##,
+    ];
+
+    // N1 — the #624 shape: stub the imports, keep the throws.
+    let n1: &[&str] = &[
+        r##"$objdump = "C:/Program Files/LLVM/bin/llvm-objdump.exe""##,
+        r##"if (-not (Test-Path $objdump)) {"##,
+        r##"  $found = Get-Command llvm-objdump -ErrorAction SilentlyContinue"##,
+        r##"  if (-not $found) { throw "llvm-objdump not found at $objdump or on PATH; the Windows runner image changed, so install LLVM or switch the guard to dumpbin /dependents" }"##,
+        r##"  $objdump = $found.Source"##,
+        r##"}"##,
+        r##"& $objdump --version | Select-Object -First 2"##,
+        r##"$exe = "dist/${{ matrix.asset }}/${{ matrix.binary }}""##,
+        r##"$imports = @("kernel32.dll", "ntdll.dll")"##,
+        r##"if (-not $imports) { throw "No imports parsed from $exe; the guard would pass vacuously" }"##,
+        r##"$imports | ForEach-Object { "import: $_" }"##,
+        r##"$banned = $imports | Where-Object { $_ -match '^(VCRUNTIME140|MSVCP140|CONCRT140|VCOMP140|VCCORLIB140|ucrtbase|api-ms-win-crt-)' }"##,
+        r##"if ($banned) { throw "Windows exe still imports the MSVC runtime: $($banned -join ', ')" }"##,
+    ];
+
+    // N2 — a real call to the real tool with the wrong flag.
+    let n2: &[&str] = &[
+        r##"$objdump = "C:/Program Files/LLVM/bin/llvm-objdump.exe""##,
+        r##"if (-not (Test-Path $objdump)) {"##,
+        r##"  $found = Get-Command llvm-objdump -ErrorAction SilentlyContinue"##,
+        r##"  if (-not $found) { throw "llvm-objdump not found at $objdump or on PATH; the Windows runner image changed, so install LLVM or switch the guard to dumpbin /dependents" }"##,
+        r##"  $objdump = $found.Source"##,
+        r##"}"##,
+        r##"& $objdump --version | Select-Object -First 2"##,
+        r##"$exe = "dist/${{ matrix.asset }}/${{ matrix.binary }}""##,
+        r##"$imports = & $objdump --version | Select-String "DLL Name:""##,
+        r##"if (-not $imports) { throw "No imports parsed from $exe; the guard would pass vacuously" }"##,
+        r##"$imports | ForEach-Object { "import: $_" }"##,
+        r##"$banned = $imports | Where-Object { $_ -match '^(VCRUNTIME140|MSVCP140|CONCRT140|VCOMP140|VCCORLIB140|ucrtbase|api-ms-win-crt-)' }"##,
+        r##"if ($banned) { throw "Windows exe still imports the MSVC runtime: $($banned -join ', ')" }"##,
+    ];
+
+    // N3 — the empty-parse guard downgraded to a non-failing write.
+    let n3: &[&str] = &[
+        r##"$objdump = "C:/Program Files/LLVM/bin/llvm-objdump.exe""##,
+        r##"if (-not (Test-Path $objdump)) {"##,
+        r##"  $found = Get-Command llvm-objdump -ErrorAction SilentlyContinue"##,
+        r##"  if (-not $found) { throw "llvm-objdump not found at $objdump or on PATH; the Windows runner image changed, so install LLVM or switch the guard to dumpbin /dependents" }"##,
+        r##"  $objdump = $found.Source"##,
+        r##"}"##,
+        r##"& $objdump --version | Select-Object -First 2"##,
+        r##"$exe = "dist/${{ matrix.asset }}/${{ matrix.binary }}""##,
+        r##"$imports = & $objdump -p $exe | Select-String "DLL Name:" | ForEach-Object { ($_ -replace '.*DLL Name:\s*', '').Trim() } | Sort-Object -Unique"##,
+        r##"if (-not $imports) { Write-Host "No imports parsed from $exe; the guard would pass vacuously" }"##,
+        r##"$imports | ForEach-Object { "import: $_" }"##,
+        r##"$banned = $imports | Where-Object { $_ -match '^(VCRUNTIME140|MSVCP140|CONCRT140|VCOMP140|VCCORLIB140|ucrtbase|api-ms-win-crt-)' }"##,
+        r##"if ($banned) { throw "Windows exe still imports the MSVC runtime: $($banned -join ', ')" }"##,
+    ];
+
+    // N4 — the banned-import guard downgraded to a non-failing write.
+    let n4: &[&str] = &[
+        r##"$objdump = "C:/Program Files/LLVM/bin/llvm-objdump.exe""##,
+        r##"if (-not (Test-Path $objdump)) {"##,
+        r##"  $found = Get-Command llvm-objdump -ErrorAction SilentlyContinue"##,
+        r##"  if (-not $found) { throw "llvm-objdump not found at $objdump or on PATH; the Windows runner image changed, so install LLVM or switch the guard to dumpbin /dependents" }"##,
+        r##"  $objdump = $found.Source"##,
+        r##"}"##,
+        r##"& $objdump --version | Select-Object -First 2"##,
+        r##"$exe = "dist/${{ matrix.asset }}/${{ matrix.binary }}""##,
+        r##"$imports = & $objdump -p $exe | Select-String "DLL Name:" | ForEach-Object { ($_ -replace '.*DLL Name:\s*', '').Trim() } | Sort-Object -Unique"##,
+        r##"if (-not $imports) { throw "No imports parsed from $exe; the guard would pass vacuously" }"##,
+        r##"$imports | ForEach-Object { "import: $_" }"##,
+        r##"$banned = $imports | Where-Object { $_ -match '^(VCRUNTIME140|MSVCP140|CONCRT140|VCOMP140|VCCORLIB140|ucrtbase|api-ms-win-crt-)' }"##,
+        r##"if ($banned) { Write-Host "Windows exe still imports the MSVC runtime: $($banned -join ', ')" }"##,
+    ];
+
+    // N5 — every banned name still on the line, consumer gone.
+    let n5: &[&str] = &[
+        r##"$objdump = "C:/Program Files/LLVM/bin/llvm-objdump.exe""##,
+        r##"if (-not (Test-Path $objdump)) {"##,
+        r##"  $found = Get-Command llvm-objdump -ErrorAction SilentlyContinue"##,
+        r##"  if (-not $found) { throw "llvm-objdump not found at $objdump or on PATH; the Windows runner image changed, so install LLVM or switch the guard to dumpbin /dependents" }"##,
+        r##"  $objdump = $found.Source"##,
+        r##"}"##,
+        r##"& $objdump --version | Select-Object -First 2"##,
+        r##"$exe = "dist/${{ matrix.asset }}/${{ matrix.binary }}""##,
+        r##"$imports = & $objdump -p $exe | Select-String "DLL Name:" | ForEach-Object { ($_ -replace '.*DLL Name:\s*', '').Trim() } | Sort-Object -Unique"##,
+        r##"if (-not $imports) { throw "No imports parsed from $exe; the guard would pass vacuously" }"##,
+        r##"$imports | ForEach-Object { "import: $_" }"##,
+        r##"$banned = @() # VCRUNTIME140 MSVCP140 CONCRT140 VCOMP140 VCCORLIB140 ucrtbase api-ms-win-crt-"##,
+        r##"if ($banned) { throw "Windows exe still imports the MSVC runtime: $($banned -join ', ')" }"##,
+    ];
+
+    // N6 — a second `$imports =` after the dump overwrites the real result.
+    let n6: &[&str] = &[
+        r##"$objdump = "C:/Program Files/LLVM/bin/llvm-objdump.exe""##,
+        r##"if (-not (Test-Path $objdump)) {"##,
+        r##"  $found = Get-Command llvm-objdump -ErrorAction SilentlyContinue"##,
+        r##"  if (-not $found) { throw "llvm-objdump not found at $objdump or on PATH; the Windows runner image changed, so install LLVM or switch the guard to dumpbin /dependents" }"##,
+        r##"  $objdump = $found.Source"##,
+        r##"}"##,
+        r##"& $objdump --version | Select-Object -First 2"##,
+        r##"$exe = "dist/${{ matrix.asset }}/${{ matrix.binary }}""##,
+        r##"$imports = & $objdump -p $exe | Select-String "DLL Name:" | ForEach-Object { ($_ -replace '.*DLL Name:\s*', '').Trim() } | Sort-Object -Unique"##,
+        r##"$imports = @("kernel32.dll")"##,
+        r##"if (-not $imports) { throw "No imports parsed from $exe; the guard would pass vacuously" }"##,
+        r##"$imports | ForEach-Object { "import: $_" }"##,
+        r##"$banned = $imports | Where-Object { $_ -match '^(VCRUNTIME140|MSVCP140|CONCRT140|VCOMP140|VCCORLIB140|ucrtbase|api-ms-win-crt-)' }"##,
+        r##"if ($banned) { throw "Windows exe still imports the MSVC runtime: $($banned -join ', ')" }"##,
+    ];
+
+    // N7 — the normalizer segment dropped; the field filter survives.
+    let n7: &[&str] = &[
+        r##"$objdump = "C:/Program Files/LLVM/bin/llvm-objdump.exe""##,
+        r##"if (-not (Test-Path $objdump)) {"##,
+        r##"  $found = Get-Command llvm-objdump -ErrorAction SilentlyContinue"##,
+        r##"  if (-not $found) { throw "llvm-objdump not found at $objdump or on PATH; the Windows runner image changed, so install LLVM or switch the guard to dumpbin /dependents" }"##,
+        r##"  $objdump = $found.Source"##,
+        r##"}"##,
+        r##"& $objdump --version | Select-Object -First 2"##,
+        r##"$exe = "dist/${{ matrix.asset }}/${{ matrix.binary }}""##,
+        r##"$imports = & $objdump -p $exe | Select-String "DLL Name:" | Sort-Object -Unique"##,
+        r##"if (-not $imports) { throw "No imports parsed from $exe; the guard would pass vacuously" }"##,
+        r##"$imports | ForEach-Object { "import: $_" }"##,
+        r##"$banned = $imports | Where-Object { $_ -match '^(VCRUNTIME140|MSVCP140|CONCRT140|VCOMP140|VCCORLIB140|ucrtbase|api-ms-win-crt-)' }"##,
+        r##"if ($banned) { throw "Windows exe still imports the MSVC runtime: $($banned -join ', ')" }"##,
+    ];
+
+    // N8 — the `-replace` operand loosened: every keyword survives, the residue does not.
+    let n8: &[&str] = &[
+        r##"$objdump = "C:/Program Files/LLVM/bin/llvm-objdump.exe""##,
+        r##"if (-not (Test-Path $objdump)) {"##,
+        r##"  $found = Get-Command llvm-objdump -ErrorAction SilentlyContinue"##,
+        r##"  if (-not $found) { throw "llvm-objdump not found at $objdump or on PATH; the Windows runner image changed, so install LLVM or switch the guard to dumpbin /dependents" }"##,
+        r##"  $objdump = $found.Source"##,
+        r##"}"##,
+        r##"& $objdump --version | Select-Object -First 2"##,
+        r##"$exe = "dist/${{ matrix.asset }}/${{ matrix.binary }}""##,
+        r##"$imports = & $objdump -p $exe | Select-String "DLL Name:" | ForEach-Object { ($_ -replace 'DLL Name:', '').Trim() } | Sort-Object -Unique"##,
+        r##"if (-not $imports) { throw "No imports parsed from $exe; the guard would pass vacuously" }"##,
+        r##"$imports | ForEach-Object { "import: $_" }"##,
+        r##"$banned = $imports | Where-Object { $_ -match '^(VCRUNTIME140|MSVCP140|CONCRT140|VCOMP140|VCCORLIB140|ucrtbase|api-ms-win-crt-)' }"##,
+        r##"if ($banned) { throw "Windows exe still imports the MSVC runtime: $($banned -join ', ')" }"##,
+    ];
+
+    // N9 — the banned alternation end-anchored; all seven names intact.
+    let n9: &[&str] = &[
+        r##"$objdump = "C:/Program Files/LLVM/bin/llvm-objdump.exe""##,
+        r##"if (-not (Test-Path $objdump)) {"##,
+        r##"  $found = Get-Command llvm-objdump -ErrorAction SilentlyContinue"##,
+        r##"  if (-not $found) { throw "llvm-objdump not found at $objdump or on PATH; the Windows runner image changed, so install LLVM or switch the guard to dumpbin /dependents" }"##,
+        r##"  $objdump = $found.Source"##,
+        r##"}"##,
+        r##"& $objdump --version | Select-Object -First 2"##,
+        r##"$exe = "dist/${{ matrix.asset }}/${{ matrix.binary }}""##,
+        r##"$imports = & $objdump -p $exe | Select-String "DLL Name:" | ForEach-Object { ($_ -replace '.*DLL Name:\s*', '').Trim() } | Sort-Object -Unique"##,
+        r##"if (-not $imports) { throw "No imports parsed from $exe; the guard would pass vacuously" }"##,
+        r##"$imports | ForEach-Object { "import: $_" }"##,
+        r##"$banned = $imports | Where-Object { $_ -match '^(VCRUNTIME140|MSVCP140|CONCRT140|VCOMP140|VCCORLIB140|ucrtbase|api-ms-win-crt-)$' }"##,
+        r##"if ($banned) { throw "Windows exe still imports the MSVC runtime: $($banned -join ', ')" }"##,
+    ];
+
+    // N10 — `$banned` overwritten before its throw; the names stay on the filter line.
+    let n10: &[&str] = &[
+        r##"$objdump = "C:/Program Files/LLVM/bin/llvm-objdump.exe""##,
+        r##"if (-not (Test-Path $objdump)) {"##,
+        r##"  $found = Get-Command llvm-objdump -ErrorAction SilentlyContinue"##,
+        r##"  if (-not $found) { throw "llvm-objdump not found at $objdump or on PATH; the Windows runner image changed, so install LLVM or switch the guard to dumpbin /dependents" }"##,
+        r##"  $objdump = $found.Source"##,
+        r##"}"##,
+        r##"& $objdump --version | Select-Object -First 2"##,
+        r##"$exe = "dist/${{ matrix.asset }}/${{ matrix.binary }}""##,
+        r##"$imports = & $objdump -p $exe | Select-String "DLL Name:" | ForEach-Object { ($_ -replace '.*DLL Name:\s*', '').Trim() } | Sort-Object -Unique"##,
+        r##"if (-not $imports) { throw "No imports parsed from $exe; the guard would pass vacuously" }"##,
+        r##"$imports | ForEach-Object { "import: $_" }"##,
+        r##"$banned = $imports | Where-Object { $_ -match '^(VCRUNTIME140|MSVCP140|CONCRT140|VCOMP140|VCCORLIB140|ucrtbase|api-ms-win-crt-)' }"##,
+        r##"$banned = @()"##,
+        r##"if ($banned) { throw "Windows exe still imports the MSVC runtime: $($banned -join ', ')" }"##,
+    ];
+
+    let missing = crt_guard_missing(control);
+    assert!(missing.is_empty(), "live guard control: {missing:?}");
+
+    // N0 — deterministic accumulation, in the helper's fixed order.
+    assert_eq!(
+        crt_guard_missing(&[]),
+        vec![
+            CRT_MISSING_INVOCATION,
+            CRT_MISSING_EMPTY_PARSE,
+            CRT_MISSING_BANNED_FILTER,
+            CRT_MISSING_BANNED_THROW,
+        ]
+    );
+    assert_eq!(crt_guard_missing(n1), vec![CRT_MISSING_INVOCATION]);
+    assert_eq!(crt_guard_missing(n2), vec![CRT_MISSING_INVOCATION]);
+    assert_eq!(crt_guard_missing(n3), vec![CRT_MISSING_EMPTY_PARSE]);
+    assert_eq!(crt_guard_missing(n4), vec![CRT_MISSING_BANNED_THROW]);
+    assert_eq!(crt_guard_missing(n5), vec![CRT_MISSING_BANNED_FILTER]);
+    assert_eq!(crt_guard_missing(n6), vec![CRT_MISSING_INVOCATION]);
+    assert_eq!(crt_guard_missing(n7), vec![CRT_MISSING_INVOCATION]);
+    assert_eq!(crt_guard_missing(n8), vec![CRT_MISSING_INVOCATION]);
+    assert_eq!(crt_guard_missing(n9), vec![CRT_MISSING_BANNED_FILTER]);
+    assert_eq!(crt_guard_missing(n10), vec![CRT_MISSING_BANNED_FILTER]);
+
+    // Pins fixture construction, not a claim that the pre-0567 needle would have caught a
+    // version-only call (it would not; N2 documents that additional gap). The retained `:259`
+    // path literal / `:262` "not found" throw must keep these four green under the old needle,
+    // or they no longer reproduce the #624 false pass.
+    let weak_needle = |guard: &[&str]| guard.iter().any(|line| line.contains("llvm-objdump"));
+    assert!(
+        weak_needle(n1) && weak_needle(n2) && weak_needle(n6) && weak_needle(n7),
+        "fixtures must keep the pre-0567 needle green, or they no longer reproduce #624"
     );
 }
 
