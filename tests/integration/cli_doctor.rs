@@ -863,7 +863,10 @@ fn user_template_secret_public_set_current_behavior_pending_followup() {
         &["config", "set", "core.strict=true"],
         &[("LEDGERFUL_DEFAULT_CONFIG", template_str.as_str())],
     );
-    assert_eq!(code, 0, "public set succeeds; stdout={stdout} stderr={stderr}");
+    assert_eq!(
+        code, 0,
+        "public set succeeds; stdout={stdout} stderr={stderr}"
+    );
     let written = fs::read_to_string(root.join(".ledgerful").join("config.toml")).unwrap();
     assert!(written.contains("strict = true"), "set applied: {written}");
 }
@@ -1010,6 +1013,9 @@ fn user_template_secret_existing_project_control_applies() {
     let root = tmp.path();
     let home = root.join("home");
     fs::create_dir_all(&home).unwrap();
+    // The pin action needs a local signing identity under the synthetic HOME.
+    // Seed a hermetic one so the pin is applicable rather than pinUnavailable.
+    ledgerful::ledger::get_or_create_keys_in(&home.join(".ledgerful").join("keys")).unwrap();
     setup_git_repo(root);
     fs::create_dir_all(root.join(".ledgerful")).unwrap();
     fs::write(
