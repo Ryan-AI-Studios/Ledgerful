@@ -1140,6 +1140,57 @@ mod tests {
             assert_eq!(security, expected_structured_tree(&security_cli));
         }
 
+        /// 0554: a framed `change_context` call over a fixture whose doctor sidecar
+        /// carries a plaintext-key finding must never echo the credential value.
+        #[test]
+        fn user_template_secret_mcp_change_context_sentinel_free() {
+            const SENTINEL: &str = "SENTINEL-0554-MCP-VALUE";
+            let tmp = repaired_fixture();
+            let home = tmp.path().join("home");
+            std::fs::create_dir_all(&home).expect("synthetic home");
+            std::fs::create_dir_all(tmp.path().join(".ledgerful")).expect("state dir");
+            std::fs::write(
+                tmp.path().join(".ledgerful").join("config.toml"),
+                format!("[core]\nstrict = false\n\n[gemini]\napi_key = \"{SENTINEL}\"\n"),
+            )
+            .expect("write project config");
+
+            // Produce the sidecar in an isolated child (no host template or keys).
+            let doctor = Command::new(get_mcp_binary())
+                .current_dir(tmp.path())
+                .arg("-C")
+                .arg(tmp.path())
+                .args(["doctor", "--json"])
+                .env_remove("GEMINI_API_KEY")
+                .env_remove("OLLAMA_CLOUD_API_KEY")
+                .env_remove("OLLAMA_API_KEY")
+                .env("USERPROFILE", &home)
+                .env("HOME", &home)
+                .env("LEDGERFUL_DEFAULT_CONFIG", home.join("missing-template.toml"))
+                .output()
+                .expect("run doctor for sidecar fixture");
+            assert!(doctor.status.success(), "{}", String::from_utf8_lossy(&doctor.stderr));
+            let sidecar = std::fs::read_to_string(
+                tmp.path()
+                    .join(".ledgerful")
+                    .join("state")
+                    .join("doctor-results.json"),
+            )
+            .expect("doctor sidecar fixture");
+            assert!(
+                sidecar.contains("config-plaintext-secret"),
+                "fixture must carry the finding: {sidecar}"
+            );
+            assert!(!sidecar.contains(SENTINEL), "sidecar must not carry the value");
+
+            let mut session = spawn_session(tmp.path());
+            session.initialize();
+            let result = session.call_tool("change_context", json!({}));
+            assert!(result.get("isError").is_none(), "change_context must succeed: {result}");
+            let text = serde_json::to_string(&result).expect("serialize response");
+            assert!(!text.contains(SENTINEL), "change_context leaked the value: {text}");
+        }
+
         #[test]
         fn test_silent_child_times_out_and_is_reaped_within_bound() {
             let tmp = tempdir().expect("tempdir");

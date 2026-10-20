@@ -1,24 +1,28 @@
-use crate::common::{DirGuard, run_cli, setup_git_repo};
-use ledgerful::commands::doctor::execute_doctor;
+use crate::common::{run_cli, setup_git_repo};
 use std::fs;
 use std::process::Command;
 use tempfile::tempdir;
 
+/// Isolated child: synthetic home and a known-missing default template, so
+/// key lookup and template inspection cannot reach the host.
 #[test]
 fn doctor_reports_system_health() {
     let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
 
     Command::new("git")
         .arg("init")
-        .current_dir(tmp.path())
+        .current_dir(root)
         .output()
         .expect("Failed to run git init");
 
-    let _guard = DirGuard::new(tmp.path());
-
-    let result = execute_doctor(ledgerful::commands::doctor::DoctorRunOpts::default());
-
-    assert!(result.is_ok());
+    let (stdout, stderr, code) = run_cli_no_template(root, &home, &["doctor", "--json"], &[]);
+    assert_eq!(code, 0, "doctor must not block on a bare repo; stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("pure JSON stdout");
+    assert_eq!(v["schemaVersion"], 1);
+    assert_eq!(v["readyForPublish"], true);
 }
 
 /// 0109: `doctor --json` stdout is pure schema-v1 JSON (no human banners).
@@ -495,4 +499,500 @@ fn test_doctor_json_plaintext_secret_file_key() {
         !rem.contains(SENTINEL),
         "remediation leaked sentinel: {rem}"
     );
+}
+
+/// Child `ledgerful` run with the default template and provider env isolated.
+///
+/// Homes point at the synthetic `home`, the default template points at a
+/// missing path unless `extra` overrides it, and provider keys are removed so
+/// nothing from the host can change the outcome.
+fn run_cli_no_template(
+    root: &std::path::Path,
+    home: &std::path::Path,
+    args: &[&str],
+    extra: &[(&str, &str)],
+) -> (String, String, i32) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ledgerful"));
+    cmd.args(args).current_dir(root);
+    for key in ["GEMINI_API_KEY", "OLLAMA_CLOUD_API_KEY", "OLLAMA_API_KEY"] {
+        cmd.env_remove(key);
+    }
+    cmd.env("USERPROFILE", home).env("HOME", home).env(
+        "LEDGERFUL_DEFAULT_CONFIG",
+        home.join("missing-template.toml"),
+    );
+    for (k, v) in extra {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().expect("failed to run ledgerful");
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
+/// Recursively collect every file under `dir` whose bytes contain `needle`.
+fn files_containing(dir: &std::path::Path, needle: &str) -> Vec<std::path::PathBuf> {
+    let mut hits = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return hits;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            hits.extend(files_containing(&path, needle));
+        } else if fs::read(&path)
+            .map(|bytes| String::from_utf8_lossy(&bytes).contains(needle))
+            .unwrap_or(false)
+        {
+            hits.push(path);
+        }
+    }
+    hits
+}
+
+fn doctor_codes(v: &serde_json::Value) -> Vec<String> {
+    let mut codes: Vec<String> = v["findings"]
+        .as_array()
+        .expect("findings array")
+        .iter()
+        .map(|f| f["code"].as_str().unwrap_or_default().to_string())
+        .filter(|c| {
+            matches!(
+                c.as_str(),
+                "config-plaintext-secret" | "config-inspection-incomplete" | "legacy-config"
+            )
+        })
+        .collect();
+    codes.sort();
+    codes
+}
+
+#[test]
+fn user_template_secret_project_key_reports_path_not_value() {
+    const SENTINEL: &str = "SENTINEL-0554-PROJECT-VALUE";
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    setup_git_repo(root);
+    fs::create_dir_all(root.join(".ledgerful")).unwrap();
+    fs::write(
+        root.join(".ledgerful").join("config.toml"),
+        format!("[gemini]\napi_key = \"{SENTINEL}\"\n"),
+    )
+    .unwrap();
+
+    let (stdout, stderr, code) = run_cli_no_template(root, &home, &["doctor", "--json"], &[]);
+    assert_eq!(code, 0, "plaintext key is warn, not block; stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("pure JSON stdout");
+    let finding = v["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["code"] == "config-plaintext-secret")
+        .expect("config-plaintext-secret");
+    assert_eq!(
+        finding["message"],
+        "Plaintext provider key(s) in project config in the Ledgerful state directory: gemini.api_key. Move them to GEMINI_API_KEY / OLLAMA_CLOUD_API_KEY (or .env) and rotate."
+    );
+    assert!(!stdout.contains(SENTINEL), "stdout leaked value");
+    assert!(!stderr.contains(SENTINEL), "stderr leaked value");
+    assert!(
+        files_containing(&root.join(".ledgerful"), SENTINEL)
+            .iter()
+            .all(|p| p.ends_with("config.toml")),
+        "only the user's own config may carry the marker"
+    );
+}
+
+#[test]
+fn user_template_secret_malformed_project_is_incomplete_and_value_free() {
+    const SENTINEL: &str = "SENTINEL-0554-MALFORMED-VALUE";
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    setup_git_repo(root);
+    fs::create_dir_all(root.join(".ledgerful")).unwrap();
+    fs::write(
+        root.join(".ledgerful").join("config.toml"),
+        format!("[gemini\napi_key = \"{SENTINEL}\"\n"),
+    )
+    .unwrap();
+
+    let (stdout, stderr, code) = run_cli_no_template(root, &home, &["doctor", "--json"], &[]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("pure JSON stdout");
+    assert_eq!(
+        doctor_codes(&v),
+        ["config-inspection-incomplete", "legacy-config"]
+    );
+    assert!(!stdout.contains(SENTINEL), "stdout leaked value");
+    assert!(!stderr.contains(SENTINEL), "stderr leaked value");
+    let legacy = v["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["code"] == "legacy-config")
+        .unwrap();
+    assert_eq!(
+        legacy["message"],
+        "Failed to load project config in the Ledgerful state directory (parse). Using defaults at runtime; review the project config and rerun ledgerful doctor --json."
+    );
+}
+
+#[test]
+fn user_template_secret_project_directory_codes() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    setup_git_repo(root);
+    fs::create_dir_all(root.join(".ledgerful").join("config.toml")).unwrap();
+
+    let (stdout, stderr, code) = run_cli_no_template(root, &home, &["doctor", "--json"], &[]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("pure JSON stdout");
+    assert_eq!(
+        doctor_codes(&v),
+        ["config-inspection-incomplete", "legacy-config"]
+    );
+}
+
+#[test]
+fn user_template_secret_override_template_scanned_only_without_project() {
+    const SENTINEL: &str = "SENTINEL-0554-TEMPLATE-VALUE";
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    setup_git_repo(root);
+    let template = root.join("template.toml");
+    fs::write(
+        &template,
+        format!("[local_model]\nollama_key = \"{SENTINEL}\"\n"),
+    )
+    .unwrap();
+    let template_str = template.to_string_lossy().into_owned();
+
+    // Control: no project config, so the selected override template is inspected.
+    let (stdout, stderr, code) = run_cli_no_template(
+        root,
+        &home,
+        &["doctor", "--json"],
+        &[("LEDGERFUL_DEFAULT_CONFIG", template_str.as_str())],
+    );
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(
+        stdout.contains("template selected by LEDGERFUL_DEFAULT_CONFIG: local_model.ollama_key"),
+        "override template must be attributed: {stdout}"
+    );
+    assert!(!stdout.contains(SENTINEL), "stdout leaked template value");
+
+    // A project config wins, so the template is not inspected at all.
+    fs::create_dir_all(root.join(".ledgerful")).unwrap();
+    fs::write(
+        root.join(".ledgerful").join("config.toml"),
+        "[core]\nstrict = false\n",
+    )
+    .unwrap();
+    let (stdout, _stderr, _code) = run_cli_no_template(
+        root,
+        &home,
+        &["doctor", "--json"],
+        &[("LEDGERFUL_DEFAULT_CONFIG", template_str.as_str())],
+    );
+    assert!(
+        !stdout.contains("config-plaintext-secret"),
+        "project wins; template must not be inspected: {stdout}"
+    );
+}
+
+#[test]
+fn doctor_json_fix_dry_run_blocked_when_project_config_missing() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    setup_git_repo(root);
+    fs::create_dir_all(root.join(".ledgerful")).unwrap();
+
+    let (stdout, stderr, code) = run_cli_no_template(
+        root,
+        &home,
+        &["doctor", "--json", "--fix", "--dry-run"],
+        &[],
+    );
+    assert_eq!(code, 0, "dry-run preview exits zero; stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("pure JSON stdout");
+    assert_eq!(v["schemaVersion"], 1);
+    let fix = &v["fix"];
+    assert_eq!(fix["dryRun"], true);
+    let kinds: Vec<&str> = fix["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["kind"].as_str().unwrap())
+        .collect();
+    assert!(
+        kinds.iter().any(|k| *k == "pin" || *k == "bumpMinSig"),
+        "fixture must carry a write-bearing action: {kinds:?}"
+    );
+    assert_eq!(fix["blocked"], true);
+    assert_eq!(
+        fix["refusal"],
+        "Doctor config fixes require a readable regular project config with valid TOML and supported fix target types. Write access is checked when applying. If the project config in the Ledgerful state directory is missing, run ledgerful init; otherwise repair its contents, type or permissions. Inspect the project config, then rerun ledgerful doctor --fix --yes."
+    );
+    assert!(
+        !root.join(".ledgerful").join("config.toml").exists(),
+        "dry-run must not materialize a project config"
+    );
+}
+
+#[test]
+fn doctor_json_fix_allowed_preview_omits_blocked_fields() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    setup_git_repo(root);
+    fs::create_dir_all(root.join(".ledgerful")).unwrap();
+    fs::write(
+        root.join(".ledgerful").join("config.toml"),
+        "[core]\nstrict = false\n",
+    )
+    .unwrap();
+
+    let (stdout, stderr, code) = run_cli_no_template(
+        root,
+        &home,
+        &["doctor", "--json", "--fix", "--dry-run"],
+        &[],
+    );
+    assert_eq!(code, 0, "stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("pure JSON stdout");
+    assert!(
+        v["fix"].get("blocked").is_none(),
+        "allowed preview: {}",
+        v["fix"]
+    );
+    assert!(
+        v["fix"].get("refusal").is_none(),
+        "allowed preview: {}",
+        v["fix"]
+    );
+}
+
+#[test]
+fn doctor_fix_yes_blocked_refuses_with_exit_one_and_no_writes() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    setup_git_repo(root);
+    fs::create_dir_all(root.join(".ledgerful")).unwrap();
+
+    // Seed a prior sidecar run; a refused apply must leave it byte-identical.
+    let (_seed_out, seed_err, seed_code) =
+        run_cli_no_template(root, &home, &["doctor", "--json"], &[]);
+    assert_eq!(seed_code, 0, "seed run; stderr={seed_err}");
+    let sidecar = root
+        .join(".ledgerful")
+        .join("state")
+        .join("doctor-results.json");
+    let before = fs::read(&sidecar).expect("prior sidecar must exist");
+
+    let (stdout, stderr, code) =
+        run_cli_no_template(root, &home, &["doctor", "--json", "--fix", "--yes"], &[]);
+    assert_eq!(code, 1, "blocked apply exits 1; stdout={stdout}");
+    assert_eq!(
+        fs::read(&sidecar).expect("sidecar still present"),
+        before,
+        "refused apply must preserve the prior sidecar bytes"
+    );
+    assert!(
+        stderr.contains("Doctor config fixes require a readable regular project config"),
+        "fixed refusal on stderr: {stderr}"
+    );
+    assert!(
+        serde_json::from_str::<serde_json::Value>(stdout.trim()).is_err(),
+        "no successful JSON envelope on refusal"
+    );
+    assert!(!root.join(".ledgerful").join("config.toml").exists());
+}
+
+#[test]
+fn doctor_bare_fix_keeps_validation_error_and_exit_one() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    setup_git_repo(root);
+    let (_stdout, stderr, code) = run_cli_no_template(root, &home, &["doctor", "--fix"], &[]);
+    assert_eq!(code, 1);
+    assert!(
+        stderr.contains("doctor --fix requires --yes or --dry-run"),
+        "validation error retained: {stderr}"
+    );
+}
+
+/// Key-name boundary (0554): the legacy unknown-key message keeps the ignored
+/// key name by design; the changed plaintext-key findings never do. Credential
+/// values never appear anywhere.
+#[test]
+fn user_template_secret_unknown_key_name_contract() {
+    const VALUE: &str = "SENTINEL-0554-KEYNAME-VALUE";
+    const KEY_MARKER: &str = "zz_0554_unknown_key_marker";
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    setup_git_repo(root);
+    fs::create_dir_all(root.join(".ledgerful")).unwrap();
+    fs::write(
+        root.join(".ledgerful").join("config.toml"),
+        format!("{KEY_MARKER} = 1\n\n[gemini]\napi_key = \"{VALUE}\"\n"),
+    )
+    .unwrap();
+
+    let (stdout, stderr, code) = run_cli_no_template(root, &home, &["doctor", "--json"], &[]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("pure JSON stdout");
+    let findings = v["findings"].as_array().unwrap();
+
+    let legacy = findings
+        .iter()
+        .find(|f| f["code"] == "legacy-config")
+        .expect("unknown key surfaces through legacy-config");
+    assert!(
+        legacy["message"].as_str().unwrap().contains(KEY_MARKER),
+        "legacy unknown-key semantics retained: {legacy}"
+    );
+
+    for f in findings.iter().filter(|f| {
+        matches!(
+            f["code"].as_str(),
+            Some("config-plaintext-secret" | "config-inspection-incomplete")
+        )
+    }) {
+        let text = format!("{}{}", f["message"], f["remediation"]);
+        assert!(!text.contains(KEY_MARKER), "inspection finding leaked key name: {f}");
+        assert!(!text.contains(VALUE), "inspection finding leaked value: {f}");
+    }
+    assert!(!stdout.contains(VALUE), "stdout leaked value");
+    assert!(!stderr.contains(VALUE), "stderr leaked value");
+}
+
+/// Positive-risk fixture (0554): a sentinel template with min_sig_version=1 and
+/// no project config. The old behavior materialized a config through the pin /
+/// bump path; the guard must refuse first, leave the template byte-identical,
+/// and print no sentinel.
+#[test]
+fn user_template_secret_positive_risk_refused_no_materialization() {
+    const SENTINEL: &str = "SENTINEL-0554-POSITIVE-RISK";
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    setup_git_repo(root);
+    fs::create_dir_all(root.join(".ledgerful")).unwrap();
+    let template = root.join("template.toml");
+    let original = format!("[gemini]\napi_key = \"{SENTINEL}\"\n\n[intent]\nmin_sig_version = 1\n");
+    fs::write(&template, &original).unwrap();
+    let template_str = template.to_string_lossy().into_owned();
+
+    let (stdout, stderr, code) = run_cli_no_template(
+        root,
+        &home,
+        &["doctor", "--json", "--fix", "--yes"],
+        &[("LEDGERFUL_DEFAULT_CONFIG", template_str.as_str())],
+    );
+    assert_eq!(code, 1, "blocked apply exits 1; stdout={stdout}");
+    assert!(
+        stderr.contains("Doctor config fixes require a readable regular project config"),
+        "fixed refusal: {stderr}"
+    );
+    assert!(!root.join(".ledgerful").join("config.toml").exists(), "no materialized config");
+    assert_eq!(fs::read_to_string(&template).unwrap(), original, "template unchanged");
+    assert!(!stdout.contains(SENTINEL), "stdout leaked sentinel");
+    assert!(!stderr.contains(SENTINEL), "stderr leaked sentinel");
+}
+
+/// Existing-project control: the same write-bearing plan applies when the
+/// regular project config exists.
+#[test]
+fn user_template_secret_existing_project_control_applies() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    setup_git_repo(root);
+    fs::create_dir_all(root.join(".ledgerful")).unwrap();
+    fs::write(root.join(".ledgerful").join("config.toml"), "[core]\nstrict = false\n").unwrap();
+
+    let (stdout, stderr, code) =
+        run_cli_no_template(root, &home, &["doctor", "--json", "--fix", "--yes"], &[]);
+    assert_eq!(code, 0, "existing-project apply succeeds; stdout={stdout} stderr={stderr}");
+    let written = fs::read_to_string(root.join(".ledgerful").join("config.toml")).unwrap();
+    assert!(written.contains("min_sig_version = 2"), "bump applied: {written}");
+}
+
+/// No-action control: a trusted key and min_sig_version=2 leave an empty plan,
+/// which succeeds without a project config and creates none.
+#[test]
+fn user_template_secret_no_action_control_creates_no_config() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    setup_git_repo(root);
+    fs::create_dir_all(root.join(".ledgerful")).unwrap();
+    let template = root.join("template.toml");
+    fs::write(
+        &template,
+        format!(
+            "[intent]\ntrusted_public_keys = [\"{}\"]\nmin_sig_version = 2\n",
+            "e".repeat(64)
+        ),
+    )
+    .unwrap();
+    let template_str = template.to_string_lossy().into_owned();
+
+    let (stdout, stderr, code) = run_cli_no_template(
+        root,
+        &home,
+        &["doctor", "--json", "--fix", "--yes"],
+        &[("LEDGERFUL_DEFAULT_CONFIG", template_str.as_str())],
+    );
+    assert_eq!(code, 0, "empty plan succeeds; stdout={stdout} stderr={stderr}");
+    assert!(!root.join(".ledgerful").join("config.toml").exists(), "no config created");
+}
+
+/// Human `-v` debug oracle (0554): the fixed marker proves the load-failure
+/// branch ran; the malformed content's sentinel must stay absent.
+#[test]
+fn user_template_secret_debug_marker_is_value_free() {
+    const SENTINEL: &str = "SENTINEL-0554-DEBUG-VALUE";
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    setup_git_repo(root);
+    fs::create_dir_all(root.join(".ledgerful")).unwrap();
+    fs::write(
+        root.join(".ledgerful").join("config.toml"),
+        format!("[gemini\napi_key = \"{SENTINEL}\"\n"),
+    )
+    .unwrap();
+
+    let (stdout, stderr, _code) = run_cli_no_template(root, &home, &["doctor", "-v"], &[]);
+    assert!(
+        stderr.contains("doctor config load failed (continuing with defaults)")
+            || stdout.contains("doctor config load failed (continuing with defaults)"),
+        "fixed debug marker must prove the branch ran; stderr={stderr}"
+    );
+    assert!(!stdout.contains(SENTINEL), "stdout leaked value");
+    assert!(!stderr.contains(SENTINEL), "stderr leaked value");
 }

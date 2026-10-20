@@ -143,19 +143,34 @@ pub fn doctor_config_findings(layout: &Layout) -> Vec<crate::doctor::finding::Do
                 "legacy-config",
                 DoctorCategory::Migration,
                 format!(
-                    "unknown or retired config key(s) ignored: {keys}. Review `{path}` or run `ledgerful init` to refresh starter config (unknown keys are never a hard error)."
+                    "unknown or retired config key(s) ignored: {keys}. Review the project config in the Ledgerful state directory or run `ledgerful init` to refresh starter config (unknown keys are never a hard error)."
                 ),
             )]
         }
         Err(e) => {
+            let reason = load_error_reason(&e);
             vec![DoctorFinding::warn(
                 "legacy-config",
                 DoctorCategory::Migration,
                 format!(
-                    "failed to parse `{path}`: {e}. Using defaults at runtime; fix the file or run `ledgerful init --force` carefully."
+                    "Failed to load project config in the Ledgerful state directory ({reason}). Using defaults at runtime; review the project config and rerun ledgerful doctor --json."
                 ),
             )]
         }
+    }
+}
+
+/// Fixed reason token for a project-config load failure.
+///
+/// Matches typed [`ConfigError`] variants only; `Display` text is never
+/// inspected, so a non-config report that happens to mention "parse" is
+/// classified as `other`.
+fn load_error_reason(report: &miette::Report) -> &'static str {
+    match report.downcast_ref::<ConfigError>() {
+        Some(ConfigError::ReadFailed { .. }) => "read",
+        Some(ConfigError::ParseFailed { .. }) => "parse",
+        Some(ConfigError::ValidationFailed { .. }) => "validation",
+        _ => "other",
     }
 }
 
@@ -319,6 +334,89 @@ x = 1
         assert!(
             CONFIG_LOAD_WARN.contains("config load"),
             "warn string must stay greppable: {CONFIG_LOAD_WARN}"
+        );
+    }
+
+    fn project_layout(contents: Option<&str>) -> (tempfile::TempDir, Layout) {
+        let tmp = tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+        if let Some(contents) = contents {
+            fs::write(layout.config_file(), contents).unwrap();
+        }
+        (tmp, layout)
+    }
+
+    fn legacy_message(layout: &Layout) -> String {
+        let findings = doctor_config_findings(layout);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected one legacy-config: {findings:?}"
+        );
+        findings[0].message.clone()
+    }
+
+    #[test]
+    fn legacy_config_load_failure_messages_are_exact_per_reason() {
+        let (_parse_tmp, parse_layout) = project_layout(Some("not = [ valid toml"));
+        assert_eq!(
+            legacy_message(&parse_layout),
+            "Failed to load project config in the Ledgerful state directory (parse). Using defaults at runtime; review the project config and rerun ledgerful doctor --json."
+        );
+
+        let (_read_tmp, read_layout) = project_layout(None);
+        fs::create_dir(read_layout.config_file()).unwrap();
+        assert_eq!(
+            legacy_message(&read_layout),
+            "Failed to load project config in the Ledgerful state directory (read). Using defaults at runtime; review the project config and rerun ledgerful doctor --json."
+        );
+
+        let (_val_tmp, val_layout) = project_layout(Some("[watch]\ndebounce_ms = 0\n"));
+        assert_eq!(
+            legacy_message(&val_layout),
+            "Failed to load project config in the Ledgerful state directory (validation). Using defaults at runtime; review the project config and rerun ledgerful doctor --json."
+        );
+    }
+
+    #[test]
+    fn legacy_config_reason_uses_typed_downcast_not_display_text() {
+        // Typed variants map to their tokens.
+        let read = miette::Report::new(ConfigError::ReadFailed {
+            path: "p".to_string(),
+            source: std::io::Error::other("x"),
+        });
+        assert_eq!(load_error_reason(&read), "read");
+        let parse = miette::Report::new(ConfigError::ParseFailed {
+            source: toml::from_str::<toml::Table>("x = [").unwrap_err(),
+        });
+        assert_eq!(load_error_reason(&parse), "parse");
+        let validation = miette::Report::new(ConfigError::ValidationFailed {
+            reason: "r".to_string(),
+        });
+        assert_eq!(load_error_reason(&validation), "validation");
+        // A non-ConfigError whose text mentions parse/read is `other`.
+        let misleading = miette::miette!("parse failed while read of a file");
+        assert_eq!(load_error_reason(&misleading), "other");
+    }
+
+    #[test]
+    fn legacy_config_unknown_keys_symbolic_source() {
+        let (tmp, layout) = project_layout(Some("[core]\nstrict = false\nzz_unknown_marker = 1\n"));
+        let message = legacy_message(&layout);
+        assert!(
+            message.contains("zz_unknown_marker"),
+            "legacy key semantics retained: {message}"
+        );
+        assert!(
+            message.contains("project config in the Ledgerful state directory"),
+            "symbolic source: {message}"
+        );
+        let resolved = tmp.path().to_string_lossy().into_owned();
+        assert!(
+            !message.contains(&resolved),
+            "resolved path leaked: {message}"
         );
     }
 }
