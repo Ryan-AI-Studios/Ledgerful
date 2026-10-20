@@ -2,7 +2,9 @@
 //! empty arms (agy-B-01 / agy-M-03). Doctor never writes the cookie. Session
 //! writes only when `configChecklist` has gated/empty rows (0301).
 
-use crate::common::{DirGuard, git_add_and_commit, non_interactive, run_cli, setup_git_repo};
+use crate::common::{
+    DirGuard, git_add_and_commit, non_interactive, run_cli, run_cli_isolated, setup_git_repo,
+};
 use ledgerful::commands::init::execute_init;
 use ledgerful::state::layout::Layout;
 use ledgerful::state::storage::StorageManager;
@@ -93,7 +95,7 @@ fn session_notice_not_written_by_doctor() {
     let layout = Layout::new(root.to_string_lossy().as_ref());
     let _guard = DirGuard::new(root);
     for _ in 0..2 {
-        let (stdout, stderr, code) = run_cli(root, &["doctor", "--json"]);
+        let (stdout, stderr, code) = run_cli_isolated(root, &["doctor", "--json"]);
         assert_eq!(code, 0, "stderr={stderr}");
         let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("doctor json");
         assert_eq!(json["schemaVersion"], 1);

@@ -3,7 +3,7 @@
 //! Ceilings and the child env live here. `common::run_cli` is unchanged.
 
 use crate::common::{
-    git_add_and_commit_no_verify, git_cmd, nested_repo_root, run_cli_env, setup_git_repo,
+    git_add_and_commit_no_verify, git_cmd, nested_repo_root, run_cli_isolated_env, setup_git_repo,
 };
 use camino::Utf8Path;
 use ledgerful::state::layout::Layout;
@@ -226,7 +226,7 @@ fn run_raw(dir: &Path, args: &[&str]) -> (String, String, i32) {
         eprintln!("QUALIFY binary={}", env!("CARGO_BIN_EXE_ledgerful"));
     });
     let started = Instant::now();
-    let (stdout, stderr, code) = run_cli_env(
+    let (stdout, stderr, code) = run_cli_isolated_env(
         dir,
         args,
         &[("LEDGERFUL_NON_INTERACTIVE", "1"), ("NO_COLOR", "1")],

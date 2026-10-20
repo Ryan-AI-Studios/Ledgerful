@@ -411,6 +411,25 @@ mod tests {
         assert!(scan(&layout).is_empty());
     }
 
+    /// Public entrypoint (§8 `test(doctor_plaintext_secret)`): an existing
+    /// project config wins, so the wrapper's single process `TemplateEnv`
+    /// snapshot cannot influence the result. Keeps the public call itself
+    /// covered without reading any ambient home/template.
+    #[test]
+    fn doctor_plaintext_secret_findings_project_key_uses_public_entrypoint() {
+        let (_tmp, layout) = layout_with_config(&format!("[gemini]\napi_key = \"{SENTINEL}\"\n"));
+        let findings = doctor_plaintext_secret_findings(&layout);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].code, CONFIG_PLAINTEXT_SECRET_CODE);
+        assert_eq!(
+            findings[0].message,
+            format!(
+                "Plaintext provider key(s) in {PROJECT_SOURCE}: gemini.api_key. Move them to GEMINI_API_KEY / OLLAMA_CLOUD_API_KEY (or .env) and rotate."
+            )
+        );
+        assert!(!findings[0].message.contains(SENTINEL));
+    }
+
     #[test]
     fn user_template_secret_malformed_project_reports_parse_incomplete() {
         let (_tmp, layout) = layout_with_config("not = [ valid toml");
@@ -652,6 +671,248 @@ mod tests {
             plan.actions.is_empty(),
             "doctor --fix must not strip keys: {:?}",
             plan.actions
+        );
+    }
+
+    fn template_under(base: &str) -> camino::Utf8PathBuf {
+        camino::Utf8PathBuf::from(base)
+            .join(".ledgerful")
+            .join(crate::config::defaults::USER_DEFAULT_CONFIG_FILE)
+    }
+
+    fn secret_template(key: &str) -> Vec<u8> {
+        format!("[gemini]\napi_key = \"{key}\"\n").into_bytes()
+    }
+
+    /// Runtime-equivalent scan with no project config: templates are the only sources.
+    fn scan_templates_only(
+        layout: &Layout,
+        env: &TemplateEnv,
+        readable: &[(camino::Utf8PathBuf, Vec<u8>)],
+    ) -> Vec<DoctorFinding> {
+        doctor_plaintext_secret_findings_with_env(
+            layout,
+            env,
+            |path| {
+                if path == layout.config_file().as_path() {
+                    Err(io::Error::new(io::ErrorKind::NotFound, "no project config"))
+                } else if readable.iter().any(|(p, _)| p.as_path() == path) {
+                    Ok(CandidateKind::RegularFile)
+                } else {
+                    Err(io::Error::new(io::ErrorKind::NotFound, "missing"))
+                }
+            },
+            |path| {
+                readable
+                    .iter()
+                    .find(|(p, _)| p.as_path() == path)
+                    .map(|(_, bytes)| bytes.clone())
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not in fixture"))
+            },
+        )
+    }
+
+    fn secret_message(source: &str, named: &str) -> String {
+        format!(
+            "Plaintext provider key(s) in {source}: {named}. Move them to GEMINI_API_KEY / OLLAMA_CLOUD_API_KEY (or .env) and rotate."
+        )
+    }
+
+    #[test]
+    fn user_template_secret_userprofile_template_emits_userprofile_source() {
+        let (_tmp, layout) = layout_with_config("[core]\nstrict = false\n");
+        let up = template_under("/synthetic/up");
+        let env = TemplateEnv {
+            userprofile: Some("/synthetic/up".into()),
+            ..TemplateEnv::default()
+        };
+        let findings = scan_templates_only(
+            &layout,
+            &env,
+            &[(up, secret_template("USERPROFILE-VALUE-0554"))],
+        );
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].code, CONFIG_PLAINTEXT_SECRET_CODE);
+        assert_eq!(
+            findings[0].message,
+            secret_message(USERPROFILE_SOURCE, "gemini.api_key")
+        );
+    }
+
+    #[test]
+    fn user_template_secret_home_template_emits_home_source_when_userprofile_absent() {
+        let (_tmp, layout) = layout_with_config("[core]\nstrict = false\n");
+        let home = template_under("/synthetic/home");
+        let env = TemplateEnv {
+            home: Some("/synthetic/home".into()),
+            ..TemplateEnv::default()
+        };
+        let findings =
+            scan_templates_only(&layout, &env, &[(home, secret_template("HOME-VALUE-0554"))]);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(
+            findings[0].message,
+            secret_message(HOME_SOURCE, "gemini.api_key")
+        );
+    }
+
+    #[test]
+    fn user_template_secret_override_wins_over_both_homes_and_homes_are_never_read() {
+        let (_tmp, layout) = layout_with_config("[core]\nstrict = false\n");
+        let override_path = camino::Utf8PathBuf::from("/synthetic/override.toml");
+        let env = TemplateEnv {
+            override_path: Some(override_path.as_str().into()),
+            userprofile: Some("/synthetic/up".into()),
+            home: Some("/synthetic/home".into()),
+        };
+        // Both homes also carry a secret, but they are inactive and must not be read.
+        let findings = scan_templates_only(
+            &layout,
+            &env,
+            &[
+                (override_path, secret_template("OVERRIDE-VALUE-0554")),
+                (template_under("/synthetic/up"), secret_template("UP")),
+                (template_under("/synthetic/home"), secret_template("HOME")),
+            ],
+        );
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(
+            findings[0].message,
+            secret_message(OVERRIDE_SOURCE, "gemini.api_key")
+        );
+    }
+
+    #[test]
+    fn user_template_secret_userprofile_wins_over_readable_home() {
+        let (_tmp, layout) = layout_with_config("[core]\nstrict = false\n");
+        let env = TemplateEnv {
+            userprofile: Some("/synthetic/up".into()),
+            home: Some("/synthetic/home".into()),
+            ..TemplateEnv::default()
+        };
+        // HOME carries a different secret; it must never be the reported source.
+        let findings = scan_templates_only(
+            &layout,
+            &env,
+            &[
+                (
+                    template_under("/synthetic/up"),
+                    secret_template("UP-VALUE-0554"),
+                ),
+                (
+                    template_under("/synthetic/home"),
+                    secret_template("HOME-VALUE-0554"),
+                ),
+            ],
+        );
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(
+            findings[0].message,
+            secret_message(USERPROFILE_SOURCE, "gemini.api_key")
+        );
+    }
+
+    #[test]
+    fn user_template_secret_existing_project_never_reads_any_template() {
+        let (_tmp, layout) = layout_with_config("[core]\nstrict = false\n");
+        let env = TemplateEnv {
+            override_path: Some("/synthetic/override.toml".into()),
+            userprofile: Some("/synthetic/up".into()),
+            home: Some("/synthetic/home".into()),
+        };
+        let project = layout.config_file();
+        let findings = doctor_plaintext_secret_findings_with_env(
+            &layout,
+            &env,
+            |_| Ok(CandidateKind::RegularFile),
+            |path| {
+                if path == project.as_path() {
+                    Ok(b"[core]\nstrict = false\n".to_vec())
+                } else {
+                    panic!("no template may be read while a project config exists")
+                }
+            },
+        );
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn user_template_secret_empty_override_falls_back_to_builtin_without_userprofile() {
+        let (_tmp, layout) = layout_with_config("[core]\nstrict = false\n");
+        let env = TemplateEnv {
+            override_path: Some("".into()),
+            userprofile: Some("/synthetic/up".into()),
+            home: None,
+        };
+        // The resolver must keep the empty override as the active candidate.
+        // Otherwise this test could pass vacuously while USERPROFILE was read.
+        match select_template_candidate(&env) {
+            TemplateSelection::Candidate {
+                origin: TemplateOrigin::Override,
+                path: Some(path),
+            } => assert!(path.as_str().is_empty(), "empty override kept verbatim"),
+            _ => panic!("empty override must select the Override candidate"),
+        }
+
+        let visited = std::cell::RefCell::new(Vec::new());
+        let findings = doctor_plaintext_secret_findings_with_env(
+            &layout,
+            &env,
+            |path| {
+                visited.borrow_mut().push(path.to_string());
+                if path == layout.config_file().as_path() {
+                    Err(io::Error::new(io::ErrorKind::NotFound, "no project config"))
+                } else if path.as_str().is_empty() {
+                    Err(io::Error::new(io::ErrorKind::NotFound, "empty override"))
+                } else {
+                    panic!("inactive candidate inspected: {path}");
+                }
+            },
+            |_| panic!("no template may be read for an empty override"),
+        );
+        assert!(findings.is_empty(), "{findings:?}");
+
+        let visited = visited.into_inner();
+        assert!(
+            visited.iter().any(|p| p.is_empty()),
+            "the empty override candidate must be probed, saw {visited:?}"
+        );
+        assert!(
+            !visited
+                .iter()
+                .any(|p| p.contains(".ledgerful/default-config.toml")),
+            "USERPROFILE must not be probed after an empty override, saw {visited:?}"
+        );
+    }
+
+    #[test]
+    fn user_template_secret_relative_override_is_inspected_verbatim() {
+        let (_tmp, layout) = layout_with_config("[core]\nstrict = false\n");
+        let env = TemplateEnv {
+            override_path: Some("relative/template.toml".into()),
+            ..TemplateEnv::default()
+        };
+        let findings = doctor_plaintext_secret_findings_with_env(
+            &layout,
+            &env,
+            |path| {
+                if path == layout.config_file().as_path() {
+                    Err(io::Error::new(io::ErrorKind::NotFound, "no project config"))
+                } else {
+                    assert_eq!(
+                        path.as_str(),
+                        "relative/template.toml",
+                        "relative path kept verbatim"
+                    );
+                    Ok(CandidateKind::RegularFile)
+                }
+            },
+            |_| Ok(secret_template("RELATIVE-VALUE-0554")),
+        );
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(
+            findings[0].message,
+            secret_message(OVERRIDE_SOURCE, "gemini.api_key")
         );
     }
 }

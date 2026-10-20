@@ -1,6 +1,6 @@
 //! Track 0114: `ledgerful change-context` CLI integration.
 
-use crate::common::{DirGuard, git_add_and_commit, run_cli, setup_git_repo};
+use crate::common::{DirGuard, git_add_and_commit, run_cli_isolated, setup_git_repo};
 use ledgerful::config::model::Config;
 use ledgerful::ledger::{Category, TransactionManager, TransactionRequest};
 use ledgerful::state::layout::Layout;
@@ -24,7 +24,7 @@ fn change_context_json_is_single_object_empty_tree() {
     storage.shutdown().unwrap();
 
     let _guard = DirGuard::new(root);
-    let (stdout, stderr, code) = run_cli(root, &["change-context", "--json"]);
+    let (stdout, stderr, code) = run_cli_isolated(root, &["change-context", "--json"]);
     assert_eq!(code, 0, "stderr={stderr}");
     let json: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("stdout must be pure JSON");
@@ -62,7 +62,7 @@ fn change_context_pending_ledger_not_silent_empty() {
     storage.shutdown().unwrap();
 
     let _guard = DirGuard::new(root);
-    let (stdout, stderr, code) = run_cli(root, &["change-context", "--json"]);
+    let (stdout, stderr, code) = run_cli_isolated(root, &["change-context", "--json"]);
     assert_eq!(code, 0, "stderr={stderr}");
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(json["status"], "ready");
@@ -94,7 +94,7 @@ fn change_context_one_changed_file_ready() {
     storage.shutdown().unwrap();
 
     let _guard = DirGuard::new(root);
-    let (stdout, stderr, code) = run_cli(root, &["change-context", "--json"]);
+    let (stdout, stderr, code) = run_cli_isolated(root, &["change-context", "--json"]);
     assert_eq!(code, 0, "stderr={stderr}");
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(json["status"], "ready");
@@ -134,7 +134,8 @@ fn change_context_max_files_capped() {
     storage.shutdown().unwrap();
 
     let _guard = DirGuard::new(root);
-    let (stdout, stderr, code) = run_cli(root, &["change-context", "--json", "--max-files", "1"]);
+    let (stdout, stderr, code) =
+        run_cli_isolated(root, &["change-context", "--json", "--max-files", "1"]);
     assert_eq!(code, 0, "stderr={stderr}");
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     let read_set = json["readSet"].as_array().unwrap();
@@ -166,7 +167,7 @@ fn change_context_base_ref_accepted() {
     // Working tree is clean at HEAD; --base-ref HEAD~1 must time-travel structure
     // so the file added in the second commit appears in the structural set.
     let (stdout, stderr, code) =
-        run_cli(root, &["change-context", "--json", "--base-ref", "HEAD~1"]);
+        run_cli_isolated(root, &["change-context", "--json", "--base-ref", "HEAD~1"]);
     assert_eq!(code, 0, "stderr={stderr}");
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(json["schemaVersion"], 1);
@@ -202,7 +203,7 @@ fn change_context_invalid_base_ref_is_not_ready() {
     storage.shutdown().unwrap();
 
     let _guard = DirGuard::new(root);
-    let (stdout, stderr, code) = run_cli(
+    let (stdout, stderr, code) = run_cli_isolated(
         root,
         &[
             "change-context",
@@ -251,7 +252,7 @@ fn change_context_option_like_base_ref_is_not_ready() {
     // Use --base-ref=VALUE so clap does not re-parse the value as a flag.
     let flag = format!("--base-ref=--output={}", poison.display());
     let _guard = DirGuard::new(root);
-    let (stdout, stderr, code) = run_cli(root, &["change-context", "--json", &flag]);
+    let (stdout, stderr, code) = run_cli_isolated(root, &["change-context", "--json", &flag]);
     assert_eq!(code, 0, "stderr={stderr} stdout={stdout}");
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(
@@ -279,7 +280,7 @@ fn change_context_human_mode_nonempty() {
     storage.shutdown().unwrap();
 
     let _guard = DirGuard::new(root);
-    let (stdout, stderr, code) = run_cli(root, &["change-context"]);
+    let (stdout, stderr, code) = run_cli_isolated(root, &["change-context"]);
     assert_eq!(code, 0, "stderr={stderr}");
     assert!(!stdout.trim().is_empty());
     assert!(
@@ -314,7 +315,7 @@ fn change_context_greenfield_pure_add_package() {
     storage.shutdown().unwrap();
 
     let _guard = DirGuard::new(root);
-    let (stdout, stderr, code) = run_cli(root, &["change-context", "--json"]);
+    let (stdout, stderr, code) = run_cli_isolated(root, &["change-context", "--json"]);
     assert_eq!(code, 0, "stderr={stderr}");
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(json["schemaVersion"], 1);
@@ -366,7 +367,7 @@ fn change_context_modify_only_not_false_greenfield() {
     storage.shutdown().unwrap();
 
     let _guard = DirGuard::new(root);
-    let (stdout, stderr, code) = run_cli(root, &["change-context", "--json"]);
+    let (stdout, stderr, code) = run_cli_isolated(root, &["change-context", "--json"]);
     assert_eq!(code, 0, "stderr={stderr}");
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(json["status"], "ready");
@@ -401,7 +402,7 @@ fn change_context_empty_omits_change_hints() {
     storage.shutdown().unwrap();
 
     let _guard = DirGuard::new(root);
-    let (stdout, stderr, code) = run_cli(root, &["change-context", "--json"]);
+    let (stdout, stderr, code) = run_cli_isolated(root, &["change-context", "--json"]);
     assert_eq!(code, 0, "stderr={stderr}");
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(json["status"], "empty");

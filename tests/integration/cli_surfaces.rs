@@ -50,7 +50,7 @@ fn test_endpoints_json() {
 /// DoD-7: human `endpoints` table never shows raw JSON array syntax in Auth.
 #[test]
 fn test_endpoints_human_auth_no_raw_json() {
-    use crate::common::run_cli;
+    use crate::common::run_cli_isolated;
     use rusqlite::Connection;
 
     let tmp = tempdir().unwrap();
@@ -112,7 +112,7 @@ fn test_endpoints_human_auth_no_raw_json() {
         .expect("insert api_routes row");
     }
 
-    let (stdout, stderr, code) = run_cli(root, &["endpoints"]);
+    let (stdout, stderr, code) = run_cli_isolated(root, &["endpoints"]);
     assert_eq!(code, 0, "endpoints must succeed; stderr={stderr}");
     assert!(
         !stdout.contains("[\""),
@@ -420,12 +420,12 @@ fn setup_surfaces_mint_repo() -> tempfile::TempDir {
 
 #[test]
 fn surfaces_json_default_config_is_two_gated_three_empty_one_ready() {
-    use crate::common::run_cli;
+    use crate::common::run_cli_isolated;
 
     let tmp = setup_surfaces_mint_repo();
     let root = tmp.path();
 
-    let (stdout, stderr, code) = run_cli(root, &["surfaces", "--json"]);
+    let (stdout, stderr, code) = run_cli_isolated(root, &["surfaces", "--json"]);
     assert_eq!(code, 0, "surfaces --json must succeed; stderr={stderr}");
     assert!(
         !stdout.contains("gated ·"),
@@ -467,7 +467,7 @@ fn surfaces_json_default_config_is_two_gated_three_empty_one_ready() {
 
 #[test]
 fn surfaces_json_fixture_only_data_models_is_empty() {
-    use crate::common::run_cli;
+    use crate::common::run_cli_isolated;
 
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -478,7 +478,7 @@ fn surfaces_json_fixture_only_data_models_is_empty() {
     execute_init(false, false).unwrap();
     seed_data_models_fixture_only(root);
 
-    let (stdout, stderr, code) = run_cli(root, &["surfaces", "--json"]);
+    let (stdout, stderr, code) = run_cli_isolated(root, &["surfaces", "--json"]);
     assert_eq!(code, 0, "surfaces --json must succeed; stderr={stderr}");
     let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("pure JSON envelope");
     assert_eq!(v["schemaVersion"], 1);
@@ -496,7 +496,8 @@ fn surfaces_json_fixture_only_data_models_is_empty() {
     );
     assert_eq!(dm["next"], "ledgerful data-models list --include-fixtures");
 
-    let (list_out, list_err, list_code) = run_cli(root, &["data-models", "list", "--json"]);
+    let (list_out, list_err, list_code) =
+        run_cli_isolated(root, &["data-models", "list", "--json"]);
     assert_eq!(
         list_code, 0,
         "data-models list --json must succeed; stderr={list_err}"
@@ -513,7 +514,7 @@ fn surfaces_json_fixture_only_data_models_is_empty() {
     if cookie.exists() {
         fs::remove_file(&cookie).expect("reset session cookie so tour is also first-show");
     }
-    let (tour, tour_err, tour_code) = run_cli(root, &["tour", "--json"]);
+    let (tour, tour_err, tour_code) = run_cli_isolated(root, &["tour", "--json"]);
     assert_eq!(tour_code, 0, "tour --json must succeed; stderr={tour_err}");
     let tour_v: serde_json::Value = serde_json::from_str(tour.trim()).expect("tour JSON");
     assert_eq!(tour_v["counts"], v["counts"]);
@@ -523,17 +524,17 @@ fn surfaces_json_fixture_only_data_models_is_empty() {
 
 #[test]
 fn tour_alias_matches_surfaces_json() {
-    use crate::common::run_cli;
+    use crate::common::run_cli_isolated;
 
     let tmp = setup_surfaces_mint_repo();
     let root = tmp.path();
-    let (surfaces, _, c1) = run_cli(root, &["surfaces", "--json"]);
+    let (surfaces, _, c1) = run_cli_isolated(root, &["surfaces", "--json"]);
     let layout = Layout::new(root.to_string_lossy().as_ref());
     let cookie = layout.cli_session_file();
     if cookie.exists() {
         fs::remove_file(&cookie).expect("reset session cookie so tour is also first-show");
     }
-    let (tour, _, c2) = run_cli(root, &["tour", "--json"]);
+    let (tour, _, c2) = run_cli_isolated(root, &["tour", "--json"]);
     assert_eq!(c1, 0);
     assert_eq!(c2, 0);
     assert_eq!(surfaces, tour);
@@ -541,11 +542,11 @@ fn tour_alias_matches_surfaces_json() {
 
 #[test]
 fn surfaces_human_table_and_summary() {
-    use crate::common::run_cli;
+    use crate::common::run_cli_isolated;
 
     let tmp = setup_surfaces_mint_repo();
     let root = tmp.path();
-    let (stdout, stderr, code) = run_cli(root, &["surfaces"]);
+    let (stdout, stderr, code) = run_cli_isolated(root, &["surfaces"]);
     assert_eq!(code, 0, "surfaces must succeed; stderr={stderr}");
     assert!(
         stdout.contains("Services"),
@@ -567,7 +568,7 @@ fn surfaces_human_table_and_summary() {
 
 #[test]
 fn surfaces_is_read_only() {
-    use crate::common::run_cli;
+    use crate::common::run_cli_isolated;
 
     let tmp = setup_surfaces_mint_repo();
     let root = tmp.path();
@@ -575,7 +576,7 @@ fn surfaces_is_read_only() {
     let before = fs::read(&config_path).expect("read config");
     let policies = root.join("policies");
     assert!(!policies.exists(), "precondition: no policies/");
-    let (stdout, stderr, code) = run_cli(root, &["surfaces", "--json"]);
+    let (stdout, stderr, code) = run_cli_isolated(root, &["surfaces", "--json"]);
     assert_eq!(code, 0, "stderr={stderr} stdout={stdout}");
     let after = fs::read(&config_path).expect("reread config");
     assert_eq!(before, after, "surfaces must not write config");
@@ -588,11 +589,11 @@ fn surfaces_is_read_only() {
 
 #[test]
 fn doctor_json_includes_surfaces_gated_without_blocking_publish() {
-    use crate::common::run_cli;
+    use crate::common::run_cli_isolated;
 
     let tmp = setup_surfaces_mint_repo();
     let root = tmp.path();
-    let (stdout, stderr, code) = run_cli(root, &["doctor", "--json"]);
+    let (stdout, stderr, code) = run_cli_isolated(root, &["doctor", "--json"]);
     assert_eq!(code, 0, "doctor --json; stderr={stderr}");
     let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("doctor JSON");
     assert_eq!(v["readyForPublish"], true);
@@ -616,13 +617,13 @@ fn doctor_json_includes_surfaces_gated_without_blocking_publish() {
 
 #[test]
 fn surfaces_malformed_config_does_not_emit_default_inventory() {
-    use crate::common::run_cli;
+    use crate::common::run_cli_isolated;
 
     let tmp = setup_surfaces_mint_repo();
     let root = tmp.path();
     let config_path = root.join(".ledgerful").join("config.toml");
     fs::write(&config_path, "this is not = valid toml [[[").expect("corrupt config");
-    let (stdout, stderr, code) = run_cli(root, &["surfaces", "--json"]);
+    let (stdout, stderr, code) = run_cli_isolated(root, &["surfaces", "--json"]);
     assert_ne!(
         code, 0,
         "malformed config must fail closed; stdout={stdout} stderr={stderr}"
@@ -635,17 +636,17 @@ fn surfaces_malformed_config_does_not_emit_default_inventory() {
 
 #[test]
 fn doctor_default_human_collapses_surfaces_gated() {
-    use crate::common::run_cli;
+    use crate::common::run_cli_isolated;
 
     let tmp = setup_surfaces_mint_repo();
     let root = tmp.path();
-    let (stdout, stderr, code) = run_cli(root, &["doctor"]);
+    let (stdout, stderr, code) = run_cli_isolated(root, &["doctor"]);
     assert_eq!(code, 0, "doctor; stderr={stderr}");
     assert!(
         !stdout.contains("surfaces-gated"),
         "default human must collapse hygiene; stdout={stdout}"
     );
-    let (full, _, c2) = run_cli(root, &["doctor", "--full"]);
+    let (full, _, c2) = run_cli_isolated(root, &["doctor", "--full"]);
     assert_eq!(c2, 0);
     assert!(
         full.contains("surfaces-gated") || full.contains("gated by coverage"),
