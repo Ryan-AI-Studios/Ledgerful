@@ -192,7 +192,9 @@ fn wipe_edge_orphan_hashes_execute_path_cold_store_and_reprocesses() {
         .record_file_hash(path_key, content_hash)
         .expect("record orphan hash");
     assert!(
-        semantic.is_file_hash_current(path_key, content_hash),
+        semantic
+            .is_file_hash_current(path_key, content_hash)
+            .expect("hash lookup"),
         "precondition: hash must be current"
     );
     assert!(
@@ -227,7 +229,9 @@ fn wipe_edge_orphan_hashes_execute_path_cold_store_and_reprocesses() {
     // C1: hash-current without snippets still re-processes when the file
     // would produce chunks (unknown here — no path). Empty-chunk skip is
     // `skip_warm_incremental_file`.
-    let would_skip = semantic.is_file_hash_current(path_key, content_hash)
+    let would_skip = semantic
+        .is_file_hash_current(path_key, content_hash)
+        .expect("hash lookup")
         && semantic.file_has_snippets(path_key);
     assert!(
         !would_skip,
@@ -292,6 +296,47 @@ fn skip_warm_incremental_file_reprocesses_stale_raw_hash() {
     assert!(
         !skip_warm_incremental_file(&semantic, path, content, "src/lib.rs", &grain),
         "old raw blake3 must be treated as stale"
+    );
+}
+
+#[test]
+fn warm_skip_reprocesses_on_lookup_error() {
+    use crate::config::model::LocalModelConfig;
+    use crate::semantic::SemanticDiscovery;
+    use crate::state::storage_cozo::CozoStorage;
+    use std::path::Path;
+
+    let storage = CozoStorage::new_in_memory().expect("cozo");
+    let config = LocalModelConfig {
+        dimensions: 3,
+        disable_hnsw: true,
+        ..Default::default()
+    };
+    let semantic = SemanticDiscovery::new(config, &storage).expect("semantic");
+    semantic.ensure_file_hash_schema().expect("hash schema");
+    storage
+        .run_script("::remove semantic_file_hash")
+        .expect("drop hash relation");
+
+    // The legacy `bool` accessor already returned `false` here, so assert the
+    // classification itself before the skip decision.
+    assert!(
+        semantic
+            .is_file_hash_current("src/test.rs", "dummy")
+            .is_err(),
+        "missing relation must be a lookup error, not a mismatch"
+    );
+
+    let content = "fn test() {}\n";
+    assert!(
+        !skip_warm_incremental_file(
+            &semantic,
+            Path::new("src/test.rs"),
+            content,
+            "src/test.rs",
+            "dummy"
+        ),
+        "a lookup error must reprocess, never abort candidate discovery"
     );
 }
 

@@ -71,7 +71,26 @@ bootstrap so the index never silently stays empty.
   unless the chunker produces zero chunks (declaration-only `mod x;`).
   A file that reads but fails to chunk after its content changed loses its stored
   hash and snippets (so `index --check` stops reporting it drifted) and is retried
-  on every run; if its stored hash still matches, the index is kept (0545).
+  on every run; if its stored hash still matches, the index is kept (0545). Rows
+  are cleared only when the stored hash is known to differ or is absent. A read
+  failure (file unreadable) never clears rows (0545). The stored-hash **lookup
+  itself** is a separate failure class (0553): when it fails during chunk-failure
+  cleanup, rows are kept, the file stays drifted, and the run reports one
+  aggregate WARN naming how many cleanup files were unknown (`lookup-unknown`).
+  Preserved rows are not fresh - search/Ask can return snippets for content that
+  changed until a later successful lookup and chunk - so `index --check` (and
+  `--strict`, which already exits 1 on any stale surface) keeps reporting the
+  drift. The frozen `N file(s) failed to chunk and will be retried` progress line
+  can claim rows were cleared where content changed even when an unknown lookup
+  kept them; the cleanup WARN and the preserved drift are the evidence until 0569
+  corrects that wording - the frozen line under-reports cleanup lookup-unknown
+  files; wording remains 0569's.
+- **Lookup failures on the warm path (0553):** a lookup error during warm
+  candidate discovery reprocesses that file with debug-only detail and no
+  `lookup_unknown` count or WARN; it never aborts discovery. Persistent lookup
+  failures can therefore repeat parse/embed work for every candidate on each warm
+  run (the fail-open snippet-presence check included). The aggregate stderr WARN
+  counts chunk-failure cleanup unknowns only, and `--json` stdout is unchanged.
 - **Force rebuild:** `index --semantic --full` always wins over `-i`.
 - **After repo absolute-path move / isolation cleanup:** prefer
   `index --semantic --full` once so foreign keys purge and relative keys rewrite.

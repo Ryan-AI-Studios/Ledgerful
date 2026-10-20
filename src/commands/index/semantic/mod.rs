@@ -40,7 +40,8 @@ pub(crate) fn resolve_semantic_index_mode(
 }
 
 /// Warm incremental skip: hash-current and (has snippets or chunker produced none).
-/// `chunk_file` errors keep the file in `to_process`.
+/// `chunk_file` errors keep the file in `to_process`. A hash-lookup error is not
+/// fatal: it reprocesses (0553) instead of aborting discovery for every file.
 pub(crate) fn skip_warm_incremental_file(
     semantic: &SemanticDiscovery<'_>,
     path: &std::path::Path,
@@ -48,8 +49,13 @@ pub(crate) fn skip_warm_incremental_file(
     key: &str,
     hash: &str,
 ) -> bool {
-    if !semantic.is_file_hash_current(key, hash) {
-        return false;
+    match semantic.is_file_hash_current(key, hash) {
+        Ok(true) => {}
+        Ok(false) => return false,
+        Err(e) => {
+            debug!("Semantic hash lookup failed for {key}; reprocessing: {e}");
+            return false;
+        }
     }
     if semantic.file_has_snippets(key) {
         return true;
@@ -360,8 +366,8 @@ pub(crate) fn execute_semantic_index(
     if chunk_failed > 0 {
         let dropped = drop_failed_chunk_rows(&semantic, &chunk_failures);
         debug!(
-            "Chunk-failure rows: cleared={}, kept_current={}, failed={}",
-            dropped.cleared, dropped.kept_current, dropped.failed
+            "Chunk-failure rows: cleared={}, kept_current={}, failed={}, lookup_unknown={}",
+            dropped.cleared, dropped.kept_current, dropped.failed, dropped.lookup_unknown
         );
     }
     if let Some(line) = chunk_failure_progress_line(chunk_failed) {
