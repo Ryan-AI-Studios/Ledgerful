@@ -1,7 +1,7 @@
 pub mod checklist;
 pub mod defaults;
-pub(crate) mod floor;
 pub mod error;
+pub(crate) mod floor;
 pub mod load;
 pub mod model;
 pub mod plaintext_secret;

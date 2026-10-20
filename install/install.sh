@@ -111,7 +111,7 @@ auto_fix = false
 
 [watch]
 debounce_ms = 1000
-ignore_patterns = ["target/**", ".git/**", "node_modules/**"]
+ignore_patterns = ["target/**", ".git/**", "node_modules/**", ".ledgerful", ".ledgerful/**"]
 
 [temporal]
 max_commits = 1000

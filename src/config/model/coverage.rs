@@ -894,8 +894,7 @@ mod tests {
         use crate::config::defaults::DEFAULT_CONFIG;
         use crate::state::layout::{LEGACY_STATE_DIR, STATE_DIR};
 
-        let parsed: crate::config::Config =
-            toml::from_str(DEFAULT_CONFIG).expect("built-in TOML");
+        let parsed: crate::config::Config = toml::from_str(DEFAULT_CONFIG).expect("built-in TOML");
         let patterns = &parsed.watch.ignore_patterns;
         assert_eq!(patterns.len(), 16, "built-in list stays at 16 entries");
         assert!(patterns.iter().any(|p| p == STATE_DIR));
@@ -928,8 +927,7 @@ mod tests {
                 .any(|p| p == &format!("{LEGACY_STATE_DIR}/**"))
         );
 
-        let parsed: crate::config::Config =
-            toml::from_str(DEFAULT_CONFIG).expect("built-in TOML");
+        let parsed: crate::config::Config = toml::from_str(DEFAULT_CONFIG).expect("built-in TOML");
         let builtin = &parsed.watch.ignore_patterns;
         assert_eq!(
             &patterns[..builtin.len()],

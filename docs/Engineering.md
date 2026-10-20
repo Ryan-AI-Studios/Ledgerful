@@ -588,6 +588,44 @@ that would mis-handle submodules). Submodules keep private `{module}/.ledgerful`
 Override with absolute `LEDGERFUL_STATE_DIR` pointing at the state directory itself.
 After large branch switches across worktrees, reindex if the shared index is stale.
 
+### Internal-state ignore floor
+
+An explicit `watch.ignore_patterns` list replaces the built-in list wholesale, so
+a project config or user template written before the current state directory
+could make Ledgerful's own state files read as user-source dirt. The private
+config load finalizer (`src/config/load.rs`, `finalize_loaded`) now appends a
+fixed floor after `sanitize_verify_steps` and before `validate_config`:
+`state::layout::STATE_DIR`, `STATE_DIR/**`, `LEGACY_STATE_DIR` and
+`LEGACY_STATE_DIR/**` — both names read from the constants, never spelled in the
+floor module. One call covers every source (project config,
+`LEDGERFUL_DEFAULT_CONFIG`, `USERPROFILE`, `HOME`, built-in).
+
+The floor is additive and idempotent: an entry is appended only when the exact
+string is absent, and existing entries keep their order and duplicates. An
+explicit empty list becomes exactly the four entries. `globset` has no negation
+semantics, so omitting an entry was the only way a config could re-enable state
+dirt; restoring it cannot override any other user intent. Invalid user globs
+still fail validation, because the floor runs first and its entries are valid by
+construction.
+
+`DEFAULT_CONFIG` is deliberately unchanged (16 entries, no retired name), so
+`ledgerful init` materializes nothing new and no seeded or created config gains
+the retired brand. `default_ignore_patterns()` — the serde field default and the
+source of `Config::default()` — appends the retired pair at runtime, so
+warn-and-default sites carry the whole floor without a TOML literal. `config
+view` prints the effective, redacted config; `config set` still edits the file
+only.
+
+`LEDGERFUL_STATE_DIR` is not derived into the floor. A state directory inside
+the work tree under a non-conventional name must be moved outside the tree or
+covered by `.gitignore`; if it is listed in `watch.ignore_patterns`, list **the
+exact state directory only** (`<sd>` and `<sd>/**`), never a parent or a broader
+prefix, because `filter_ignored_changes(..., filter_tracked = true)`
+(`src/git/ignore.rs`) suppresses matching **tracked** changes and a broad entry
+would hide real source edits. Index discovery is a separate path: it uses
+`hidden(true)` plus `.gitignore` (`src/index/walker.rs`) and never consumes
+`watch.ignore_patterns`.
+
 **Independent / read-only review:** Codex pure RO sandboxes and restricted
 reviewers cannot run full `verify` / `index` / doctor write-open. Prefer git +
 soft-open `change-context` / `ledger status` / `audit` when state is readable;

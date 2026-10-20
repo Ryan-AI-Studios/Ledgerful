@@ -961,8 +961,7 @@ mod tests {
 
     /// Parseable stale template: an explicit list that omits the internal-state
     /// entries. `target` is the selection marker (self-certification).
-    const STALE_TEMPLATE: &str =
-        "[watch]\nignore_patterns = [\"target\", \"target/**\"]\n";
+    const STALE_TEMPLATE: &str = "[watch]\nignore_patterns = [\"target\", \"target/**\"]\n";
 
     /// Variant of [`gather_with_saved_packet`] that pins a **parseable** stale
     /// template instead of a missing path, so the selected source is the stale
@@ -978,10 +977,8 @@ mod tests {
         fs::write(&template_path, STALE_TEMPLATE).expect("write stale template");
         // Named guard: it must outlive the gather call, which reloads config
         // through `collect_changed_files_for_filter`.
-        let _template_pin = env_guard::TempEnv::set(
-            "LEDGERFUL_DEFAULT_CONFIG",
-            &template_path.to_string_lossy(),
-        );
+        let _template_pin =
+            env_guard::TempEnv::set("LEDGERFUL_DEFAULT_CONFIG", &template_path.to_string_lossy());
         let root = camino::Utf8Path::from_path(dir).expect("utf8 path");
         let layout = Layout::new(root);
         layout.ensure_state_dir().expect("state dir");

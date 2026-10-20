@@ -488,7 +488,8 @@ x = 1
         let builtin = parsed.watch.ignore_patterns;
         assert_eq!(builtin.len(), 16);
 
-        let (config, _) = finalize_config(DEFAULT_CONFIG.to_string(), Vec::new()).expect("built-in");
+        let (config, _) =
+            finalize_config(DEFAULT_CONFIG.to_string(), Vec::new()).expect("built-in");
         assert_eq!(&config.watch.ignore_patterns[..16], builtin.as_slice());
         assert_eq!(
             config.watch.ignore_patterns,

@@ -355,6 +355,23 @@ publication and omits secret-bearing assignments and credentialed connection
 URLs. A malformed custom template fails closed and does not create a partial
 repo config. Existing repo configs are never replaced.
 
+The effective `watch.ignore_patterns` always gains Ledgerful's own state
+entries — the state directory and its contents plus the retired legacy state
+pair — whichever source selected the config (project config, the
+`LEDGERFUL_DEFAULT_CONFIG` template, the user-level template, or the built-in
+default). A custom list keeps every entry it had; the floor only appends
+entries that are missing and never rewrites a file. `ledgerful init` output is
+unchanged by this invariant. `ledgerful config view` prints the resolved,
+effective configuration rather than the file text; `ledgerful config set` still
+edits the file only.
+
+`LEDGERFUL_STATE_DIR` is not folded into that floor. A state directory placed
+inside the work tree under a non-conventional name must be moved outside the
+work tree, or covered by `.gitignore`. If it is listed in
+`watch.ignore_patterns`, list **the exact state directory only** (`<sd>` and
+`<sd>/**`) — never a parent or any broader prefix — because tracked changes
+that match are suppressed too.
+
 Store credentials in the process environment or an ignored repo-local `.env`.
 Supported names include `GEMINI_API_KEY`, `OLLAMA_CLOUD_API_KEY`, and the
 legacy `OLLAMA_API_KEY`. Ledgerful does not expand `${VAR}` syntax in TOML.

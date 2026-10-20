@@ -48,8 +48,11 @@ fn init_storage(root: &Path) {
 }
 
 fn write_probe(root: &Path) {
-    fs::write(root.join(STATE_DIR).join("state").join("probe.txt"), "state\n")
-        .expect("write state probe");
+    fs::write(
+        root.join(STATE_DIR).join("state").join("probe.txt"),
+        "state\n",
+    )
+    .expect("write state probe");
 }
 
 fn write_home_template(home: &Path, contents: &str) -> PathBuf {
@@ -286,7 +289,10 @@ fn default_template_ignore_floor_override_error_controls() {
             expected.push(entry);
         }
     }
-    assert_eq!(list, expected, "missing override must use the floored built-in");
+    assert_eq!(
+        list, expected,
+        "missing override must use the floored built-in"
+    );
 
     let (_, stderr, code) = run_child(
         repo.path(),
@@ -357,4 +363,61 @@ fn default_template_ignore_floor_userprofile_shadows_home_template() {
         !list.iter().any(|p| p == "home-marker.txt"),
         "HOME template must be ignored: {list:?}"
     );
+}
+
+fn seed_file(relative: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+/// Split the seed's `ignore_patterns = [...]` array into exact quoted entries,
+/// so `.ledgerful` is not satisfied as a substring of `.ledgerful/**`.
+fn seed_ignore_entries(relative: &str) -> Vec<String> {
+    let text = seed_file(relative);
+    let line = text
+        .lines()
+        .find(|line| line.trim_start().starts_with("ignore_patterns"))
+        .unwrap_or_else(|| panic!("{relative} must contain an ignore_patterns line"));
+    let array = line
+        .split_once('[')
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .map(|(entries, _)| entries)
+        .unwrap_or_else(|| panic!("{relative} ignore_patterns must be an array: {line}"));
+    array
+        .split(',')
+        .map(|entry| entry.trim().trim_matches('"').to_string())
+        .filter(|entry| !entry.is_empty())
+        .collect()
+}
+
+#[test]
+fn seed_templates_include_internal_state_ignores() {
+    for relative in [
+        "docs/examples/config.toml",
+        "install/install.sh",
+        "install/install.ps1",
+    ] {
+        let entries = seed_ignore_entries(relative);
+        for expected in [STATE_DIR.to_string(), format!("{STATE_DIR}/**")] {
+            assert!(
+                entries.iter().any(|entry| entry == &expected),
+                "{relative} must seed the exact entry {expected:?}: {entries:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn seed_files_do_not_materialize_retired_state_dir() {
+    for relative in [
+        "docs/examples/config.toml",
+        "install/install.sh",
+        "install/install.ps1",
+    ] {
+        let text = seed_file(relative);
+        assert!(
+            !text.contains(LEGACY_STATE_DIR),
+            "{relative} must not materialize the retired state directory name"
+        );
+    }
 }
