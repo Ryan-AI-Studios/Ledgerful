@@ -125,10 +125,15 @@ fn changed_chunk_error_clears_hash_and_snippets(#[case] had_hash: bool) {
         ChunkDropOutcome {
             cleared: 1,
             kept_current: 0,
-            failed: 0
+            failed: 0,
+            lookup_unknown: 0
         }
     );
-    assert!(!semantic.is_file_hash_current("src/bad.rs", &semantic_file_content_hash(OLD)));
+    assert!(
+        !semantic
+            .is_file_hash_current("src/bad.rs", &semantic_file_content_hash(OLD))
+            .expect("hash lookup")
+    );
     assert!(!semantic.file_has_snippets("src/bad.rs"));
     assert_eq!(semantic.get_vector_count().expect("count"), before - 1);
     assert!(
@@ -139,7 +144,226 @@ fn changed_chunk_error_clears_hash_and_snippets(#[case] had_hash: bool) {
     );
     // DoD-7: the healthy sibling is untouched.
     assert!(semantic.file_has_snippets("src/ok.rs"));
-    assert!(semantic.is_file_hash_current("src/ok.rs", &semantic_file_content_hash(OLD)));
+    assert!(
+        semantic
+            .is_file_hash_current("src/ok.rs", &semantic_file_content_hash(OLD))
+            .expect("hash lookup")
+    );
+}
+
+/// 0553 DoD-1: a failed lookup never deletes rows and counts as unknown.
+#[test]
+fn lookup_error_preserves_rows_and_counts_unknown() {
+    let storage = CozoStorage::new_in_memory().expect("cozo");
+    let semantic = semantic_for(&storage);
+    seed(&semantic, "src/bad.rs", OLD);
+    seed(&semantic, "src/ok.rs", OLD);
+    let before = semantic.get_vector_count().expect("count");
+
+    let failures = vec![ChunkFailure {
+        key: "src/bad.rs".to_string(),
+        content_hash: semantic_file_content_hash(NEW),
+    }];
+    let out = drop_failed_chunk_rows_with(&semantic, &failures, |_| {
+        Err(miette::miette!("injected read failure"))
+    });
+
+    assert_eq!(
+        out,
+        ChunkDropOutcome {
+            cleared: 0,
+            kept_current: 0,
+            failed: 0,
+            lookup_unknown: 1
+        }
+    );
+    assert!(semantic.file_has_snippets("src/bad.rs"));
+    assert_eq!(semantic.get_vector_count().expect("count"), before);
+    assert!(
+        semantic
+            .get_tracked_files()
+            .expect("tracked")
+            .contains(&"src/bad.rs".to_string())
+    );
+    assert_eq!(
+        semantic.stored_file_hash("src/bad.rs").expect("lookup"),
+        Some(semantic_file_content_hash(OLD)),
+        "the old hash must survive the unknown lookup"
+    );
+    // The healthy sibling is untouched.
+    assert!(semantic.file_has_snippets("src/ok.rs"));
+}
+
+/// 0553 DoD-1: one bounded aggregate line, `None` at zero.
+#[rstest]
+#[case::zero(0, None)]
+#[case::one(
+    1,
+    Some(
+        "Semantic index: 1 file(s) could not be checked for a current stored hash; not deleting their stored hash or snippets."
+    )
+)]
+#[case::three(
+    3,
+    Some(
+        "Semantic index: 3 file(s) could not be checked for a current stored hash; not deleting their stored hash or snippets."
+    )
+)]
+fn lookup_unknown_notice_matrix(#[case] n: usize, #[case] want: Option<&str>) {
+    let notice = lookup_unknown_notice(n);
+    assert_eq!(notice.as_deref(), want);
+    if let Some(line) = notice {
+        assert!(!line.contains('\n'), "notice must be a single line");
+        assert!(!line.contains('\r'), "notice must not contain CR: {line}");
+        assert!(
+            !line.contains('/') && !line.contains('\\'),
+            "notice must not contain path content: {line}"
+        );
+        assert!(
+            line.contains(&n.to_string()),
+            "notice must name the count: {line}"
+        );
+    }
+}
+
+/// 0553 DoD-1: the production wrapper wires the real lookup, so a relation-level
+/// lookup failure keeps rows and counts unknown (relation-missing wiring proof,
+/// not transient IO or command-boundary fault coverage).
+#[test]
+fn production_lookup_error_preserves_rows() {
+    let storage = CozoStorage::new_in_memory().expect("cozo");
+    let semantic = semantic_for(&storage);
+    seed(&semantic, "src/bad.rs", OLD);
+    let before = semantic.get_vector_count().expect("vector count");
+    assert!(before > 0, "precondition: seeded snippets");
+    // Remove only the hash relation, so the real lookup errors while the snippet
+    // rows stay addressable.
+    storage
+        .run_script("::remove semantic_file_hash")
+        .expect("drop hash relation");
+
+    let failures = vec![ChunkFailure {
+        key: "src/bad.rs".to_string(),
+        content_hash: semantic_file_content_hash(NEW),
+    }];
+    let out = drop_failed_chunk_rows(&semantic, &failures);
+
+    assert_eq!(out.lookup_unknown, 1, "wrapper must classify the error");
+    assert_eq!(out.cleared, 0, "an unknown lookup never clears");
+    assert_eq!(out.kept_current, 0, "unknown is not a known-current hash");
+    assert_eq!(out.failed, 0, "no removal was attempted");
+    assert!(
+        semantic.file_has_snippets("src/bad.rs"),
+        "snippets must survive a lookup failure"
+    );
+    assert_eq!(
+        semantic.get_vector_count().expect("vector count"),
+        before,
+        "no vector may be dropped"
+    );
+}
+
+/// 0553 DoD-2: only a known mismatch clears; match keeps, unknown keeps.
+#[test]
+fn mixed_batch_clears_only_mismatch_keeps_match_and_unknown() {
+    let storage = CozoStorage::new_in_memory().expect("cozo");
+    let semantic = semantic_for(&storage);
+    seed(&semantic, "src/x.rs", OLD);
+    seed(&semantic, "src/y.rs", OLD);
+    seed(&semantic, "src/z.rs", NEW);
+
+    let old_hash = semantic_file_content_hash(OLD);
+    let new_hash = semantic_file_content_hash(NEW);
+    let failures = vec![
+        ChunkFailure {
+            key: "src/x.rs".to_string(),
+            content_hash: new_hash.clone(),
+        },
+        ChunkFailure {
+            key: "src/y.rs".to_string(),
+            content_hash: new_hash.clone(),
+        },
+        ChunkFailure {
+            key: "src/z.rs".to_string(),
+            content_hash: new_hash.clone(),
+        },
+    ];
+    let out = drop_failed_chunk_rows_with(&semantic, &failures, |key| match key {
+        "src/x.rs" => Err(miette::miette!("injected read failure")),
+        "src/y.rs" => Ok(Some(old_hash.clone())),
+        "src/z.rs" => Ok(Some(new_hash.clone())),
+        other => panic!("unexpected key in mixed batch: {other}"),
+    });
+
+    assert_eq!(out.cleared, 1, "only the known mismatch clears");
+    assert_eq!(out.kept_current, 1, "the matching hash keeps its rows");
+    assert_eq!(out.lookup_unknown, 1);
+    assert_eq!(out.failed, 0);
+
+    // x: unknown lookup, rows kept.
+    assert!(semantic.file_has_snippets("src/x.rs"));
+    assert_eq!(
+        semantic.stored_file_hash("src/x.rs").expect("x lookup"),
+        Some(old_hash.clone())
+    );
+    // y: known mismatch, snippets then hash cleared.
+    assert!(!semantic.file_has_snippets("src/y.rs"));
+    assert_eq!(
+        semantic.stored_file_hash("src/y.rs").expect("y lookup"),
+        None
+    );
+    // z: known match, rows kept.
+    assert!(semantic.file_has_snippets("src/z.rs"));
+    assert_eq!(
+        semantic.stored_file_hash("src/z.rs").expect("z lookup"),
+        Some(new_hash.clone())
+    );
+}
+
+/// 0553 DoD-4: preserved rows are not fresh — drift remains the operator signal.
+#[test]
+fn unknown_lookup_keeps_rows_and_drift() {
+    let storage = CozoStorage::new_in_memory().expect("cozo");
+    let semantic = semantic_for(&storage);
+    let root = tempfile::tempdir().expect("root");
+    write(root.path(), "src/bad.rs", NEW);
+    seed(&semantic, "src/bad.rs", OLD);
+
+    let before = collect_semantic_provenance(
+        root.path(),
+        Some(&storage),
+        ProvenanceWalk::IfStorePopulatedHashed,
+    )
+    .expect("provenance before");
+    assert!(before.walked);
+    assert_eq!(before.drifted_hash_count, 1, "drift before the drop");
+
+    let failures = vec![ChunkFailure {
+        key: "src/bad.rs".to_string(),
+        content_hash: semantic_file_content_hash(NEW),
+    }];
+    let out = drop_failed_chunk_rows_with(&semantic, &failures, |_| {
+        Err(miette::miette!("injected read failure"))
+    });
+    assert_eq!(out.lookup_unknown, 1);
+
+    let after = collect_semantic_provenance(
+        root.path(),
+        Some(&storage),
+        ProvenanceWalk::IfStorePopulatedHashed,
+    )
+    .expect("provenance after");
+    assert!(after.walked);
+    assert_eq!(
+        after.drifted_hash_count, 1,
+        "kept rows stay drifted until a later successful run"
+    );
+    assert!(after.is_content_stale());
+    assert!(semantic.file_has_snippets("src/bad.rs"));
+    assert_eq!(
+        semantic.stored_file_hash("src/bad.rs").expect("lookup"),
+        Some(semantic_file_content_hash(OLD))
+    );
 }
 
 /// DoD-2: the user-visible drift goes 1 -> 0 with a populated, walked store.
@@ -194,11 +418,16 @@ fn chunk_error_on_current_hash_keeps_rows() {
         ChunkDropOutcome {
             cleared: 0,
             kept_current: 1,
-            failed: 0
+            failed: 0,
+            lookup_unknown: 0
         }
     );
     assert!(semantic.file_has_snippets("src/bad.rs"));
-    assert!(semantic.is_file_hash_current("src/bad.rs", &semantic_file_content_hash(OLD)));
+    assert!(
+        semantic
+            .is_file_hash_current("src/bad.rs", &semantic_file_content_hash(OLD))
+            .expect("hash lookup")
+    );
 }
 
 /// DoD-4: the hash is never removed alone.

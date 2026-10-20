@@ -533,25 +533,47 @@ impl<'a> SemanticDiscovery<'a> {
         Ok(())
     }
 
-    /// Returns `true` if the stored hash for work-root-relative `path_key` matches `hash`.
+    /// The stored content hash for work-root-relative `path_key`, if a row exists.
+    ///
     /// Keys must be slash-normalized relative strings (see `util::path::semantic_path_key`).
-    pub fn is_file_hash_current(&self, path_key: &str, hash: &str) -> bool {
+    /// `Ok(None)` means the relation answered and holds no row for that key. `Err` means
+    /// the lookup itself failed, so nothing is known about this row (0553): callers that
+    /// delete rows must never treat it as a hash mismatch.
+    pub fn stored_file_hash(&self, path_key: &str) -> Result<Option<String>> {
+        use cozo::{DataValue, ScriptMutability};
+        use std::collections::BTreeMap;
+
         let path_str = path_key.replace('\\', "/");
-        let script = format!(
-            "?[content_hash] := *semantic_file_hash{{file_path: \"{}\", content_hash}}",
-            path_str.replace('"', "\\\"")
-        );
-        match self.vector_store.storage_ref().run_script(&script) {
-            Ok(res) => {
-                if let Some(row) = res.rows.first()
-                    && let Some(cozo::DataValue::Str(stored)) = row.first()
-                {
-                    return stored.as_str() == hash;
-                }
-                false
-            }
-            Err(_) => false,
+        let mut params = BTreeMap::new();
+        params.insert("path".to_string(), DataValue::from(path_str.as_str()));
+        // Parameterized key: hostile characters stay inert instead of entering the query.
+        let res = self.vector_store.storage_ref().run_script_with_params(
+            "?[content_hash] := *semantic_file_hash{file_path: $path, content_hash}",
+            params,
+            ScriptMutability::Immutable,
+        )?;
+        let Some(row) = res.rows.first() else {
+            return Ok(None);
+        };
+        match row.first() {
+            Some(cozo::DataValue::Str(stored)) => Ok(Some(stored.to_string())),
+            // `{file_path => content_hash: String}` makes this unreachable without
+            // corruption; never read it as "no hash" (that would authorize deletion).
+            other => Err(miette::miette!(
+                "Unexpected stored semantic hash value for {path_str}: {other:?}"
+            )),
         }
+    }
+
+    /// Tri-state freshness for work-root-relative `path_key` (0553).
+    ///
+    /// `Ok(true)` - the stored hash matches `hash`; `Ok(false)` - a different hash or no
+    /// row at all; `Err` - the lookup failed and nothing is known. Keys must be
+    /// slash-normalized relative strings (see `util::path::semantic_path_key`).
+    pub fn is_file_hash_current(&self, path_key: &str, hash: &str) -> Result<bool> {
+        Ok(self
+            .stored_file_hash(path_key)?
+            .is_some_and(|stored| stored == hash))
     }
 
     /// Returns `true` if `snippet_embedding` has at least one row for work-root-relative
@@ -1200,7 +1222,9 @@ mod tests {
             .record_file_hash(path_key, "deadbeef")
             .expect("record hash");
         assert!(
-            semantic.is_file_hash_current(path_key, "deadbeef"),
+            semantic
+                .is_file_hash_current(path_key, "deadbeef")
+                .expect("hash lookup"),
             "hash must be current"
         );
         assert!(
@@ -1230,6 +1254,167 @@ mod tests {
         assert!(
             !semantic.file_has_snippets("src/other.rs"),
             "unrelated path must not have snippets"
+        );
+    }
+
+    /// 0553 DoD-3: an absent row is a known "no hash", not a lookup error.
+    #[test]
+    fn stored_file_hash_absent_row_is_none() {
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let config = LocalModelConfig {
+            dimensions: 3,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let semantic = SemanticDiscovery::new(config, &storage).expect("semantic");
+        semantic.ensure_file_hash_schema().expect("hash schema");
+
+        assert_eq!(
+            semantic.stored_file_hash("src/absent.rs").expect("lookup"),
+            None
+        );
+        assert!(
+            !semantic
+                .is_file_hash_current("src/absent.rs", "any")
+                .expect("lookup")
+        );
+    }
+
+    /// 0553 DoD-3: a failed query is `Err`, never "no hash" (which would clear rows).
+    #[test]
+    fn stored_file_hash_missing_relation_is_err() {
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let config = LocalModelConfig {
+            dimensions: 3,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let semantic = SemanticDiscovery::new(config, &storage).expect("semantic");
+        semantic.ensure_file_hash_schema().expect("hash schema");
+        storage
+            .run_script("::remove semantic_file_hash")
+            .expect("drop hash relation");
+
+        let err = semantic
+            .stored_file_hash("src/a.rs")
+            .expect_err("missing relation must be a lookup error");
+        assert!(
+            err.to_string().contains("CozoDB script error"),
+            "error must name the failed query: {err}"
+        );
+        assert!(
+            semantic.is_file_hash_current("src/a.rs", "hash").is_err(),
+            "tri-state accessor must surface the same failure"
+        );
+    }
+
+    /// 0553 DoD-3: the key is bound as a parameter, so quotes, backslashes
+    /// (normalized) and control characters stay inert and cannot read another row.
+    #[test]
+    fn stored_file_hash_binds_adversarial_keys() {
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let config = LocalModelConfig {
+            dimensions: 3,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let semantic = SemanticDiscovery::new(config, &storage).expect("semantic");
+        semantic.ensure_file_hash_schema().expect("hash schema");
+
+        let quote_key = "a\"b.rs";
+        let backslash_key = "a\\b.rs";
+        let control_key = "a\u{0007}b.rs";
+        let injection_probe = "x\" } ?[content_hash] := *semantic_file_hash{file_path: \"x";
+
+        semantic
+            .record_file_hash("a", "hash-prefix")
+            .expect("record prefix");
+        semantic
+            .record_file_hash(quote_key, "hash-quote")
+            .expect("record quote");
+        semantic
+            .record_file_hash(backslash_key, "hash-backslash")
+            .expect("record backslash");
+        semantic
+            .record_file_hash(control_key, "hash-control")
+            .expect("record control");
+
+        assert_eq!(
+            semantic.stored_file_hash(quote_key).expect("quote lookup"),
+            Some("hash-quote".to_string())
+        );
+        assert_eq!(
+            semantic.stored_file_hash("a").expect("prefix lookup"),
+            Some("hash-prefix".to_string()),
+            "quote key must not bleed into the shorter key"
+        );
+        assert_eq!(
+            semantic
+                .stored_file_hash(backslash_key)
+                .expect("backslash lookup"),
+            Some("hash-backslash".to_string())
+        );
+        assert_eq!(
+            semantic.stored_file_hash("a/b.rs").expect("slash lookup"),
+            Some("hash-backslash".to_string()),
+            "backslash spelling is stored normalized"
+        );
+        assert_eq!(
+            semantic
+                .stored_file_hash(control_key)
+                .expect("control lookup"),
+            Some("hash-control".to_string())
+        );
+        assert_eq!(
+            semantic
+                .stored_file_hash(injection_probe)
+                .expect("injection probe stays inert"),
+            None
+        );
+        assert!(
+            !semantic
+                .is_file_hash_current(quote_key, "hash-backslash")
+                .expect("tri-state")
+        );
+    }
+
+    /// 0553 DoD-3: match -> `Ok(true)`, different/absent -> `Ok(false)`, failure -> `Err`.
+    #[test]
+    fn is_file_hash_current_matches_tri_state() {
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let config = LocalModelConfig {
+            dimensions: 3,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let semantic = SemanticDiscovery::new(config, &storage).expect("semantic");
+        semantic.ensure_file_hash_schema().expect("hash schema");
+        semantic
+            .record_file_hash("src/a.rs", "hash-a")
+            .expect("record hash");
+
+        assert!(
+            semantic
+                .is_file_hash_current("src/a.rs", "hash-a")
+                .expect("match")
+        );
+        assert!(
+            !semantic
+                .is_file_hash_current("src/a.rs", "hash-b")
+                .expect("different hash")
+        );
+        assert!(
+            !semantic
+                .is_file_hash_current("src/absent.rs", "hash-a")
+                .expect("absent row")
+        );
+
+        storage
+            .run_script("::remove semantic_file_hash")
+            .expect("drop hash relation");
+        assert!(
+            semantic.is_file_hash_current("src/a.rs", "hash-a").is_err(),
+            "missing relation is a lookup failure, not a mismatch"
         );
     }
 
@@ -1307,7 +1492,9 @@ mod tests {
             "precondition: local + foreign vectors present"
         );
         assert!(
-            semantic.is_file_hash_current(&foreign_key, "hash_foreign"),
+            semantic
+                .is_file_hash_current(&foreign_key, "hash_foreign")
+                .expect("hash lookup"),
             "precondition: foreign hash present"
         );
 
@@ -1326,7 +1513,9 @@ mod tests {
             "foreign snippet rows must be gone after purge"
         );
         assert!(
-            !semantic.is_file_hash_current(&foreign_key, "hash_foreign"),
+            !semantic
+                .is_file_hash_current(&foreign_key, "hash_foreign")
+                .expect("hash lookup"),
             "foreign hash row must be gone after purge"
         );
         assert!(
@@ -1344,7 +1533,9 @@ mod tests {
             "local snippets must survive purge"
         );
         assert!(
-            semantic.is_file_hash_current(local_key, "hash_local"),
+            semantic
+                .is_file_hash_current(local_key, "hash_local")
+                .expect("hash lookup"),
             "local hash must survive purge"
         );
         let vector_count = semantic.get_vector_count().unwrap_or(0);
@@ -1378,14 +1569,20 @@ mod tests {
         semantic
             .record_file_hash(&foreign_key, "orphan_foreign_hash")
             .expect("plant hash-only foreign");
-        assert!(semantic.is_file_hash_current(&foreign_key, "orphan_foreign_hash"));
+        assert!(
+            semantic
+                .is_file_hash_current(&foreign_key, "orphan_foreign_hash")
+                .expect("hash lookup")
+        );
 
         let purged = semantic
             .purge_foreign_semantic_keys(work.path())
             .expect("purge");
         assert_eq!(purged, 1, "hash-only foreign key counts as one purge");
         assert!(
-            !semantic.is_file_hash_current(&foreign_key, "orphan_foreign_hash"),
+            !semantic
+                .is_file_hash_current(&foreign_key, "orphan_foreign_hash")
+                .expect("hash lookup"),
             "hash-only foreign must be removed"
         );
         assert_eq!(
@@ -1498,7 +1695,11 @@ mod tests {
             .record_file_hash("src/a.rs", "hash-a")
             .expect("hash");
         assert_eq!(storage.snippet_embedding_dim().expect("dim"), Some(768));
-        assert!(semantic.is_file_hash_current("src/a.rs", "hash-a"));
+        assert!(
+            semantic
+                .is_file_hash_current("src/a.rs", "hash-a")
+                .expect("hash lookup")
+        );
 
         let config_384 = LocalModelConfig {
             dimensions: 384,
@@ -1584,7 +1785,11 @@ mod tests {
             SemanticDiscovery::new_for_index(config, SemanticConfig::default(), &storage)
                 .expect("same width");
         assert!(!recreated);
-        assert!(again.is_file_hash_current("src/keep.rs", "keep-hash"));
+        assert!(
+            again
+                .is_file_hash_current("src/keep.rs", "keep-hash")
+                .expect("hash lookup")
+        );
     }
 
     #[test]

@@ -7,12 +7,18 @@
 //! that is gone, so they are cleared and the file is retried each run. When the
 //! stored hash is still current the content did not change (a grammar or
 //! chunker regression), so the valid index is kept.
+//!
+//! 0553: the decision is tri-state. When the stored-hash lookup itself fails the
+//! outcome is `lookup-unknown`, not stale: the stored hash and snippets are kept
+//! and no `clear_rows` call is made, because a read failure must never authorize
+//! deletion. Only a known stale or absent stored hash clears rows; `clear_rows`
+//! keeps its snippets-then-hash order.
 
 use super::stages::SemanticFileError;
 use crate::semantic::SemanticDiscovery;
 use crate::util::path::semantic_path_key;
 use std::path::Path;
-use tracing::warn;
+use tracing::{debug, warn};
 
 /// A chunk-error file with its work-root-relative key and the hash of the
 /// content that failed to chunk.
@@ -31,6 +37,9 @@ pub(crate) struct ChunkDropOutcome {
     pub(crate) kept_current: usize,
     /// A removal failed; the file stays drifted and is retried.
     pub(crate) failed: usize,
+    /// The stored-hash lookup failed; rows were kept and the file is retried when
+    /// the lookup succeeds.
+    pub(crate) lookup_unknown: usize,
 }
 
 /// Keep only `Chunk` errors (a `Read` error says nothing about the content) and
@@ -81,20 +90,37 @@ pub(crate) fn clear_rows<E: std::fmt::Display>(
     true
 }
 
-/// Apply the drop rule to every failure. Idempotent.
-pub(crate) fn drop_failed_chunk_rows(
+/// Apply the drop rule to every failure with an injected hash lookup. Idempotent.
+///
+/// The lookup is tri-state: `Ok(Some(hash))` equal to the failing content keeps the
+/// rows, `Ok(Some(other))` and `Ok(None)` clear them, and `Err` keeps them (0553) -
+/// a read failure must never authorize deletion.
+pub(crate) fn drop_failed_chunk_rows_with(
     semantic: &SemanticDiscovery<'_>,
     failures: &[ChunkFailure],
+    lookup: impl Fn(&str) -> miette::Result<Option<String>>,
 ) -> ChunkDropOutcome {
     let mut outcome = ChunkDropOutcome::default();
     for failure in failures {
-        if semantic.is_file_hash_current(&failure.key, &failure.content_hash) {
-            warn!(
-                "{} failed to chunk but its content is unchanged; keeping its stored index",
-                failure.key
-            );
-            outcome.kept_current += 1;
-            continue;
+        match lookup(&failure.key) {
+            Ok(Some(stored)) if stored == failure.content_hash => {
+                warn!(
+                    "{} failed to chunk but its content is unchanged; keeping its stored index",
+                    failure.key
+                );
+                outcome.kept_current += 1;
+                continue;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                // Unknown, not stale: keep both rows and report the aggregate only.
+                debug!(
+                    "Hash lookup failed for {}; keeping stored hash and snippets: {e}",
+                    failure.key
+                );
+                outcome.lookup_unknown += 1;
+                continue;
+            }
         }
         let cleared = clear_rows(
             &failure.key,
@@ -107,7 +133,30 @@ pub(crate) fn drop_failed_chunk_rows(
             outcome.failed += 1;
         }
     }
+    if let Some(notice) = lookup_unknown_notice(outcome.lookup_unknown) {
+        warn!("{notice}");
+    }
     outcome
+}
+
+/// Apply the drop rule to every failure. Idempotent.
+pub(crate) fn drop_failed_chunk_rows(
+    semantic: &SemanticDiscovery<'_>,
+    failures: &[ChunkFailure],
+) -> ChunkDropOutcome {
+    drop_failed_chunk_rows_with(semantic, failures, |key| semantic.stored_file_hash(key))
+}
+
+/// One bounded aggregate line for unknown lookups; `None` at zero. No file key and
+/// no error text, so a store-wide read failure stays a single WARN per run.
+pub(crate) fn lookup_unknown_notice(count: usize) -> Option<String> {
+    if count == 0 {
+        return None;
+    }
+    Some(format!(
+        "Semantic index: {count} file(s) could not be checked for a current stored hash; \
+         not deleting their stored hash or snippets."
+    ))
 }
 
 /// Human line for `failed` in-root chunk-error files; `None` at zero. States

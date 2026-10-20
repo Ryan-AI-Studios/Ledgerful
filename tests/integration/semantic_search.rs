@@ -165,7 +165,8 @@ fn test_remove_file_snippets() {
     assert_eq!(results[0].0, "file_b.rs");
 }
 
-/// Verify that file hash tracking (ensure_file_hash_schema, record_file_hash, is_file_hash_current) works correctly.
+/// Verify that file hash tracking works through the public `stored_file_hash` and
+/// `is_file_hash_current` accessors (ensure_file_hash_schema, record_file_hash).
 #[test]
 fn test_file_hash_tracking() {
     use ledgerful::config::model::LocalModelConfig;
@@ -186,21 +187,52 @@ fn test_file_hash_tracking() {
     let path_a = "src/foo.rs";
     let hash_a = "abc123hash";
 
-    // Initially hash should not be current
-    assert!(!semantic.is_file_hash_current(path_a, hash_a));
+    // Initially no stored hash row
+    assert_eq!(
+        semantic.stored_file_hash(path_a).expect("hash lookup"),
+        None
+    );
+    assert!(
+        !semantic
+            .is_file_hash_current(path_a, hash_a)
+            .expect("hash lookup")
+    );
 
     // Record the hash
     semantic.record_file_hash(path_a, hash_a).unwrap();
 
-    // Now it should be current
-    assert!(semantic.is_file_hash_current(path_a, hash_a));
+    // Now it should be current, and the public lookup returns the stored value
+    assert_eq!(
+        semantic
+            .stored_file_hash(path_a)
+            .expect("hash lookup")
+            .as_deref(),
+        Some(hash_a)
+    );
+    assert!(
+        semantic
+            .is_file_hash_current(path_a, hash_a)
+            .expect("hash lookup")
+    );
 
     // A different hash for the same file should not be current
-    assert!(!semantic.is_file_hash_current(path_a, "different_hash"));
+    assert!(
+        !semantic
+            .is_file_hash_current(path_a, "different_hash")
+            .expect("hash lookup")
+    );
 
-    // A different file with the same hash should not be current
+    // A different file with the same hash has no stored row
     let path_b = "src/bar.rs";
-    assert!(!semantic.is_file_hash_current(path_b, hash_a));
+    assert_eq!(
+        semantic.stored_file_hash(path_b).expect("hash lookup"),
+        None
+    );
+    assert!(
+        !semantic
+            .is_file_hash_current(path_b, hash_a)
+            .expect("hash lookup")
+    );
 }
 
 /// Verify get_tracked_files and remove_file_hash helpers.
