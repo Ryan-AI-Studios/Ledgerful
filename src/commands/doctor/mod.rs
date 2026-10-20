@@ -22,7 +22,9 @@ pub use finding::{
 pub(crate) use finding::{
     is_action_critical, is_hygiene, is_observe_signing_later_code, split_doctor_warns,
 };
-pub(crate) use fix::{apply_doctor_fix, format_fix_plan_lines, plan_doctor_fix};
+pub(crate) use fix::{
+    annotate_config_write_refusal, apply_doctor_fix, format_fix_plan_lines, plan_doctor_fix,
+};
 pub use remediation::{
     ContentHashDriftInputs, GraphAgeInputs, GraphIndexHealth, SearchDocsClassification,
     build_graph_content_stale_finding, build_graph_drift_check_failed_finding,
@@ -188,8 +190,8 @@ pub fn execute_doctor(opts: DoctorRunOpts) -> Result<()> {
 
     let config = match crate::config::load::load_config(&layout) {
         Ok(c) => c,
-        Err(e) => {
-            tracing::debug!("doctor config load failed (continuing with defaults): {e}");
+        Err(_) => {
+            tracing::debug!("doctor config load failed (continuing with defaults)");
             crate::config::model::Config::default()
         }
     };
@@ -346,12 +348,11 @@ pub fn execute_doctor(opts: DoctorRunOpts) -> Result<()> {
                     .flatten()
             });
         let v1_count = count_entries_below_sig_version(storage.get_connection(), 2).ok();
-        Some(plan_doctor_fix(
-            &findings,
-            pub_hex.as_deref(),
-            v1_count,
-            dry_run,
-        ))
+        let mut plan = plan_doctor_fix(&findings, pub_hex.as_deref(), v1_count, dry_run);
+        // Classified before the dry-run / --yes branch so previews and applies
+        // share one precondition. Read-only: no config-action writes here.
+        annotate_config_write_refusal(&layout, &mut plan);
+        Some(plan)
     } else {
         None
     };

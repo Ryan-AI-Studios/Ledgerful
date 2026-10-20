@@ -265,6 +265,8 @@ pub struct DoctorArgs {
     pub apply_hook_refresh: bool,
     /// Pin observe-mode signing remediations (keys / min_sig_version / phantom ack).
     /// Never runs `ledger re-sign --all`. Conflicts with `--apply-hook-refresh`.
+    /// Pin, min-signature and ack writes require an existing regular project config;
+    /// a missing one is refused (dry-run JSON reports `fix.blocked`).
     #[arg(long, conflicts_with = "apply_hook_refresh", group = "fix_or_refresh")]
     pub fix: bool,
     /// Confirm `--fix` mutations (non-interactive). Requires `--fix`.
