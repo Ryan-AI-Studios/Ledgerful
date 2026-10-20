@@ -1,3 +1,4 @@
+use super::ChunkFailureOutcomesJson;
 use super::SemanticIndexJsonResult;
 use super::chunk_failures::*;
 use super::skip_warm_incremental_file;
@@ -489,23 +490,279 @@ fn second_drop_is_idempotent_and_file_is_reprocessed() {
     );
 }
 
-/// DoD-6: progress line.
+/// 0569 DoD-2: the progress line reports what cleanup actually did, per class,
+/// in a fixed order. No class carries a blanket retry promise.
 #[rstest]
-#[case::zero(0, None)]
-#[case::some(
-    2,
+#[case::zero(0, 0, 0, 0, None)]
+#[case::cleared_only(
+    1,
+    0,
+    0,
+    0,
+    Some("Semantic index: 1 file(s) failed to chunk: 1 cleared and retried on the next run.")
+)]
+#[case::cleanup_failed_only(
+    0,
+    1,
+    0,
+    0,
     Some(
-        "Semantic index: 2 file(s) failed to chunk and will be retried; stored hash and snippets cleared where the content changed."
+        "Semantic index: 1 file(s) failed to chunk: 1 cleanup failed and retried on the next run."
     )
 )]
-fn chunk_failure_progress_line_matrix(#[case] n: usize, #[case] want: Option<&str>) {
-    assert_eq!(chunk_failure_progress_line(n).as_deref(), want);
+#[case::kept_current_only(
+    0,
+    0,
+    1,
+    0,
+    Some("Semantic index: 1 file(s) failed to chunk: 1 kept because the content is unchanged.")
+)]
+#[case::lookup_unknown_only(
+    0,
+    0,
+    0,
+    1,
+    Some(
+        "Semantic index: 1 file(s) failed to chunk: 1 unchecked because the stored-hash lookup failed."
+    )
+)]
+#[case::four_class_matrix(
+    1,
+    1,
+    1,
+    1,
+    Some(
+        "Semantic index: 4 file(s) failed to chunk: 1 cleared and retried on the next run; 1 cleanup failed and retried on the next run; 1 kept because the content is unchanged; 1 unchecked because the stored-hash lookup failed."
+    )
+)]
+fn chunk_failure_progress_line_matrix(
+    #[case] cleared: usize,
+    #[case] failed: usize,
+    #[case] kept_current: usize,
+    #[case] lookup_unknown: usize,
+    #[case] want: Option<&str>,
+) {
+    let outcome = ChunkDropOutcome {
+        cleared,
+        kept_current,
+        failed,
+        lookup_unknown,
+    };
+    assert_eq!(chunk_failure_progress_line(&outcome).as_deref(), want);
 }
 
-/// DoD-6: JSON key set.
+/// 0569 DoD-1: `total()` is the arithmetic sum of the four disjoint classes.
+#[rstest]
+#[case::zero(0, 0, 0, 0)]
+#[case::cleared(1, 0, 0, 0)]
+#[case::failed(0, 1, 0, 0)]
+#[case::kept(0, 0, 1, 0)]
+#[case::unknown(0, 0, 0, 1)]
+#[case::four_class_matrix(1, 1, 1, 1)]
+#[case::asymmetric(2, 0, 3, 1)]
+fn chunk_failure_outcome_total_is_sum(
+    #[case] cleared: usize,
+    #[case] failed: usize,
+    #[case] kept_current: usize,
+    #[case] lookup_unknown: usize,
+) {
+    let outcome = ChunkDropOutcome {
+        cleared,
+        kept_current,
+        failed,
+        lookup_unknown,
+    };
+    assert_eq!(
+        outcome.total(),
+        cleared + failed + kept_current + lookup_unknown
+    );
+    assert_eq!(
+        outcome.total() == 0,
+        (cleared, failed, kept_current, lookup_unknown) == (0, 0, 0, 0)
+    );
+}
+
+/// 0569 DoD-1: the line is built from a **real** outcome produced by the 0553
+/// seam. This overlaps 0553's `mixed_batch_clears_only_mismatch_keeps_match_and_unknown`
+/// by design: 0553 proves the seam's counters, 0569 proves the consumer's line.
+/// The `failed` class is covered by `cleanup_failure_is_reported_and_hash_kept`.
+#[test]
+fn progress_line_reports_actual_mixed_outcome() {
+    let storage = CozoStorage::new_in_memory().expect("cozo");
+    let semantic = semantic_for(&storage);
+    seed(&semantic, "src/x.rs", OLD);
+    seed(&semantic, "src/y.rs", OLD);
+    seed(&semantic, "src/z.rs", OLD);
+
+    let old_hash = semantic_file_content_hash(OLD);
+    let new_hash = semantic_file_content_hash(NEW);
+    let failures = vec![
+        ChunkFailure {
+            key: "src/x.rs".to_string(),
+            content_hash: new_hash.clone(),
+        },
+        ChunkFailure {
+            key: "src/y.rs".to_string(),
+            content_hash: new_hash.clone(),
+        },
+        ChunkFailure {
+            key: "src/z.rs".to_string(),
+            content_hash: old_hash.clone(),
+        },
+    ];
+    let outcome = drop_failed_chunk_rows_with(&semantic, &failures, |key| match key {
+        "src/x.rs" => Err(miette::miette!("injected read failure")),
+        "src/y.rs" | "src/z.rs" => Ok(Some(old_hash.clone())),
+        other => panic!("unexpected key in mixed batch: {other}"),
+    });
+
+    assert_eq!(outcome.cleared, 1, "y: known mismatch clears");
+    assert_eq!(outcome.kept_current, 1, "z: matching hash keeps its rows");
+    assert_eq!(
+        outcome.lookup_unknown, 1,
+        "x: unknown lookup keeps its rows"
+    );
+    assert_eq!(outcome.failed, 0, "no removal was attempted for x or z");
+    assert_eq!(outcome.total(), failures.len());
+
+    assert_eq!(
+        chunk_failure_progress_line(&outcome).as_deref(),
+        Some(
+            "Semantic index: 3 file(s) failed to chunk: 1 cleared and retried on the next run; 1 kept because the content is unchanged; 1 unchecked because the stored-hash lookup failed."
+        )
+    );
+
+    // The counter and the store agree.
+    assert!(semantic.file_has_snippets("src/x.rs"));
+    assert_eq!(
+        semantic.stored_file_hash("src/x.rs").expect("x lookup"),
+        Some(old_hash.clone())
+    );
+    assert!(!semantic.file_has_snippets("src/y.rs"));
+    assert_eq!(
+        semantic.stored_file_hash("src/y.rs").expect("y lookup"),
+        None
+    );
+    assert!(semantic.file_has_snippets("src/z.rs"));
+    assert_eq!(
+        semantic.stored_file_hash("src/z.rs").expect("z lookup"),
+        Some(old_hash.clone())
+    );
+}
+
+/// 0569 DoD-2: a kept-current file with snippets **is skipped** by the next
+/// incremental run — the assertion the old "will be retried" wording contradicted.
+#[test]
+fn kept_current_file_is_skipped_by_incremental_run() {
+    let storage = CozoStorage::new_in_memory().expect("cozo");
+    let semantic = semantic_for(&storage);
+    seed(&semantic, "src/bad.rs", OLD);
+
+    let old_hash = semantic_file_content_hash(OLD);
+    let outcome = drop_failed_chunk_rows(
+        &semantic,
+        &[ChunkFailure {
+            key: "src/bad.rs".to_string(),
+            content_hash: old_hash.clone(),
+        }],
+    );
+    assert_eq!(outcome.kept_current, 1);
+    assert_eq!(outcome.cleared, 0);
+    assert_eq!(outcome.total(), 1);
+
+    assert!(skip_warm_incremental_file(
+        &semantic,
+        std::path::Path::new("src/bad.rs"),
+        OLD,
+        "src/bad.rs",
+        &old_hash
+    ));
+}
+
+/// 0569 DoD-2: the zero-snippet kept-current corner is **re-processed** because
+/// the real chunker produces chunks for `OLD` (the zero-chunk qualifier in the docs).
+#[test]
+fn kept_current_zero_snippets_is_retried() {
+    let storage = CozoStorage::new_in_memory().expect("cozo");
+    let semantic = semantic_for(&storage);
+    let old_hash = semantic_file_content_hash(OLD);
+    semantic
+        .record_file_hash("src/bad.rs", &old_hash)
+        .expect("record hash");
+
+    assert!(!semantic.file_has_snippets("src/bad.rs"));
+    assert!(
+        semantic
+            .is_file_hash_current("src/bad.rs", &old_hash)
+            .expect("hash lookup")
+    );
+    assert!(
+        !skip_warm_incremental_file(
+            &semantic,
+            std::path::Path::new("src/bad.rs"),
+            OLD,
+            "src/bad.rs",
+            &old_hash
+        ),
+        "hash-current but snippet-less and the chunker yields chunks => re-processed"
+    );
+}
+
+/// 0569 DoD-1: the cleanup-failure class on a real outcome. Removing the
+/// `snippet_embedding` relation makes `remove_file_snippets` error, so
+/// `clear_rows` returns `false` through the **public wrapper** (no injector).
+#[test]
+fn cleanup_failure_is_reported_and_hash_kept() {
+    let storage = CozoStorage::new_in_memory().expect("cozo");
+    let semantic = semantic_for(&storage);
+    seed(&semantic, "src/bad.rs", OLD);
+    storage
+        .run_script("::remove snippet_embedding")
+        .expect("remove snippets relation");
+
+    let old_hash = semantic_file_content_hash(OLD);
+    let outcome = drop_failed_chunk_rows(
+        &semantic,
+        &[ChunkFailure {
+            key: "src/bad.rs".to_string(),
+            content_hash: semantic_file_content_hash(NEW),
+        }],
+    );
+
+    assert_eq!(outcome.failed, 1, "the snippet removal errored");
+    assert_eq!(outcome.cleared, 0);
+    assert_eq!(outcome.kept_current, 0);
+    assert_eq!(outcome.lookup_unknown, 0);
+    assert_eq!(outcome.total(), 1);
+    assert_eq!(
+        chunk_failure_progress_line(&outcome).as_deref(),
+        Some(
+            "Semantic index: 1 file(s) failed to chunk: 1 cleanup failed and retried on the next run."
+        )
+    );
+    assert_eq!(
+        semantic
+            .stored_file_hash("src/bad.rs")
+            .expect("hash lookup"),
+        Some(old_hash),
+        "the hash is never removed alone, so the next incremental run reprocesses"
+    );
+    assert_eq!(
+        serde_json::to_value(ChunkFailureOutcomesJson::from_outcome(&outcome)).expect("json"),
+        serde_json::json!({
+            "cleared": 0,
+            "keptCurrent": 0,
+            "cleanupFailed": 1,
+            "lookupUnknown": 0
+        })
+    );
+}
+
+/// 0569 DoD-3: JSON key set. The breakdown is present iff the total is, and the
+/// four integers sum to `chunkFailedFiles` (which stays the total).
 #[rstest]
 #[case::zero(None, false)]
-#[case::some(Some(2), true)]
+#[case::some(Some(4), true)]
 fn json_chunk_failed_files_only_when_nonzero(#[case] n: Option<usize>, #[case] present: bool) {
     let result = SemanticIndexJsonResult {
         schema_version: 1,
@@ -518,6 +775,14 @@ fn json_chunk_failed_files_only_when_nonzero(#[case] n: Option<usize>, #[case] p
         up_to_date: false,
         hnsw_rebuilt: None,
         chunk_failed_files: n,
+        chunk_failure_outcomes: present.then(|| {
+            ChunkFailureOutcomesJson::from_outcome(&ChunkDropOutcome {
+                cleared: 1,
+                kept_current: 1,
+                failed: 1,
+                lookup_unknown: 1,
+            })
+        }),
     };
     let v: serde_json::Value = serde_json::to_value(&result).expect("json");
     let mut keys: Vec<&str> = v
@@ -538,10 +803,27 @@ fn json_chunk_failed_files_only_when_nonzero(#[case] n: Option<usize>, #[case] p
     ];
     if present {
         want.push("chunkFailedFiles");
+        want.push("chunkFailureOutcomes");
     }
     want.sort_unstable();
     assert_eq!(keys, want);
     if present {
-        assert_eq!(v["chunkFailedFiles"], 2);
+        assert_eq!(v["chunkFailedFiles"], 4);
+        assert_eq!(
+            v["chunkFailureOutcomes"],
+            serde_json::json!({
+                "cleared": 1,
+                "keptCurrent": 1,
+                "cleanupFailed": 1,
+                "lookupUnknown": 1
+            })
+        );
+        let sum = ["cleared", "keptCurrent", "cleanupFailed", "lookupUnknown"]
+            .iter()
+            .map(|k| v["chunkFailureOutcomes"][k].as_u64().expect("integer"))
+            .sum::<u64>();
+        assert_eq!(Some(sum as usize), n, "the four classes sum to the total");
+    } else {
+        assert!(v.get("chunkFailureOutcomes").is_none());
     }
 }

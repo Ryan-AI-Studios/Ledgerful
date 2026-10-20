@@ -159,14 +159,51 @@ pub(crate) fn lookup_unknown_notice(count: usize) -> Option<String> {
     ))
 }
 
-/// Human line for `failed` in-root chunk-error files; `None` at zero. States
-/// intent, not a completed mutation.
-pub(crate) fn chunk_failure_progress_line(failed: usize) -> Option<String> {
-    if failed == 0 {
+impl ChunkDropOutcome {
+    /// Total in-root chunk failures this run; the four classes are disjoint.
+    pub(crate) fn total(&self) -> usize {
+        self.cleared + self.kept_current + self.failed + self.lookup_unknown
+    }
+}
+
+/// Human line for the in-root chunk-error files; `None` at zero. Reports what
+/// cleanup actually did, per outcome class, in a fixed order. "Retried on the
+/// next run" means the file re-enters processing (no stored hash matches), not
+/// that the chunk error itself is resolved. Kept-current and unknown-lookup
+/// files get a fact, not a retry promise: a kept-current file is normally
+/// skipped by later incremental runs.
+pub(crate) fn chunk_failure_progress_line(outcome: &ChunkDropOutcome) -> Option<String> {
+    let total = outcome.total();
+    if total == 0 {
         return None;
     }
+    let mut parts = Vec::new();
+    if outcome.cleared > 0 {
+        parts.push(format!(
+            "{} cleared and retried on the next run",
+            outcome.cleared
+        ));
+    }
+    if outcome.failed > 0 {
+        parts.push(format!(
+            "{} cleanup failed and retried on the next run",
+            outcome.failed
+        ));
+    }
+    if outcome.kept_current > 0 {
+        parts.push(format!(
+            "{} kept because the content is unchanged",
+            outcome.kept_current
+        ));
+    }
+    if outcome.lookup_unknown > 0 {
+        parts.push(format!(
+            "{} unchecked because the stored-hash lookup failed",
+            outcome.lookup_unknown
+        ));
+    }
     Some(format!(
-        "Semantic index: {failed} file(s) failed to chunk and will be retried; \
-         stored hash and snippets cleared where the content changed."
+        "Semantic index: {total} file(s) failed to chunk: {}.",
+        parts.join("; ")
     ))
 }

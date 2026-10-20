@@ -15,7 +15,9 @@ use serde::Serialize;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
-use chunk_failures::{chunk_failure_progress_line, drop_failed_chunk_rows, failed_chunk_files};
+use chunk_failures::{
+    ChunkDropOutcome, chunk_failure_progress_line, drop_failed_chunk_rows, failed_chunk_files,
+};
 use progress::{embedding_done_progress_line, emit_semantic_progress};
 use stages::{embed_semantic_chunks, parse_semantic_files, persist_semantic_chunks};
 
@@ -81,6 +83,30 @@ pub(crate) struct SemanticIndexJsonResult {
     /// 0545: files that read but failed to chunk this run. Omitted at zero.
     #[serde(skip_serializing_if = "Option::is_none")]
     chunk_failed_files: Option<usize>,
+    /// 0569: breakdown of `chunk_failed_files`; omitted with it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chunk_failure_outcomes: Option<ChunkFailureOutcomesJson>,
+}
+
+/// 0569: per-outcome breakdown of `chunkFailedFiles`. Present iff the total is.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChunkFailureOutcomesJson {
+    cleared: usize,
+    kept_current: usize,
+    cleanup_failed: usize,
+    lookup_unknown: usize,
+}
+
+impl ChunkFailureOutcomesJson {
+    pub(crate) fn from_outcome(outcome: &ChunkDropOutcome) -> Self {
+        Self {
+            cleared: outcome.cleared,
+            kept_current: outcome.kept_current,
+            cleanup_failed: outcome.failed,
+            lookup_unknown: outcome.lookup_unknown,
+        }
+    }
 }
 
 fn emit_semantic_json(result: &SemanticIndexJsonResult) -> Result<()> {
@@ -275,6 +301,7 @@ pub(crate) fn execute_semantic_index(
                 up_to_date: true,
                 hnsw_rebuilt: None,
                 chunk_failed_files: None,
+                chunk_failure_outcomes: None,
             })?;
         }
         return Ok(());
@@ -361,16 +388,16 @@ pub(crate) fn execute_semantic_index(
 
     // 0545: clear rows of changed files that failed to chunk (never `Read` errors),
     // after the successful files are persisted and before their hashes are recorded.
+    // 0569: the progress line and JSON counts come from what cleanup actually did.
     let chunk_failures = failed_chunk_files(&parse_errors, repo_root);
-    let chunk_failed = chunk_failures.len();
-    if chunk_failed > 0 {
-        let dropped = drop_failed_chunk_rows(&semantic, &chunk_failures);
+    let dropped = drop_failed_chunk_rows(&semantic, &chunk_failures);
+    if dropped.total() > 0 {
         debug!(
             "Chunk-failure rows: cleared={}, kept_current={}, failed={}, lookup_unknown={}",
             dropped.cleared, dropped.kept_current, dropped.failed, dropped.lookup_unknown
         );
     }
-    if let Some(line) = chunk_failure_progress_line(chunk_failed) {
+    if let Some(line) = chunk_failure_progress_line(&dropped) {
         emit_semantic_progress(json, &line);
     }
 
@@ -398,11 +425,9 @@ pub(crate) fn execute_semantic_index(
             purged_foreign: if purged > 0 { Some(purged) } else { None },
             up_to_date: false,
             hnsw_rebuilt: if hnsw_rebuilt { Some(true) } else { None },
-            chunk_failed_files: if chunk_failed > 0 {
-                Some(chunk_failed)
-            } else {
-                None
-            },
+            chunk_failed_files: (dropped.total() > 0).then_some(dropped.total()),
+            chunk_failure_outcomes: (dropped.total() > 0)
+                .then(|| ChunkFailureOutcomesJson::from_outcome(&dropped)),
         })?;
     }
     Ok(())
