@@ -1,5 +1,6 @@
 pub mod checklist;
 pub mod defaults;
+pub(crate) mod floor;
 pub mod error;
 pub mod load;
 pub mod model;
