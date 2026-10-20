@@ -19,7 +19,10 @@ fn doctor_reports_system_health() {
         .expect("Failed to run git init");
 
     let (stdout, stderr, code) = run_cli_no_template(root, &home, &["doctor", "--json"], &[]);
-    assert_eq!(code, 0, "doctor must not block on a bare repo; stderr={stderr}");
+    assert_eq!(
+        code, 0,
+        "doctor must not block on a bare repo; stderr={stderr}"
+    );
     let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("pure JSON stdout");
     assert_eq!(v["schemaVersion"], 1);
     assert_eq!(v["readyForPublish"], true);
@@ -824,7 +827,7 @@ fn doctor_fix_yes_blocked_refuses_with_exit_one_and_no_writes() {
 }
 
 #[test]
-fn doctor_bare_fix_keeps_validation_error_and_exit_one() {
+fn user_template_secret_bare_fix_keeps_validation_error_and_exit_one() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     let home = root.join("home");
@@ -836,6 +839,72 @@ fn doctor_bare_fix_keeps_validation_error_and_exit_one() {
         stderr.contains("doctor --fix requires --yes or --dry-run"),
         "validation error retained: {stderr}"
     );
+}
+
+/// Compatibility control (0554): public `config set` keeps its current
+/// missing-project fallback. The template is synthetic and nonsecret. This pins
+/// current behavior pending 0554-opencode-M-2-public-materialization; it is not
+/// approval of copying credentials.
+#[test]
+fn user_template_secret_public_set_current_behavior_pending_followup() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    setup_git_repo(root);
+    fs::create_dir_all(root.join(".ledgerful")).unwrap();
+    let template = root.join("template.toml");
+    fs::write(&template, "[core]\nstrict = false\n").unwrap();
+    let template_str = template.to_string_lossy().to_string();
+
+    let (stdout, stderr, code) = run_cli_no_template(
+        root,
+        &home,
+        &["config", "set", "core.strict=true"],
+        &[("LEDGERFUL_DEFAULT_CONFIG", template_str.as_str())],
+    );
+    assert_eq!(code, 0, "public set succeeds; stdout={stdout} stderr={stderr}");
+    let written = fs::read_to_string(root.join(".ledgerful").join("config.toml")).unwrap();
+    assert!(written.contains("strict = true"), "set applied: {written}");
+}
+
+/// Determinism (0554): the same repo state and fixture produce identical
+/// config-* findings on two consecutive `doctor --json` runs.
+#[test]
+fn user_template_secret_findings_deterministic_twice() {
+    const SENTINEL: &str = "SENTINEL-0554-DETERMINISM-VALUE";
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    setup_git_repo(root);
+    fs::create_dir_all(root.join(".ledgerful")).unwrap();
+    fs::write(
+        root.join(".ledgerful").join("config.toml"),
+        format!("[gemini]\napi_key = \"{SENTINEL}\"\n"),
+    )
+    .unwrap();
+
+    let config_findings = || {
+        let (stdout, stderr, code) = run_cli_no_template(root, &home, &["doctor", "--json"], &[]);
+        assert_eq!(code, 0, "doctor runs; stderr={stderr}");
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("pure JSON stdout");
+        let found: Vec<serde_json::Value> = v["findings"]
+            .as_array()
+            .expect("findings array")
+            .iter()
+            .filter(|f| f["code"].as_str().unwrap_or("").starts_with("config-"))
+            .cloned()
+            .collect();
+        found
+    };
+    let first = config_findings();
+    let second = config_findings();
+    assert!(
+        first.iter().any(|f| f["code"] == "config-plaintext-secret"),
+        "fixture carries the finding: {first:?}"
+    );
+    assert_eq!(first, second, "config-* findings identical across runs");
 }
 
 /// Key-name boundary (0554): the legacy unknown-key message keeps the ignored
@@ -878,8 +947,14 @@ fn user_template_secret_unknown_key_name_contract() {
         )
     }) {
         let text = format!("{}{}", f["message"], f["remediation"]);
-        assert!(!text.contains(KEY_MARKER), "inspection finding leaked key name: {f}");
-        assert!(!text.contains(VALUE), "inspection finding leaked value: {f}");
+        assert!(
+            !text.contains(KEY_MARKER),
+            "inspection finding leaked key name: {f}"
+        );
+        assert!(
+            !text.contains(VALUE),
+            "inspection finding leaked value: {f}"
+        );
     }
     assert!(!stdout.contains(VALUE), "stdout leaked value");
     assert!(!stderr.contains(VALUE), "stderr leaked value");
@@ -914,8 +989,15 @@ fn user_template_secret_positive_risk_refused_no_materialization() {
         stderr.contains("Doctor config fixes require a readable regular project config"),
         "fixed refusal: {stderr}"
     );
-    assert!(!root.join(".ledgerful").join("config.toml").exists(), "no materialized config");
-    assert_eq!(fs::read_to_string(&template).unwrap(), original, "template unchanged");
+    assert!(
+        !root.join(".ledgerful").join("config.toml").exists(),
+        "no materialized config"
+    );
+    assert_eq!(
+        fs::read_to_string(&template).unwrap(),
+        original,
+        "template unchanged"
+    );
     assert!(!stdout.contains(SENTINEL), "stdout leaked sentinel");
     assert!(!stderr.contains(SENTINEL), "stderr leaked sentinel");
 }
@@ -930,13 +1012,23 @@ fn user_template_secret_existing_project_control_applies() {
     fs::create_dir_all(&home).unwrap();
     setup_git_repo(root);
     fs::create_dir_all(root.join(".ledgerful")).unwrap();
-    fs::write(root.join(".ledgerful").join("config.toml"), "[core]\nstrict = false\n").unwrap();
+    fs::write(
+        root.join(".ledgerful").join("config.toml"),
+        "[core]\nstrict = false\n",
+    )
+    .unwrap();
 
     let (stdout, stderr, code) =
         run_cli_no_template(root, &home, &["doctor", "--json", "--fix", "--yes"], &[]);
-    assert_eq!(code, 0, "existing-project apply succeeds; stdout={stdout} stderr={stderr}");
+    assert_eq!(
+        code, 0,
+        "existing-project apply succeeds; stdout={stdout} stderr={stderr}"
+    );
     let written = fs::read_to_string(root.join(".ledgerful").join("config.toml")).unwrap();
-    assert!(written.contains("min_sig_version = 2"), "bump applied: {written}");
+    assert!(
+        written.contains("min_sig_version = 2"),
+        "bump applied: {written}"
+    );
 }
 
 /// No-action control: a trusted key and min_sig_version=2 leave an empty plan,
@@ -966,8 +1058,14 @@ fn user_template_secret_no_action_control_creates_no_config() {
         &["doctor", "--json", "--fix", "--yes"],
         &[("LEDGERFUL_DEFAULT_CONFIG", template_str.as_str())],
     );
-    assert_eq!(code, 0, "empty plan succeeds; stdout={stdout} stderr={stderr}");
-    assert!(!root.join(".ledgerful").join("config.toml").exists(), "no config created");
+    assert_eq!(
+        code, 0,
+        "empty plan succeeds; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        !root.join(".ledgerful").join("config.toml").exists(),
+        "no config created"
+    );
 }
 
 /// Human `-v` debug oracle (0554): the fixed marker proves the load-failure

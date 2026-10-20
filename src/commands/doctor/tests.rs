@@ -788,6 +788,37 @@ fn write_doctor_results_block_before_warn_under_reverse_alpha_codes() {
 }
 
 #[test]
+fn user_template_secret_sidecar_six_warnings_displace_deterministically() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = Utf8Path::from_path(tmp.path()).expect("utf8 path");
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().expect("ensure_state_dir");
+
+    // Six actionable warns, input reversed, plus one optional warn that is excluded.
+    // Sort by code, then take(5): w-06 is displaced deterministically.
+    let findings = vec![
+        DoctorFinding::warn("w-06", DoctorCategory::Index, "sixth"),
+        DoctorFinding::warn("w-05", DoctorCategory::Index, "fifth"),
+        DoctorFinding::warn("w-04", DoctorCategory::Index, "fourth"),
+        DoctorFinding::warn("opt-warn", DoctorCategory::Optional, "optional excluded"),
+        DoctorFinding::warn("w-03", DoctorCategory::Index, "third"),
+        DoctorFinding::warn("w-02", DoctorCategory::Index, "second"),
+        DoctorFinding::warn("w-01", DoctorCategory::Index, "first"),
+    ];
+    write_doctor_results(&layout, &findings).expect("write");
+    let path = layout.state_subdir().join("doctor-results.json");
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path.as_std_path()).unwrap()).unwrap();
+    let codes: Vec<&str> = json["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .map(|f| f["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes, ["w-01", "w-02", "w-03", "w-04", "w-05"]);
+}
+
+#[test]
 fn write_doctor_results_remediation_round_trip() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = Utf8Path::from_path(tmp.path()).expect("utf8 path");

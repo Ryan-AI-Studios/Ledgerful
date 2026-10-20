@@ -1166,10 +1166,17 @@ mod tests {
                 .env_remove("OLLAMA_API_KEY")
                 .env("USERPROFILE", &home)
                 .env("HOME", &home)
-                .env("LEDGERFUL_DEFAULT_CONFIG", home.join("missing-template.toml"))
+                .env(
+                    "LEDGERFUL_DEFAULT_CONFIG",
+                    home.join("missing-template.toml"),
+                )
                 .output()
                 .expect("run doctor for sidecar fixture");
-            assert!(doctor.status.success(), "{}", String::from_utf8_lossy(&doctor.stderr));
+            assert!(
+                doctor.status.success(),
+                "{}",
+                String::from_utf8_lossy(&doctor.stderr)
+            );
             let sidecar = std::fs::read_to_string(
                 tmp.path()
                     .join(".ledgerful")
@@ -1181,14 +1188,23 @@ mod tests {
                 sidecar.contains("config-plaintext-secret"),
                 "fixture must carry the finding: {sidecar}"
             );
-            assert!(!sidecar.contains(SENTINEL), "sidecar must not carry the value");
+            assert!(
+                !sidecar.contains(SENTINEL),
+                "sidecar must not carry the value"
+            );
 
             let mut session = spawn_session(tmp.path());
             session.initialize();
             let result = session.call_tool("change_context", json!({}));
-            assert!(result.get("isError").is_none(), "change_context must succeed: {result}");
+            assert!(
+                result.get("isError").is_none(),
+                "change_context must succeed: {result}"
+            );
             let text = serde_json::to_string(&result).expect("serialize response");
-            assert!(!text.contains(SENTINEL), "change_context leaked the value: {text}");
+            assert!(
+                !text.contains(SENTINEL),
+                "change_context leaked the value: {text}"
+            );
         }
 
         #[test]
