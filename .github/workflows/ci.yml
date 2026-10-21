@@ -84,15 +84,21 @@ jobs:
               *) return 1 ;;
             esac
           }
-          docs_only=1
-          while IFS= read -r path; do
-            if ! is_cheap "$path" || is_exception "$path"; then
-              docs_only=0
-              break
+          # 0576: a renamed entry whose previous_filename is missing, null, empty,
+          # or not a string never reaches the cheap check or the rust=false write.
+          if printf '%s\n' "$files" | jq -e 'any(.[]; .status == "renamed" and ((.previous_filename | type) != "string" or .previous_filename == ""))' >/dev/null; then
+            :
+          else
+            docs_only=1
+            while IFS= read -r path; do
+              if ! is_cheap "$path" || is_exception "$path"; then
+                docs_only=0
+                break
+              fi
+            done < <(printf '%s\n' "$files" | jq -r '.[] | .filename, (.previous_filename // empty)')
+            if [ "$docs_only" -eq 1 ]; then
+              echo "rust=false" >> "$GITHUB_OUTPUT"
             fi
-          done < <(printf '%s\n' "$files" | jq -r '.[].filename')
-          if [ "$docs_only" -eq 1 ]; then
-            echo "rust=false" >> "$GITHUB_OUTPUT"
           fi
 
   web-build:
