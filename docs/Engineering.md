@@ -410,9 +410,9 @@ to separate fast PR feedback from heavy/nightly validation.
 
 | Tier | Profile | What it runs | Target | When |
 |---|---|---|---|---|
-| 1 | `default` | Fast unit + integration tests, excludes `__slow` tests | `<60s` wall | Every PR, local dev |
-| 2 | `ci` | Same as `default`, with retries (`count=2`) and 60s slow-timeout | `<60s` wall | CI / pre-push gate |
-| 3 | `slow` | Only tests whose name ends in `__slow`; 300s slow-timeout | nightly | On-demand / nightly / pre-release |
+| 1 | `default` | Fast unit + integration tests, excludes `__slow` tests | local loop | Local dev |
+| 2 | `ci` | Same as `default`, retries `count=0` (the child value replaces the parent), 60s slow-timeout | PR gate | CI pull requests and the pre-push gate |
+| 3 | `slow` | Only tests whose name ends in `__slow`; own retries `count=2`; 300s slow-timeout | nightly | On-demand / nightly / pre-release |
 | 4 | doctests | `cargo test --workspace --all-features --doc` | seconds | Every PR |
 
 Note: compile-fail tier removed in 0067; `--profile compile-fail` no longer exists.
@@ -425,7 +425,7 @@ without special flags and tier selection lives entirely in `nextest.toml`.
 
 **Important:** tracks that rename tests (for example TA7) must preserve an
 existing `__slow` suffix. If a slow test is renamed and the suffix is dropped,
-it silently re-enters the fast tier and breaks the `<60s` PR target.
+it silently re-enters profile `ci`, which is the PR gate. The merge wait is the `test (windows-latest)` job, not a 60-second wall clock.
 
 ### Test hermeticity
 
@@ -443,10 +443,11 @@ instead of shelling out to `tar`, whose entry order follows the file system.
 # Fast PR loop (excludes slow)
 cargo nextest run --workspace --all-features --profile default
 
-# CI gate (retries, 60s timeout)
+# CI / PR gate (retries count=0, 60s timeout). Profile `ci` is the PR gate;
+# the merge wait is `test (windows-latest)`, not a fixed wall-clock budget.
 cargo nextest run --workspace --all-features --profile ci
 
-# Slow tier only (13 tests marked __slow)
+# Slow tier only (115 tests whose names end in __slow; `rg "fn .*__slow"`)
 cargo nextest run --workspace --all-features --profile slow
 
 # Doctests (nextest cannot run doctests on stable)

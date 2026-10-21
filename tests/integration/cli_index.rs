@@ -524,7 +524,8 @@ fn count_structural_edges(root: &Utf8Path) -> i64 {
 
 /// DoD-2(a): `--full --analyze-graph` must store one builder pass, not 2×.
 #[test]
-fn analyze_graph_does_not_double_native_structural_edges() {
+#[allow(non_snake_case)]
+fn analyze_graph_does_not_double_native_structural_edges__slow() {
     let tmp_plain = tempdir().unwrap();
     let root_plain = Utf8Path::from_path(tmp_plain.path()).unwrap();
     setup_call_fixture(root_plain);
@@ -560,7 +561,8 @@ fn analyze_graph_does_not_double_native_structural_edges() {
 
 /// DoD-2(b): `--full` then `--incremental` twice with no edits must not stack.
 #[test]
-fn repeat_incremental_does_not_stack_native_structural_edges() {
+#[allow(non_snake_case)]
+fn repeat_incremental_does_not_stack_native_structural_edges__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_call_fixture(root);
@@ -599,7 +601,8 @@ fn repeat_incremental_does_not_stack_native_structural_edges() {
 
 /// DoD-1: `index --full --analyze-graph` emits exactly one CG complete line.
 #[test]
-fn analyze_graph_emits_one_call_graph_build_complete() {
+#[allow(non_snake_case)]
+fn analyze_graph_emits_one_call_graph_build_complete__slow() {
     use std::sync::{Arc, Mutex};
     use tracing_subscriber::fmt::MakeWriter;
 
@@ -654,7 +657,8 @@ fn analyze_graph_emits_one_call_graph_build_complete() {
 
 /// DoD-5: `--analyze-graph --export-docs` must not claim KG unavailable when Cozo is up.
 #[test]
-fn analyze_graph_export_docs_does_not_report_kg_unavailable() {
+#[allow(non_snake_case)]
+fn analyze_graph_export_docs_does_not_report_kg_unavailable__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_call_fixture(root);

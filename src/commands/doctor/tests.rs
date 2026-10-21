@@ -1290,7 +1290,8 @@ fn test_probe_with_retry_semantic_fail_no_retry() {
 /// DoD-5 / 0143 B1: hung probe must surface Unreachable via hard deadline
 /// without waiting for the full sleep (join-first would block ~1s).
 #[test]
-fn test_probe_with_retry_hang_hard_deadline() {
+#[allow(non_snake_case)]
+fn test_probe_with_retry_hang_hard_deadline__slow() {
     let budget = std::time::Duration::from_millis(30);
     let delay = std::time::Duration::from_millis(1);
     let deadline = std::time::Duration::from_millis(50);

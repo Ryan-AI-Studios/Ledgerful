@@ -31,7 +31,8 @@ fn setup_repo(root: &Utf8PathBuf) {
 }
 
 #[test]
-fn test_incremental_graph_consistency() {
+#[allow(non_snake_case)]
+fn test_incremental_graph_consistency__slow() {
     let tmp = tempfile::tempdir().unwrap();
     let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
     setup_repo(&root);

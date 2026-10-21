@@ -214,7 +214,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_initialize_round_trip() {
+    fn initialize_handle_request_round_trip() {
         let req = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             method: "initialize".to_string(),

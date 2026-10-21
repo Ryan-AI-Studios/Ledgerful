@@ -7,7 +7,7 @@
 #
 # Tiers:
 #   default      fast unit + integration tests, PR loop
-#   ci           default + retries, CI/PR gate
+#   ci           default with retries count 0, CI/PR gate
 #   slow         heavy integration tests, nightly / on-demand
 #   doctests     `cargo test --doc` (nextest doesn't run doctests on stable)
 
@@ -24,11 +24,15 @@ default-filter = 'not (test(/__slow$/))'
 inherits = "default"
 fail-fast = false
 slow-timeout = "60s"
-retries = { count = 2, backoff = "fixed", delay = "1s" }
+# 0573: the PR profile does not retry a hang. nextest 0.9.146 resolves
+# `retries` on the selected profile before the inheritance chain, so the
+# child value below replaces this 0.
+retries = { count = 0, backoff = "fixed", delay = "1s" }
 
 [profile.slow]
 inherits = "ci"
 slow-timeout = "300s"
+retries = { count = 2, backoff = "fixed", delay = "1s" }
 # Only tests whose name ends in `__slow`.
 default-filter = 'test(/__slow$/)'
 

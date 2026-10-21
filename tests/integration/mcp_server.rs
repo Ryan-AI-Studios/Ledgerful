@@ -113,7 +113,8 @@ mod tests {
     }
 
     #[test]
-    fn test_initialize_round_trip() {
+    #[allow(non_snake_case)]
+    fn test_initialize_round_trip__slow() {
         let bin_path = get_mcp_binary();
 
         let mut child = Command::new(bin_path)
@@ -179,7 +180,8 @@ mod tests {
     }
 
     #[test]
-    fn test_search_round_trip_and_no_stdout_pollution() {
+    #[allow(non_snake_case)]
+    fn test_search_round_trip_and_no_stdout_pollution__slow() {
         let tmp = hermetic_mcp_search_fixture();
         let mut child = spawn_mcp_in_tempdir(&tmp);
 
@@ -245,7 +247,8 @@ mod tests {
     }
 
     #[test]
-    fn test_tools_call_standalone() {
+    #[allow(non_snake_case)]
+    fn test_tools_call_standalone__slow() {
         let tmp = hermetic_mcp_search_fixture();
         let mut child = spawn_mcp_in_tempdir(&tmp);
 
@@ -306,7 +309,8 @@ mod tests {
     }
 
     #[test]
-    fn test_ping_round_trip() {
+    #[allow(non_snake_case)]
+    fn test_ping_round_trip__slow() {
         let bin_path = get_mcp_binary();
 
         let mut child = Command::new(bin_path)
@@ -362,7 +366,8 @@ mod tests {
     }
 
     #[test]
-    fn test_malformed_json() {
+    #[allow(non_snake_case)]
+    fn test_malformed_json__slow() {
         let bin_path = get_mcp_binary();
 
         let mut child = Command::new(bin_path)
@@ -411,7 +416,8 @@ mod tests {
     }
 
     #[test]
-    fn test_rejects_oversized_content_length() {
+    #[allow(non_snake_case)]
+    fn test_rejects_oversized_content_length__slow() {
         let bin_path = get_mcp_binary();
 
         let mut child = Command::new(bin_path)
@@ -467,7 +473,8 @@ mod tests {
     }
 
     #[test]
-    fn test_exits_cleanly_after_trailing_newline_at_eof() {
+    #[allow(non_snake_case)]
+    fn test_exits_cleanly_after_trailing_newline_at_eof__slow() {
         let bin_path = get_mcp_binary();
 
         let mut child = Command::new(bin_path)
@@ -539,7 +546,8 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_no_repo() {
+    #[allow(non_snake_case)]
+    fn test_scan_no_repo__slow() {
         // Create an empty temp directory WITH NO REPO STATE
         let tmp = tempdir().unwrap();
         let _root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -962,7 +970,8 @@ mod tests {
         }
 
         #[test]
-        fn test_structured_search_parity_and_repeatability() {
+        #[allow(non_snake_case)]
+        fn test_structured_search_parity_and_repeatability__slow() {
             let tmp = repaired_fixture();
             let mut session = spawn_session(tmp.path());
             session.initialize();
@@ -995,7 +1004,8 @@ mod tests {
         }
 
         #[test]
-        fn test_structured_search_payload_is_visible_and_sanitized() {
+        #[allow(non_snake_case)]
+        fn test_structured_search_payload_is_visible_and_sanitized__slow() {
             let tmp = repaired_fixture();
             let mut session = spawn_session(tmp.path());
             session.initialize();
@@ -1045,7 +1055,8 @@ mod tests {
         }
 
         #[test]
-        fn test_structured_search_no_match_is_empty() {
+        #[allow(non_snake_case)]
+        fn test_structured_search_no_match_is_empty__slow() {
             let tmp = repaired_fixture();
             let mut session = spawn_session(tmp.path());
             session.initialize();
@@ -1061,7 +1072,8 @@ mod tests {
         }
 
         #[test]
-        fn test_structured_search_parenthesized_query_echo_is_sanitized() {
+        #[allow(non_snake_case)]
+        fn test_structured_search_parenthesized_query_echo_is_sanitized__slow() {
             let tmp = repaired_fixture();
             let mut session = spawn_session(tmp.path());
             session.initialize();
@@ -1076,7 +1088,8 @@ mod tests {
         }
 
         #[test]
-        fn test_structured_search_child_failure_is_error() {
+        #[allow(non_snake_case)]
+        fn test_structured_search_child_failure_is_error__slow() {
             let tmp = repaired_fixture();
             let mut session = spawn_session(tmp.path());
             session.initialize();
@@ -1101,7 +1114,8 @@ mod tests {
         }
 
         #[test]
-        fn test_structured_scan_endpoints_security_dispatch() {
+        #[allow(non_snake_case)]
+        fn test_structured_scan_endpoints_security_dispatch__slow() {
             let tmp = repaired_fixture();
             let mut session = spawn_session(tmp.path());
             session.initialize();
@@ -1143,7 +1157,8 @@ mod tests {
         /// 0554: a framed `change_context` call over a fixture whose doctor sidecar
         /// carries a plaintext-key finding must never echo the credential value.
         #[test]
-        fn user_template_secret_mcp_change_context_sentinel_free() {
+        #[allow(non_snake_case)]
+        fn user_template_secret_mcp_change_context_sentinel_free__slow() {
             const SENTINEL: &str = "SENTINEL-0554-MCP-VALUE";
             let tmp = repaired_fixture();
             let home = tmp.path().join("home");
@@ -1211,7 +1226,8 @@ mod tests {
         /// override template whose FILENAME carries an attribution sentinel and
         /// whose body carries a credential. Neither may reach change_context.
         #[test]
-        fn user_template_secret_mcp_change_context_override_attribution_free() {
+        #[allow(non_snake_case)]
+        fn user_template_secret_mcp_change_context_override_attribution_free__slow() {
             const ATTR: &str = "MCP-ATTR-SENTINEL-0554";
             const CRED: &str = "MCP-CRED-SENTINEL-0554";
             let tmp = repaired_fixture();
@@ -1271,7 +1287,8 @@ mod tests {
         }
 
         #[test]
-        fn test_silent_child_times_out_and_is_reaped_within_bound() {
+        #[allow(non_snake_case)]
+        fn test_silent_child_times_out_and_is_reaped_within_bound__slow() {
             let tmp = tempdir().expect("tempdir");
             let reaped = Arc::new(AtomicBool::new(false));
             let started = Instant::now();
@@ -1297,7 +1314,8 @@ mod tests {
         }
 
         #[test]
-        fn test_session_panic_still_reaps_child() {
+        #[allow(non_snake_case)]
+        fn test_session_panic_still_reaps_child__slow() {
             let tmp = tempdir().expect("tempdir");
             let reaped = Arc::new(AtomicBool::new(false));
             let caught = std::panic::catch_unwind(AssertUnwindSafe(|| {

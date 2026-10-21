@@ -120,7 +120,8 @@ fn mock_embed_batch(server: &MockServer, n: usize) -> httpmock::Mock<'_> {
 /// B7-1: non-TTY progress smoke (cold full run over tiny fixture).
 #[test]
 #[serial(test)]
-fn test_index_semantic_non_tty_progress_smoke() {
+#[allow(non_snake_case)]
+fn test_index_semantic_non_tty_progress_smoke__slow() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     hermetic_repo(root);
@@ -165,7 +166,8 @@ fn test_index_semantic_non_tty_progress_smoke() {
 /// B7-2: warm second run with no content changes → up-to-date incremental.
 #[test]
 #[serial(test)]
-fn test_index_semantic_up_to_date_warm_second_run() {
+#[allow(non_snake_case)]
+fn test_index_semantic_up_to_date_warm_second_run__slow() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     hermetic_repo(root);
@@ -207,7 +209,8 @@ fn test_index_semantic_up_to_date_warm_second_run() {
 /// B7-3: edit one source file → only the delta is reprocessed.
 #[test]
 #[serial(test)]
-fn test_index_semantic_incremental_delta() {
+#[allow(non_snake_case)]
+fn test_index_semantic_incremental_delta__slow() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     hermetic_repo(root);
@@ -286,7 +289,8 @@ fn test_index_semantic_incremental_delta() {
 /// B7-4: `--json` emits a pure single JSON object (no human mode prefixes).
 #[test]
 #[serial(test)]
-fn test_index_semantic_json_purity() {
+#[allow(non_snake_case)]
+fn test_index_semantic_json_purity__slow() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     hermetic_repo(root);

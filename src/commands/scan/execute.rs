@@ -312,7 +312,7 @@ pub fn execute_scan_with_opts(
     }
 
     // open_repo first so no-repo errors keep the stable discover message
-    // (MCP test_scan_no_repo / CLI). Then layout.root for repo-root path
+    // (MCP test_scan_no_repo__slow / CLI). Then layout.root for repo-root path
     // resolution when invoked from a subdirectory.
     let repo = open_repo(&current_dir)?;
     let (head_hash, branch_name) = get_head_info(&repo)?;

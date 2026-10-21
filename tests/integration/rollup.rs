@@ -711,7 +711,8 @@ fn no_repos_prints_empty_message_and_exits_zero() {
 
 #[test]
 #[serial(env, cwd)]
-fn cache_older_than_staleness_secs_triggers_rewalk() {
+#[allow(non_snake_case)]
+fn cache_older_than_staleness_secs_triggers_rewalk__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let home = tmp.path().join("home");
