@@ -925,7 +925,7 @@ fn rust_toolchain_toml_pins_the_pr_path_channel() {
     let windows = include_str!("../../.github/workflows/windows-path-tests.yml");
     let release = include_str!("../../.github/workflows/release.yml");
     let smoke = include_str!("../../.github/workflows/smoke.yml");
-    assert_eq!(trimmed_line_count(ci, &needle), 8, "{needle} in ci.yml");
+    assert_eq!(trimmed_line_count(ci, &needle), 9, "{needle} in ci.yml");
     assert_eq!(
         trimmed_line_count(security, &needle),
         2,

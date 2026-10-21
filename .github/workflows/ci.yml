@@ -144,13 +144,37 @@ jobs:
 
   clippy:
     needs: changes
-    if: ${{ matrix.os != 'windows-latest' || github.event_name != 'pull_request' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
+      # GitHub rejects `matrix` in a job-level `if` ("Unrecognized named-value: matrix"),
+      # so Windows clippy is the separate job below. fail-fast stays false.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest]
+    steps:
+      - name: Docs-only suite skip
+        if: needs.changes.outputs.rust != 'true'
+        shell: bash
+        run: echo "Suite skipped as docs-only; this required check succeeded without compiling." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.rust == 'true'
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+        if: needs.changes.outputs.rust == 'true'
+        with:
+          toolchain: 1.98.1
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: needs.changes.outputs.rust == 'true'
+      - name: cargo clippy
+        if: needs.changes.outputs.rust == 'true'
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  clippy-windows:
+    needs: changes
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - name: Docs-only suite skip
         if: needs.changes.outputs.rust != 'true'
