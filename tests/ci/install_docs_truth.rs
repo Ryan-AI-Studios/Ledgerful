@@ -1639,6 +1639,9 @@ fn advisory_selected<W: Copy>(
 // so a skipped `build` skips the gate, a non-skipped gate implies a successful build, and a
 // `failure`/`cancelled` outcome can only exist when the matching status function is true.
 fn advisory_search_perf_reachable(ctx: &AdvisoryCtx) -> bool {
+    if ctx.failure && ctx.cancelled {
+        return false;
+    }
     if ctx.build == StepOutcome::Skipped && ctx.gate != StepOutcome::Skipped {
         return false;
     }
@@ -1674,9 +1677,12 @@ fn advisory_search_perf_reachable(ctx: &AdvisoryCtx) -> bool {
     true
 }
 
-// The mutation job has one outcome-bearing step, so its 16 tuples are 10 reachable rows plus
-// 6 unreachable ones.
+// The mutation job has one outcome-bearing step, so its 16 tuples are 7 reachable rows plus
+// 9 unreachable ones. `failure && cancelled` is unreachable: both functions read one job status.
 fn advisory_mutation_reachable(ctx: &AdvisoryCtx) -> bool {
+    if ctx.failure && ctx.cancelled {
+        return false;
+    }
     if ctx.mutants == StepOutcome::Skipped && !(ctx.failure || ctx.cancelled) {
         return false;
     }
@@ -1730,22 +1736,18 @@ fn advisory_mutation_states() -> Vec<AdvisoryCtx> {
     states
 }
 
-/// The 13 sequentially reachable `search-perf` traces, written out (never derived from the
+/// The 9 sequentially reachable `search-perf` traces, written out (never derived from the
 /// predicate) so the predicate can neither widen nor narrow silently.
 fn advisory_search_perf_pinned_reachable() -> Vec<AdvisoryCtx> {
-    let rows: [(bool, bool, StepOutcome, StepOutcome); 13] = [
+    let rows: [(bool, bool, StepOutcome, StepOutcome); 9] = [
         (true, false, StepOutcome::Skipped, StepOutcome::Skipped),
-        (true, true, StepOutcome::Skipped, StepOutcome::Skipped),
         (false, true, StepOutcome::Skipped, StepOutcome::Skipped),
         (true, false, StepOutcome::Failure, StepOutcome::Skipped),
-        (true, true, StepOutcome::Failure, StepOutcome::Skipped),
         (false, true, StepOutcome::Cancelled, StepOutcome::Skipped),
         (true, false, StepOutcome::Success, StepOutcome::Failure),
-        (true, true, StepOutcome::Success, StepOutcome::Failure),
         (false, true, StepOutcome::Success, StepOutcome::Cancelled),
         (false, false, StepOutcome::Success, StepOutcome::Success),
         (true, false, StepOutcome::Success, StepOutcome::Success),
-        (true, true, StepOutcome::Success, StepOutcome::Success),
         (false, true, StepOutcome::Success, StepOutcome::Success),
     ];
     rows.into_iter()
@@ -1759,9 +1761,9 @@ fn advisory_search_perf_pinned_reachable() -> Vec<AdvisoryCtx> {
         .collect()
 }
 
-/// The 10 sequentially reachable mutation traces.
+/// The 7 sequentially reachable mutation traces.
 fn advisory_mutation_pinned_reachable() -> Vec<AdvisoryCtx> {
-    let rows: [(bool, bool, StepOutcome); 10] = [
+    let rows: [(bool, bool, StepOutcome); 7] = [
         (false, false, StepOutcome::Success),
         (true, false, StepOutcome::Success),
         (true, false, StepOutcome::Failure),
@@ -1769,9 +1771,6 @@ fn advisory_mutation_pinned_reachable() -> Vec<AdvisoryCtx> {
         (false, true, StepOutcome::Success),
         (false, true, StepOutcome::Skipped),
         (false, true, StepOutcome::Cancelled),
-        (true, true, StepOutcome::Success),
-        (true, true, StepOutcome::Failure),
-        (true, true, StepOutcome::Skipped),
     ];
     rows.into_iter()
         .map(|(failure, cancelled, mutants)| AdvisoryCtx {
@@ -1788,20 +1787,20 @@ fn advisory_mutation_pinned_reachable() -> Vec<AdvisoryCtx> {
 /// independent `match`; it never calls `advisory_eval`.
 fn advisory_search_perf_expected(ctx: &AdvisoryCtx) -> Vec<SearchPerfWarning> {
     match (ctx.build, ctx.gate, ctx.failure, ctx.cancelled) {
-        (StepOutcome::Skipped, StepOutcome::Skipped, true, _) => vec![SearchPerfWarning::Setup],
+        (StepOutcome::Skipped, StepOutcome::Skipped, true, false) => vec![SearchPerfWarning::Setup],
         (StepOutcome::Skipped, StepOutcome::Skipped, false, true) => {
             vec![SearchPerfWarning::Cancelled]
         }
-        (StepOutcome::Failure, StepOutcome::Skipped, true, _) => vec![SearchPerfWarning::Build],
+        (StepOutcome::Failure, StepOutcome::Skipped, true, false) => vec![SearchPerfWarning::Build],
         (StepOutcome::Cancelled, StepOutcome::Skipped, false, true) => {
             vec![SearchPerfWarning::Cancelled]
         }
-        (StepOutcome::Success, StepOutcome::Failure, true, _) => vec![SearchPerfWarning::Gate],
+        (StepOutcome::Success, StepOutcome::Failure, true, false) => vec![SearchPerfWarning::Gate],
         (StepOutcome::Success, StepOutcome::Cancelled, false, true) => {
             vec![SearchPerfWarning::Cancelled]
         }
         (StepOutcome::Success, StepOutcome::Success, false, false) => Vec::new(),
-        (StepOutcome::Success, StepOutcome::Success, true, _) => Vec::new(),
+        (StepOutcome::Success, StepOutcome::Success, true, false) => Vec::new(),
         (StepOutcome::Success, StepOutcome::Success, false, true) => {
             vec![SearchPerfWarning::Cancelled]
         }
@@ -1812,12 +1811,12 @@ fn advisory_search_perf_expected(ctx: &AdvisoryCtx) -> Vec<SearchPerfWarning> {
 /// The expected selection per reachable mutation trace (spec §3.4 table).
 fn advisory_mutation_expected(ctx: &AdvisoryCtx) -> Vec<MutationWarning> {
     match (ctx.mutants, ctx.failure, ctx.cancelled) {
-        (StepOutcome::Skipped, true, _) => vec![MutationWarning::Setup],
+        (StepOutcome::Skipped, true, false) => vec![MutationWarning::Setup],
         (StepOutcome::Skipped, false, true) => vec![MutationWarning::Cancelled],
-        (StepOutcome::Failure, true, _) => vec![MutationWarning::Run],
+        (StepOutcome::Failure, true, false) => vec![MutationWarning::Run],
         (StepOutcome::Cancelled, false, true) => vec![MutationWarning::Cancelled],
         (StepOutcome::Success, false, false) => Vec::new(),
-        (StepOutcome::Success, true, _) => Vec::new(),
+        (StepOutcome::Success, true, false) => Vec::new(),
         (StepOutcome::Success, false, true) => vec![MutationWarning::Cancelled],
         other => panic!("unmapped reachable mutation state {other:?}"),
     }
@@ -2084,12 +2083,12 @@ fn advisory_warning_conditions_partition_the_failure_states() {
     search_pinned.sort_unstable();
     assert_eq!(
         search_reachable, search_pinned,
-        "the reachability predicate and the pinned 13 search-perf states disagree"
+        "the reachability predicate and the pinned 9 search-perf states disagree"
     );
     assert_eq!(
         search_states.len() - search_reachable.len(),
-        51,
-        "the 51 unreachable search-perf tuples stay classified, not asserted away"
+        55,
+        "the 55 unreachable search-perf tuples stay classified, not asserted away"
     );
 
     let mutation_states = advisory_mutation_states();
@@ -2104,12 +2103,12 @@ fn advisory_warning_conditions_partition_the_failure_states() {
     mutation_pinned.sort_unstable();
     assert_eq!(
         mutation_reachable, mutation_pinned,
-        "the reachability predicate and the pinned 10 mutation states disagree"
+        "the reachability predicate and the pinned 7 mutation states disagree"
     );
     assert_eq!(
         mutation_states.len() - mutation_reachable.len(),
-        6,
-        "the 6 unreachable mutation tuples stay classified, not asserted away"
+        9,
+        "the 9 unreachable mutation tuples stay classified, not asserted away"
     );
 
     // 3. Total mapping: every reachable state selects exactly its expected set, and every
@@ -2137,8 +2136,8 @@ fn advisory_warning_conditions_partition_the_failure_states() {
         }
     }
     assert_eq!(
-        search_warned, 10,
-        "10 of the 13 reachable search-perf states carry a warning"
+        search_warned, 7,
+        "7 of the 9 reachable search-perf states carry a warning"
     );
 
     let mut mutation_warned = 0_usize;
@@ -2164,8 +2163,8 @@ fn advisory_warning_conditions_partition_the_failure_states() {
         }
     }
     assert_eq!(
-        mutation_warned, 7,
-        "7 of the 10 reachable mutation states carry a warning"
+        mutation_warned, 5,
+        "5 of the 7 reachable mutation states carry a warning"
     );
 
     // 4. The states the claim is scoped away from, stated instead of omitted.
@@ -2650,4 +2649,859 @@ fn docs_only_exception_lists_match_includes_and_manifest_reads() {
     }
     union.sort();
     assert_eq!(arms, union, "classifier case list drifted from the fixture");
+}
+
+#[derive(Clone, Copy)]
+enum OldPath {
+    Absent,
+    Null,
+    False,
+    Zero,
+    Text(&'static str),
+}
+
+struct RenameCase {
+    label: &'static str,
+    status: &'static str,
+    filename: &'static str,
+    old: OldPath,
+    expect_write: bool,
+    guard_must_block: bool,
+}
+
+struct ShellIf {
+    cond: String,
+    header: usize,
+    else_at: Option<usize>,
+    end: usize,
+}
+
+enum JqExpr {
+    Any(Box<JqExpr>),
+    And(Box<JqExpr>, Box<JqExpr>),
+    Or(Box<JqExpr>, Box<JqExpr>),
+    Eq(JqVal, JqVal),
+    Ne(JqVal, JqVal),
+}
+
+enum JqVal {
+    Field(String),
+    TypeOf(String),
+    Lit(serde_json::Value),
+}
+
+struct JqParser<'a> {
+    source: &'a str,
+    index: usize,
+}
+
+fn bound_jq_program(lines: &[&str]) -> Result<String, String> {
+    let whiles: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.contains("while IFS= read -r path; do"))
+        .map(|(idx, _)| idx)
+        .collect();
+    if whiles.len() != 1 {
+        return Err(format!(
+            "expected one `while IFS= read -r path` loop, found {}",
+            whiles.len()
+        ));
+    }
+    let while_at = whiles[0];
+    let done_at = lines
+        .iter()
+        .enumerate()
+        .skip(while_at)
+        .find(|(_, line)| line.contains("done < <("))
+        .map(|(idx, _)| idx)
+        .ok_or_else(|| "the path loop has no `done < <(...)` process substitution".to_string())?;
+    let done_line = lines[done_at];
+    let marker = "done < <(";
+    let open = done_line
+        .find(marker)
+        .ok_or_else(|| "process substitution marker vanished".to_string())?
+        + marker.len()
+        - 1;
+    let mut depth = 0_i32;
+    let mut end = None;
+    for (offset, ch) in done_line[open..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(open + offset);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let end =
+        end.ok_or_else(|| "process substitution is not closed on the done line".to_string())?;
+    let inside = &done_line[open + 1..end];
+    if inside.matches("jq -r").count() != 1 {
+        return Err(format!(
+            "the path-loop process substitution must contain exactly one jq -r, not `{inside}`"
+        ));
+    }
+    let quote = "jq -r '";
+    let start = inside
+        .find(quote)
+        .ok_or_else(|| "jq -r program is not a single-quoted literal".to_string())?
+        + quote.len();
+    let rest = &inside[start..];
+    let close = rest
+        .find('\'')
+        .ok_or_else(|| "jq -r program has no closing quote".to_string())?;
+    Ok(rest[..close].to_string())
+}
+
+fn shell_ifs(lines: &[&str]) -> Result<Vec<ShellIf>, String> {
+    let mut closed = Vec::new();
+    let mut stack: Vec<ShellIf> = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("if ") && trimmed.ends_with("then") {
+            stack.push(ShellIf {
+                cond: trimmed.to_string(),
+                header: idx,
+                else_at: None,
+                end: 0,
+            });
+            continue;
+        }
+        if trimmed == "else" {
+            let frame = stack
+                .last_mut()
+                .ok_or_else(|| "else without if".to_string())?;
+            if frame.else_at.is_some() {
+                return Err("an if has two else branches".to_string());
+            }
+            frame.else_at = Some(idx);
+            continue;
+        }
+        if trimmed == "fi" {
+            let mut frame = stack.pop().ok_or_else(|| "fi without if".to_string())?;
+            frame.end = idx;
+            closed.push(frame);
+        }
+    }
+    if !stack.is_empty() {
+        return Err("an if in the changes job is not closed".to_string());
+    }
+    Ok(closed)
+}
+
+/// `Some(true)` is the else branch. `Some(false)` is the then branch.
+fn shell_branch(frame: &ShellIf, line: usize) -> Option<bool> {
+    if line <= frame.header || line >= frame.end {
+        return None;
+    }
+    match frame.else_at {
+        Some(else_at) if line > else_at => Some(true),
+        Some(else_at) if line < else_at => Some(false),
+        Some(_) => None,
+        None => Some(false),
+    }
+}
+
+fn shell_function<'a>(lines: &[&'a str], name: &str) -> Result<Vec<&'a str>, String> {
+    let header = format!("{name}() {{");
+    let start = lines
+        .iter()
+        .position(|line| line.contains(&header))
+        .ok_or_else(|| format!("changes job is missing {name}()"))?;
+    let mut depth = 0_i32;
+    let mut body = Vec::new();
+    for line in &lines[start..] {
+        body.push(*line);
+        depth += i32::try_from(line.matches('{').count()).unwrap_or(i32::MAX);
+        depth -= i32::try_from(line.matches('}').count()).unwrap_or(i32::MAX);
+        if body.len() > 1 && depth == 0 {
+            return Ok(body);
+        }
+    }
+    Err(format!("{name}() is not closed"))
+}
+
+fn shell_case_returns_zero(body: &[&str], arg: &str) -> Result<bool, String> {
+    let text = body.join("\n");
+    let case_at = text
+        .find("case ")
+        .ok_or_else(|| "shell function has no case".to_string())?;
+    let after = &text[case_at..];
+    let in_rel = after
+        .find(" in")
+        .ok_or_else(|| "case has no in".to_string())?;
+    let rest = &after[in_rel + 3..];
+    let esac = rest
+        .find("esac")
+        .ok_or_else(|| "case has no esac".to_string())?;
+    for arm in rest[..esac].split(";;") {
+        let Some((pattern, action)) = arm.trim().split_once(')') else {
+            continue;
+        };
+        let returns_zero = action.contains("return 0");
+        let returns_one = action.contains("return 1");
+        if returns_zero == returns_one {
+            return Err(format!("case arm has no single return: {arm}"));
+        }
+        if case_pattern_matches(pattern.trim(), arg) {
+            return Ok(returns_zero);
+        }
+    }
+    Err(format!("no case arm matched `{arg}`"))
+}
+
+fn case_pattern_matches(pattern: &str, arg: &str) -> bool {
+    pattern.split('|').any(|alt| shell_glob(alt.trim(), arg))
+}
+
+fn shell_glob(pattern: &str, arg: &str) -> bool {
+    if !pattern.contains('*') {
+        return pattern == arg;
+    }
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if !arg.starts_with(parts[0]) {
+        return false;
+    }
+    let mut pos = parts[0].len();
+    for (idx, part) in parts.iter().enumerate().skip(1) {
+        let last = idx + 1 == parts.len();
+        if last {
+            if part.is_empty() {
+                return true;
+            }
+            return arg.len() >= pos + part.len() && arg[pos..].ends_with(part);
+        }
+        if part.is_empty() {
+            continue;
+        }
+        match arg[pos..].find(part) {
+            Some(found) => pos += found + part.len(),
+            None => return false,
+        }
+    }
+    pos == arg.len()
+}
+
+fn jq_type_name(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+fn jq_equal(left: &serde_json::Value, right: &serde_json::Value) -> bool {
+    match (left, right) {
+        (serde_json::Value::Null, serde_json::Value::Null) => true,
+        (serde_json::Value::Bool(lhs), serde_json::Value::Bool(rhs)) => lhs == rhs,
+        (serde_json::Value::Number(lhs), serde_json::Value::Number(rhs)) => lhs == rhs,
+        (serde_json::Value::String(lhs), serde_json::Value::String(rhs)) => lhs == rhs,
+        _ => false,
+    }
+}
+
+fn jq_raw_output(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Number(number) => number.to_string(),
+        serde_json::Value::Bool(flag) => flag.to_string(),
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// Semantics of the byte-locked program `.[] | .filename, (.previous_filename // empty)`.
+/// `//` omits only `false` and `null` (including a missing field). `""` and `0` stay.
+fn paths_of_bound_program(files: &serde_json::Value) -> Result<Vec<String>, String> {
+    let entries = files
+        .as_array()
+        .ok_or_else(|| "fixture is not a JSON array".to_string())?;
+    let mut paths = Vec::new();
+    for entry in entries {
+        let filename = entry
+            .get("filename")
+            .ok_or_else(|| "entry has no filename".to_string())?;
+        paths.push(jq_raw_output(filename));
+        match entry.get("previous_filename") {
+            None | Some(serde_json::Value::Null) | Some(serde_json::Value::Bool(false)) => {}
+            Some(other) => paths.push(jq_raw_output(other)),
+        }
+    }
+    Ok(paths)
+}
+
+fn cheap_loop_rejects(lines: &[&str], paths: &[String]) -> Result<bool, String> {
+    let cheap = shell_function(lines, "is_cheap")?;
+    let exception = shell_function(lines, "is_exception")?;
+    for path in paths {
+        let is_cheap = shell_case_returns_zero(&cheap, path)?;
+        let is_exception = shell_case_returns_zero(&exception, path)?;
+        if !is_cheap || is_exception {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn rename_guard_blocks(
+    cond: &str,
+    echo_in_else: bool,
+    files: &serde_json::Value,
+) -> Result<bool, String> {
+    let rest = cond.trim().trim_start_matches("if").trim_start();
+    let negated = rest.starts_with('!');
+    let marker = "jq -e '";
+    let start = cond
+        .find(marker)
+        .ok_or_else(|| "the dominating guard has no jq -e program".to_string())?
+        + marker.len();
+    let after = &cond[start..];
+    let end = after
+        .find('\'')
+        .ok_or_else(|| "the dominating jq -e program has no closing quote".to_string())?;
+    let expr = JqParser::parse_filter(&after[..end])?;
+    let truthy = eval_jq(&expr, files)?;
+    let command_ok = if negated { !truthy } else { truthy };
+    let echo_runs = if echo_in_else {
+        !command_ok
+    } else {
+        command_ok
+    };
+    Ok(!echo_runs)
+}
+
+fn eval_jq(expr: &JqExpr, current: &serde_json::Value) -> Result<bool, String> {
+    match expr {
+        JqExpr::Any(inner) => {
+            let items = current
+                .as_array()
+                .ok_or_else(|| "any() input is not an array".to_string())?;
+            for item in items {
+                if eval_jq(inner, item)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        JqExpr::And(left, right) => Ok(eval_jq(left, current)? && eval_jq(right, current)?),
+        JqExpr::Or(left, right) => Ok(eval_jq(left, current)? || eval_jq(right, current)?),
+        JqExpr::Eq(left, right) => Ok(jq_equal(
+            &eval_jq_val(left, current)?,
+            &eval_jq_val(right, current)?,
+        )),
+        JqExpr::Ne(left, right) => Ok(!jq_equal(
+            &eval_jq_val(left, current)?,
+            &eval_jq_val(right, current)?,
+        )),
+    }
+}
+
+fn eval_jq_val(val: &JqVal, current: &serde_json::Value) -> Result<serde_json::Value, String> {
+    match val {
+        JqVal::Lit(lit) => Ok(lit.clone()),
+        JqVal::Field(name) => Ok(current
+            .get(name)
+            .cloned()
+            .unwrap_or(serde_json::Value::Null)),
+        JqVal::TypeOf(name) => {
+            let found = current
+                .get(name)
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            Ok(serde_json::Value::String(jq_type_name(&found).to_string()))
+        }
+    }
+}
+
+fn one_entry(status: &str, filename: &str, old: OldPath) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "status".to_string(),
+        serde_json::Value::String(status.to_string()),
+    );
+    map.insert(
+        "filename".to_string(),
+        serde_json::Value::String(filename.to_string()),
+    );
+    match old {
+        OldPath::Absent => {}
+        OldPath::Null => {
+            map.insert("previous_filename".to_string(), serde_json::Value::Null);
+        }
+        OldPath::False => {
+            map.insert(
+                "previous_filename".to_string(),
+                serde_json::Value::Bool(false),
+            );
+        }
+        OldPath::Zero => {
+            map.insert("previous_filename".to_string(), serde_json::json!(0));
+        }
+        OldPath::Text(text) => {
+            map.insert(
+                "previous_filename".to_string(),
+                serde_json::Value::String(text.to_string()),
+            );
+        }
+    }
+    serde_json::Value::Array(vec![serde_json::Value::Object(map)])
+}
+
+impl<'a> JqParser<'a> {
+    fn parse_filter(source: &'a str) -> Result<JqExpr, String> {
+        let mut parser = Self { source, index: 0 };
+        parser.skip();
+        if !parser.eat_word("any") || !parser.eat("(") || !parser.eat_dot_each() || !parser.eat(";")
+        {
+            return Err(format!("guard filter must be any(.[]; ...): {source}"));
+        }
+        let inner = parser.parse_or()?;
+        if !parser.eat(")") {
+            return Err("any() is missing its closing paren".to_string());
+        }
+        parser.skip();
+        if parser.index != parser.source.len() {
+            return Err(format!(
+                "trailing jq after the guard filter: {}",
+                &parser.source[parser.index..]
+            ));
+        }
+        Ok(JqExpr::Any(Box::new(inner)))
+    }
+
+    fn parse_or(&mut self) -> Result<JqExpr, String> {
+        let mut left = self.parse_and()?;
+        while self.eat_word("or") {
+            let right = self.parse_and()?;
+            left = JqExpr::Or(Box::new(left), Box::new(right));
+        }
+        Ok(left)
+    }
+
+    fn parse_and(&mut self) -> Result<JqExpr, String> {
+        let mut left = self.parse_atom()?;
+        while self.eat_word("and") {
+            let right = self.parse_atom()?;
+            left = JqExpr::And(Box::new(left), Box::new(right));
+        }
+        Ok(left)
+    }
+
+    fn parse_atom(&mut self) -> Result<JqExpr, String> {
+        self.skip();
+        if self.peek() == Some('(') {
+            let saved = self.index;
+            if let Some(expr) = self.try_grouped_expr() {
+                return Ok(expr);
+            }
+            self.index = saved;
+        }
+        let left = self.parse_val()?;
+        self.skip();
+        if self.eat("==") {
+            return Ok(JqExpr::Eq(left, self.parse_val()?));
+        }
+        if self.eat("!=") {
+            return Ok(JqExpr::Ne(left, self.parse_val()?));
+        }
+        Err(format!(
+            "expected a comparison in the rename guard at {}",
+            &self.source[self.index..]
+        ))
+    }
+
+    fn try_grouped_expr(&mut self) -> Option<JqExpr> {
+        if !self.eat("(") {
+            return None;
+        }
+        let inner = self.parse_or().ok()?;
+        if !self.eat(")") {
+            return None;
+        }
+        Some(inner)
+    }
+
+    fn parse_val(&mut self) -> Result<JqVal, String> {
+        self.skip();
+        if self.eat("(") {
+            let inner = self.parse_val()?;
+            if !self.eat(")") {
+                return Err("unclosed '(' around a jq value".to_string());
+            }
+            return Ok(inner);
+        }
+        if self.eat(".") {
+            let name = self.parse_ident()?;
+            self.skip();
+            if self.eat("|") {
+                if !self.eat_word("type") {
+                    return Err("the guard may only pipe a field to type".to_string());
+                }
+                return Ok(JqVal::TypeOf(name));
+            }
+            return Ok(JqVal::Field(name));
+        }
+        if self.peek() == Some('"') {
+            return Ok(JqVal::Lit(serde_json::Value::String(self.parse_string()?)));
+        }
+        if self.eat_word("false") {
+            return Ok(JqVal::Lit(serde_json::Value::Bool(false)));
+        }
+        if self.eat_word("true") {
+            return Ok(JqVal::Lit(serde_json::Value::Bool(true)));
+        }
+        if self.eat_word("null") {
+            return Ok(JqVal::Lit(serde_json::Value::Null));
+        }
+        if self
+            .peek()
+            .is_some_and(|ch| ch == '-' || ch.is_ascii_digit())
+        {
+            return Ok(JqVal::Lit(self.parse_number()?));
+        }
+        Err(format!(
+            "unexpected jq value at {}",
+            &self.source[self.index..]
+        ))
+    }
+
+    fn parse_string(&mut self) -> Result<String, String> {
+        if !self.eat("\"") {
+            return Err("expected a jq string".to_string());
+        }
+        let start = self.index;
+        while self.index < self.source.len() && self.peek() != Some('"') {
+            if self.peek() == Some('\\') {
+                return Err("jq string escapes are outside this guard".to_string());
+            }
+            let ch = self
+                .peek()
+                .ok_or_else(|| "unterminated jq string".to_string())?;
+            self.index += ch.len_utf8();
+        }
+        let text = self.source[start..self.index].to_string();
+        if !self.eat("\"") {
+            return Err("unterminated jq string".to_string());
+        }
+        Ok(text)
+    }
+
+    fn parse_ident(&mut self) -> Result<String, String> {
+        self.skip();
+        let start = self.index;
+        while let Some(ch) = self.peek() {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                self.index += 1;
+            } else {
+                break;
+            }
+        }
+        if start == self.index {
+            return Err(format!(
+                "expected a jq field at {}",
+                &self.source[self.index..]
+            ));
+        }
+        Ok(self.source[start..self.index].to_string())
+    }
+
+    fn parse_number(&mut self) -> Result<serde_json::Value, String> {
+        let start = self.index;
+        if self.peek() == Some('-') {
+            self.index += 1;
+        }
+        let digits = self.index;
+        while self.peek().is_some_and(|ch| ch.is_ascii_digit()) {
+            self.index += 1;
+        }
+        if self.index == digits {
+            return Err("expected a jq number".to_string());
+        }
+        let text = &self.source[start..self.index];
+        let number: i64 = text
+            .parse()
+            .map_err(|_| format!("jq number `{text}` is out of range"))?;
+        Ok(serde_json::Value::Number(number.into()))
+    }
+
+    fn skip(&mut self) {
+        while self.peek().is_some_and(|ch| ch.is_ascii_whitespace()) {
+            self.index += 1;
+        }
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.source[self.index..].chars().next()
+    }
+
+    fn eat(&mut self, token: &str) -> bool {
+        self.skip();
+        if self.source[self.index..].starts_with(token) {
+            self.index += token.len();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn eat_word(&mut self, word: &str) -> bool {
+        self.skip();
+        if !self.source[self.index..].starts_with(word) {
+            return false;
+        }
+        let after = self.index + word.len();
+        let boundary = self.source[after..]
+            .chars()
+            .next()
+            .is_none_or(|ch| !ch.is_ascii_alphanumeric() && ch != '_');
+        if boundary {
+            self.index = after;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn eat_dot_each(&mut self) -> bool {
+        self.skip();
+        if !self.source[self.index..].starts_with(".[") {
+            return false;
+        }
+        self.index += 2;
+        self.skip();
+        if self.source[self.index..].starts_with(']') {
+            self.index += 1;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+#[test]
+fn docs_only_rename_guard_dominates_rust_false() {
+    let ci = include_str!("../../.github/workflows/ci.yml");
+    let lines = job_lines(ci, "changes");
+    assert!(!lines.is_empty(), "ci.yml is missing the changes job");
+
+    let program = bound_jq_program(&lines).unwrap_or_else(|err| panic!("{err}"));
+    assert_eq!(
+        program, ".[] | .filename, (.previous_filename // empty)",
+        "the while-loop process substitution must carry the 0576 path program"
+    );
+    assert!(
+        lines
+            .join("\n")
+            .contains("if ! is_cheap \"$path\" || is_exception \"$path\"; then"),
+        "the cheap check inside the path loop must stay the 0573 predicate"
+    );
+
+    let frames = shell_ifs(&lines).unwrap_or_else(|err| panic!("{err}"));
+    let echo_lines: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.contains("echo \"rust=false\""))
+        .map(|(idx, _)| idx)
+        .collect();
+    assert_eq!(
+        echo_lines.len(),
+        1,
+        "the changes job must write rust=false once"
+    );
+    let echo_at = echo_lines[0];
+    let mentioning: Vec<&ShellIf> = frames
+        .iter()
+        .filter(|frame| frame.cond.contains("previous_filename"))
+        .collect();
+    assert!(
+        !mentioning.is_empty(),
+        "no changes-job condition mentions previous_filename"
+    );
+    let dominating: Vec<&ShellIf> = mentioning
+        .iter()
+        .copied()
+        .filter(|frame| echo_at > frame.header && echo_at < frame.end)
+        .collect();
+    assert_eq!(
+        dominating.len(),
+        mentioning.len(),
+        "a condition mentions previous_filename but does not dominate the rust=false write"
+    );
+    assert_eq!(dominating.len(), 1, "expected one dominating rename guard");
+    let guard = dominating[0];
+    let echo_branch = shell_branch(guard, echo_at);
+    assert!(
+        echo_branch.is_some(),
+        "rust=false is outside the rename guard's branches"
+    );
+    let while_at = lines
+        .iter()
+        .position(|line| line.contains("while IFS= read -r path; do"))
+        .unwrap_or_else(|| panic!("missing path loop"));
+    assert!(
+        guard.header < while_at && while_at < echo_at,
+        "the rename guard must run before the cheap check, and that check before the write"
+    );
+    assert_eq!(
+        shell_branch(guard, while_at),
+        echo_branch,
+        "the cheap check and the rust=false write must sit in the same guard branch"
+    );
+    let echo_in_else = echo_branch == Some(true);
+
+    let cases = [
+        RenameCase {
+            label: "renamed src/foo.rs to docs/foo.md",
+            status: "renamed",
+            filename: "docs/foo.md",
+            old: OldPath::Text("src/foo.rs"),
+            expect_write: false,
+            guard_must_block: false,
+        },
+        RenameCase {
+            label: "renamed docs/a.md to docs/b.md",
+            status: "renamed",
+            filename: "docs/b.md",
+            old: OldPath::Text("docs/a.md"),
+            expect_write: true,
+            guard_must_block: false,
+        },
+        RenameCase {
+            label: "added docs/only.md",
+            status: "added",
+            filename: "docs/only.md",
+            old: OldPath::Absent,
+            expect_write: true,
+            guard_must_block: false,
+        },
+        RenameCase {
+            label: "modified docs/only.md",
+            status: "modified",
+            filename: "docs/only.md",
+            old: OldPath::Absent,
+            expect_write: true,
+            guard_must_block: false,
+        },
+        RenameCase {
+            label: "added src/foo.rs",
+            status: "added",
+            filename: "src/foo.rs",
+            old: OldPath::Absent,
+            expect_write: false,
+            guard_must_block: false,
+        },
+        RenameCase {
+            label: "modified src/foo.rs",
+            status: "modified",
+            filename: "src/foo.rs",
+            old: OldPath::Absent,
+            expect_write: false,
+            guard_must_block: false,
+        },
+        RenameCase {
+            label: "renamed missing previous_filename",
+            status: "renamed",
+            filename: "docs/foo.md",
+            old: OldPath::Absent,
+            expect_write: false,
+            guard_must_block: true,
+        },
+        RenameCase {
+            label: "renamed null previous_filename",
+            status: "renamed",
+            filename: "docs/foo.md",
+            old: OldPath::Null,
+            expect_write: false,
+            guard_must_block: true,
+        },
+        RenameCase {
+            label: "renamed empty previous_filename",
+            status: "renamed",
+            filename: "docs/foo.md",
+            old: OldPath::Text(""),
+            expect_write: false,
+            guard_must_block: true,
+        },
+        RenameCase {
+            label: "renamed false previous_filename",
+            status: "renamed",
+            filename: "docs/foo.md",
+            old: OldPath::False,
+            expect_write: false,
+            guard_must_block: true,
+        },
+        RenameCase {
+            label: "renamed zero previous_filename",
+            status: "renamed",
+            filename: "docs/foo.md",
+            old: OldPath::Zero,
+            expect_write: false,
+            guard_must_block: true,
+        },
+    ];
+
+    for case in cases {
+        let files = one_entry(case.status, case.filename, case.old);
+        let blocks = rename_guard_blocks(&guard.cond, echo_in_else, &files)
+            .unwrap_or_else(|err| panic!("{}: {err}", case.label));
+        let paths =
+            paths_of_bound_program(&files).unwrap_or_else(|err| panic!("{}: {err}", case.label));
+        let cheap_rejects = cheap_loop_rejects(&lines, &paths)
+            .unwrap_or_else(|err| panic!("{}: {err}", case.label));
+        let writes = !blocks && !cheap_rejects;
+        assert_eq!(
+            blocks, case.guard_must_block,
+            "{}: guard decision (paths={paths:?}, cheap_rejects={cheap_rejects})",
+            case.label
+        );
+        assert_eq!(
+            writes, case.expect_write,
+            "{}: rust=false write",
+            case.label
+        );
+        if case.guard_must_block {
+            assert!(
+                blocks,
+                "{}: the guard itself must reject before is_cheap",
+                case.label
+            );
+        }
+        if case.status == "renamed"
+            && matches!(case.old, OldPath::Absent | OldPath::Null | OldPath::False)
+        {
+            assert_eq!(
+                paths,
+                vec![case.filename.to_string()],
+                "{}: // empty must omit the old path while filename stays cheap",
+                case.label
+            );
+            assert!(
+                !cheap_rejects,
+                "{}: the new path is cheap, so only the guard stops the write",
+                case.label
+            );
+        }
+        if matches!(case.old, OldPath::Text("")) {
+            assert!(
+                paths.iter().any(|path| path.is_empty()),
+                "{}: // empty keeps a blank previous_filename",
+                case.label
+            );
+        }
+        if matches!(case.old, OldPath::Zero) {
+            assert!(
+                paths.iter().any(|path| path == "0"),
+                "{}: // empty keeps JSON 0",
+                case.label
+            );
+        }
+    }
 }
