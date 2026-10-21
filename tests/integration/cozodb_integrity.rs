@@ -8,7 +8,8 @@ use crate::common::setup_git_repo;
 
 #[test]
 #[serial(test)]
-fn test_cozodb_hard_migration_integrity() {
+#[allow(non_snake_case)]
+fn test_cozodb_hard_migration_integrity__slow() {
     let binary_path = env!("CARGO_BIN_EXE_ledgerful");
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();

@@ -496,11 +496,29 @@ fn release_windows_leg_builds_with_static_crt_and_guards_imports() {
     }
 
     // The installed tools are not shipped, so they must not inherit the static CRT flag.
+    // install-action downloads release binaries and does not compile. A `cargo install`
+    // in this step would inherit the job RUSTFLAGS and must still clear them.
     let install = step_lines(&body, "      - name: Install cargo-auditable + cargo-audit");
-    assert!(
-        install.contains(&"          RUSTFLAGS: \"\""),
-        "the cargo install step must reset the job-level RUSTFLAGS"
-    );
+    let compiles = install.iter().any(|line| line.contains("cargo install"));
+    if compiles {
+        assert!(
+            install.contains(&"          RUSTFLAGS: \"\""),
+            "the cargo install step must reset the job-level RUSTFLAGS"
+        );
+    } else {
+        assert!(
+            install
+                .iter()
+                .any(|line| line.contains("taiki-e/install-action@")),
+            "cargo-auditable and cargo-audit must be prebuilt binaries so they do not inherit the static CRT RUSTFLAGS"
+        );
+        assert!(
+            install
+                .iter()
+                .any(|line| line.contains("tool: cargo-auditable,cargo-audit")),
+            "the install step must request cargo-auditable and cargo-audit"
+        );
+    }
 }
 
 /// Negative fixtures for [`crt_guard_missing`] — the oracles that keep the Windows CRT guard
@@ -907,7 +925,7 @@ fn rust_toolchain_toml_pins_the_pr_path_channel() {
     let windows = include_str!("../../.github/workflows/windows-path-tests.yml");
     let release = include_str!("../../.github/workflows/release.yml");
     let smoke = include_str!("../../.github/workflows/smoke.yml");
-    assert_eq!(trimmed_line_count(ci, &needle), 8, "{needle} in ci.yml");
+    assert_eq!(trimmed_line_count(ci, &needle), 9, "{needle} in ci.yml");
     assert_eq!(
         trimmed_line_count(security, &needle),
         2,
@@ -972,10 +990,9 @@ fn deny_job_runs_cargo_audit_without_a_job_name() {
         .any(|line| *line == "    name:" || line.starts_with("    name:"));
     assert!(!job_name, "deny job has a job-level name before steps");
     let required = [
-        "- run: cargo install cargo-deny --locked",
-        "- run: cargo deny check",
-        "- run: cargo install cargo-audit --locked",
-        "- run: cargo audit",
+        "tool: cargo-deny,cargo-audit",
+        "run: cargo deny check",
+        "run: cargo audit",
     ];
     let missing: Vec<&str> = required
         .into_iter()
@@ -983,15 +1000,22 @@ fn deny_job_runs_cargo_audit_without_a_job_name() {
         .collect();
     assert!(
         missing.is_empty(),
-        "deny job is missing run lines:\n  {}",
+        "deny job is missing install/run lines:\n  {}",
         missing.join("\n  ")
+    );
+    assert!(
+        !body
+            .iter()
+            .any(|line| line.contains("cargo install cargo-deny")
+                || line.contains("cargo install cargo-audit")),
+        "deny job must not compile cargo-deny or cargo-audit"
     );
     let deny_at = body
         .iter()
-        .position(|line| line.trim() == "- run: cargo deny check");
+        .position(|line| line.trim() == "run: cargo deny check");
     let audit_at = body
         .iter()
-        .position(|line| line.trim() == "- run: cargo audit");
+        .position(|line| line.trim() == "run: cargo audit");
     let deny_before_audit = deny_at.is_some_and(|deny| audit_at.is_some_and(|audit| deny < audit));
     assert!(
         deny_before_audit,
@@ -1086,10 +1110,10 @@ fn smoke_yml_installs_without_building_the_spa() {
         !ci.contains("Keep identical to smoke.yml"),
         "ci.yml must not keep the old smoke.yml identity clause"
     );
-    assert_eq!(ci.matches("needs: web-build").count(), 2);
-    assert_eq!(ci.matches("needs: [clippy, web-build]").count(), 1);
-    // Line-bounded so this does not also match `needs: [clippy, web-build]`.
-    assert_eq!(ci.matches("needs: [clippy]\n").count(), 1);
+    assert_eq!(ci.matches("needs: web-build").count(), 0);
+    assert_eq!(ci.matches("needs: [clippy, web-build]").count(), 0);
+    // Line-bounded so a future `needs: [clippy, …]` cannot hide inside a longer list.
+    assert_eq!(ci.matches("needs: [clippy]\n").count(), 0);
 
     let release_required = ["ledgerful-web-spa", "--all-features", "node-version: 24"];
     let release_missing: Vec<&str> = release_required
@@ -1948,8 +1972,14 @@ fn advisory_jobs_keep_advisory_policy() {
     }
     let search = job_lines(ci, "search-perf");
     assert!(
-        search.contains(&"    needs: [clippy, web-build]"),
-        "search-perf must keep needs: [clippy, web-build]"
+        !search
+            .iter()
+            .any(|line| line.trim_start().starts_with("needs:")),
+        "search-perf must not wait on clippy or web-build"
+    );
+    assert!(
+        search.contains(&"    if: github.event_name == 'schedule'"),
+        "search-perf must run only on schedule"
     );
     assert!(
         search.contains(&"    runs-on: windows-latest"),
@@ -2272,4 +2302,352 @@ fn advisory_cache_comment_states_pr_ref_scope_and_dependency_only() {
             "the cache policy must not change: {banned} is not part of 0568"
         );
     }
+}
+
+/// Cheap paths compiled into the library or a test. A new `include_str!` /
+/// `include_bytes!` / `include!` of a cheap path fails this test until the
+/// workflow comment, the classifier `is_exception` arm, and this list move
+/// together.
+const COMPILE_TIME_CHEAP_EXCEPTIONS: &[&str] = &[
+    "README.md",
+    "SECURITY.md",
+    "docs/Call-Resolution.md",
+    "docs/Ledgerful/skill.md",
+    "docs/agent-output-contract.md",
+    "docs/golden-path.md",
+    "docs/installation.md",
+    "docs/package-distribution.md",
+];
+
+/// Cheap paths read from this work tree via `CARGO_MANIFEST_DIR` or
+/// `cargo_root()`. `docs/examples/config.toml` and `README.md` force `rust=true`.
+const RUNTIME_CHEAP_EXCEPTIONS: &[&str] = &["README.md", "docs/examples/config.toml"];
+
+fn is_cheap_ci_path(path: &str) -> bool {
+    if path == "docs/api/openapi.json" {
+        return false;
+    }
+    const EXACT: &[&str] = &[
+        "CHANGELOG.md",
+        "README.md",
+        "LICENSE",
+        "SECURITY.md",
+        "AGENTS.md",
+        "Agents.md",
+        "Claude.md",
+        "scripts/bump-manifests.ps1",
+        "scripts/bump-manifests.sh",
+    ];
+    EXACT.contains(&path) || path.starts_with("docs/") || path.starts_with("packaging/")
+}
+
+fn strip_rust_comments(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let b = src.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'/' && i + 1 < b.len() && b[i + 1] == b'/' {
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if b[i] == b'/' && i + 1 < b.len() && b[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(b.len());
+            continue;
+        }
+        if b[i] == b'"' {
+            out.push('"');
+            i += 1;
+            while i < b.len() {
+                out.push(b[i] as char);
+                if b[i] == b'\\' && i + 1 < b.len() {
+                    out.push(b[i + 1] as char);
+                    i += 2;
+                    continue;
+                }
+                if b[i] == b'"' {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        out.push(b[i] as char);
+        i += 1;
+    }
+    out
+}
+
+fn lexical_repo_rel(file: &std::path::Path, lit: &str) -> Option<String> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut out = file.parent()?.to_path_buf();
+    for comp in std::path::Path::new(&lit.replace('\\', "/")).components() {
+        match comp {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(part) => out.push(part),
+            _ => return None,
+        }
+    }
+    let rel = out.strip_prefix(root).ok()?;
+    Some(rel.to_string_lossy().replace('\\', "/"))
+}
+
+fn push_include_literal(src: &str, at: usize, out: &mut Vec<(String, bool)>) {
+    let bytes = src.as_bytes();
+    let mut i = at;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if i >= bytes.len() || (bytes[i] != b'(' && bytes[i] != b'{') {
+        return;
+    }
+    i += 1;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    let rest = &src[i..];
+    if let Some(stripped) = rest.strip_prefix("r#\"") {
+        if let Some(end) = stripped.find("\"#") {
+            out.push((stripped[..end].to_string(), false));
+        }
+        return;
+    }
+    if let Some(stripped) = rest.strip_prefix("r\"") {
+        if let Some(end) = stripped.find('"') {
+            out.push((stripped[..end].to_string(), false));
+        }
+        return;
+    }
+    if let Some(stripped) = rest.strip_prefix('"') {
+        if let Some(end) = stripped.find('"') {
+            out.push((stripped[..end].to_string(), false));
+        }
+        return;
+    }
+    if rest.starts_with("concat!") {
+        let marker = "env!(\"CARGO_MANIFEST_DIR\")";
+        let Some(pos) = rest.find(marker) else {
+            return;
+        };
+        let after = &rest[pos + marker.len()..];
+        let after = after.trim_start().trim_start_matches(',').trim_start();
+        let Some(body) = after.strip_prefix('"') else {
+            return;
+        };
+        let Some(end) = body.find('"') else {
+            return;
+        };
+        out.push((body[..end].trim_start_matches('/').to_string(), true));
+    }
+}
+
+fn discover_compile_time_cheap(root: &std::path::Path) -> Vec<String> {
+    let mut found = Vec::new();
+    for path in rust_sources(root) {
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let src = strip_rust_comments(&raw);
+        for needle in ["include_str!", "include_bytes!", "include!"] {
+            let mut from = 0;
+            while let Some(rel) = src[from..].find(needle) {
+                let at = from + rel;
+                if needle == "include!" {
+                    let prev = src[..at].chars().next_back();
+                    if prev.is_some_and(|c| c == '_' || c.is_ascii_alphanumeric()) {
+                        from = at + needle.len();
+                        continue;
+                    }
+                }
+                let mut lits = Vec::new();
+                push_include_literal(&src, at + needle.len(), &mut lits);
+                for (lit, repo_relative) in lits {
+                    let repo = if repo_relative {
+                        lit
+                    } else {
+                        lexical_repo_rel(&path, &lit).unwrap_or(lit)
+                    };
+                    if is_cheap_ci_path(&repo) {
+                        found.push(repo);
+                    }
+                }
+                from = at + needle.len();
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+fn discover_runtime_cheap(root: &std::path::Path) -> Vec<String> {
+    let mut found = Vec::new();
+    for path in rust_sources(root) {
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let src = strip_rust_comments(&raw);
+        if !src.contains("CARGO_MANIFEST_DIR") && !src.contains("cargo_root()") {
+            continue;
+        }
+        let mut from = 0;
+        while let Some(rel) = src[from..].find("seed_file(\"") {
+            let at = from + rel + "seed_file(\"".len();
+            if let Some(end) = src[at..].find('"') {
+                let lit = &src[at..at + end];
+                if is_cheap_ci_path(lit) {
+                    found.push(lit.to_string());
+                }
+            }
+            from = at;
+        }
+        from = 0;
+        while let Some(rel) = src[from..].find(".join(\"") {
+            let at = from + rel + ".join(\"".len();
+            let Some(end) = src[at..].find('"') else {
+                break;
+            };
+            let lit = &src[at..at + end];
+            let start = from.saturating_sub(400);
+            let window_end = (at + end + 200).min(src.len());
+            let window = &src[start..window_end];
+            let rooted = window.contains("CARGO_MANIFEST_DIR") || window.contains("cargo_root()");
+            let reads = window.contains("read_to_string")
+                || window.contains("fs::read")
+                || window.contains("File::open");
+            if rooted && reads && is_cheap_ci_path(lit) {
+                found.push(lit.to_string());
+            }
+            from = at + end;
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+fn rust_sources(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if path.is_dir() {
+                if matches!(
+                    name.as_ref(),
+                    "target" | ".git" | "output" | ".ledgerful" | "node_modules"
+                ) {
+                    continue;
+                }
+                stack.push(path);
+            } else if name.ends_with(".rs") {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+fn comment_section(ci: &str, begin: &str, end: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut on = false;
+    for line in ci.lines() {
+        if line.contains(begin) {
+            on = true;
+            continue;
+        }
+        if on && line.contains(end) {
+            break;
+        }
+        if on {
+            let path = line.trim().trim_start_matches('#').trim();
+            if !path.is_empty() {
+                out.push(path.to_string());
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+#[test]
+fn docs_only_exception_lists_match_includes_and_manifest_reads() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ci = include_str!("../../.github/workflows/ci.yml");
+    let compile = discover_compile_time_cheap(root);
+    let runtime = discover_runtime_cheap(root);
+    let compile_expected: Vec<String> = COMPILE_TIME_CHEAP_EXCEPTIONS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    let runtime_expected: Vec<String> = RUNTIME_CHEAP_EXCEPTIONS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    assert_eq!(
+        compile, compile_expected,
+        "a new compile-time include of a cheap path is not on the exception list"
+    );
+    assert_eq!(
+        runtime, runtime_expected,
+        "a new manifest-rooted read of a cheap path is not on the exception list"
+    );
+    assert_eq!(
+        comment_section(
+            ci,
+            "0573-compile-exceptions-begin",
+            "0573-compile-exceptions-end"
+        ),
+        compile_expected
+    );
+    assert_eq!(
+        comment_section(
+            ci,
+            "0573-runtime-exceptions-begin",
+            "0573-runtime-exceptions-end"
+        ),
+        runtime_expected
+    );
+    let case = ci
+        .lines()
+        .find(|line| line.contains("docs/examples/config.toml) return 0"))
+        .unwrap_or_else(|| panic!("classifier is_exception arm is missing"));
+    let start = case
+        .find("README.md")
+        .unwrap_or_else(|| panic!("exception arm has no README.md"));
+    let end = case[start..]
+        .find(')')
+        .map(|off| start + off)
+        .unwrap_or_else(|| panic!("exception arm has no closing paren"));
+    let mut arms: Vec<String> = case[start..end]
+        .split('|')
+        .map(|part| part.trim().to_string())
+        .filter(|part| !part.is_empty())
+        .collect();
+    arms.sort();
+    arms.dedup();
+    let mut union = compile_expected.clone();
+    for path in &runtime_expected {
+        if !union.contains(path) {
+            union.push(path.clone());
+        }
+    }
+    union.sort();
+    assert_eq!(arms, union, "classifier case list drifted from the fixture");
 }

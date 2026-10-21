@@ -1400,7 +1400,7 @@ mod capture_git_author_tests {
     /// When the supplied `repo_root` is a tempdir that *is* a git
     /// repository with a known `user.name`, the function returns
     /// that name. The test in `tests/integration/web_api.rs`
-    /// (`test_api_ledger_includes_author_from_git_config`) is the
+    /// (`test_api_ledger_includes_author_from_git_config__slow`) is the
     /// end-to-end version of this; this is a fast unit-level check
     /// for the helper itself.
     #[test]

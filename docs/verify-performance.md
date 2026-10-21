@@ -5,9 +5,9 @@ their safe combinations.
 
 ## Fast vs full scope boundary
 
-- `ledgerful verify --scope full` is the **authoritative gate**. It always runs
-the complete suite (fmt, clippy, tests, doctests, slow tier). CI uses this
-scope.
+- `ledgerful verify --scope full` is the **authoritative local gate**. It always runs
+the complete suite (fmt, clippy, tests, doctests, slow tier). CI is split jobs
+(fmt, clippy, `test`, `test-slow`), not one `verify` invocation.
 - `ledgerful verify --scope fast` is the **local convenience gate**. The pre-push
 hook uses this scope.
 

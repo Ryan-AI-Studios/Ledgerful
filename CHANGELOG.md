@@ -6,6 +6,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **PR wall clock (0573):** required PR checks no longer run the slow tier, a Windows clippy lane, or an SPA download on every pull request, and profile `ci` does not retry a hang (`retries` count 0; profile `slow` keeps count 2). A docs-only pull request skips the Rust test jobs when every changed file is cheap and off the compile-time and runtime exception lists. The merge wait remains `test (windows-latest)`. `schemaVersion` stays 1. Package stays `0.2.17`.
+
 ### Added
 
 - **Ask kg note (0515):** a printed `kg=0` on `[Evidence]` and `[AskMeta]` names `kgNote` (`skipped`, `not-gathered`, `no-global-fallback`, `fallback-off`, `unavailable`, `no-match`) immediately after `kg=0`. `kg>0` omits the token. A length stop still exits 1. No `ask --json`. `schemaVersion` stays 1. Package stays `0.2.17`.

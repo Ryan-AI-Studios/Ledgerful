@@ -271,7 +271,8 @@ fn write_require_signing_config(layout: &Layout, require: bool) {
 }
 
 #[tokio::test]
-async fn test_health_returns_ok() {
+#[allow(non_snake_case)]
+async fn test_health_returns_ok__slow() {
     let guard = temp_layout();
     let (url, _token, handle) = spawn_server(guard.layout()).await;
 
@@ -290,7 +291,8 @@ async fn test_health_returns_ok() {
 }
 
 #[tokio::test]
-async fn test_snapshot_without_token_returns_403() {
+#[allow(non_snake_case)]
+async fn test_snapshot_without_token_returns_403__slow() {
     let guard = temp_layout();
     let (url, _token, handle) = spawn_server(guard.layout()).await;
 
@@ -309,7 +311,8 @@ async fn test_snapshot_without_token_returns_403() {
 }
 
 #[tokio::test]
-async fn test_snapshot_with_token_returns_json() {
+#[allow(non_snake_case)]
+async fn test_snapshot_with_token_returns_json__slow() {
     let guard = temp_layout();
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
@@ -332,7 +335,8 @@ async fn test_snapshot_with_token_returns_json() {
 }
 
 #[tokio::test]
-async fn test_status_returns_json() {
+#[allow(non_snake_case)]
+async fn test_status_returns_json__slow() {
     let guard = temp_layout();
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
@@ -357,7 +361,8 @@ async fn test_status_returns_json() {
 }
 
 #[tokio::test]
-async fn test_status_is_demo_true_when_marker_present() {
+#[allow(non_snake_case)]
+async fn test_status_is_demo_true_when_marker_present__slow() {
     let guard = temp_layout();
     // Write the DEMO_MARKER so the status endpoint detects a demo repo.
     std::fs::create_dir_all(guard.layout().root.join(".ledgerful")).unwrap();
@@ -388,7 +393,8 @@ async fn test_status_is_demo_true_when_marker_present() {
 }
 
 #[tokio::test]
-async fn test_projects_returns_self() {
+#[allow(non_snake_case)]
+async fn test_projects_returns_self__slow() {
     let guard = temp_layout();
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
@@ -409,7 +415,8 @@ async fn test_projects_returns_self() {
 }
 
 #[tokio::test]
-async fn test_api_projects_returns_sibling_with_warning() {
+#[allow(non_snake_case)]
+async fn test_api_projects_returns_sibling_with_warning__slow() {
     let guard = temp_layout();
     let primary_dir = guard.layout().root.join("primary");
     let sibling_dir = guard.layout().root.join("sibling");
@@ -479,7 +486,8 @@ async fn test_api_projects_returns_sibling_with_warning() {
 }
 
 #[tokio::test]
-async fn test_api_ledger_empty_entity_fallback() {
+#[allow(non_snake_case)]
+async fn test_api_ledger_empty_entity_fallback__slow() {
     let guard = temp_layout();
     let tx_id = "tx-empty-entity";
     seed_ledger_entry(
@@ -520,7 +528,8 @@ async fn test_api_ledger_empty_entity_fallback() {
 }
 
 #[tokio::test]
-async fn test_ledger_empty_returns_array() {
+#[allow(non_snake_case)]
+async fn test_ledger_empty_returns_array__slow() {
     let guard = temp_layout();
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
@@ -540,7 +549,8 @@ async fn test_ledger_empty_returns_array() {
 }
 
 #[tokio::test]
-async fn test_ledger_missing_tx_returns_404() {
+#[allow(non_snake_case)]
+async fn test_ledger_missing_tx_returns_404__slow() {
     let guard = temp_layout();
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
@@ -559,7 +569,8 @@ async fn test_ledger_missing_tx_returns_404() {
 }
 
 #[tokio::test]
-async fn test_ledger_search_missing_query_returns_400() {
+#[allow(non_snake_case)]
+async fn test_ledger_search_missing_query_returns_400__slow() {
     let guard = temp_layout();
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
@@ -578,7 +589,8 @@ async fn test_ledger_search_missing_query_returns_400() {
 }
 
 #[tokio::test]
-async fn test_ledger_search_returns_array() {
+#[allow(non_snake_case)]
+async fn test_ledger_search_returns_array__slow() {
     let guard = temp_layout();
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
@@ -598,7 +610,8 @@ async fn test_ledger_search_returns_array() {
 }
 
 #[tokio::test]
-async fn test_changes_returns_array() {
+#[allow(non_snake_case)]
+async fn test_changes_returns_array__slow() {
     let guard = temp_layout();
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
@@ -617,7 +630,8 @@ async fn test_changes_returns_array() {
 }
 
 #[tokio::test]
-async fn test_hotspots_returns_array() {
+#[allow(non_snake_case)]
+async fn test_hotspots_returns_array__slow() {
     let guard = temp_layout();
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
@@ -673,7 +687,8 @@ async fn test_hotspots_returns_array() {
 /// Verify that `/api/hotspots` returns populated `lastTouchedAt` and
 /// `contributor` when the data is persisted in `project_files` (Track TA30).
 #[tokio::test]
-async fn test_hotspots_dto_reads_git_metadata_from_project_files() {
+#[allow(non_snake_case)]
+async fn test_hotspots_dto_reads_git_metadata_from_project_files__slow() {
     use ledgerful::state::migrations::get_migrations;
 
     let guard = temp_layout();
@@ -773,7 +788,8 @@ async fn test_hotspots_dto_reads_git_metadata_from_project_files() {
 }
 
 #[tokio::test]
-async fn test_latest_impact_report_returns_json() {
+#[allow(non_snake_case)]
+async fn test_latest_impact_report_returns_json__slow() {
     let guard = temp_layout();
     let reports_dir = guard.layout().reports_dir();
     std::fs::create_dir_all(&reports_dir).unwrap();
@@ -800,7 +816,8 @@ async fn test_latest_impact_report_returns_json() {
 }
 
 #[tokio::test]
-async fn test_latest_verify_report_returns_json() {
+#[allow(non_snake_case)]
+async fn test_latest_verify_report_returns_json__slow() {
     let guard = temp_layout();
     let reports_dir = guard.layout().reports_dir();
     std::fs::create_dir_all(&reports_dir).unwrap();
@@ -827,7 +844,8 @@ async fn test_latest_verify_report_returns_json() {
 }
 
 #[tokio::test]
-async fn test_hotspots_trend_returns_json() {
+#[allow(non_snake_case)]
+async fn test_hotspots_trend_returns_json__slow() {
     let guard = temp_layout();
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
@@ -848,7 +866,8 @@ async fn test_hotspots_trend_returns_json() {
 }
 
 #[tokio::test]
-async fn test_trends_returns_empty_array_when_no_data() {
+#[allow(non_snake_case)]
+async fn test_trends_returns_empty_array_when_no_data__slow() {
     let guard = temp_layout();
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
@@ -873,7 +892,8 @@ async fn test_trends_returns_empty_array_when_no_data() {
 }
 
 #[tokio::test]
-async fn api_trends_empty_window_reports_last_day() {
+#[allow(non_snake_case)]
+async fn api_trends_empty_window_reports_last_day__slow() {
     use ledgerful::state::storage::StorageManager;
 
     let empty = temp_layout();
@@ -947,7 +967,8 @@ async fn api_trends_empty_window_reports_last_day() {
 }
 
 #[tokio::test]
-async fn test_trends_returns_populated_data() {
+#[allow(non_snake_case)]
+async fn test_trends_returns_populated_data__slow() {
     use ledgerful::state::storage::StorageManager;
 
     let guard = temp_layout();
@@ -992,7 +1013,8 @@ async fn test_trends_returns_populated_data() {
 }
 
 #[tokio::test]
-async fn test_trends_days_param_returns_inclusive_n_day_window() {
+#[allow(non_snake_case)]
+async fn test_trends_days_param_returns_inclusive_n_day_window__slow() {
     use ledgerful::state::storage::StorageManager;
 
     let guard = temp_layout();
@@ -1051,7 +1073,8 @@ async fn test_trends_days_param_returns_inclusive_n_day_window() {
 }
 
 #[tokio::test]
-async fn test_endpoints_changed_returns_json() {
+#[allow(non_snake_case)]
+async fn test_endpoints_changed_returns_json__slow() {
     let guard = temp_layout();
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
@@ -1070,7 +1093,8 @@ async fn test_endpoints_changed_returns_json() {
 }
 
 #[tokio::test]
-async fn test_security_boundaries_returns_json() {
+#[allow(non_snake_case)]
+async fn test_security_boundaries_returns_json__slow() {
     let guard = temp_layout();
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
@@ -1092,7 +1116,8 @@ async fn test_security_boundaries_returns_json() {
 
 /// 0280 B4: populated REST mirrors CLI label+dedupe values (DTO unchanged).
 #[tokio::test]
-async fn test_security_boundaries_populated_parity_with_cli() {
+#[allow(non_snake_case)]
+async fn test_security_boundaries_populated_parity_with_cli__slow() {
     use ledgerful::state::graph_kinds::{EdgeKind, NodeKind};
     use ledgerful::state::storage::StorageManager;
     use ledgerful::state::storage_cozo::{GraphEdge, GraphNode};
@@ -1288,7 +1313,8 @@ permit (
 }
 
 #[tokio::test]
-async fn test_knowledge_graph_returns_json() {
+#[allow(non_snake_case)]
+async fn test_knowledge_graph_returns_json__slow() {
     let guard = temp_layout();
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
@@ -1310,7 +1336,8 @@ async fn test_knowledge_graph_returns_json() {
 }
 
 #[tokio::test]
-async fn test_problem_detail_on_forbidden() {
+#[allow(non_snake_case)]
+async fn test_problem_detail_on_forbidden__slow() {
     let guard = temp_layout();
     let (url, _token, handle) = spawn_server(guard.layout()).await;
 
@@ -1342,7 +1369,8 @@ async fn test_problem_detail_on_forbidden() {
 }
 
 #[tokio::test]
-async fn test_ledger_detail_returns_entry_shape() {
+#[allow(non_snake_case)]
+async fn test_ledger_detail_returns_entry_shape__slow() {
     let guard = temp_layout();
     let tx_id = "tx-detail-001";
     seed_ledger_entry(
@@ -1376,7 +1404,8 @@ async fn test_ledger_detail_returns_entry_shape() {
 }
 
 #[tokio::test]
-async fn test_rate_limit_returns_429_after_burst() {
+#[allow(non_snake_case)]
+async fn test_rate_limit_returns_429_after_burst__slow() {
     let guard = temp_layout();
     let (url, _token, handle) = spawn_server(guard.layout()).await;
 
@@ -1406,7 +1435,8 @@ async fn test_rate_limit_returns_429_after_burst() {
 }
 
 #[tokio::test]
-async fn test_spa_index_served_at_root() {
+#[allow(non_snake_case)]
+async fn test_spa_index_served_at_root__slow() {
     let guard = temp_layout();
     let spa_tmp = tempfile::tempdir().unwrap();
     let spa_dir = camino::Utf8Path::from_path(spa_tmp.path())
@@ -1473,7 +1503,8 @@ async fn test_spa_index_served_at_root() {
 /// `capture_git_author`) is what's actually writing the `author`
 /// column the response then reads.
 #[tokio::test]
-async fn test_api_ledger_includes_author_from_git_config() {
+#[allow(non_snake_case)]
+async fn test_api_ledger_includes_author_from_git_config__slow() {
     use ledgerful::config::model::Config;
     use ledgerful::ledger::transaction::TransactionManager;
     use ledgerful::ledger::types::{ChangeType, CommitRequest, TransactionRequest};
@@ -1599,7 +1630,8 @@ async fn test_api_ledger_includes_author_from_git_config() {
 /// `tx_id` from `ledger commit`). The write side is a documented
 /// follow-up (see `m45_ledger_verification_runs_tx.rs:14-19`).
 #[tokio::test]
-async fn test_api_ledger_detail_reads_verification_enrichment() {
+#[allow(non_snake_case)]
+async fn test_api_ledger_detail_reads_verification_enrichment__slow() {
     use ledgerful::state::storage::StorageManager;
 
     let guard = temp_layout();
@@ -1796,7 +1828,8 @@ async fn test_api_ledger_detail_reads_verification_enrichment() {
 /// asserts the dashboard reports a non-`healthy` status plus the
 /// timestamp from the report.
 #[tokio::test]
-async fn test_api_projects_reflect_impact_report() {
+#[allow(non_snake_case)]
+async fn test_api_projects_reflect_impact_report__slow() {
     let guard = temp_layout();
     let layout = guard.layout();
 
@@ -1883,7 +1916,8 @@ async fn test_api_projects_reflect_impact_report() {
 /// endpoint is not registered.
 #[cfg(feature = "sync")]
 #[tokio::test]
-async fn test_api_sync_status_when_never_synced() {
+#[allow(non_snake_case)]
+async fn test_api_sync_status_when_never_synced__slow() {
     let guard = temp_layout();
     let layout = guard.layout();
 
@@ -1925,7 +1959,8 @@ async fn test_api_sync_status_when_never_synced() {
 /// are valid.
 #[cfg(feature = "sync")]
 #[tokio::test]
-async fn test_api_sync_status_after_init() {
+#[allow(non_snake_case)]
+async fn test_api_sync_status_after_init__slow() {
     use ledgerful::state::storage::StorageManager;
 
     let guard = temp_layout();
@@ -2051,7 +2086,8 @@ async fn test_api_sync_status_returns_501_without_sync_feature() {
 /// `count_doctor_failures` and `write_doctor_results` unit tests in
 /// `src/commands/doctor.rs`.
 #[tokio::test]
-async fn test_api_projects_health_score_reflects_doctor_results() {
+#[allow(non_snake_case)]
+async fn test_api_projects_health_score_reflects_doctor_results__slow() {
     let guard = temp_layout();
     let layout = guard.layout();
 
@@ -2133,7 +2169,8 @@ async fn test_api_projects_health_score_reflects_doctor_results() {
 /// 0 Ã¢â‚¬â€ the existing behavior Ã¢â‚¬â€ and the health_score reflects the
 /// risk term only.
 #[tokio::test]
-async fn test_api_projects_health_score_no_doctor_file_is_clean() {
+#[allow(non_snake_case)]
+async fn test_api_projects_health_score_no_doctor_file_is_clean__slow() {
     let guard = temp_layout();
     let layout = guard.layout();
 
@@ -2194,7 +2231,8 @@ async fn test_api_projects_health_score_no_doctor_file_is_clean() {
 /// state, not an unparseable report. It must not fall into the 40-point
 /// "unknown report" penalty the way a genuinely corrupt file does.
 #[tokio::test]
-async fn test_api_projects_health_score_clean_tree_tombstone_not_penalized() {
+#[allow(non_snake_case)]
+async fn test_api_projects_health_score_clean_tree_tombstone_not_penalized__slow() {
     let guard = temp_layout();
     let layout = guard.layout();
 
@@ -2490,7 +2528,8 @@ fn seed_verification_runs(layout: &Layout) {
 }
 
 #[tokio::test]
-async fn test_verify_health_no_runs_is_degraded() {
+#[allow(non_snake_case)]
+async fn test_verify_health_no_runs_is_degraded__slow() {
     let guard = temp_layout();
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
@@ -2526,7 +2565,8 @@ async fn test_verify_health_no_runs_is_degraded() {
 }
 
 #[tokio::test]
-async fn test_verify_health_failing_when_latest_run_failed() {
+#[allow(non_snake_case)]
+async fn test_verify_health_failing_when_latest_run_failed__slow() {
     let guard = temp_layout();
     seed_verification_runs(&guard.layout());
 
@@ -2564,7 +2604,8 @@ async fn test_verify_health_failing_when_latest_run_failed() {
 }
 
 #[tokio::test]
-async fn test_verify_health_healthy_when_latest_run_passed_recently() {
+#[allow(non_snake_case)]
+async fn test_verify_health_healthy_when_latest_run_passed_recently__slow() {
     let guard = temp_layout();
     {
         use ledgerful::state::storage::StorageManager;
@@ -2601,7 +2642,8 @@ async fn test_verify_health_healthy_when_latest_run_passed_recently() {
 }
 
 #[tokio::test]
-async fn test_verify_history_aggregates_by_date() {
+#[allow(non_snake_case)]
+async fn test_verify_history_aggregates_by_date__slow() {
     let guard = temp_layout();
     seed_verification_runs(&guard.layout());
     let (url, token, handle) = spawn_server(guard.layout()).await;
@@ -2644,7 +2686,8 @@ async fn test_verify_history_aggregates_by_date() {
 }
 
 #[tokio::test]
-async fn test_verify_steps_aggregates_per_command() {
+#[allow(non_snake_case)]
+async fn test_verify_steps_aggregates_per_command__slow() {
     let guard = temp_layout();
     seed_verification_runs(&guard.layout());
     let (url, token, handle) = spawn_server(guard.layout()).await;
@@ -2687,7 +2730,8 @@ async fn test_verify_steps_aggregates_per_command() {
 }
 
 #[tokio::test]
-async fn test_verify_steps_empty_when_no_db() {
+#[allow(non_snake_case)]
+async fn test_verify_steps_empty_when_no_db__slow() {
     let guard = temp_layout();
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
@@ -2707,7 +2751,8 @@ async fn test_verify_steps_empty_when_no_db() {
 }
 
 #[tokio::test]
-async fn test_verify_steps_name_falls_back_to_command_without_plan_json() {
+#[allow(non_snake_case)]
+async fn test_verify_steps_name_falls_back_to_command_without_plan_json__slow() {
     // When `plan_json` is absent/empty, `name` must fall back to `command`
     // (graceful degradation Ã¢â‚¬â€ no parse failure can break the endpoint).
     let guard = temp_layout();
@@ -2768,7 +2813,8 @@ async fn test_verify_steps_name_falls_back_to_command_without_plan_json() {
 }
 
 #[tokio::test]
-async fn test_verify_steps_name_strips_predicted_impact_traceability() {
+#[allow(non_snake_case)]
+async fn test_verify_steps_name_strips_predicted_impact_traceability__slow() {
     // The plan builder concatenates " | Predicted impact (<reason>) on <file>"
     // traceability segments onto a friendly label (for `verify --explain`).
     // The dashboard `name` must surface ONLY the friendly first segment, and
@@ -2892,7 +2938,8 @@ async fn fetch_compliance_signatures(url: &str, token: &str) -> serde_json::Valu
 /// the returned (sig, pub). The signed payload's `committed_at` and
 /// `category` match the seeded row, so `verify_signature` must succeed.
 #[tokio::test]
-async fn test_compliance_valid_signature() {
+#[allow(non_snake_case)]
+async fn test_compliance_valid_signature__slow() {
     use ledgerful::ledger::crypto::sign_ledger_entry_in;
 
     let home = tempfile::tempdir().unwrap();
@@ -2947,7 +2994,8 @@ async fn test_compliance_valid_signature() {
 /// summary than was signed. `verify_signature` must fail Ã¢â€ â€™ `INVALID` and
 /// `validityPercent < 100`.
 #[tokio::test]
-async fn test_compliance_tampered_signature_is_invalid() {
+#[allow(non_snake_case)]
+async fn test_compliance_tampered_signature_is_invalid__slow() {
     use ledgerful::ledger::crypto::sign_ledger_entry_in;
 
     let home = tempfile::tempdir().unwrap();
@@ -3003,7 +3051,8 @@ async fn test_compliance_tampered_signature_is_invalid() {
 /// config (`intent.require_signing=false`) Ã¢â€ â€™ `SKIPPED`, and does NOT count as
 /// invalid.
 #[tokio::test]
-async fn test_compliance_unsigned_skipped_when_not_required() {
+#[allow(non_snake_case)]
+async fn test_compliance_unsigned_skipped_when_not_required__slow() {
     let guard = temp_layout();
     let layout = guard.layout();
     let tx_id = "tx-compliance-skipped-001";
@@ -3034,7 +3083,8 @@ async fn test_compliance_unsigned_skipped_when_not_required() {
 /// UNSIGNED Ã¢â€ â€™ INVALID when `intent.require_signing=true`: an unsigned row
 /// with signing required must classify as `INVALID`.
 #[tokio::test]
-async fn test_compliance_unsigned_invalid_when_required() {
+#[allow(non_snake_case)]
+async fn test_compliance_unsigned_invalid_when_required__slow() {
     let guard = temp_layout();
     let layout = guard.layout();
     let tx_id = "tx-compliance-required-001";
@@ -3069,7 +3119,8 @@ async fn test_compliance_unsigned_invalid_when_required() {
 /// Empty state (no DB): `summary` is the zero/null payload and `signatures`
 /// is `[]`. Must be HTTP 200, not an error.
 #[tokio::test]
-async fn test_compliance_empty_state_no_db() {
+#[allow(non_snake_case)]
+async fn test_compliance_empty_state_no_db__slow() {
     let guard = temp_layout();
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
@@ -3087,7 +3138,8 @@ async fn test_compliance_empty_state_no_db() {
 /// `lastAuditAt` must serialize as `null` (present, not omitted) in the empty
 /// state Ã¢â‚¬â€ the frontend contract is `lastAuditAt: string | null`.
 #[tokio::test]
-async fn test_compliance_summary_last_audit_at_serializes_as_null_in_empty_state() {
+#[allow(non_snake_case)]
+async fn test_compliance_summary_last_audit_at_serializes_as_null_in_empty_state__slow() {
     let guard = temp_layout();
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
@@ -3111,60 +3163,61 @@ async fn test_compliance_summary_last_audit_at_serializes_as_null_in_empty_state
 
 /// `hotspotDeltaPercent`: seed two `hotspot_history` snapshots with different
 /// total row counts and assert the computed percent delta.
-#[rstest::rstest]
-#[case::increase(4, 5, 25.0)]
-#[case::single_snapshot(1, 0, 0.0)]
-#[case::decrease(5, 4, -20.0)]
+///
+/// One function, not rstest: profile filters match `__slow` at the end of the
+/// test id, and an rstest case id ends in `::case_N`, so it would stay in
+/// profile `ci`.
 #[tokio::test]
-async fn test_compliance_hotspot_delta_percent(
-    #[case] old_count: usize,
-    #[case] new_count: usize,
-    #[case] expected_percent: f64,
-) {
-    use ledgerful::state::storage::StorageManager;
+#[allow(non_snake_case)]
+async fn test_compliance_hotspot_delta_percent__slow() {
+    for (old_count, new_count, expected_percent) in
+        [(4_usize, 5_usize, 25.0_f64), (1, 0, 0.0), (5, 4, -20.0)]
+    {
+        use ledgerful::state::storage::StorageManager;
 
-    let guard = temp_layout();
-    let layout = guard.layout();
-    // Use `StorageManager::init` (full migrations) rather than
-    // `seed_ledger_entry_with_ts` (minimal raw tables) so the `hotspot_history`
-    // table is created by its migration. No ledger entry is needed Ã¢â‚¬â€ the
-    // summary endpoint reads hotspot delta independently of the ledger.
-    layout.ensure_state_dir().unwrap();
-    let db_path = layout.state_subdir().join("ledger.db");
-    let storage = StorageManager::init(db_path.as_std_path()).unwrap();
-    let conn = storage.get_connection();
+        let guard = temp_layout();
+        let layout = guard.layout();
+        // Use `StorageManager::init` (full migrations) rather than
+        // `seed_ledger_entry_with_ts` (minimal raw tables) so the `hotspot_history`
+        // table is created by its migration. No ledger entry is needed Ã¢â‚¬â€ the
+        // summary endpoint reads hotspot delta independently of the ledger.
+        layout.ensure_state_dir().unwrap();
+        let db_path = layout.state_subdir().join("ledger.db");
+        let storage = StorageManager::init(db_path.as_std_path()).unwrap();
+        let conn = storage.get_connection();
 
-    for i in 0..old_count {
-        conn.execute(
-            "INSERT INTO hotspot_history \
+        for i in 0..old_count {
+            conn.execute(
+                "INSERT INTO hotspot_history \
              (file_path, score, display_score, complexity, frequency, timestamp) \
              VALUES (?1, 1.0, 1.0, 1, 1.0, '2026-06-19T09:00:00Z')",
-            rusqlite::params![format!("src/old{i}.rs")],
-        )
-        .unwrap();
-    }
-    for i in 0..new_count {
-        conn.execute(
-            "INSERT INTO hotspot_history \
+                rusqlite::params![format!("src/old{i}.rs")],
+            )
+            .unwrap();
+        }
+        for i in 0..new_count {
+            conn.execute(
+                "INSERT INTO hotspot_history \
              (file_path, score, display_score, complexity, frequency, timestamp) \
              VALUES (?1, 2.0, 2.0, 2, 2.0, '2026-06-20T09:00:00Z')",
-            rusqlite::params![format!("src/new{i}.rs")],
-        )
-        .unwrap();
-    }
+                rusqlite::params![format!("src/new{i}.rs")],
+            )
+            .unwrap();
+        }
 
-    let (url, token, handle) = spawn_server(layout).await;
-    let summary_json = fetch_compliance_summary(&url, &token).await;
-    assert_eq!(
-        summary_json["hotspotDeltaPercent"].as_f64(),
-        Some(expected_percent),
-        "expected {} percent delta ({}->{} hotspots); got {:?}",
-        expected_percent,
-        old_count,
-        new_count,
-        summary_json["hotspotDeltaPercent"]
-    );
-    handle.abort();
+        let (url, token, handle) = spawn_server(layout).await;
+        let summary_json = fetch_compliance_summary(&url, &token).await;
+        assert_eq!(
+            summary_json["hotspotDeltaPercent"].as_f64(),
+            Some(expected_percent),
+            "expected {} percent delta ({}->{} hotspots); got {:?}",
+            expected_percent,
+            old_count,
+            new_count,
+            summary_json["hotspotDeltaPercent"]
+        );
+        handle.abort();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3301,7 +3354,8 @@ fn hash_zip_file(body: &[u8], name: &str) -> String {
 /// the Ed25519 signature verifies, and the seeded content is present in the
 /// right files.
 #[tokio::test]
-async fn test_soc2_export_seeded() {
+#[allow(non_snake_case)]
+async fn test_soc2_export_seeded__slow() {
     use ledgerful::ledger::crypto::sign_ledger_entry_in;
 
     let home = tempfile::tempdir().unwrap();
@@ -3413,7 +3467,8 @@ async fn test_soc2_export_seeded() {
 /// header-only CSVs, no `adr/` files, and a signature that verifies over
 /// the manifest.
 #[tokio::test]
-async fn test_soc2_export_empty_state_no_db() {
+#[allow(non_snake_case)]
+async fn test_soc2_export_empty_state_no_db__slow() {
     use crate::common::TempEnv;
 
     let home = tempfile::tempdir().unwrap();
@@ -3470,7 +3525,8 @@ async fn test_soc2_export_empty_state_no_db() {
 /// manifest would detect the tamper. This proves the tamper-evidence
 /// contract actually catches modification.
 #[tokio::test]
-async fn test_soc2_export_tamper_detection() {
+#[allow(non_snake_case)]
+async fn test_soc2_export_tamper_detection__slow() {
     use ledgerful::ledger::crypto::sign_ledger_entry_in;
     use std::io::Read;
 
@@ -3561,12 +3617,13 @@ async fn test_soc2_export_tamper_detection() {
 /// and all data files untouched, then prove the Ed25519 signature over the
 /// ORIGINAL `manifest.json` does NOT verify against the tampered manifest
 /// bytes Ã¢â‚¬â€ i.e. `verifying_key.verify(&tampered_manifest, &signature)` is
-/// `Err`. This complements `test_soc2_export_tamper_detection` (which proves
+/// `Err`. This complements `test_soc2_export_tamper_detection__slow` (which proves
 /// the file-HASH leg catches a modified data file) by locking in the
 /// signature-rejection leg: any alteration to `manifest.json` itself is
 /// caught by the Ed25519 verifier, not just by per-file SHA-256 comparison.
 #[tokio::test]
-async fn test_soc2_export_tampered_manifest_fails_signature_verification() {
+#[allow(non_snake_case)]
+async fn test_soc2_export_tampered_manifest_fails_signature_verification__slow() {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
     use ledgerful::ledger::crypto::sign_ledger_entry_in;
 
@@ -3828,7 +3885,8 @@ fn count_sse_data_lines(body: &str) -> usize {
 }
 
 #[tokio::test]
-async fn test_events_requires_auth_dod1() {
+#[allow(non_snake_case)]
+async fn test_events_requires_auth_dod1__slow() {
     let guard = temp_layout();
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
@@ -3872,7 +3930,8 @@ async fn test_events_requires_auth_dod1() {
 }
 
 #[tokio::test]
-async fn test_events_detects_cross_connection_commit_dod5() {
+#[allow(non_snake_case)]
+async fn test_events_detects_cross_connection_commit_dod5__slow() {
     let guard = temp_layout();
     ensure_ledger_db(&guard.layout());
     let layout = guard.layout();
@@ -3914,7 +3973,8 @@ async fn test_events_detects_cross_connection_commit_dod5() {
 
 /// DoD-5: a write from a **separate OS process** is detected and streamed.
 #[tokio::test]
-async fn test_events_detects_separate_os_process_commit_dod5() {
+#[allow(non_snake_case)]
+async fn test_events_detects_separate_os_process_commit_dod5__slow() {
     let guard = temp_layout();
     ensure_ledger_db(&guard.layout());
     let layout = guard.layout();
@@ -3956,7 +4016,8 @@ async fn test_events_detects_separate_os_process_commit_dod5() {
 /// baseline must be silent so no second `data:` arrives without ledger writes.
 /// Keep-alive comment frames (`:` lines) are allowed; only `data:` counts.
 #[tokio::test]
-async fn test_events_idle_no_spurious_data_dod5() {
+#[allow(non_snake_case)]
+async fn test_events_idle_no_spurious_data_dod5__slow() {
     let guard = temp_layout();
     ensure_ledger_db(&guard.layout());
     let (url, token, handle) = spawn_server(guard.layout()).await;
@@ -3994,7 +4055,8 @@ async fn test_events_idle_no_spurious_data_dod5() {
 
 /// First successful data_version after missing DB must publish (not silent baseline).
 #[tokio::test]
-async fn test_events_first_availability_publishes_dod5() {
+#[allow(non_snake_case)]
+async fn test_events_first_availability_publishes_dod5__slow() {
     let guard = temp_layout();
     // No ledger.db yet â€” connect snapshot is zeros; detector has no baseline.
     let layout = guard.layout();
@@ -4035,7 +4097,8 @@ async fn test_events_first_availability_publishes_dod5() {
 }
 
 #[tokio::test]
-async fn test_events_graceful_shutdown_with_live_stream_dod6() {
+#[allow(non_snake_case)]
+async fn test_events_graceful_shutdown_with_live_stream_dod6__slow() {
     let guard = temp_layout();
     let (url, token, handle, shutdown_tx) = spawn_server_graceful(guard.layout()).await;
 

@@ -194,14 +194,9 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install cargo-auditable + cargo-audit
-        shell: bash
-        env:
-          # These tools are not shipped; build them as before, not under the job-level static CRT flag.
-          RUSTFLAGS: ""
-        run: |
-          set -euo pipefail
-          cargo install cargo-auditable --locked
-          cargo install cargo-audit --locked
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with:
+          tool: cargo-auditable,cargo-audit
       - shell: bash
         run: |
           # embed-spa is off by default. --all-features is what includes it, after the SPA artifact is downloaded.

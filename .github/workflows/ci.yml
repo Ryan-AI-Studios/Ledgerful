@@ -9,18 +9,100 @@ on:
   schedule:
     - cron: '0 4 * * *'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.classify.outputs.rust }}
+    steps:
+      - name: Classify rust vs docs-only
+        id: classify
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Fail closed: rust=true unless every changed file is cheap and off both lists.
+          # 0573-compile-exceptions-begin
+          # README.md
+          # SECURITY.md
+          # docs/Call-Resolution.md
+          # docs/Ledgerful/skill.md
+          # docs/agent-output-contract.md
+          # docs/golden-path.md
+          # docs/installation.md
+          # docs/package-distribution.md
+          # 0573-compile-exceptions-end
+          # 0573-runtime-exceptions-begin
+          # README.md
+          # docs/examples/config.toml
+          # 0573-runtime-exceptions-end
+          echo "rust=true" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            exit 0
+          fi
+          set +e
+          body=$(gh api --paginate "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" 2>gh-api.err)
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ]; then
+            exit 0
+          fi
+          files=$(printf '%s\n' "$body" | jq -s -e '
+            if length == 0 then error("empty")
+            elif (length == 1) and (.[0] | type) == "array" then .[0]
+            elif all(type == "array") then add
+            else error("not-arrays") end
+            | if all(type == "object" and has("filename")) then .
+              else error("not-entries") end
+          ') || exit 0
+          count=$(printf '%s\n' "$files" | jq 'length')
+          if [ "$count" -eq 0 ] || [ "$count" -ge 3000 ]; then
+            exit 0
+          fi
+          is_cheap() {
+            case "$1" in
+              docs/api/openapi.json) return 1 ;;
+              CHANGELOG.md|README.md|LICENSE|SECURITY.md|AGENTS.md|Agents.md|Claude.md|scripts/bump-manifests.ps1|scripts/bump-manifests.sh) return 0 ;;
+              docs/*|packaging/*) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+          is_exception() {
+            case "$1" in
+              README.md|SECURITY.md|docs/Call-Resolution.md|docs/Ledgerful/skill.md|docs/agent-output-contract.md|docs/golden-path.md|docs/installation.md|docs/package-distribution.md|docs/examples/config.toml) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+          docs_only=1
+          while IFS= read -r path; do
+            if ! is_cheap "$path" || is_exception "$path"; then
+              docs_only=0
+              break
+            fi
+          done < <(printf '%s\n' "$files" | jq -r '.[].filename')
+          if [ "$docs_only" -eq 1 ]; then
+            echo "rust=false" >> "$GITHUB_OUTPUT"
+          fi
+
   web-build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       # Public frontend repo — no PAT. Dependabot PR workflows cannot read
       # repository secrets (only Dependabot secrets), so a required token
-      # fails as empty ("Input required and not supplied: token") and blocks
-      # the whole CI graph (clippy/test need web-build).
+      # fails as empty ("Input required and not supplied: token").
+      # 0573: clippy, test, test-slow, and search-perf no longer need this job.
       # 0241 shipped-vs-tested: required ubuntu web-build still pins 4a1df7e2 / Node 22.
       # Tried frontend main 71d2d2db + Node 24: npm ci passed (not EBADENGINE); npm run
       # build failed in ~36s (not timeout) — Linux CSP/build class. release.yml still
@@ -58,31 +140,61 @@ jobs:
           # dtolnay uses rustup --profile minimal; fmt/clippy must request components.
           toolchain: 1.98.1
           components: rustfmt
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --check
 
   clippy:
-    needs: web-build
+    needs: changes
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
+      # GitHub rejects `matrix` in a job-level `if` ("Unrecognized named-value: matrix"),
+      # so Windows clippy is the separate job below. fail-fast stays false.
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest]
     steps:
+      - name: Docs-only suite skip
+        if: needs.changes.outputs.rust != 'true'
+        shell: bash
+        run: echo "Suite skipped as docs-only; this required check succeeded without compiling." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: ledgerful-web-spa
-          path: ../ledgerful-frontend/out
+        if: needs.changes.outputs.rust == 'true'
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+        if: needs.changes.outputs.rust == 'true'
         with:
           toolchain: 1.98.1
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        if: needs.changes.outputs.rust == 'true'
+      - name: cargo clippy
+        if: needs.changes.outputs.rust == 'true'
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  clippy-windows:
+    needs: changes
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Docs-only suite skip
+        if: needs.changes.outputs.rust != 'true'
+        shell: bash
+        run: echo "Suite skipped as docs-only; this required check succeeded without compiling." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.rust == 'true'
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+        if: needs.changes.outputs.rust == 'true'
+        with:
+          toolchain: 1.98.1
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: needs.changes.outputs.rust == 'true'
+      - name: cargo clippy
+        if: needs.changes.outputs.rust == 'true'
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   test:
-    needs: web-build
+    needs: changes
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -90,16 +202,24 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
+      - name: Docs-only suite skip
+        if: needs.changes.outputs.rust != 'true'
+        shell: bash
+        run: echo "Suite skipped as docs-only; this required check succeeded without compiling." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: ledgerful-web-spa
-          path: ../ledgerful-frontend/out
+        if: needs.changes.outputs.rust == 'true'
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+        if: needs.changes.outputs.rust == 'true'
         with:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: needs.changes.outputs.rust == 'true'
+        with:
+          shared-key: nextest-${{ runner.os }}
+          cache-workspace-crates: "true"
+          save-if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
       - name: Install cargo-nextest
+        if: needs.changes.outputs.rust == 'true'
         # Pin mainline v2 release SHA (not per-tool tags). Dependabot shallow-
         # clones cannot resolve diverged nextest/cargo-llvm-cov/cargo-mutants
         # convenience commits (error: no such commit).
@@ -108,6 +228,7 @@ jobs:
           tool: nextest
 
       - name: Run fast tier (default + integration)
+        if: needs.changes.outputs.rust == 'true'
         shell: bash
         # Uses `.config/nextest.toml` profile `ci` (excludes `__slow` tests).
         # `-j 4` on Windows: bounded parallelism (4 vCPU / 16 GB runner).
@@ -125,12 +246,12 @@ jobs:
           fi
 
       - name: Run doctests
-        if: runner.os != 'Windows'
+        if: needs.changes.outputs.rust == 'true' && runner.os != 'Windows'
         shell: bash
         run: cargo test --workspace --all-features --doc
 
   test-slow:
-    needs: [clippy]
+    needs: changes
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -138,21 +259,30 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
+      - name: Docs-only suite skip
+        if: needs.changes.outputs.rust != 'true'
+        shell: bash
+        run: echo "Suite skipped as docs-only; this required check succeeded without compiling." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: ledgerful-web-spa
-          path: ../ledgerful-frontend/out
+        if: needs.changes.outputs.rust == 'true'
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+        if: needs.changes.outputs.rust == 'true'
         with:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: needs.changes.outputs.rust == 'true'
+        with:
+          shared-key: nextest-${{ runner.os }}
+          cache-workspace-crates: "true"
+          save-if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
       - name: Install cargo-nextest
+        if: needs.changes.outputs.rust == 'true'
         uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
           tool: nextest
 
       - name: Run slow tier
+        if: needs.changes.outputs.rust == 'true'
         shell: bash
         # `-j 4` on Windows: bounded parallelism for the 4 vCPU / 16 GB runner.
         # See the `test` job and `.config/nextest.toml` [test-groups.serial].
@@ -164,17 +294,12 @@ jobs:
           fi
 
   search-perf:
-    needs: [clippy, web-build]
+    if: github.event_name == 'schedule'
     runs-on: windows-latest
     continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 15
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        timeout-minutes: 15
-        with:
-          name: ledgerful-web-spa
-          path: ../ledgerful-frontend/out
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         timeout-minutes: 15
         with:
@@ -241,18 +366,33 @@ jobs:
           path: search-perf-out/
 
   deny:
+    needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - name: Docs-only suite skip
+        if: needs.changes.outputs.rust != 'true'
+        shell: bash
+        run: echo "Suite skipped as docs-only; this required check succeeded without compiling." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.rust == 'true'
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+        if: needs.changes.outputs.rust == 'true'
         with:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo install cargo-deny --locked
-      - run: cargo deny check
-      - run: cargo install cargo-audit --locked
-      - run: cargo audit
+        if: needs.changes.outputs.rust == 'true'
+      - name: Install cargo-deny and cargo-audit
+        if: needs.changes.outputs.rust == 'true'
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with:
+          tool: cargo-deny,cargo-audit
+      - name: cargo deny check
+        if: needs.changes.outputs.rust == 'true'
+        run: cargo deny check
+      - name: cargo audit
+        if: needs.changes.outputs.rust == 'true'
+        run: cargo audit
 
   no-network-public-export:
     runs-on: ubuntu-latest
