@@ -2794,7 +2794,7 @@ fn test_include_str_material_stems_name_live_fns() {
         .collect();
     stems.sort_unstable();
     stems.dedup();
-    assert_eq!(stems.len(), 10, "distinct stem count");
+    assert_eq!(stems.len(), 11, "distinct stem count");
     let mut found = std::collections::BTreeSet::new();
     let mut failures = Vec::new();
     for dir in ["src", "tests", "crates"] {
