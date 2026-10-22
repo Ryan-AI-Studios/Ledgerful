@@ -1,3 +1,4 @@
+use crate::verify::assurance::ExecutionAssuranceJson;
 use crate::verify::plan::VerifyScope;
 use crate::verify::results::{VerificationReport, VerificationResult};
 use miette::{IntoDiagnostic, Result};
@@ -28,6 +29,10 @@ pub struct VerifyCliJson {
     /// schemaVersion stays **1** (additive optional field).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matched_steps: Option<usize>,
+    /// Which commands recorded results. Absent on legacy payloads (unknown),
+    /// never a fabricated pass. schemaVersion stays 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_assurance: Option<ExecutionAssuranceJson>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -70,6 +75,7 @@ impl VerifyCliJson {
         report: &VerificationReport,
         scope_requested: VerifyScope,
         matched_steps: Option<usize>,
+        execution_assurance: ExecutionAssuranceJson,
     ) -> Self {
         let plan = report.plan.as_ref();
         let refused = plan.is_some_and(|p| p.refused);
@@ -104,6 +110,7 @@ impl VerifyCliJson {
             timestamp: report.timestamp.clone(),
             tx_id: report.tx_id.clone(),
             matched_steps,
+            execution_assurance: Some(execution_assurance),
         }
     }
 
@@ -153,12 +160,19 @@ mod verify_cli_json_tests {
     use crate::verify::plan::{PlanSource, VerificationPlan};
     use crate::verify::results::VerificationReport;
 
-    use super::super::test_support::{sample_report, sample_report_with_refused, sample_result};
+    use super::super::test_support::{
+        fixture_assurance, sample_report, sample_report_with_refused, sample_result,
+    };
 
     #[test]
     fn schema_version_and_ok_from_report() {
         let report = sample_report(vec![sample_result("cargo test", 0)], None);
-        let payload = VerifyCliJson::from_report(&report, VerifyScope::Full, None);
+        let payload = VerifyCliJson::from_report(
+            &report,
+            VerifyScope::Full,
+            None,
+            fixture_assurance(&report),
+        );
         assert_eq!(payload.schema_version, VERIFY_JSON_SCHEMA_VERSION);
         assert!(payload.ok);
         assert_eq!(payload.scope_requested, "full");
@@ -177,7 +191,12 @@ mod verify_cli_json_tests {
             vec![sample_result("cargo test", 0)],
             Some("fast scope unavailable — empty test_mapping; running full (~5-8 min)"),
         );
-        let payload = VerifyCliJson::from_report(&report, VerifyScope::Fast, None);
+        let payload = VerifyCliJson::from_report(
+            &report,
+            VerifyScope::Fast,
+            None,
+            fixture_assurance(&report),
+        );
         assert_eq!(payload.scope_requested, "fast");
         assert_eq!(payload.scope_executed, "full");
         assert!(payload.fallback_reason.as_ref().unwrap().contains("empty"));
@@ -194,7 +213,12 @@ mod verify_cli_json_tests {
         );
         // Vacuous overall_pass on empty results would be true without the force.
         assert!(!report.overall_pass || report.results.is_empty());
-        let payload = VerifyCliJson::from_report(&report, VerifyScope::Fast, None);
+        let payload = VerifyCliJson::from_report(
+            &report,
+            VerifyScope::Fast,
+            None,
+            fixture_assurance(&report),
+        );
         assert!(!payload.ok, "refused must never report ok:true");
         assert_eq!(payload.scope_requested, "fast");
         assert_eq!(payload.scope_executed, "refused");
@@ -223,7 +247,12 @@ mod verify_cli_json_tests {
         report.timestamp = "2026-01-01T00:00:00Z".into();
         // Vacuous .all() on empty results is true — the bug 0135 guards against.
         assert!(report.overall_pass);
-        let payload = VerifyCliJson::from_report(&report, VerifyScope::Fast, None);
+        let payload = VerifyCliJson::from_report(
+            &report,
+            VerifyScope::Fast,
+            None,
+            fixture_assurance(&report),
+        );
         assert!(!payload.ok);
         assert_eq!(payload.scope_executed, "refused");
         assert!(payload.steps.is_empty());
@@ -238,7 +267,12 @@ mod verify_cli_json_tests {
             ],
             None,
         );
-        let payload = VerifyCliJson::from_report(&report, VerifyScope::Fast, None);
+        let payload = VerifyCliJson::from_report(
+            &report,
+            VerifyScope::Fast,
+            None,
+            fixture_assurance(&report),
+        );
         assert!(!payload.ok);
         assert_eq!(payload.steps[0].status, "pass");
         assert_eq!(payload.steps[1].status, "fail");
@@ -252,7 +286,12 @@ mod verify_cli_json_tests {
         let mut result = sample_result("cargo fmt --all -- --check", 1);
         result.stderr_summary = "Diff in src/lib.rs:\nDiff in src/main.rs:\n".into();
         let report = sample_report(vec![result], None);
-        let payload = VerifyCliJson::from_report(&report, VerifyScope::Fast, None);
+        let payload = VerifyCliJson::from_report(
+            &report,
+            VerifyScope::Fast,
+            None,
+            fixture_assurance(&report),
+        );
         assert_eq!(payload.schema_version, 1);
         assert!(!payload.ok);
         let paths = payload.steps[0].failed_paths.as_ref().expect("paths");
@@ -264,10 +303,12 @@ mod verify_cli_json_tests {
         assert!(json.contains("\"failedPaths\""));
         assert!(json.contains("src/lib.rs"));
         // Pass steps omit the field.
+        let pass_report = sample_report(vec![sample_result("cargo test", 0)], None);
         let pass = VerifyCliJson::from_report(
-            &sample_report(vec![sample_result("cargo test", 0)], None),
+            &pass_report,
             VerifyScope::Full,
             None,
+            fixture_assurance(&pass_report),
         );
         assert!(pass.steps[0].failed_paths.is_none());
         assert!(!pass.to_json_string().unwrap().contains("failedPaths"));
@@ -276,16 +317,31 @@ mod verify_cli_json_tests {
     #[test]
     fn matched_steps_additive_schema_v1() {
         let report = sample_report(vec![sample_result("cargo test", 0)], None);
-        let with = VerifyCliJson::from_report(&report, VerifyScope::Full, Some(2));
+        let with = VerifyCliJson::from_report(
+            &report,
+            VerifyScope::Full,
+            Some(2),
+            fixture_assurance(&report),
+        );
         assert_eq!(with.schema_version, 1);
         assert_eq!(with.matched_steps, Some(2));
         let json = with.to_json_string().unwrap();
         assert!(json.contains("\"matchedSteps\": 2"));
-        let without = VerifyCliJson::from_report(&report, VerifyScope::Full, None);
+        let without = VerifyCliJson::from_report(
+            &report,
+            VerifyScope::Full,
+            None,
+            fixture_assurance(&report),
+        );
         assert!(without.matched_steps.is_none());
         assert!(!without.to_json_string().unwrap().contains("matchedSteps"));
         // Vacuous honesty: matched_steps=0 still serializes (ordering ran, zero hits).
-        let zero = VerifyCliJson::from_report(&report, VerifyScope::Full, Some(0));
+        let zero = VerifyCliJson::from_report(
+            &report,
+            VerifyScope::Full,
+            Some(0),
+            fixture_assurance(&report),
+        );
         assert_eq!(zero.matched_steps, Some(0));
         assert!(
             zero.to_json_string()
@@ -308,7 +364,12 @@ mod verify_cli_json_tests {
             ],
             None,
         );
-        let payload = VerifyCliJson::from_report(&report, VerifyScope::Fast, None);
+        let payload = VerifyCliJson::from_report(
+            &report,
+            VerifyScope::Fast,
+            None,
+            fixture_assurance(&report),
+        );
         assert_eq!(payload.schema_version, 1);
         assert_eq!(payload.schema_version, VERIFY_JSON_SCHEMA_VERSION);
         assert_eq!(payload.scope_requested, "fast");
@@ -344,12 +405,22 @@ mod verify_cli_json_tests {
             ],
             None,
         );
-        let a = VerifyCliJson::from_report(&report, VerifyScope::Fast, None)
-            .to_json_string()
-            .unwrap();
-        let b = VerifyCliJson::from_report(&report, VerifyScope::Fast, None)
-            .to_json_string()
-            .unwrap();
+        let a = VerifyCliJson::from_report(
+            &report,
+            VerifyScope::Fast,
+            None,
+            fixture_assurance(&report),
+        )
+        .to_json_string()
+        .unwrap();
+        let b = VerifyCliJson::from_report(
+            &report,
+            VerifyScope::Fast,
+            None,
+            fixture_assurance(&report),
+        )
+        .to_json_string()
+        .unwrap();
         assert_eq!(a, b);
         let parsed: VerifyCliJson = serde_json::from_str(&a).unwrap();
         assert_eq!(parsed.schema_version, 1);
@@ -373,9 +444,41 @@ mod verify_cli_json_tests {
                 vec![sample_result("cargo test", exit)]
             };
             let report = sample_report(results, None);
-            let payload = VerifyCliJson::from_report(&report, VerifyScope::Full, None);
+            let payload = VerifyCliJson::from_report(
+                &report,
+                VerifyScope::Full,
+                None,
+                fixture_assurance(&report),
+            );
             assert_eq!(payload.ok, expect_ok, "exit={exit}");
             assert_eq!(payload.ok, exit == 0);
         }
+    }
+
+    #[test]
+    fn legacy_payload_without_execution_assurance_deserializes_none() {
+        let legacy = r#"{
+            "schemaVersion": 1,
+            "ok": true,
+            "scopeRequested": "fast",
+            "scopeExecuted": "fast",
+            "steps": [],
+            "timestamp": "2026-07-28T12:00:00+00:00"
+        }"#;
+        let parsed: VerifyCliJson = serde_json::from_str(legacy).unwrap();
+        assert!(parsed.execution_assurance.is_none());
+        let round = serde_json::to_string(&parsed).unwrap();
+        assert!(!round.contains("executionAssurance"));
+        let report = sample_report(vec![sample_result("cargo fmt --all -- --check", 0)], None);
+        let produced = VerifyCliJson::from_report(
+            &report,
+            VerifyScope::Fast,
+            None,
+            fixture_assurance(&report),
+        );
+        let wire = produced.to_json_string().unwrap();
+        assert!(wire.contains("\"testCasesRun\":null") || wire.contains("\"testCasesRun\": null"));
+        let again: VerifyCliJson = serde_json::from_str(&wire).unwrap();
+        assert!(again.execution_assurance.unwrap().test_cases_run.is_none());
     }
 }
