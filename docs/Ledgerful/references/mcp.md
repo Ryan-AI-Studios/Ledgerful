@@ -72,7 +72,7 @@ still writes concrete command/args and never writes secrets or embedding URLs.
 8. `endpoints_changed`: API endpoints affected by current diff. Tool text is the CLI `endpoints --changed --json` envelope (`schemaVersion` 1, `results[]`) behind the structured provenance line (0552).
 9. `security_boundaries`: Security policy graph summary. Tool text is the structured `security boundaries --json` document behind the provenance line (0552).
 10. `dead_code`: Confidence-ranked dead code candidates in the repo.
-11. `verify_plan`: Predicted test list for the current diff, without running tests.
+11. `verify_plan`: Prediction of the verification plan for the current diff. No verification commands are executed. The framed object flattens the existing plan and adds `executionAssurance` (`execution: planned`, zero recorded results, `selectionCompleteness: not-established`). Completeness is not established. `scan --impact` still runs. Sanitized command text is not a copy-paste guarantee.
 
 ## Known Limitations
 
