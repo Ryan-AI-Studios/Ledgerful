@@ -128,6 +128,10 @@ pub(crate) const INCLUDE_STR_MATERIAL: &[(&str, &[&str])] = &[
             "smoke_yml_installs_without_building_the_spa",
         ],
     ),
+    (
+        "docs/verify-performance.md",
+        &["cli_verify_assurance_docs_contract"],
+    ),
 ];
 
 /// Nextest `test()` stems for a cheap `include_str!` path, or empty.
