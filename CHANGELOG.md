@@ -12,6 +12,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Execution assurance (0555):** executed `verify --json`, `verify --json --dry-run`, and MCP `verify_plan` add nested `executionAssurance` (`schemaVersion` 1). It records whether the planned commands ran, whether a recognized test command was attempted, and that case counts, affected-test completeness, and exclusions stay unknown. `testCasesRun` is JSON `null`. Human verify prints one `Assurance:` line; `results recorded` is not pass wording, and a nextest exit 4 says `runner reported no tests` without claiming an excluded profile was detected. **Consumer-visible change:** quiet success stdout gains that line immediately before `Verification passed`; failing stdout gains it before the existing stderr `Verification failed` and does not say `Verification passed`; dry-run human and JSON, executed JSON, and the MCP preview include the packet. Root `schemaVersion` stays 1. HTTP `/api/verify/health` is unchanged. Package stays `0.2.17`.
 - **Ask kg note (0515):** a printed `kg=0` on `[Evidence]` and `[AskMeta]` names `kgNote` (`skipped`, `not-gathered`, `no-global-fallback`, `fallback-off`, `unavailable`, `no-match`) immediately after `kg=0`. `kg>0` omits the token. A length stop still exits 1. No `ask --json`. `schemaVersion` stays 1. Package stays `0.2.17`.
 
 ### Fixed
