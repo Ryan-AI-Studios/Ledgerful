@@ -3,6 +3,9 @@
 //! Dto schema tests and execute tests both import from here so dto does not
 //! depend on execute and the fixtures are not duplicated.
 
+use crate::verify::assurance::{
+    AssuranceInputs, ExecutionAssuranceJson, build_execution_assurance,
+};
 use crate::verify::plan::{PlanSource, VerificationPlan, VerificationStep};
 use crate::verify::results::{VerificationReport, VerificationResult};
 
@@ -52,6 +55,27 @@ pub(crate) fn sample_report_with_refused(
         report.overall_pass = false;
     }
     report
+}
+
+/// Test-only assurance for a sample report. Normal tests still call
+/// `VerifyCliJson::from_report` with this required context.
+pub(crate) fn fixture_assurance(report: &VerificationReport) -> ExecutionAssuranceJson {
+    let empty = Vec::new();
+    let steps = report
+        .plan
+        .as_ref()
+        .map(|plan| plan.steps.as_slice())
+        .unwrap_or(empty.as_slice());
+    let plan_source = report.plan.as_ref().and_then(|plan| plan.source.clone());
+    let refused = report.plan.as_ref().is_some_and(|plan| plan.refused);
+    build_execution_assurance(AssuranceInputs {
+        planned_steps: steps,
+        results: &report.results,
+        plan_source,
+        manual_requested: false,
+        preview: false,
+        refused,
+    })
 }
 
 /// Test-only step builder for dto/execute fixtures (not production `manual_step`).
