@@ -149,7 +149,7 @@ pub const INVENTORY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         name: "verify_plan",
-        description: "Predict the verification plan (test targets) for current changes.",
+        description: "Predict the verification plan for current changes. This is a prediction: no verification commands are executed, and affected-test completeness is not established.",
         schema_json: r#"{"type": "object", "properties": {}}"#,
     },
 ];
