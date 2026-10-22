@@ -438,5 +438,38 @@ pub(super) fn handle_verify_plan(_params: Value) -> Value {
         &profile,
         layout.root.as_std_path(),
     );
-    json_response(&plan)
+    json_response(&build_verify_plan_preview(&plan))
+}
+
+/// Typed preview wrapper. Flattens the existing plan and adds execution assurance.
+/// Does not run verification commands.
+#[derive(serde::Serialize)]
+pub struct VerifyPlanPreviewJson<'a> {
+    #[serde(flatten)]
+    plan: &'a crate::verify::plan::VerificationPlan,
+    #[serde(rename = "executionAssurance")]
+    execution_assurance: crate::verify::assurance::ExecutionAssuranceJson,
+}
+
+pub fn build_verify_plan_preview(
+    plan: &crate::verify::plan::VerificationPlan,
+) -> VerifyPlanPreviewJson<'_> {
+    let execution_assurance = crate::verify::assurance::build_execution_assurance(
+        crate::verify::assurance::AssuranceInputs {
+            planned_steps: &plan.steps,
+            results: &[],
+            plan_source: plan.source.clone(),
+            manual_requested: false,
+            preview: true,
+            refused: plan.refused,
+        },
+    );
+    VerifyPlanPreviewJson {
+        plan,
+        execution_assurance,
+    }
+}
+
+pub fn frame_verify_plan_preview(plan: &crate::verify::plan::VerificationPlan) -> Value {
+    json_response(&build_verify_plan_preview(plan))
 }
