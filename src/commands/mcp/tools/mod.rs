@@ -9,6 +9,7 @@ mod spawn;
 #[cfg(test)]
 mod tests;
 
+pub use handlers::{build_verify_plan_preview, frame_verify_plan_preview};
 pub use spawn::McpToolError;
 
 use envelope::error_response;
