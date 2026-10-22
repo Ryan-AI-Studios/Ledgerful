@@ -68,9 +68,10 @@ Ledger [C:\dev\my-project]: 0 pending, 0 unaudited drift.
 WARN Search index empty after rebuild (0 documents). No indexable content found — check ignore patterns; empty repo or filters may leave the index empty.
 ```
 
-`ledgerful verify --scope fast`:
+`ledgerful verify --scope fast` quiet success ends with the assurance line, then the trailing pass line. A fmt/clippy-only plan looks like this. A plan that ran `cargo nextest run` says `test commands attempted (case execution unproven)` and still leaves the case count unavailable:
 
 ```text
+Assurance: 2/2 command results (results recorded); test commands not invoked; test-case count unavailable; affected-test completeness not established; exclusions not inventoried.
 Verification passed
 ```
 

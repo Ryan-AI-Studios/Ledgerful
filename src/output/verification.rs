@@ -1,4 +1,5 @@
 use crate::output::diagnostics::print_header;
+use crate::verify::assurance::ExecutionAssuranceJson;
 use crate::verify::engine::VerificationContext;
 use crate::verify::plan::{VerificationStep, VerifyScope};
 use crate::verify::results::VerificationReport;
@@ -81,13 +82,15 @@ pub fn dry_run_scope_line(scope: VerifyScope) -> String {
 ///    engine would execute; do not filter by description — pure predicted-impact
 ///    rows still carry real commands, B1 rule 2 / B5)
 /// 4. Predicted Impacts (grouped by source) — omit section when empty
-/// 5. Dry-run footer
+/// 5. Assurance line (planned only; no command was executed)
+/// 6. Dry-run footer
 pub fn format_dry_run_human(
     steps: &[VerificationStep],
     matched: Option<usize>,
     dataset_keys: Option<usize>,
     dry_verbose: bool,
     scope: VerifyScope,
+    assurance: &ExecutionAssuranceJson,
 ) -> String {
     let mut sections: Vec<String> = Vec::new();
     sections.push(dry_run_scope_line(scope));
@@ -142,6 +145,7 @@ pub fn format_dry_run_human(
         sections.push(block);
     }
 
+    sections.push(crate::verify::assurance::format_assurance_line(assurance));
     sections.push(
         "Dry run mode: verification plan displayed above. No commands were executed.".to_string(),
     );
@@ -158,11 +162,16 @@ pub fn print_dry_run_human(
     dataset_keys: Option<usize>,
     dry_verbose: bool,
     scope: VerifyScope,
+    assurance: &ExecutionAssuranceJson,
 ) {
     print!(
         "{}",
-        format_dry_run_human(steps, matched, dataset_keys, dry_verbose, scope)
+        format_dry_run_human(steps, matched, dataset_keys, dry_verbose, scope, assurance)
     );
+}
+
+pub fn format_assurance_line(packet: &ExecutionAssuranceJson) -> String {
+    crate::verify::assurance::format_assurance_line(packet)
 }
 
 /// Whether to print Suggested Actions / full human report chatter after verify.
@@ -416,8 +425,22 @@ mod tests {
         should_emit_verify_step_progress, should_print_success_step,
         should_print_suggested_actions, verify_step_result_label,
     };
-    use crate::verify::plan::{VerificationStep, VerifyScope};
+    use crate::verify::assurance::{
+        AssuranceInputs, ExecutionAssuranceJson, build_execution_assurance,
+    };
+    use crate::verify::plan::{PlanSource, VerificationStep, VerifyScope};
     use std::time::Duration;
+
+    fn preview_assurance(steps: &[VerificationStep]) -> ExecutionAssuranceJson {
+        build_execution_assurance(AssuranceInputs {
+            planned_steps: steps,
+            results: &[],
+            plan_source: Some(PlanSource::AutoPolicy),
+            manual_requested: false,
+            preview: true,
+            refused: false,
+        })
+    }
 
     fn step(command: &str, description: &str) -> VerificationStep {
         VerificationStep {
@@ -582,7 +605,14 @@ mod tests {
             step("cargo clippy --all-targets", &desc),
             step("cargo nextest run", "From rules: cargo nextest run"),
         ];
-        let formatted = format_dry_run_human(&steps, Some(3), Some(11), false, VerifyScope::Full);
+        let formatted = format_dry_run_human(
+            &steps,
+            Some(3),
+            Some(11),
+            false,
+            VerifyScope::Full,
+            &preview_assurance(&steps),
+        );
 
         assert!(
             formatted.contains("Bayesian ordering: matched_steps=3 dataset_keys=11"),
@@ -628,7 +658,14 @@ mod tests {
             | Predicted impact (CallGraph) on c.rs \
             | Predicted impact (CallGraph) on d.rs";
         let steps = vec![step("cargo clippy", desc)];
-        let formatted = format_dry_run_human(&steps, Some(1), Some(2), true, VerifyScope::Full);
+        let formatted = format_dry_run_human(
+            &steps,
+            Some(1),
+            Some(2),
+            true,
+            VerifyScope::Full,
+            &preview_assurance(&steps),
+        );
 
         // All 4 paths, one per line
         for p in ["a.rs", "b.rs", "c.rs", "d.rs"] {
@@ -663,7 +700,14 @@ mod tests {
             "cargo clippy",
             "From rules: cargo clippy --all-targets",
         )];
-        let formatted = format_dry_run_human(&steps, None, None, false, VerifyScope::Full);
+        let formatted = format_dry_run_human(
+            &steps,
+            None,
+            None,
+            false,
+            VerifyScope::Full,
+            &preview_assurance(&steps),
+        );
         assert!(!formatted.contains("Predicted Impacts"));
         assert!(!formatted.contains("Bayesian ordering:"));
         assert!(formatted.contains("Verification Steps:"));
@@ -676,7 +720,14 @@ mod tests {
     fn format_dry_run_matched_zero_still_prints_line() {
         // 0140 vacuous honesty: ordering ran, zero hits — still print key=value.
         let steps = vec![step("cargo test", "From rules: cargo test")];
-        let formatted = format_dry_run_human(&steps, Some(0), Some(5), false, VerifyScope::Full);
+        let formatted = format_dry_run_human(
+            &steps,
+            Some(0),
+            Some(5),
+            false,
+            VerifyScope::Full,
+            &preview_assurance(&steps),
+        );
         assert!(formatted.contains("Bayesian ordering: matched_steps=0 dataset_keys=5"));
     }
 
@@ -689,7 +740,14 @@ mod tests {
             "cargo fmt --all -- --check",
             "Predicted impact (Temporal) on docs/x.md",
         )];
-        let formatted = format_dry_run_human(&steps, None, None, false, VerifyScope::Full);
+        let formatted = format_dry_run_human(
+            &steps,
+            None,
+            None,
+            false,
+            VerifyScope::Full,
+            &preview_assurance(&steps),
+        );
         assert!(
             formatted.contains("cargo fmt --all -- --check"),
             "executable command must appear in Verification Steps: {formatted}"
@@ -706,7 +764,14 @@ mod tests {
     #[test]
     fn format_dry_run_human_first_line_scope_fast() {
         let steps = vec![step("cargo fmt --all -- --check", "Non-code changes")];
-        let formatted = format_dry_run_human(&steps, None, None, false, VerifyScope::Fast);
+        let formatted = format_dry_run_human(
+            &steps,
+            None,
+            None,
+            false,
+            VerifyScope::Fast,
+            &preview_assurance(&steps),
+        );
         assert_eq!(
             formatted.lines().next(),
             Some("scope: fast"),
@@ -718,7 +783,14 @@ mod tests {
     #[test]
     fn format_dry_run_human_first_line_scope_full_static() {
         let steps = vec![step("cargo nextest run --workspace", "full")];
-        let formatted = format_dry_run_human(&steps, None, None, false, VerifyScope::Full);
+        let formatted = format_dry_run_human(
+            &steps,
+            None,
+            None,
+            false,
+            VerifyScope::Full,
+            &preview_assurance(&steps),
+        );
         assert_eq!(
             formatted.lines().next(),
             Some("scope: full (pre-push uses --scope fast)"),

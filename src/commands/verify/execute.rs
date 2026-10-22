@@ -2,9 +2,11 @@
 
 use crate::output::human::print_verify_plan;
 use crate::output::verification::{
-    VerificationReporter, dry_run_scope_line, print_dry_run_human, should_print_suggested_actions,
+    VerificationReporter, dry_run_scope_line, format_assurance_line, print_dry_run_human,
+    should_print_suggested_actions,
 };
 use crate::state::storage::StorageManager;
+use crate::verify::assurance::{AssuranceInputs, build_execution_assurance};
 use crate::verify::engine::{VerificationContext, VerifyEngine};
 use crate::verify::plan::{VerificationStep, VerifyScope, build_plan_from_config};
 use crate::verify::predictor::OutcomePredictor;
@@ -449,6 +451,9 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
     let plan_refused = plan.as_ref().is_some_and(|p| p.refused);
     if plan_refused {
         if dry_run {
+            let plan_source = plan.as_ref().and_then(|p| p.source.clone());
+            let assurance =
+                execution_assurance_for(&steps, &[], plan_source, manual_requested, true, true);
             if json {
                 let reason = plan
                     .as_ref()
@@ -468,16 +473,18 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                     bayesian_dataset_keys,
                     working_material,
                     prediction_skipped,
+                    &assurance,
                 )?;
                 return Err(miette::miette!("{reason}"));
             }
-            // P5: scope line first, then ℹ/Next, then the refused footer.
+            // P5: scope line first, then ℹ/Next, assurance, then the refused footer.
             println!("{}", dry_run_scope_line(scope));
             let reason = plan
                 .as_ref()
                 .and_then(|p| p.fallback_reason.clone())
                 .unwrap_or_else(|| "fast scope unavailable; refusing full suite".to_string());
             print_fallback_announcement(&reason, true);
+            println!("{}", format_assurance_line(&assurance));
             println!(
                 "\n{}",
                 "Dry run mode: plan refused — no commands would be executed."
@@ -487,11 +494,25 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
         }
 
         // Live refuse: emit report/JSON with ok:false, empty steps; no cargo.
+        // `VerificationReport::new` moves `plan`. Source is copied first; `steps`
+        // is the surviving clone. Production MappingRefuse steps are empty.
+        let plan_source = plan.as_ref().and_then(|p| p.source.clone());
         let mut report = VerificationReport::new(plan, Vec::new());
         report.overall_pass = false;
+        let assurance = execution_assurance_for(
+            &steps,
+            &report.results,
+            plan_source,
+            manual_requested,
+            false,
+            true,
+        );
         if json {
-            let payload = VerifyCliJson::from_report(&report, scope, bayesian_matched_steps);
+            let payload =
+                VerifyCliJson::from_report(&report, scope, bayesian_matched_steps, assurance);
             println!("{}", payload.to_json_string()?);
+        } else {
+            println!("{}", format_assurance_line(&assurance));
         }
         let reason = report
             .plan
@@ -504,6 +525,9 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
     // Dry Run early exit — plan-first scannable layout (0144).
     // No print_verify_plan (gated above); no cargo execution.
     if dry_run {
+        let plan_source = plan.as_ref().and_then(|p| p.source.clone());
+        let assurance =
+            execution_assurance_for(&steps, &[], plan_source, manual_requested, true, false);
         if json {
             let prediction_skipped = command_str.is_none()
                 && matches!(
@@ -519,6 +543,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                 bayesian_dataset_keys,
                 working_material,
                 prediction_skipped,
+                &assurance,
             );
         }
         // Manual --command: keep simple Verification Plan + single step + footer.
@@ -536,6 +561,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                 manual_timeout(manual_timeout_from_cli(timeout_secs))
             );
             println!();
+            println!("{}", format_assurance_line(&assurance));
             println!(
                 "{}",
                 "Dry run mode: verification plan displayed above. No commands were executed."
@@ -552,6 +578,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
             bayesian_dataset_keys,
             dry_verbose,
             scope,
+            &assurance,
         );
         // SharedInfra dry-run: keep ℹ after `scope:` (first line), before the
         // rest of the 0144 layout.
@@ -574,6 +601,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                 bayesian_dataset_keys,
                 dry_verbose,
                 scope,
+                &assurance,
             );
         }
         return Ok(());
@@ -759,6 +787,14 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
     // Ordering on fail (non-json): step FAILURE lines (during run) → structured
     // fail block → Suggested Actions → miette on stderr.
     // Quiet success: suppress Suggested Actions; one trailing ok line.
+    let assurance = execution_assurance_for(
+        &steps,
+        &report.results,
+        report.plan.as_ref().and_then(|p| p.source.clone()),
+        manual_requested,
+        false,
+        report.plan.as_ref().is_some_and(|p| p.refused),
+    );
     if !json {
         if !report.overall_pass
             && let Some(block) = crate::verify::fail_block::format_fail_block_from_report(&report)
@@ -768,12 +804,15 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
 
         if should_print_suggested_actions(verbose, report.overall_pass) {
             VerificationReporter::report(&ctx, &report);
+            println!("{}", format_assurance_line(&assurance));
         } else {
             // Quiet green: still surface prediction warnings on stderr; no
-            // Suggested Actions header on stdout.
+            // Suggested Actions header on stdout. Assurance sits immediately
+            // before the trailing success line.
             if !report.prediction_warnings.is_empty() {
                 VerificationReporter::print_prediction_warnings(&report.prediction_warnings);
             }
+            println!("{}", format_assurance_line(&assurance));
             println!("Verification passed");
         }
     }
@@ -802,7 +841,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
     // Emit versioned CLI payload before any error return (DoD-15 boundary):
     // JSON present + non-zero = validation rejection; no JSON + non-zero = fatal.
     if json {
-        let payload = VerifyCliJson::from_report(&report, scope, bayesian_matched_steps);
+        let payload = VerifyCliJson::from_report(&report, scope, bayesian_matched_steps, assurance);
         println!("{}", payload.to_json_string()?);
     }
 
@@ -1084,6 +1123,25 @@ fn working_tree_has_material_changes(material: WorkingTreeMaterial) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn execution_assurance_for(
+    steps: &[VerificationStep],
+    results: &[crate::verify::results::VerificationResult],
+    plan_source: Option<crate::verify::plan::PlanSource>,
+    manual_requested: bool,
+    preview: bool,
+    refused: bool,
+) -> crate::verify::assurance::ExecutionAssuranceJson {
+    build_execution_assurance(AssuranceInputs {
+        planned_steps: steps,
+        results,
+        plan_source,
+        manual_requested,
+        preview,
+        refused,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn emit_verify_dry_run_json(
     steps: &[crate::verify::plan::VerificationStep],
     scope: crate::verify::plan::VerifyScope,
@@ -1093,6 +1151,7 @@ fn emit_verify_dry_run_json(
     dataset_keys: Option<usize>,
     material: WorkingTreeMaterial,
     prediction_gate: bool,
+    assurance: &crate::verify::assurance::ExecutionAssuranceJson,
 ) -> Result<()> {
     let git_available = !matches!(material, WorkingTreeMaterial::Unavailable);
     let clean_tree = match material {
@@ -1146,6 +1205,7 @@ fn emit_verify_dry_run_json(
         matched_steps,
         dataset_keys,
         steps: planned,
+        execution_assurance: Some(assurance.clone()),
     };
     println!("{}", payload.to_json_string()?);
     Ok(())

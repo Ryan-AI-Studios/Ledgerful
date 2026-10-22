@@ -438,8 +438,8 @@ refused). After a PATH upgrade alone:
 
 | Outcome | Default (non-verbose) stdout |
 |---|---|
-| **Pass** | Per-step `[i/n] Running:` + compact `ok` + elapsed; trailing `Verification passed`; **no** SUCCESS banner / plan banner / Suggested Actions |
-| **Fail** | Per-step `[i/n] Running:` → `FAILURE` lines → structured fail block → Suggested Actions (if any) → miette on stderr; exit non-zero |
+| **Pass** | Per-step `[i/n] Running:` + compact `ok` + elapsed; one assurance line immediately before trailing `Verification passed`; **no** SUCCESS banner / plan banner / Suggested Actions |
+| **Fail** | Per-step `[i/n] Running:` → `FAILURE` lines → structured fail block → Suggested Actions → one assurance line (`results recorded` is not pass wording; no `Verification passed`) → miette `Verification failed` on stderr; exit non-zero |
 
 `--verbose` / `-v` restores plan banner, per-step SUCCESS (as-is, no compact ok
 elapsed), aggregate “Running N step(s)…” progress `info!`, and Suggested Actions
@@ -481,9 +481,33 @@ Primary example — **MappingRefuse** (default when fast cannot scope; empty
   "fallbackReason": "fast scope unavailable — test_mapping is empty; run `ledgerful index --incremental` or use `--auto-index`; refusing full suite (~5-8 min)",
   "steps": [],
   "timestamp": "2026-07-28T12:00:00+00:00",
-  "txId": "optional-pending-tx-id"
+  "txId": "optional-pending-tx-id",
+  "executionAssurance": {
+    "schemaVersion": 1,
+    "planSource": "auto-policy",
+    "execution": "refused",
+    "plannedSteps": 0,
+    "recordedSteps": 0,
+    "passedSteps": 0,
+    "failedSteps": 0,
+    "testCommandEvidence": "not-invoked",
+    "testCasesRun": null,
+    "testCaseCountStatus": "unavailable",
+    "selectionCompleteness": "not-established",
+    "exclusionsStatus": "not-inventoried",
+    "limitationCodes": [
+      "affected-tests-not-proven-complete",
+      "case-counts-not-collected",
+      "commands-not-executed",
+      "exclusions-not-inventoried"
+    ]
+  }
 }
 ```
+
+`executionAssurance` is additive on new producers. Root `schemaVersion` stays 1. A missing outer key deserializes as absent. `testCasesRun` is JSON `null` and the key is present; a missing inner field is not zero. `passedSteps` and `failedSteps` count command exits, not test cases. `results-recorded` means the recorded commands match the plan. `results recorded` is not pass wording. `runner-reported-no-tests` is a direct `cargo nextest run` exit 4. The human line says `runner reported no tests`. That phrase is not an exclusion detection. `npm run test:ci` / `yarn run test:ci` / `pnpm run test:ci` / `deno task test:ci` stay `testCommandEvidence: unknown` (`unknown-command-semantics`). Fatal verify exits stay fatal: no partial JSON and no assurance line. This object is not `verifySignatures.assurance`.
+
+Quiet success prints the assurance line immediately before `Verification passed`. Verbose success prints it once after the reporter and does not invent a trailing pass line. Failure prints it after Suggested Actions, then miette `Verification failed` on stderr. Dry-run prints it immediately before the existing footer. JSON mode prints no human assurance line. MCP `verify_plan` flattens the plan and adds `executionAssurance` with `execution: planned` (or `refused` when the plan is refused), `recordedSteps: 0`, and `selectionCompleteness: not-established`. The description says this is a prediction, no verification commands are executed, and completeness is not established.
 
 Optional — **full fallback** only for SharedInfra (always) or when the operator
 passed `--allow-full-fallback` (restores pre-0135 surprise-full for mapping miss):

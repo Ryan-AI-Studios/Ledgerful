@@ -90,7 +90,7 @@ The tool table is cross-checked against `src/commands/mcp/manifest.rs`.
 | `endpoints_changed` | List API endpoints affected by current changes. |
 | `security_boundaries` | Inspect security policy boundaries and their risk status. |
 | `dead_code` | Identify likely unused functions and types based on graph reachability. |
-| `verify_plan` | Predict the verification plan for current changes. |
+| `verify_plan` | Predict the verification plan for current changes. This is a prediction: no verification commands are executed, and affected-test completeness is not established. |
 
 ## Environment
 

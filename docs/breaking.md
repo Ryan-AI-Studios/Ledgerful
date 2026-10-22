@@ -18,6 +18,16 @@ This document tracks dependency and project-level compatibility concerns for the
 
 ## Project-Level Changes
 
+### Verify execution assurance (0555)
+
+**Additive JSON; breaking for in-tree callers of `VerifyCliJson::from_report` (no package bump, no migration):**
+
+| Before | After |
+| :--- | :--- |
+| `from_report(report, scope_requested, matched_steps)` | `from_report(report, scope_requested, matched_steps, execution_assurance)` |
+
+New executed and dry-run JSON objects include `executionAssurance`. An old reader that ignores unknown fields still parses the root object (`schemaVersion` 1). `testCasesRun` is `null`, not an omitted zero. Human quiet success prints one assurance line before `Verification passed`.
+
 ### Fallible semantic hash lookup (0553)
 
 **Breaking for library callers of `SemanticDiscovery` (0.x, in-tree only; no schema, migration or package-version change):**

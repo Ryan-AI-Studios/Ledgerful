@@ -11,3 +11,5 @@ telemetry contract, update `coordination.md` (§3–§6) in the same change. See
 (Coordination Protocol).
 
 Track 0511: `GET /api/trends` adds omit-empty `lastDay` when `data` is empty and an older `project_trend_days` day exists. See `coordination.md`.
+
+Track 0555: `GET /api/verify/health` is unchanged. The dashboard card copy is static and is not a new response field. See `coordination.md` §4.2 and §4.6.
