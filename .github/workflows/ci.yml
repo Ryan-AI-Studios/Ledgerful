@@ -42,6 +42,7 @@ jobs:
           # docs/golden-path.md
           # docs/installation.md
           # docs/package-distribution.md
+          # docs/verify-performance.md
           # 0573-compile-exceptions-end
           # 0573-runtime-exceptions-begin
           # README.md
@@ -80,7 +81,7 @@ jobs:
           }
           is_exception() {
             case "$1" in
-              README.md|SECURITY.md|docs/Call-Resolution.md|docs/Ledgerful/skill.md|docs/agent-output-contract.md|docs/golden-path.md|docs/installation.md|docs/package-distribution.md|docs/examples/config.toml) return 0 ;;
+              README.md|SECURITY.md|docs/Call-Resolution.md|docs/Ledgerful/skill.md|docs/agent-output-contract.md|docs/golden-path.md|docs/installation.md|docs/package-distribution.md|docs/verify-performance.md|docs/examples/config.toml) return 0 ;;
               *) return 1 ;;
             esac
           }
