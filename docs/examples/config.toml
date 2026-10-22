@@ -5,8 +5,8 @@ auto_fix = false
 [watch]
 debounce_ms = 1000
 # This list replaces the built-in default when the key is present; omitting the
-# key keeps the default. Ledgerful always adds its own state entries to the
-# effective list, so no state entry needs to be written here.
+# key keeps the default. Missing state entries are appended to the effective
+# list. Listing them here is optional, and every entry must stay a valid glob.
 ignore_patterns = ["dist/**", "coverage/**", ".ledgerful", ".ledgerful/**"]
 
 [gemini]
