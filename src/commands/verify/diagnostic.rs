@@ -7,6 +7,7 @@ use miette::{IntoDiagnostic, Result};
 use serde::{Deserialize, Serialize};
 
 use super::dto::VERIFY_JSON_SCHEMA_VERSION;
+use crate::verify::assurance::ExecutionAssuranceJson;
 
 const BREAK_CAP: usize = 20;
 const INVALID_SAMPLE_CAP: usize = 20;
@@ -49,6 +50,9 @@ pub struct VerifyDryRunJson {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dataset_keys: Option<usize>,
     pub steps: Vec<VerifyDryRunStepJson>,
+    /// Planned assurance. Absent on legacy dry-run payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_assurance: Option<ExecutionAssuranceJson>,
 }
 
 impl VerifyDryRunJson {
@@ -424,12 +428,19 @@ mod diagnostic_dto_tests {
 
     #[test]
     fn executed_verify_cli_json_still_has_no_kind() {
-        use crate::commands::verify::test_support::{sample_report, sample_result};
+        use crate::commands::verify::test_support::{
+            fixture_assurance, sample_report, sample_result,
+        };
         use crate::commands::verify::{VERIFY_JSON_SCHEMA_VERSION, VerifyCliJson};
         use crate::verify::plan::VerifyScope;
 
         let report = sample_report(vec![sample_result("cargo test", 0)], None);
-        let payload = VerifyCliJson::from_report(&report, VerifyScope::Full, None);
+        let payload = VerifyCliJson::from_report(
+            &report,
+            VerifyScope::Full,
+            None,
+            fixture_assurance(&report),
+        );
         let json = payload.to_json_string().unwrap();
         assert_eq!(payload.schema_version, VERIFY_JSON_SCHEMA_VERSION);
         assert!(
@@ -461,6 +472,7 @@ mod diagnostic_dto_tests {
                 timeout_secs: 60,
                 budget_source: None,
             }],
+            execution_assurance: None,
         };
         let json = payload.to_json_string().unwrap();
         assert!(json.contains("\"kind\": \"verifyDryRun\""));
@@ -499,6 +511,7 @@ mod diagnostic_dto_tests {
             matched_steps: None,
             dataset_keys: None,
             steps: vec![],
+            execution_assurance: None,
         };
         let json = payload.to_json_string().unwrap();
         assert!(json.contains("\"gitAvailable\": false"));
@@ -649,5 +662,62 @@ mod diagnostic_dto_tests {
         assert!(refuse_mixed_verify_diagnostics(true, false, true, false, false).is_err());
         assert!(refuse_mixed_verify_diagnostics(false, true, false, true, false).is_err());
         assert!(refuse_mixed_verify_diagnostics(false, false, true, false, false).is_ok());
+    }
+
+    #[test]
+    fn legacy_dry_run_without_assurance_stays_absent() {
+        let legacy = r#"{
+            "schemaVersion": 1,
+            "kind": "verifyDryRun",
+            "scopeRequested": "fast",
+            "scopeExecuted": "fast",
+            "refused": false,
+            "executed": false,
+            "gitAvailable": true,
+            "predictionSkipped": false,
+            "steps": []
+        }"#;
+        let parsed: VerifyDryRunJson = serde_json::from_str(legacy).unwrap();
+        assert!(parsed.execution_assurance.is_none());
+        let round = serde_json::to_string(&parsed).unwrap();
+        assert!(!round.contains("executionAssurance"));
+
+        let produced = r#"{
+            "schemaVersion": 1,
+            "kind": "verifyDryRun",
+            "scopeRequested": "fast",
+            "scopeExecuted": "fast",
+            "refused": false,
+            "executed": false,
+            "gitAvailable": true,
+            "predictionSkipped": false,
+            "steps": [],
+            "executionAssurance": {
+                "schemaVersion": 1,
+                "planSource": "manual",
+                "execution": "planned",
+                "plannedSteps": 1,
+                "recordedSteps": 0,
+                "passedSteps": 0,
+                "failedSteps": 0,
+                "testCommandEvidence": "not-invoked",
+                "testCasesRun": null,
+                "testCaseCountStatus": "unavailable",
+                "selectionCompleteness": "not-established",
+                "exclusionsStatus": "not-inventoried",
+                "limitationCodes": ["case-counts-not-collected"]
+            }
+        }"#;
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct OldDryRun {
+            kind: String,
+            executed: bool,
+        }
+        let old: OldDryRun = serde_json::from_str(produced).unwrap();
+        assert_eq!(old.kind, "verifyDryRun");
+        assert!(!old.executed);
+        let current: VerifyDryRunJson = serde_json::from_str(produced).unwrap();
+        assert!(current.execution_assurance.is_some());
     }
 }
