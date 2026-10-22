@@ -1,3 +1,4 @@
+pub mod assurance;
 pub mod auto_policy;
 pub mod ci_predictor;
 pub mod engine;
