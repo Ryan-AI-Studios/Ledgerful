@@ -2316,6 +2316,7 @@ const COMPILE_TIME_CHEAP_EXCEPTIONS: &[&str] = &[
     "docs/golden-path.md",
     "docs/installation.md",
     "docs/package-distribution.md",
+    "docs/verify-performance.md",
 ];
 
 /// Cheap paths read from this work tree via `CARGO_MANIFEST_DIR` or
