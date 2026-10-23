@@ -78,6 +78,7 @@ fn production_keys_fingerprint() -> Vec<(String, u64)> {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn demo__hook_fires_and_produces_signed_entries__slow() {
     let _ni = non_interactive();
     let tmp = tempdir().unwrap();
@@ -142,6 +143,7 @@ fn demo__hook_fires_and_produces_signed_entries__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn demo__manifest_contains_demo_marker__slow() {
     let _ni = non_interactive();
     let tmp = tempdir().unwrap();
@@ -175,6 +177,7 @@ fn demo__manifest_contains_demo_marker__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn demo__cleanup_by_default_removes_dir__slow() {
     let _ni = non_interactive();
     let tmp = tempdir().unwrap();
@@ -192,6 +195,7 @@ fn demo__cleanup_by_default_removes_dir__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn demo__keep_retains_dir__slow() {
     let _ni = non_interactive();
     let tmp = tempdir().unwrap();
@@ -220,6 +224,7 @@ fn demo__keep_retains_dir__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn demo__refuses_non_empty_without_force__slow() {
     let _ni = non_interactive();
     let tmp = tempdir().unwrap();
@@ -237,6 +242,7 @@ fn demo__refuses_non_empty_without_force__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn demo__force_overwrites_non_empty__slow() {
     let _ni = non_interactive();
     let tmp = tempdir().unwrap();
@@ -257,6 +263,7 @@ fn demo__force_overwrites_non_empty__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn demo__global_git_config_unchanged__slow() {
     let _ni = non_interactive();
     let tmp = tempdir().unwrap();
@@ -286,6 +293,7 @@ fn demo__global_git_config_unchanged__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn demo__stdout_contains_demo_marker_and_export_path__slow() {
     let _ni = non_interactive();
     let tmp = tempdir().unwrap();
@@ -321,6 +329,7 @@ fn demo__stdout_contains_demo_marker_and_export_path__slow() {
 /// noise demoted; evidence kept with --keep.
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn demo__crypto_valid_beat_on_automated_path__slow() {
     let _ni = non_interactive();
     let tmp = tempdir().unwrap();

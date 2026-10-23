@@ -56,6 +56,7 @@ fn add_dummy_peer(root: &Utf8Path, peer_id: &str) {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn setup_checklist_exit_zero_when_incomplete__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -71,6 +72,7 @@ fn setup_checklist_exit_zero_when_incomplete__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn setup_enable_refuses_without_peers__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -102,6 +104,7 @@ fn setup_enable_refuses_without_peers__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn setup_enable_refuses_not_initialized__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -120,6 +123,7 @@ fn setup_enable_refuses_not_initialized__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn setup_enable_success_when_all_green__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -154,6 +158,7 @@ fn setup_enable_success_when_all_green__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn setup_enable_refuses_unreachable_target__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -189,6 +194,7 @@ fn setup_enable_refuses_unreachable_target__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn setup_json_is_parseable_schema_v1__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -216,6 +222,7 @@ fn setup_json_is_parseable_schema_v1__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn setup_json_stdout_is_pure_json_object__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -249,6 +256,7 @@ fn setup_json_stdout_is_pure_json_object__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn setup_enable_json_stdout_is_pure_json_enabled__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -308,6 +316,7 @@ fn setup_enable_json_stdout_is_pure_json_enabled__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn status_next_action_when_incomplete__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -333,6 +342,7 @@ fn status_next_action_when_incomplete__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn status_json_stdout_is_pure_json_object__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -370,6 +380,7 @@ fn status_json_stdout_is_pure_json_object__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn setup_enable_refuse_config_immutable_no_bak__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -420,6 +431,7 @@ fn setup_enable_refuse_config_immutable_no_bak__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn setup_enable_success_bak_matches_pre_enable_bytes__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -467,6 +479,7 @@ fn setup_enable_success_bak_matches_pre_enable_bytes__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn readiness_windows_style_target_parse_ok__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -495,6 +508,7 @@ fn readiness_windows_style_target_parse_ok__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn cursor_json_lag_reasons__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -572,6 +586,7 @@ fn cursor_json_lag_reasons__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn log_json_states__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -646,6 +661,7 @@ fn log_json_states__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn cursor_json_watermark_compare_parseable_and_human__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -683,6 +699,7 @@ fn cursor_json_watermark_compare_parseable_and_human__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn log_events_failed_filter_and_disabled_run_writes_nothing__slow() {
     use ledgerful::config::load::load_config;
     use ledgerful::sync::event_log::{
@@ -758,6 +775,7 @@ fn log_events_failed_filter_and_disabled_run_writes_nothing__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn verify_json_verdicts_signed_tampered_missing__slow() {
     use ed25519_dalek::{Signer, SigningKey};
     use ledgerful::sync::bundle::{Bundle, Manifest};
@@ -948,6 +966,7 @@ fn verify_json_verdicts_signed_tampered_missing__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(cwd, env)]
+#[allow(non_snake_case)]
 fn cursor_log_human_tokens_without_sync_init__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -983,6 +1002,7 @@ fn cursor_log_human_tokens_without_sync_init__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(cwd, env)]
+#[allow(non_snake_case)]
 fn cursor_set_skips_unknown_lag_line__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();

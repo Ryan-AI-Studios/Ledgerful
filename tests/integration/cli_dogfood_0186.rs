@@ -10,6 +10,7 @@ fn cargo_root() -> std::path::PathBuf {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn examples_config_parses_with_two_service_definitions__slow() {
     let path = cargo_root().join("docs/examples/config.toml");
     let content = fs::read_to_string(&path).unwrap();
@@ -54,6 +55,7 @@ fn init_temp_repo() -> tempfile::TempDir {
 
 /// 0186-C: copying committed `.env.example` + `index --incremental` populates schema.
 #[test]
+#[allow(non_snake_case)]
 fn env_example_incremental_index_makes_config_schema_ready__slow() {
     let tmp = init_temp_repo();
     let root = tmp.path();
@@ -173,6 +175,7 @@ fn env_example_incremental_index_makes_config_schema_ready__slow() {
 
 /// Cedar pack + `--analyze-graph` makes `security boundaries` non-empty.
 #[test]
+#[allow(non_snake_case)]
 fn daemon_api_cedar_analyze_graph_makes_security_ready__slow() {
     let tmp = init_temp_repo();
     let root = tmp.path();
@@ -478,6 +481,7 @@ async fn session_exchange_handler() {}
 
 /// 0185-A: fixture Cedar under `tests/fixtures/policies` is not product graph content.
 #[test]
+#[allow(non_snake_case)]
 fn fixture_only_under_tests_fixtures_leaves_security_empty__slow() {
     let tmp = init_temp_repo();
     let root = tmp.path();
@@ -542,6 +546,7 @@ fn init_cedar_indexed_clean_repo() -> tempfile::TempDir {
 
 /// 0208-A/D: indexed Cedar + clean tree → `--changed` is CleanDiff, not add-Cedar.
 #[test]
+#[allow(non_snake_case)]
 fn security_impact_changed_clean_tree_is_clean_diff__slow() {
     let tmp = init_cedar_indexed_clean_repo();
     let root = tmp.path();
@@ -595,6 +600,7 @@ fn security_impact_changed_clean_tree_is_clean_diff__slow() {
 
 /// 0207-A1: dirty `policies/daemon-api.cedar` → `--changed --json` is an object with `impacted`.
 #[test]
+#[allow(non_snake_case)]
 fn security_impact_changed_dirty_cedar_returns_source_file_array__slow() {
     let tmp = init_cedar_indexed_clean_repo();
     let root = tmp.path();
@@ -629,6 +635,7 @@ fn security_impact_changed_dirty_cedar_returns_source_file_array__slow() {
 
 /// 0146 keep: `security impact --changed` must not create or rewrite latest-impact.json.
 #[test]
+#[allow(non_snake_case)]
 fn test_security_impact_changed_does_not_rewrite_latest_impact__slow() {
     let tmp = init_temp_repo();
     let root = tmp.path();
@@ -728,6 +735,7 @@ fn assert_coverage_shape(v: &serde_json::Value, stdout: &str) {
 
 /// 0317: unfiltered impact is inventory of declared Cedar, not a changed hit-list.
 #[test]
+#[allow(non_snake_case)]
 fn security_impact_unfiltered_scope_is_inventory__slow() {
     let tmp = init_cedar_indexed_clean_repo();
     let root = tmp.path();
@@ -809,6 +817,7 @@ fn security_impact_unfiltered_scope_is_inventory__slow() {
 
 /// 0317: --changed CleanDiff is scope=changed; no declared one-liner.
 #[test]
+#[allow(non_snake_case)]
 fn security_impact_changed_scope_is_changed__slow() {
     let tmp = init_cedar_indexed_clean_repo();
     let root = tmp.path();
@@ -846,6 +855,7 @@ fn security_impact_changed_scope_is_changed__slow() {
 
 /// 0317: inventory title on populated and empty unfiltered human.
 #[test]
+#[allow(non_snake_case)]
 fn security_impact_human_titles_for_diff_and_inventory__slow() {
     let tmp = init_cedar_indexed_clean_repo();
     let root = tmp.path();
@@ -915,6 +925,7 @@ fn security_impact_human_titles_for_diff_and_inventory__slow() {
 
 /// 0317: one-liner immediately under title; Source column is source_file.
 #[test]
+#[allow(non_snake_case)]
 fn security_impact_human_source_and_one_liner__slow() {
     let tmp = init_cedar_indexed_clean_repo();
     let root = tmp.path();
@@ -944,6 +955,7 @@ fn security_impact_human_source_and_one_liner__slow() {
 
 /// 0317: coverage on empty + populated impact and CLI boundaries.
 #[test]
+#[allow(non_snake_case)]
 fn security_coverage_always_emitted__slow() {
     let empty = init_temp_repo();
     for args in [
@@ -1013,6 +1025,7 @@ fn security_coverage_always_emitted__slow() {
 
 /// 0317 / R-0208-2: two Cedar files, dirty one → n of indexed with n < indexed.
 #[test]
+#[allow(non_snake_case)]
 fn security_impact_two_file_changed_denominator__slow() {
     let tmp = init_cedar_indexed_clean_repo();
     let root = tmp.path();
@@ -1091,6 +1104,7 @@ permit (
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn security_impact_unrelated_readme_is_clean_diff__slow() {
     let tmp = init_cedar_indexed_clean_repo();
     let root = tmp.path();
@@ -1118,6 +1132,7 @@ fn security_impact_unrelated_readme_is_clean_diff__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn security_impact_deleted_policy_file_is_changed__slow() {
     let tmp = init_cedar_indexed_clean_repo();
     let root = tmp.path();

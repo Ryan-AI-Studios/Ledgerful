@@ -111,6 +111,7 @@ fn plan(repo: &Repo) -> std::path::PathBuf {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn adopt_plan_is_read_only__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
@@ -141,6 +142,7 @@ fn adopt_plan_is_read_only__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn adopt_plan_rejects_invalid_signature__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
@@ -175,6 +177,7 @@ fn adopt_plan_rejects_invalid_signature__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn adopt_plan_rejects_fork__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
@@ -225,6 +228,7 @@ fn adopt_plan_rejects_fork__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn adopt_apply_preserves_original_rows__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
@@ -276,6 +280,7 @@ fn adopt_apply_preserves_original_rows__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn adopt_second_apply_is_already_applied__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
@@ -317,6 +322,7 @@ fn adopt_second_apply_is_already_applied__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn adopt_verify_strict_still_fails__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
@@ -355,6 +361,7 @@ fn adopt_verify_strict_still_fails__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn adopt_verify_accept_adoption_labels_unestablished__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
@@ -400,6 +407,7 @@ fn adopt_verify_accept_adoption_labels_unestablished__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn adopt_backup_failure_does_not_mutate__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
@@ -432,6 +440,7 @@ fn adopt_backup_failure_does_not_mutate__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn adopt_does_not_create_keys_on_refusal__slow() {
     let _env = non_interactive();
     let repo = setup();
@@ -465,6 +474,7 @@ fn adopt_does_not_create_keys_on_refusal__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn adopt_rejects_tampered_manifest__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
@@ -500,6 +510,7 @@ fn adopt_rejects_tampered_manifest__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn adopt_manifest_omits_absolute_path_and_keys__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
@@ -524,6 +535,7 @@ fn adopt_manifest_omits_absolute_path_and_keys__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn adopt_preserves_checkpoint_extension__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
@@ -578,6 +590,7 @@ fn prepared() -> (Repo, std::path::PathBuf, DirGuard) {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn adopt_rejects_omitted_row__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
@@ -602,6 +615,7 @@ fn adopt_rejects_omitted_row__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn adopt_verify_rejects_new_extra_genesis__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
@@ -637,6 +651,7 @@ fn adopt_verify_rejects_new_extra_genesis__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn adopt_verify_rejects_mutated_row__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
@@ -672,6 +687,7 @@ fn adopt_verify_rejects_mutated_row__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn adopt_restore_backup_matches_preimage__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
@@ -714,6 +730,7 @@ fn adopt_restore_backup_matches_preimage__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn adopt_stale_head_aborts__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
@@ -752,6 +769,7 @@ fn adopt_stale_head_aborts__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn adopt_signing_failure_leaves_rows__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();

@@ -81,6 +81,7 @@ fn corrupt_entry(db_path: &std::path::Path, tx_id: &str, new_sig: &str, new_pub:
 
 #[test]
 #[serial(cwd)]
+#[allow(non_snake_case)]
 fn corrupted_ledger_re_sign_all_invalid_repairs_to_valid__slow() {
     let _env_non_interactive = non_interactive();
     let (_dir, root, db_path) = setup_initialized_repo();
@@ -191,6 +192,7 @@ fn corrupted_ledger_re_sign_all_invalid_repairs_to_valid__slow() {
 
 #[test]
 #[serial(cwd)]
+#[allow(non_snake_case)]
 fn dry_run_does_not_mutate_db__slow() {
     let _env_non_interactive = non_interactive();
     let (_dir, root, db_path) = setup_initialized_repo();
@@ -263,6 +265,7 @@ fn dry_run_does_not_mutate_db__slow() {
 
 #[test]
 #[serial(cwd)]
+#[allow(non_snake_case)]
 fn batch_re_sign_emits_one_maintenance_entry__slow() {
     let _env_non_interactive = non_interactive();
     let (_dir, root, db_path) = setup_initialized_repo();
@@ -352,6 +355,7 @@ fn batch_re_sign_emits_one_maintenance_entry__slow() {
 
 #[test]
 #[serial(cwd)]
+#[allow(non_snake_case)]
 fn re_sign_creates_backup_and_aborts_if_backup_fails__slow() {
     // Placeholder: simulating a failed backup requires a database whose backup cannot
     // be completed (e.g. read-only destination). We test the backup file is produced
@@ -445,6 +449,7 @@ fn re_sign_creates_backup_and_aborts_if_backup_fails__slow() {
 
 #[test]
 #[serial(cwd)]
+#[allow(non_snake_case)]
 fn valid_v1_entry_re_sign_all_upgrades_to_v2__slow() {
     let _env_non_interactive = non_interactive();
     let (_dir, root, db_path) = setup_initialized_repo();
@@ -587,6 +592,7 @@ fn valid_v1_entry_re_sign_all_upgrades_to_v2__slow() {
 
 #[test]
 #[serial(cwd)]
+#[allow(non_snake_case)]
 fn re_sign_all_empty_candidates_dry_run_clean__slow() {
     let _env_non_interactive = non_interactive();
     let (_dir, root, db_path) = setup_initialized_repo();
@@ -611,6 +617,7 @@ fn re_sign_all_empty_candidates_dry_run_clean__slow() {
 
 #[test]
 #[serial(cwd)]
+#[allow(non_snake_case)]
 fn dry_run_does_not_create_key_store__slow() {
     let _env_non_interactive = non_interactive();
     let (_dir, root, db_path) = setup_initialized_repo();
@@ -687,6 +694,7 @@ fn dry_run_does_not_create_key_store__slow() {
 
 #[test]
 #[serial(cwd)]
+#[allow(non_snake_case)]
 fn maintenance_entry_is_signed_when_signing_required__slow() {
     let _env_non_interactive = non_interactive();
     let (_dir, root, db_path) = setup_initialized_repo();
@@ -801,6 +809,7 @@ fn maintenance_entry_is_signed_when_signing_required__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn re_sign_then_verify_chain_passes__slow() {
     let _env_non_interactive = non_interactive();
     let (_dir, root, db_path) = setup_initialized_repo();
@@ -877,6 +886,7 @@ fn re_sign_then_verify_chain_passes__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn re_sign_blocked_yes_does_not_create_default_keys_dir__slow() {
     let _non_interactive = non_interactive();
     let (_dir, root, db_path) = setup_initialized_repo();
@@ -918,6 +928,7 @@ fn re_sign_blocked_yes_does_not_create_default_keys_dir__slow() {
 
 #[test]
 #[serial(cwd)]
+#[allow(non_snake_case)]
 fn re_sign_v1_parent_rewrites_child_prev_hash__slow() {
     let _env = non_interactive();
     let (_dir, root, db_path) = setup_initialized_repo();
@@ -1056,6 +1067,7 @@ fn re_sign_v1_parent_rewrites_child_prev_hash__slow() {
 
 #[test]
 #[serial(cwd)]
+#[allow(non_snake_case)]
 fn re_sign_empty_captured_order_and_broken_post_walk_errors__slow() {
     let _env = non_interactive();
     let (dir, root, db_path) = setup_initialized_repo();
@@ -1170,6 +1182,7 @@ fn re_sign_empty_captured_order_and_broken_post_walk_errors__slow() {
 
 #[test]
 #[serial(cwd)]
+#[allow(non_snake_case)]
 fn re_sign_blocked_extra_genesis_dry_run_and_yes__slow() {
     let _env = non_interactive();
     let (dir, root, db_path) = setup_initialized_repo();
@@ -1242,6 +1255,7 @@ fn file_fingerprint(path: &std::path::Path) -> Option<u64> {
 
 #[test]
 #[serial(cwd)]
+#[allow(non_snake_case)]
 fn re_sign_single_valid_entry_fails_with_error__slow() {
     let _env = non_interactive();
     let (dir, root, db_path) = setup_initialized_repo();
@@ -1320,6 +1334,7 @@ fn fs_backup(dir: &std::path::Path) -> bool {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn re_sign_backup_failure_aborts_before_mutation__slow() {
     let _env = non_interactive();
     let (dir, root, db_path) = setup_initialized_repo();

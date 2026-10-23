@@ -192,6 +192,7 @@ fn run_hotspots_trend(root: &std::path::Path, args: &[&str]) -> std::process::Ou
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn trend_window_empty_reports_last_sample__slow() {
     let tmp = setup_young_indexed_repo();
     let root = tmp.path();
@@ -226,6 +227,7 @@ fn trend_window_empty_reports_last_sample__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn trend_entity_no_series__slow() {
     let tmp = setup_young_indexed_repo();
     let root = tmp.path();
@@ -263,6 +265,7 @@ fn trend_entity_no_series__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn trend_entity_history_only_is_no_series__slow() {
     let tmp = setup_young_indexed_repo();
     let root = tmp.path();
@@ -296,6 +299,7 @@ fn trend_entity_history_only_is_no_series__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn trend_no_lifetime_keeps_bootstrap__slow() {
     let tmp = setup_young_indexed_repo();
     let root = tmp.path();
@@ -331,6 +335,7 @@ fn trend_no_lifetime_keeps_bootstrap__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn test_trend_no_history_non_bootstrap_human_shows_exact_command__slow() {
     let tmp = setup_indexed_repo();
     let root = tmp.path();
@@ -367,6 +372,7 @@ fn test_trend_no_history_non_bootstrap_human_shows_exact_command__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn test_trend_no_history_non_bootstrap_json_shape_and_read_only__slow() {
     let tmp = setup_indexed_repo();
     let root = tmp.path();
@@ -415,6 +421,7 @@ fn test_trend_no_history_non_bootstrap_json_shape_and_read_only__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn test_trend_bootstrap_on_empty_history_creates_one_snapshot_and_reports_available__slow() {
     let tmp = setup_indexed_repo();
     let root = tmp.path();
@@ -508,6 +515,7 @@ fn test_trend_bootstrap_on_empty_history_creates_one_snapshot_and_reports_availa
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn test_trend_bootstrap_is_idempotent_after_history_exists__slow() {
     let tmp = setup_indexed_repo();
     let root = tmp.path();
@@ -557,6 +565,7 @@ fn test_trend_bootstrap_is_idempotent_after_history_exists__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn test_trend_bootstrap_succeeds_on_young_repo_with_insufficient_coupling_history__slow() {
     let tmp = setup_young_indexed_repo();
     let root = tmp.path();
@@ -692,6 +701,7 @@ fn cli_hotspots_snapshot__young_repo__prints_insufficient_history_sentence__slow
 
 /// 0151 Codex P2: `--limit 5` is honored end-to-end (JSON limit + truncation).
 #[test]
+#[allow(non_snake_case)]
 fn test_trend_limit_5_honored_in_summary_json__slow() {
     let tmp = setup_indexed_repo();
     let root = tmp.path();
@@ -740,6 +750,7 @@ fn test_trend_limit_5_honored_in_summary_json__slow() {
 
 /// 0151 Codex P2: `--limit 0` is rejected by clap range `1..` (non-zero exit).
 #[test]
+#[allow(non_snake_case)]
 fn test_trend_limit_0_rejected_by_clap__slow() {
     let tmp = setup_indexed_repo();
     let root = tmp.path();
@@ -773,6 +784,7 @@ fn test_trend_limit_0_rejected_by_clap__slow() {
 
 /// 0151 Codex P2: `--entity` JSON is mode entity with only that path's rows.
 #[test]
+#[allow(non_snake_case)]
 fn test_trend_entity_json_mode_filters_to_path__slow() {
     let tmp = setup_indexed_repo();
     let root = tmp.path();
@@ -990,6 +1002,7 @@ fn setup_vendor_churn_repo() -> tempfile::TempDir {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn cli_hotspots_default_json_omits_tests_and_examples__slow() {
     let tmp = setup_mixed_hotspot_repo();
     let root = tmp.path();
@@ -1021,6 +1034,7 @@ fn cli_hotspots_default_json_omits_tests_and_examples__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn cli_hotspots_include_tests_json_can_rank_tests__slow() {
     let tmp = setup_mixed_hotspot_repo();
     let root = tmp.path();
@@ -1076,6 +1090,7 @@ fn cli_hotspots_include_tests_json_can_rank_tests__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn cli_hotspots_human_default_footer_when_omitted__slow() {
     let tmp = setup_mixed_hotspot_repo();
     let root = tmp.path();
@@ -1110,6 +1125,7 @@ fn cli_hotspots_human_default_footer_when_omitted__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn cli_hotspots_default_json_omits_changelog__slow() {
     let tmp = setup_docs_churn_repo();
     let root = tmp.path();
@@ -1151,6 +1167,7 @@ fn cli_hotspots_default_json_omits_changelog__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn cli_hotspots_include_docs_json_lists_changelog__slow() {
     let tmp = setup_docs_churn_repo();
     let root = tmp.path();
@@ -1194,6 +1211,7 @@ fn cli_hotspots_include_docs_json_lists_changelog__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn cli_hotspots_include_docs_snapshot_is_error__slow() {
     let tmp = setup_docs_churn_repo();
     let root = tmp.path();
@@ -1218,6 +1236,7 @@ fn cli_hotspots_include_docs_snapshot_is_error__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn cli_hotspots_human_default_omits_docs_footer__slow() {
     let tmp = setup_docs_churn_repo();
     let root = tmp.path();
@@ -1248,6 +1267,7 @@ fn cli_hotspots_human_default_omits_docs_footer__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn cli_hotspots_include_docs_human_omits_tests_footer__slow() {
     let tmp = setup_docs_churn_repo();
     let root = tmp.path();
@@ -1274,6 +1294,7 @@ fn cli_hotspots_include_docs_human_omits_tests_footer__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn cli_hotspots_default_json_omits_vendor__slow() {
     let tmp = setup_vendor_churn_repo();
     let root = tmp.path();
@@ -1311,6 +1332,7 @@ fn cli_hotspots_default_json_omits_vendor__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn cli_hotspots_include_vendor_json_lists_vendor__slow() {
     let tmp = setup_vendor_churn_repo();
     let root = tmp.path();
@@ -1349,6 +1371,7 @@ fn cli_hotspots_include_vendor_json_lists_vendor__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn cli_hotspots_human_default_omits_vendor_footer__slow() {
     let tmp = setup_vendor_churn_repo();
     let root = tmp.path();
@@ -1375,6 +1398,7 @@ fn cli_hotspots_human_default_omits_vendor_footer__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn cli_hotspots_include_vendor_human_lists_vendor__slow() {
     let tmp = setup_vendor_churn_repo();
     let root = tmp.path();
@@ -1401,6 +1425,7 @@ fn cli_hotspots_include_vendor_human_lists_vendor__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn cli_hotspots_include_vendor_snapshot_is_allowed__slow() {
     let tmp = setup_vendor_churn_repo();
     let root = tmp.path();
@@ -1428,6 +1453,7 @@ fn cli_hotspots_include_vendor_snapshot_is_allowed__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn hotspots_budget_invalid_threshold_exits_2__slow() {
     let tmp = tempdir().unwrap();
     let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
@@ -1460,6 +1486,7 @@ fn seed_hotspot_history_score(root: &std::path::Path, path: &str, score: f64, ti
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn hotspots_budget_fail_empty_exits_1__slow() {
     let tmp = setup_young_indexed_repo();
     let root = tmp.path();
@@ -1489,6 +1516,7 @@ fn hotspots_budget_fail_empty_exits_1__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn hotspots_budget_fail_violation_exits_1__slow() {
     let tmp = setup_young_indexed_repo();
     let root = tmp.path();
@@ -1539,6 +1567,7 @@ fn hotspots_budget_fail_violation_exits_1__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn hotspots_budget_empty_json_envelope__slow() {
     let tmp = setup_young_indexed_repo();
     let root = tmp.path();
@@ -1575,6 +1604,7 @@ fn hotspots_budget_empty_json_envelope__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn hotspots_budget_populated_pass_and_violation__slow() {
     let tmp = setup_young_indexed_repo();
     let root = tmp.path();
@@ -1665,6 +1695,7 @@ fn assert_hotspots_ok(output: &std::process::Output) -> String {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn canonical_list_records_hotspot_history_once__slow() {
     let tmp = setup_young_indexed_repo();
     let root = tmp.path();
@@ -1704,6 +1735,7 @@ fn canonical_list_records_hotspot_history_once__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn narrow_limit_does_not_record_history__slow() {
     let tmp = setup_young_indexed_repo();
     let root = tmp.path();
@@ -1713,6 +1745,7 @@ fn narrow_limit_does_not_record_history__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn snapshot_narrow_limit_errors__slow() {
     let tmp = setup_young_indexed_repo();
     let root = tmp.path();
@@ -1728,6 +1761,7 @@ fn snapshot_narrow_limit_errors__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn snapshot_include_docs_keeps_docs_error__slow() {
     let tmp = setup_young_indexed_repo();
     let root = tmp.path();
@@ -1746,6 +1780,7 @@ fn snapshot_include_docs_keeps_docs_error__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn snapshot_include_tests_errors__slow() {
     let tmp = setup_young_indexed_repo();
     let root = tmp.path();
@@ -1764,6 +1799,7 @@ fn snapshot_include_tests_errors__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn include_vendor_snapshot_skips_trends__slow() {
     let tmp = setup_young_indexed_repo();
     let root = tmp.path();
@@ -1779,6 +1815,7 @@ fn include_vendor_snapshot_skips_trends__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn auto_snapshot_false_skips_list_write__slow() {
     let tmp = setup_young_indexed_repo();
     let root = tmp.path();
@@ -1806,6 +1843,7 @@ fn auto_snapshot_false_skips_list_write__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn unindexed_list_does_not_record_zeros__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -1828,6 +1866,7 @@ fn unindexed_list_does_not_record_zeros__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn plain_list_missing_database_creates_nothing__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -1848,6 +1887,7 @@ fn plain_list_missing_database_creates_nothing__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn snapshot_unchanged_scores_skip_couplings__slow() {
     let tmp = setup_young_indexed_repo();
     let root = tmp.path();
@@ -1869,6 +1909,7 @@ fn snapshot_unchanged_scores_skip_couplings__slow() {
 
 #[test]
 #[serial_test::serial(cwd)]
+#[allow(non_snake_case)]
 fn snapshot_overall_skip_line_hidden_in_json__slow() {
     use ledgerful::cli::HotspotArgs;
     use ledgerful::commands::hotspots::{HotspotRunOpts, execute_hotspots_with_opts};

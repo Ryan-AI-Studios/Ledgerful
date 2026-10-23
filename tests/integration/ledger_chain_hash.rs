@@ -67,6 +67,7 @@ fn setup_initialized_repo() -> RepoSetup {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn chain__two_sequential_commits__linear_no_fork__slow() {
     let _env_non_interactive = non_interactive();
     let setup = setup_initialized_repo();
@@ -176,6 +177,7 @@ fn chain__two_sequential_commits__linear_no_fork__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn chain__downgrade_deletes_head__verify_chain_fails_closed__slow() {
     let _env_non_interactive = non_interactive();
     let setup = setup_initialized_repo();
@@ -241,6 +243,7 @@ fn chain__downgrade_deletes_head__verify_chain_fails_closed__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn chain__delete_all_entries_leave_head__verify_chain_fails_orphan_head__slow() {
     let _env_non_interactive = non_interactive();
     let setup = setup_initialized_repo();
@@ -306,6 +309,7 @@ fn chain__delete_all_entries_leave_head__verify_chain_fails_orphan_head__slow() 
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn chain__pre_chain_entries_without_prev_hash__verify_chain_is_benign__slow() {
     let _env_non_interactive = non_interactive();
     let setup = setup_initialized_repo();
@@ -336,6 +340,7 @@ fn chain__pre_chain_entries_without_prev_hash__verify_chain_is_benign__slow() {
 #[cfg(feature = "export")]
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn chain__pre_chain_entries_without_prev_hash__against_export_of_same_ledger_passes__slow() {
     use ledgerful::export::soc2::generate_soc2_export;
 
@@ -429,6 +434,7 @@ fn chain__pre_chain_entries_without_prev_hash__against_export_of_same_ledger_pas
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn chain__delete_middle_entry__verify_chain_fails_localized__slow() {
     let _env_non_interactive = non_interactive();
     let setup = setup_initialized_repo();
@@ -496,6 +502,7 @@ fn chain__delete_middle_entry__verify_chain_fails_localized__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn chain__reorder_entries__verify_chain_fails__slow() {
     let _env_non_interactive = non_interactive();
     let setup = setup_initialized_repo();
@@ -571,6 +578,7 @@ fn chain__reorder_entries__verify_chain_fails__slow() {
 
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn chain__insert_unlinked_entry__verify_chain_fails__slow() {
     let _env_non_interactive = non_interactive();
     let setup = setup_initialized_repo();
@@ -646,6 +654,7 @@ fn chain__insert_unlinked_entry__verify_chain_fails__slow() {
 #[cfg(feature = "export")]
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn chain__export_contains_chain_head_json__valid_head_data__slow() {
     use ledgerful::export::soc2::generate_soc2_export;
 
@@ -724,6 +733,7 @@ fn chain__export_contains_chain_head_json__valid_head_data__slow() {
 #[cfg(feature = "export")]
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn chain__against_export_after_rollback__detects_rollback__slow() {
     use ledgerful::export::soc2::generate_soc2_export;
 
@@ -836,6 +846,7 @@ fn chain__against_export_after_rollback__detects_rollback__slow() {
 #[cfg(feature = "export")]
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn chain__against_export_missing_head_with_links__fails_closed_downgrade__slow() {
     use ledgerful::export::soc2::generate_soc2_export;
 
@@ -912,6 +923,7 @@ fn chain__against_export_missing_head_with_links__fails_closed_downgrade__slow()
 #[cfg(feature = "export")]
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn chain__against_export_tail_deleted_with_head_unchanged__fails_local_truncation__slow() {
     use ledgerful::export::soc2::generate_soc2_export;
 
@@ -1037,6 +1049,7 @@ fn commit_n_entries(setup: &RepoSetup, n: usize, prefix: &str) -> Vec<String> {
 #[cfg(feature = "export")]
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn chain__against_export_advance_past_checkpoint__passes__slow() {
     use ledgerful::export::soc2::generate_soc2_export;
 
@@ -1069,6 +1082,7 @@ fn chain__against_export_advance_past_checkpoint__passes__slow() {
 #[cfg(feature = "export")]
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn against_export_extra_genesis_is_extends_or_match__slow() {
     use ledgerful::export::soc2::generate_soc2_export;
 
@@ -1148,6 +1162,7 @@ fn against_export_extra_genesis_is_extends_or_match__slow() {
 #[cfg(feature = "export")]
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn chain__against_export_exact_after_advance__fails__slow() {
     use ledgerful::export::soc2::generate_soc2_export;
 
@@ -1184,6 +1199,7 @@ fn chain__against_export_exact_after_advance__fails__slow() {
 #[cfg(feature = "export")]
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn chain__against_export_bare_json_path__works__slow() {
     let _env_non_interactive = non_interactive();
     let setup = setup_initialized_repo();
@@ -1213,6 +1229,7 @@ fn chain__against_export_bare_json_path__works__slow() {
 #[cfg(feature = "export")]
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn chain__against_export_zip_path__still_works__slow() {
     use ledgerful::export::soc2::generate_soc2_export;
 
@@ -1241,6 +1258,7 @@ fn chain__against_export_zip_path__still_works__slow() {
 #[cfg(feature = "export")]
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn chain__against_export_fork_same_length__fails__slow() {
     use ledgerful::export::soc2::generate_soc2_export;
 
@@ -1314,6 +1332,7 @@ fn chain__against_export_fork_same_length__fails__slow() {
 #[cfg(feature = "export")]
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn chain__export_head_round_trip__checkpoint_ok_exact_fails_after_advance__slow() {
     use ledgerful::export::head::{prepare_chain_head_export, serialize_chain_head};
 
@@ -1372,6 +1391,7 @@ fn chain__export_head_round_trip__checkpoint_ok_exact_fails_after_advance__slow(
 #[cfg(feature = "export")]
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn chain__export_head_unsigned_with_require_signing__refuses__slow() {
     use ledgerful::export::head::prepare_chain_head_export;
 
@@ -1414,6 +1434,7 @@ fn chain__export_head_unsigned_with_require_signing__refuses__slow() {
 #[cfg(feature = "export")]
 #[test]
 #[serial(cwd, env)]
+#[allow(non_snake_case)]
 fn chain__export_head_unsigned_with_broken_config__refuses__slow() {
     use ledgerful::export::head::prepare_chain_head_export;
 

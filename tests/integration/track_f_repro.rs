@@ -7,6 +7,7 @@ use std::process::Command;
 use tempfile::tempdir;
 
 #[test]
+#[allow(non_snake_case)]
 fn test_f8_index_exclusions_ignored_by_scan__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -64,6 +65,7 @@ fn test_f8_index_exclusions_ignored_by_scan__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn test_f10_endpoints_changed_with_unindexed_vs_indexed__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -129,6 +131,7 @@ fn main() { let app = Router::new().route(\"/\", get(handler)); }
 /// filtering. This hermetic e2e dirties a real indexed Axum registration file
 /// and asserts the route still appears via the production CLI.
 #[test]
+#[allow(non_snake_case)]
 fn test_endpoints_changed_dirty_handler_appears__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -264,6 +267,7 @@ fn main() { let app = Router::new().route("/health", get(health)); }
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn test_f10_doctor_graph_state_qualifier__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -301,6 +305,7 @@ fn test_f10_doctor_graph_state_qualifier__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn test_f12_ledger_gc_dry_run__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -367,6 +372,7 @@ fn test_f12_ledger_gc_dry_run__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn test_f13_data_models_pruning__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -429,6 +435,7 @@ fn test_f13_data_models_pruning__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn test_f13_serialize_only_struct_excluded__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -477,6 +484,7 @@ fn test_f13_serialize_only_struct_excluded__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn test_f14_config_diff_env__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();

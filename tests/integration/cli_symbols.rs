@@ -90,6 +90,7 @@ fn setup_seeded_repo() -> tempfile::TempDir {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn symbols_json_schema_version_1_path_prefix__slow() {
     let tmp = setup_seeded_repo();
     let root = tmp.path();
@@ -134,6 +135,7 @@ fn symbols_json_schema_version_1_path_prefix__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn symbols_trailing_slash_path_matches__slow() {
     let tmp = setup_seeded_repo();
     let root = tmp.path();
@@ -146,6 +148,7 @@ fn symbols_trailing_slash_path_matches__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn symbols_kind_alias_canonical_scope__slow() {
     let tmp = setup_seeded_repo();
     let root = tmp.path();
@@ -170,6 +173,7 @@ fn symbols_kind_alias_canonical_scope__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn symbols_unknown_kind_rejected__slow() {
     let tmp = setup_seeded_repo();
     let root = tmp.path();
@@ -183,6 +187,7 @@ fn symbols_unknown_kind_rejected__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn symbols_pub_and_limit_truncate_true_count__slow() {
     let tmp = setup_seeded_repo();
     let root = tmp.path();
@@ -213,6 +218,7 @@ fn symbols_pub_and_limit_truncate_true_count__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn symbols_sort_tiebreak_qualified_name__slow() {
     let tmp = setup_seeded_repo();
     let root = tmp.path();
@@ -242,6 +248,7 @@ fn symbols_sort_tiebreak_qualified_name__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn symbols_changed_clean_empty__slow() {
     let tmp = setup_seeded_repo();
     let root = tmp.path();
@@ -256,6 +263,7 @@ fn symbols_changed_clean_empty__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn symbols_changed_dirty_and_path_intersection__slow() {
     let tmp = setup_seeded_repo();
     let root = tmp.path();
@@ -295,6 +303,7 @@ fn symbols_changed_dirty_and_path_intersection__slow() {
 
 /// Codex R2 P2: rename keeps old indexed path in --changed membership until re-index.
 #[test]
+#[allow(non_snake_case)]
 fn symbols_changed_rename_includes_old_path__slow() {
     let tmp = setup_seeded_repo();
     let root = tmp.path();
@@ -325,6 +334,7 @@ fn symbols_changed_rename_includes_old_path__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn symbols_missing_db_empty_index_status__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -351,6 +361,7 @@ fn symbols_missing_db_empty_index_status__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn symbols_limit_over_max_rejected__slow() {
     let tmp = setup_seeded_repo();
     let root = tmp.path();
@@ -360,6 +371,7 @@ fn symbols_limit_over_max_rejected__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn symbols_line_null_omitted__slow() {
     let tmp = setup_seeded_repo();
     let root = tmp.path();
@@ -392,6 +404,7 @@ fn symbols_line_null_omitted__slow() {
 
 /// F2: `--changed` outside a git work tree must fail closed with a clear error.
 #[test]
+#[allow(non_snake_case)]
 fn symbols_changed_non_git_errors__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -414,6 +427,7 @@ fn symbols_changed_non_git_errors__slow() {
 /// Non-git root + no ledger.db must be non-zero with git/changed error — not
 /// exit 0 with `indexStatus: missing`.
 #[test]
+#[allow(non_snake_case)]
 fn symbols_changed_non_git_no_db_errors_before_h1__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -446,6 +460,7 @@ fn symbols_changed_non_git_no_db_errors_before_h1__slow() {
 
 /// 0183: file-form `pkg.rs` with only `pkg/mod.rs` indexed → non-empty symbols + pathResolve.
 #[test]
+#[allow(non_snake_case)]
 fn symbols_path_file_form_resolves_to_mod_rs__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -515,6 +530,7 @@ fn symbols_path_file_form_resolves_to_mod_rs__slow() {
 
 /// 0183: multi-match suffix on --path refuses with pathResolve ambiguous.
 #[test]
+#[allow(non_snake_case)]
 fn symbols_path_ambiguous_suffix_refuses__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -563,6 +579,7 @@ fn symbols_path_ambiguous_suffix_refuses__slow() {
 
 /// 0183: --changed + file-form --path still intersects resolved mod.rs.
 #[test]
+#[allow(non_snake_case)]
 fn symbols_changed_path_file_form_resolves__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -627,6 +644,7 @@ fn symbols_changed_path_file_form_resolves__slow() {
 
 /// 0183: rename mod.rs → pkg.rs on disk; index still has mod.rs; --changed --path pkg.rs resolves.
 #[test]
+#[allow(non_snake_case)]
 fn symbols_changed_path_file_form_after_rename_to_rs__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -686,6 +704,7 @@ fn symbols_changed_path_file_form_after_rename_to_rs__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn symbols_json_omits_qualified_name_when_equal_to_name__slow() {
     let tmp = setup_seeded_repo();
     let root = tmp.path();
@@ -720,6 +739,7 @@ fn symbols_json_omits_qualified_name_when_equal_to_name__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn symbols_json_emits_type_method_when_different__slow() {
     let tmp = setup_seeded_repo();
     let root = tmp.path();
@@ -760,6 +780,7 @@ fn symbols_json_emits_type_method_when_different__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn symbols_human_shows_stored_qualification__slow() {
     let tmp = setup_seeded_repo();
     let root = tmp.path();

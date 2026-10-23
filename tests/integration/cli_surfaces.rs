@@ -15,6 +15,7 @@ use std::fs;
 use tempfile::tempdir;
 
 #[test]
+#[allow(non_snake_case)]
 fn test_endpoints_json__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -49,6 +50,7 @@ fn test_endpoints_json__slow() {
 
 /// DoD-7: human `endpoints` table never shows raw JSON array syntax in Auth.
 #[test]
+#[allow(non_snake_case)]
 fn test_endpoints_human_auth_no_raw_json__slow() {
     use crate::common::run_cli_isolated;
     use rusqlite::Connection;
@@ -126,6 +128,7 @@ fn test_endpoints_human_auth_no_raw_json__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn test_data_models_impact_changed__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -149,6 +152,7 @@ fn test_data_models_impact_changed__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn test_data_models_include_fixtures_parses_on_list_and_impact__slow() {
     use clap::Parser;
     use ledgerful::cli::{Cli, Commands};
@@ -207,6 +211,7 @@ fn test_data_models_include_fixtures_parses_on_list_and_impact__slow() {
 /// `execute_impact_silent` were reintroduced, `write_impact_report` would
 /// clobber a seeded report (or create one when absent).
 #[test]
+#[allow(non_snake_case)]
 fn test_data_models_impact_changed_does_not_rewrite_latest_impact__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -284,6 +289,7 @@ fn test_data_models_impact_changed_does_not_rewrite_latest_impact__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn test_observability_coverage_json__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -306,6 +312,7 @@ fn test_observability_coverage_json__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn test_security_boundaries_human__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -328,6 +335,7 @@ fn test_security_boundaries_human__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn test_services_diff__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -419,6 +427,7 @@ fn setup_surfaces_mint_repo() -> tempfile::TempDir {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn surfaces_json_default_config_is_two_gated_three_empty_one_ready__slow() {
     use crate::common::run_cli_isolated;
 
@@ -466,6 +475,7 @@ fn surfaces_json_default_config_is_two_gated_three_empty_one_ready__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn surfaces_json_fixture_only_data_models_is_empty__slow() {
     use crate::common::run_cli_isolated;
 
@@ -523,6 +533,7 @@ fn surfaces_json_fixture_only_data_models_is_empty__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn tour_alias_matches_surfaces_json__slow() {
     use crate::common::run_cli_isolated;
 
@@ -541,6 +552,7 @@ fn tour_alias_matches_surfaces_json__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn surfaces_human_table_and_summary__slow() {
     use crate::common::run_cli_isolated;
 
@@ -567,6 +579,7 @@ fn surfaces_human_table_and_summary__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn surfaces_is_read_only__slow() {
     use crate::common::run_cli_isolated;
 
@@ -588,6 +601,7 @@ fn surfaces_is_read_only__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn doctor_json_includes_surfaces_gated_without_blocking_publish__slow() {
     use crate::common::run_cli_isolated;
 
@@ -616,6 +630,7 @@ fn doctor_json_includes_surfaces_gated_without_blocking_publish__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn surfaces_malformed_config_does_not_emit_default_inventory__slow() {
     use crate::common::run_cli_isolated;
 
@@ -635,6 +650,7 @@ fn surfaces_malformed_config_does_not_emit_default_inventory__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn doctor_default_human_collapses_surfaces_gated__slow() {
     use crate::common::run_cli_isolated;
 

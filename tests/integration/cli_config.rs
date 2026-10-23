@@ -10,6 +10,7 @@ use std::process::Command;
 use tempfile::tempdir;
 
 #[test]
+#[allow(non_snake_case)]
 fn test_config_verify_default__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -27,6 +28,7 @@ fn test_config_verify_default__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn test_config_view_shows_values__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -43,6 +45,7 @@ fn test_config_view_shows_values__slow() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn test_config_schema_output__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -61,6 +64,7 @@ fn test_config_schema_output__slow() {
 /// 0131 DoD-2 end-to-end: `config schema` human + JSON empty wiring (not only
 /// pure helpers). Fresh index with no `.env.example` → NoMatches honesty.
 #[test]
+#[allow(non_snake_case)]
 fn test_config_schema_empty_cli_human_and_json_envelope__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -161,6 +165,7 @@ fn test_config_schema_empty_cli_human_and_json_envelope__slow() {
 /// list. The test/example-only signal must stay visible (not hidden behind
 /// a flag) in both human and JSON output, just clearly separated.
 #[test]
+#[allow(non_snake_case)]
 fn test_config_diff_separates_test_only_from_production_missing_declarations__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -260,6 +265,7 @@ fn test_config_diff_separates_test_only_from_production_missing_declarations__sl
 /// for `config diff` it must be ignored so the report stays readable.
 #[test]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn config_diff_global_verbose_does_not_emit_debug_tracing__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -647,6 +653,7 @@ fn config_diff_internal_var_handling(#[case] case: ConfigDiffCase) {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn config_verify_json_malformed_toml_fail_envelope__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -696,6 +703,7 @@ fn config_verify_json_malformed_toml_fail_envelope__slow() {
 
 #[test]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn config_verify_base_url_origin_env__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -768,6 +776,7 @@ fn config_verify_base_url_origin_env__slow() {
 
 #[test]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn config_verify_base_url_origin_dotenv__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -852,6 +861,7 @@ fn inited_config_repo() -> tempfile::TempDir {
 
 #[test]
 #[serial(cwd)]
+#[allow(non_snake_case)]
 fn config_verify_human_unscoped_catalog_then_valid_then_next__slow() {
     let tmp = inited_config_repo();
     let (stdout, stderr, code) = run_cli(tmp.path(), &["config", "verify"]);
@@ -888,6 +898,7 @@ fn config_verify_human_unscoped_catalog_then_valid_then_next__slow() {
 
 #[test]
 #[serial(cwd)]
+#[allow(non_snake_case)]
 fn config_verify_json_unscoped_is_bare_array_auto_omits_origin__slow() {
     let tmp = inited_config_repo();
     let (stdout, stderr, code) = run_cli(tmp.path(), &["config", "verify", "--json"]);
@@ -919,6 +930,7 @@ fn config_verify_json_unscoped_is_bare_array_auto_omits_origin__slow() {
 
 #[test]
 #[serial(cwd)]
+#[allow(non_snake_case)]
 fn config_verify_json_verbose_embed_concurrency_has_default_origin__slow() {
     let tmp = inited_config_repo();
     let (stdout, stderr, code) = run_cli(tmp.path(), &["config", "verify", "--json", "--verbose"]);
@@ -959,6 +971,7 @@ fn config_verify_json_verbose_embed_concurrency_has_default_origin__slow() {
 
 #[test]
 #[serial(cwd)]
+#[allow(non_snake_case)]
 fn config_verify_section_backend_human_next_and_json__slow() {
     let tmp = inited_config_repo();
     let (json_out, err, code) = run_cli(
@@ -995,6 +1008,7 @@ fn config_verify_section_backend_human_next_and_json__slow() {
 
 #[test]
 #[serial(cwd)]
+#[allow(non_snake_case)]
 fn config_view_human_unscoped_names_section_key_and_json_has_no_envelope__slow() {
     let tmp = inited_config_repo();
     let (human, herr, hcode) = run_cli(tmp.path(), &["config", "view"]);
@@ -1015,6 +1029,7 @@ fn config_view_human_unscoped_names_section_key_and_json_has_no_envelope__slow()
 
 #[test]
 #[serial(cwd)]
+#[allow(non_snake_case)]
 fn config_view_section_gate_json_stays_object_slice__slow() {
     let tmp = inited_config_repo();
     let (stdout, stderr, code) = run_cli(
@@ -1029,6 +1044,7 @@ fn config_view_section_gate_json_stays_object_slice__slow() {
 
 #[test]
 #[serial(cwd)]
+#[allow(non_snake_case)]
 fn config_view_human_scoped_omits_next__slow() {
     let tmp = inited_config_repo();
     let (section_out, err, code) = run_cli(tmp.path(), &["config", "view", "--section", "gate"]);

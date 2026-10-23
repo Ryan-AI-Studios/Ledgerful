@@ -47,6 +47,7 @@ fn read_pub(root: &Utf8Path) -> [u8; 32] {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn invite_round_trip_accept_writes_peer_and_list_sees_device__slow() {
     // Device A layout
     let tmp_a = tempdir().unwrap();
@@ -84,6 +85,7 @@ fn invite_round_trip_accept_writes_peer_and_list_sees_device__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn wrong_secret_accept_fails_no_peer_file__slow() {
     let tmp_a = tempdir().unwrap();
     let root_a = Utf8Path::from_path(tmp_a.path()).unwrap();
@@ -119,6 +121,7 @@ fn wrong_secret_accept_fails_no_peer_file__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn tampered_invite_fails__slow() {
     let secret = TEST_SECRET.as_bytes();
     // Need a valid curve point for format; use a real key from init.
@@ -141,6 +144,7 @@ fn tampered_invite_fails__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn self_pair_fails__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -159,6 +163,7 @@ fn self_pair_fails__slow() {
 
 #[test]
 #[cfg(feature = "sync")]
+#[allow(non_snake_case)]
 fn path_unsafe_device_id_rejected__slow() {
     for id in ["../x", "a/b", "a.b", "unknown", "", ".", ".."] {
         assert!(
@@ -171,6 +176,7 @@ fn path_unsafe_device_id_rejected__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn path_unsafe_invite_rejects_before_write__slow() {
     // Craft invites with path-unsafe ids that still parse as 4 `.` parts (valid MAC).
     // Accept must fail at path validation with path/device messaging — no peer write.
@@ -215,6 +221,7 @@ fn path_unsafe_invite_rejects_before_write__slow() {
 
 #[test]
 #[cfg(feature = "sync")]
+#[allow(non_snake_case)]
 fn path_unsafe_dotdot_invite_fails_parse__slow() {
     // `..` as device_id injects extra `.` separators → not 4 parts after split.
     let secret = TEST_SECRET.as_bytes();
@@ -238,6 +245,7 @@ fn invalid_curve_pub_fixture() -> [u8; 32] {
 
 #[test]
 #[cfg(feature = "sync")]
+#[allow(non_snake_case)]
 fn invalid_curve_point_rejected_on_trust_path__slow() {
     let bad = invalid_curve_pub_fixture();
     assert!(
@@ -255,6 +263,7 @@ fn invalid_curve_point_rejected_on_trust_path__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn invalid_curve_point_rejected_on_accept_path__slow() {
     // Build a real invite with invalid pub under a valid MAC; accept must fail at curve check.
     let bad = invalid_curve_pub_fixture();
@@ -297,6 +306,7 @@ fn invalid_curve_point_rejected_on_accept_path__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn reaccept_same_idempotent_different_key_needs_force__slow() {
     let tmp_a = tempdir().unwrap();
     let root_a = Utf8Path::from_path(tmp_a.path()).unwrap();
@@ -348,6 +358,7 @@ fn reaccept_same_idempotent_different_key_needs_force__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn revoke_removes_from_load_peer_keys__slow() {
     let tmp_a = tempdir().unwrap();
     let root_a = Utf8Path::from_path(tmp_a.path()).unwrap();
@@ -382,6 +393,7 @@ fn revoke_removes_from_load_peer_keys__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn conflicting_flags_clear_error__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -407,6 +419,7 @@ fn conflicting_flags_clear_error__slow() {
 
 #[test]
 #[cfg(feature = "sync")]
+#[allow(non_snake_case)]
 fn malformed_peer_file_load_no_panic__slow() {
     let tmp = tempdir().unwrap();
     let sync_dir = tmp.path().join("sync");
@@ -419,6 +432,7 @@ fn malformed_peer_file_load_no_panic__slow() {
 
 #[test]
 #[cfg(feature = "sync")]
+#[allow(non_snake_case)]
 fn temp_not_matching_pub_not_trusted__slow() {
     let tmp = tempdir().unwrap();
     let sync_dir = tmp.path().join("sync");
@@ -431,6 +445,7 @@ fn temp_not_matching_pub_not_trusted__slow() {
 
 #[test]
 #[cfg(feature = "sync")]
+#[allow(non_snake_case)]
 fn mac_not_old_hash_truncation__slow() {
     let secret = b"team-secret";
     let pk = [9u8; 32];
@@ -447,6 +462,7 @@ fn mac_not_old_hash_truncation__slow() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
+#[allow(non_snake_case)]
 fn generate_invite_emits_lf_pair_prefix__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
