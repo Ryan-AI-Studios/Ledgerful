@@ -1223,6 +1223,8 @@ that frame first.
 | `semantic` | object \| **omitted** | On `--semantic` paths: readiness fields + optional `error` |
 | `fallbackUsed` | string \| **omitted** | When hybrid empty path used identifier-literal AllPaths fallback and produced ≥1 hit: `"identifier_literal"`. `schemaVersion` stays **1**; kind vocabulary unchanged (`regex_match` for those hits) |
 
+Identifier-likely hybrid places one definition witness first when the walk finds one among the first 256 trigram candidates, on a line of at most 1000 characters. Hybrid results then order by score descending, then path ascending, then line ascending, with a missing line last. A definition that appears only after candidate 256, or only on a skipped longer line, is not seated, and that miss does not set `truncated`. `score` stays the hybrid score, so a later row can score higher than the witness. No new field. `schemaVersion` stays 1.
+
 **Empty results:** full envelope with `results: []`, `resultCount: 0`, exit **0**.
 
 **Fatal auto-index** (`try_auto_index` Err under `--auto-index`): **no** machine
