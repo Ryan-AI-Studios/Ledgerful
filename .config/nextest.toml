@@ -51,6 +51,13 @@ max-threads = 1
 test-group = "serial"
 filter = 'test(/^$/)'  # placeholder — add Phase-0-confirmed group-local contenders here
 
+# A wall-clock assertion must not share CPU with the rest of the suite.
+# engine_scan_latency_guard stays at 6000 ms (debug) and 1500 ms (release).
+# Add one override per wall-clock test. Do not raise those budgets here.
+[[profile.default.overrides]]
+filter = 'test(engine_scan_latency_guard)'
+threads-required = "num-cpus"
+
 [[profile.ci.overrides]]
 test-group = "serial"
 filter = 'test(/^$/)'

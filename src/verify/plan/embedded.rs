@@ -2547,6 +2547,7 @@ mod engine_tests {
 
     /// D2: warm scan of the engine tree stays inside the latency budget
     /// (generous slack for debug builds and shared CI runners).
+    /// `.config/nextest.toml` gives this test `threads-required = "num-cpus"` so those budgets measure the scan, not the rest of the suite.
     #[test]
     fn engine_scan_latency_guard() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
