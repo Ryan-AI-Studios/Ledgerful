@@ -1413,6 +1413,61 @@ fn audit_toml_ignore_matches_deny_advisories() {
     }
 }
 
+#[test]
+fn webpki_roots_ignore_comment_matches_locked_wording() {
+    let deny = include_str!("../../deny.toml");
+    let audit = include_str!("../../.cargo/audit.toml");
+    const EXPECTED: &[&str] = &[
+        "# RUSTSEC-2026-0381 stays an advisory-id ignore. Neither ignore list can",
+        "# limit that id to one crate or version. ureq 2.12.1 depends on",
+        "# webpki-roots 0.26.11, which depends on webpki-roots 1.0.10. 0.26.11",
+        "# has no trust store of its own; it re-exports that 1.x parent. The",
+        "# advisory marks =0.26.11 unaffected and >=1.0.10 patched. cargo-deny",
+        "# check advisories reports this id advisory-not-detected on this",
+        "# lockfile. The sentence is cargo-deny's report. The id still covers",
+        "# every later webpki-roots version that matches.",
+        "# Remove this id when ureq no longer depends on webpki-roots 0.26.x (the ureq 3 migration).",
+    ];
+    const FORBIDDEN: &[&str] = &[
+        "risk accepted",
+        "no 0.26.x patch",
+        "fix requires >=1.0.10",
+        "direct rustls-webpki",
+    ];
+
+    for (label, source) in [("deny.toml", deny), (".cargo/audit.toml", audit)] {
+        let lines = trimmed_source_lines(source);
+        let id_indexes: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| **line == "\"RUSTSEC-2026-0381\",")
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(
+            id_indexes.len(),
+            1,
+            "{label} should contain one quoted RUSTSEC-2026-0381 line, found {}",
+            id_indexes.len()
+        );
+        let id_index = id_indexes[0];
+        let mut comment_start = id_index;
+        while comment_start > 0 && lines[comment_start - 1].starts_with('#') {
+            comment_start -= 1;
+        }
+        assert_eq!(
+            &lines[comment_start..id_index],
+            EXPECTED,
+            "{label} comment above the quoted id"
+        );
+        for phrase in FORBIDDEN {
+            assert!(
+                !source.contains(phrase),
+                "{label} still contains `{phrase}`"
+            );
+        }
+    }
+}
+
 // ---- 0568: advisory CI diagnostics ----
 //
 // `search-perf` and `mutation` both carry `continue-on-error: true`, so a failure never

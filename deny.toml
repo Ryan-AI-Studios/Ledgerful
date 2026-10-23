@@ -14,10 +14,15 @@ ignore = [
     # serde_yaml 0.9.34+deprecated → unsafe-libyaml 0.2.11 unmaintained
     # (RUSTSEC-2024-0449). No safe upgrade without replacing serde_yaml.
     "RUSTSEC-2024-0449",
-    # webpki-roots 0.26.11 (RUSTSEC-2026-0381) is pinned by ureq 2.12.1; the
-    # fix requires >=1.0.10 and no 0.26.x patch exists. ureq 3.x migration is a
-    # separate dependency-hygiene task; risk accepted temporarily. The direct
-    # rustls-webpki, webpki-root-certs, and webpki-roots 1.x paths are patched.
+    # RUSTSEC-2026-0381 stays an advisory-id ignore. Neither ignore list can
+    # limit that id to one crate or version. ureq 2.12.1 depends on
+    # webpki-roots 0.26.11, which depends on webpki-roots 1.0.10. 0.26.11
+    # has no trust store of its own; it re-exports that 1.x parent. The
+    # advisory marks =0.26.11 unaffected and >=1.0.10 patched. cargo-deny
+    # check advisories reports this id advisory-not-detected on this
+    # lockfile. The sentence is cargo-deny's report. The id still covers
+    # every later webpki-roots version that matches.
+    # Remove this id when ureq no longer depends on webpki-roots 0.26.x (the ureq 3 migration).
     "RUSTSEC-2026-0381",
 ]
 
