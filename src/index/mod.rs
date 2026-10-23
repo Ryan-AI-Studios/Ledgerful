@@ -26,6 +26,8 @@ pub mod module_path;
 pub mod normalize;
 pub mod observability;
 pub mod orchestrator;
+#[cfg(test)]
+mod recovery_boundary;
 pub mod references;
 /// Shared call-graph callee resolution (full + incremental paths).
 pub mod resolve;

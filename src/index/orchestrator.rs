@@ -64,7 +64,7 @@ mod docs;
 mod extraction;
 pub(crate) mod git_meta;
 pub(crate) mod graph;
-mod lifecycle;
+pub(crate) mod lifecycle;
 mod parsing;
 mod topology;
 
