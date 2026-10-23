@@ -156,6 +156,7 @@ mod rust_parser_modular;
 mod scan_pr_tests;
 mod scip_integration;
 mod search_correctness;
+mod search_definition_witness;
 mod semantic_search;
 mod tantivy_hardening;
 mod temporal_coupling;
