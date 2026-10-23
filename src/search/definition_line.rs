@@ -705,10 +705,7 @@ test(\"opens\", () => {
             "same-line block with a closing brace is a body"
         );
         let chosen = witness(
-            &[
-                ("types/widget.d.ts", signature),
-                ("pkg/open.js", open_body),
-            ],
+            &[("types/widget.d.ts", signature), ("pkg/open.js", open_body)],
             "widget_open",
         )
         .expect("body wins");
