@@ -1101,3 +1101,438 @@ fn link_pending_sidecar_reason_is_not_trailer_only() {
     );
     assert_eq!(why, "feat: bind review evidence");
 }
+
+struct ManualHookEntry {
+    tx_id: String,
+    summary: String,
+    reason: String,
+    entry_type: String,
+    verification_status: Option<String>,
+    signature: Option<String>,
+    public_key: Option<String>,
+}
+
+/// Manual `ledger commit`, then a git commit with no ledger line and zero PENDING,
+/// keeps the CLI row and a distinct HOOK row. Same summary is not a merge.
+#[test]
+fn manual_commit_then_hook_without_trailer_keeps_two_rows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    crate::common::setup_git_repo(root);
+
+    let ledgerful_bin = std::env!("CARGO_BIN_EXE_ledgerful");
+    let subject_a = "feat: record one edit";
+    let body_a = "Body records the same edit.";
+    let subject_b = "feat: record a different edit";
+    let body_b = "Body records a different edit.";
+
+    let init = std::process::Command::new(ledgerful_bin)
+        .arg("init")
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        init.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let config = std::fs::read_to_string(root.join(".ledgerful").join("config.toml")).unwrap();
+    assert!(
+        config.contains("mode = \"observe\""),
+        "oracle stays on default observe gate mode"
+    );
+    assert!(
+        !config.contains("mode = \"enforce\""),
+        "oracle must not set enforce"
+    );
+
+    let start = std::process::Command::new(ledgerful_bin)
+        .args([
+            "ledger",
+            "start",
+            "alpha.rs",
+            "--category",
+            "FEATURE",
+            "--message",
+            "open the CLI row",
+        ])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "ledger start failed: {}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+
+    let status_out = std::process::Command::new(ledgerful_bin)
+        .args(["ledger", "status", "--json"])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    let status_json: serde_json::Value = serde_json::from_slice(&status_out.stdout).unwrap();
+    let cli_tx = status_json["pendingTxIds"][0]
+        .as_str()
+        .expect("pending tx id")
+        .to_string();
+
+    let commit = std::process::Command::new(ledgerful_bin)
+        .args([
+            "ledger",
+            "commit",
+            &cli_tx,
+            "--summary",
+            subject_a,
+            "--reason",
+            "manual ledger commit",
+        ])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        commit.status.success(),
+        "ledger commit failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&commit.stdout),
+        String::from_utf8_lossy(&commit.stderr)
+    );
+
+    let db_path = root.join(".ledgerful").join("state").join("ledger.db");
+    let (sig_before, key_before, summary_before, reason_before, status_before) = {
+        let db = rusqlite::Connection::open(&db_path).unwrap();
+        let row: (
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+            Option<String>,
+        ) = db
+            .query_row(
+                "SELECT signature, public_key, summary, reason, verification_status \
+                 FROM ledger_entries WHERE tx_id = ?1 AND entry_type = 'IMPLEMENTATION'",
+                rusqlite::params![&cli_tx],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        row
+    };
+    assert!(
+        sig_before.as_ref().is_some_and(|s| !s.is_empty()),
+        "CLI signature must be non-null and non-empty before the hook"
+    );
+    assert!(
+        key_before.as_ref().is_some_and(|s| !s.is_empty()),
+        "CLI public key must be non-null and non-empty before the hook"
+    );
+    assert_eq!(summary_before, subject_a);
+    assert_eq!(reason_before, "manual ledger commit");
+    assert!(
+        status_before.is_none(),
+        "CLI verification_status must be SQL NULL, got {status_before:?}"
+    );
+
+    std::fs::write(root.join("alpha.rs"), "fn alpha() {}\n").unwrap();
+    let add_a = std::process::Command::new("git")
+        .args(["add", "alpha.rs"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(add_a.status.success(), "git add alpha.rs failed");
+
+    let msg_file = root.join(".git").join("COMMIT_EDITMSG");
+    let msg_a = format!("{subject_a}\n\n{body_a}\n");
+    assert!(!msg_a.contains("Ledger:"));
+    assert!(!msg_a.contains("Ledger-Tx:"));
+    std::fs::write(&msg_file, &msg_a).unwrap();
+
+    let hook_a = std::process::Command::new(ledgerful_bin)
+        .args(["internal", "hook-commit-msg", msg_file.to_str().unwrap()])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        hook_a.status.success(),
+        "hook-commit-msg failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&hook_a.stdout),
+        String::from_utf8_lossy(&hook_a.stderr)
+    );
+
+    let empty_hooks = root.join("empty-hooks");
+    std::fs::create_dir_all(&empty_hooks).unwrap();
+    let git_commit_a = std::process::Command::new("git")
+        .args([
+            "-c",
+            &format!("core.hooksPath={}", empty_hooks.display()),
+            "commit",
+            "-F",
+            msg_file.to_str().unwrap(),
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        git_commit_a.status.success(),
+        "git commit (no hooks) failed: {}",
+        String::from_utf8_lossy(&git_commit_a.stderr)
+    );
+
+    let promote_a = std::process::Command::new(ledgerful_bin)
+        .args(["internal", "hook-post-commit"])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        promote_a.status.success(),
+        "post-commit failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&promote_a.stdout),
+        String::from_utf8_lossy(&promote_a.stderr)
+    );
+
+    let count_after_first = {
+        let db = rusqlite::Connection::open(&db_path).unwrap();
+        let count: i32 = db
+            .query_row(
+                "SELECT COUNT(*) FROM transactions WHERE entity != 'ledgerful/gate-mode'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        count
+    };
+
+    let promote_a_again = std::process::Command::new(ledgerful_bin)
+        .args(["internal", "hook-post-commit"])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        promote_a_again.status.success(),
+        "second post-commit failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&promote_a_again.stdout),
+        String::from_utf8_lossy(&promote_a_again.stderr)
+    );
+
+    let db = rusqlite::Connection::open(&db_path).unwrap();
+    let count_after_second: i32 = db
+        .query_row(
+            "SELECT COUNT(*) FROM transactions WHERE entity != 'ledgerful/gate-mode'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count_after_first, 2, "first promote must leave two rows");
+    assert_eq!(
+        count_after_second, count_after_first,
+        "second post-commit must not add a transaction"
+    );
+
+    let mut tx_stmt = db
+        .prepare(
+            "SELECT tx_id, source, status, entity FROM transactions \
+             WHERE entity != 'ledgerful/gate-mode' ORDER BY tx_id",
+        )
+        .unwrap();
+    let tx_rows: Vec<(String, String, String, String)> = tx_stmt
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(tx_rows.len(), 2, "expected CLI and HOOK transactions");
+    assert!(
+        tx_rows.iter().all(|row| row.2 == "COMMITTED"),
+        "both rows must be COMMITTED: {tx_rows:?}"
+    );
+    assert_ne!(tx_rows[0].0, tx_rows[1].0, "tx ids must be distinct");
+    let cli = tx_rows
+        .iter()
+        .find(|row| row.1 == "CLI")
+        .expect("CLI source row");
+    let hook = tx_rows
+        .iter()
+        .find(|row| row.1 == "HOOK")
+        .expect("HOOK source row");
+    assert_eq!(cli.0, cli_tx);
+    assert_eq!(hook.3, "alpha.rs");
+    let hook_tx = hook.0.clone();
+
+    let mut entry_stmt = db
+        .prepare(
+            "SELECT tx_id, summary, reason, entry_type, verification_status, signature, public_key \
+             FROM ledger_entries WHERE tx_id = ?1 OR tx_id = ?2 ORDER BY tx_id",
+        )
+        .unwrap();
+    let entries: Vec<ManualHookEntry> = entry_stmt
+        .query_map(rusqlite::params![&cli_tx, &hook_tx], |row| {
+            Ok(ManualHookEntry {
+                tx_id: row.get(0)?,
+                summary: row.get(1)?,
+                reason: row.get(2)?,
+                entry_type: row.get(3)?,
+                verification_status: row.get(4)?,
+                signature: row.get(5)?,
+                public_key: row.get(6)?,
+            })
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(entries.len(), 2);
+    for entry in &entries {
+        assert_eq!(entry.summary, subject_a);
+        assert_eq!(entry.entry_type, "IMPLEMENTATION");
+        assert_ne!(entry.verification_status.as_deref(), Some("verified"));
+    }
+    let cli_entry = entries
+        .iter()
+        .find(|entry| entry.tx_id == cli.0)
+        .expect("CLI entry");
+    let hook_entry = entries
+        .iter()
+        .find(|entry| entry.tx_id == hook_tx)
+        .expect("HOOK entry");
+    assert_eq!(hook_entry.reason, body_a);
+    assert!(
+        cli_entry.verification_status.is_none(),
+        "CLI verification_status must stay SQL NULL, got {:?}",
+        cli_entry.verification_status
+    );
+    assert_eq!(
+        hook_entry.verification_status.as_deref(),
+        Some("unverified")
+    );
+    assert_eq!(cli_entry.signature, sig_before);
+    assert_eq!(cli_entry.public_key, key_before);
+    assert_eq!(cli_entry.summary, summary_before);
+    assert_eq!(cli_entry.reason, reason_before);
+    assert!(cli_entry.signature.as_ref().is_some_and(|s| !s.is_empty()));
+    assert!(cli_entry.public_key.as_ref().is_some_and(|s| !s.is_empty()));
+    drop(entry_stmt);
+    drop(tx_stmt);
+    drop(db);
+
+    std::fs::write(root.join("beta.rs"), "fn beta() {}\n").unwrap();
+    let add_b = std::process::Command::new("git")
+        .args(["add", "beta.rs"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(add_b.status.success(), "git add beta.rs failed");
+    let msg_b = format!("{subject_b}\n\n{body_b}\n");
+    assert!(!msg_b.contains("Ledger:"));
+    assert!(!msg_b.contains("Ledger-Tx:"));
+    std::fs::write(&msg_file, &msg_b).unwrap();
+
+    let hook_b = std::process::Command::new(ledgerful_bin)
+        .args(["internal", "hook-commit-msg", msg_file.to_str().unwrap()])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        hook_b.status.success(),
+        "second hook-commit-msg failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&hook_b.stdout),
+        String::from_utf8_lossy(&hook_b.stderr)
+    );
+    let git_commit_b = std::process::Command::new("git")
+        .args([
+            "-c",
+            &format!("core.hooksPath={}", empty_hooks.display()),
+            "commit",
+            "-F",
+            msg_file.to_str().unwrap(),
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        git_commit_b.status.success(),
+        "second git commit failed: {}",
+        String::from_utf8_lossy(&git_commit_b.stderr)
+    );
+    let promote_b = std::process::Command::new(ledgerful_bin)
+        .args(["internal", "hook-post-commit"])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        promote_b.status.success(),
+        "beta post-commit failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&promote_b.stdout),
+        String::from_utf8_lossy(&promote_b.stderr)
+    );
+
+    let db = rusqlite::Connection::open(&db_path).unwrap();
+    let mut tx_stmt = db
+        .prepare(
+            "SELECT tx_id, source, status, entity FROM transactions \
+             WHERE entity != 'ledgerful/gate-mode' ORDER BY tx_id",
+        )
+        .unwrap();
+    let tx_rows: Vec<(String, String, String, String)> = tx_stmt
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(tx_rows.len(), 3, "beta commit must append one HOOK row");
+    assert!(tx_rows.iter().any(|row| row.0 == cli_tx));
+    assert!(tx_rows.iter().any(|row| row.0 == hook_tx));
+    let beta = tx_rows
+        .iter()
+        .find(|row| row.0 != cli_tx && row.0 != hook_tx)
+        .expect("new HOOK row");
+    assert_eq!(beta.1, "HOOK");
+    assert_eq!(beta.2, "COMMITTED");
+    assert_eq!(beta.3, "beta.rs");
+
+    let beta_entry: (String, Option<String>) = db
+        .query_row(
+            "SELECT summary, verification_status FROM ledger_entries WHERE tx_id = ?1",
+            rusqlite::params![&beta.0],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(beta_entry.0, subject_b);
+    assert_eq!(beta_entry.1.as_deref(), Some("unverified"));
+
+    let subject_a_rows: i32 = db
+        .query_row(
+            "SELECT COUNT(*) FROM ledger_entries WHERE summary = ?1",
+            rusqlite::params![subject_a],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(subject_a_rows, 2, "subject A must still have two rows");
+
+    let cli_after: (Option<String>, Option<String>, Option<String>) = db
+        .query_row(
+            "SELECT signature, public_key, verification_status FROM ledger_entries WHERE tx_id = ?1",
+            rusqlite::params![&cli_tx],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(cli_after.0, sig_before);
+    assert_eq!(cli_after.1, key_before);
+    assert!(cli_after.0.as_ref().is_some_and(|s| !s.is_empty()));
+    assert!(cli_after.1.as_ref().is_some_and(|s| !s.is_empty()));
+    assert!(cli_after.2.is_none());
+}
