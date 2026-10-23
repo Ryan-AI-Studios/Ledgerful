@@ -1,4 +1,5 @@
 pub mod code_tokenizer;
+pub mod definition_line;
 pub mod encoding;
 pub mod format_stamp;
 pub mod rebuild;

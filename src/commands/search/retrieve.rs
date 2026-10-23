@@ -140,6 +140,127 @@ pub(crate) fn collect_token_lexical_hits(
         .collect()
 }
 
+/// One ordinary or seated hybrid hit. Score ties use path, then line.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct HybridRow {
+    pub path: String,
+    pub line_number: Option<usize>,
+    /// Plain fragment for JSON and for emphasis application at print time.
+    pub content: String,
+    /// Byte ranges into `content` for gated owo_colors emphasis (human only).
+    pub highlight_ranges: Vec<(usize, usize)>,
+    pub score: Option<f32>,
+    pub is_regex: bool,
+}
+
+/// Existing +5 / +15 regex boost. `.d.ts` is 15 because it ends with `.ts`.
+/// `.java` stays 5. The extension set is not widened.
+pub(crate) fn code_extension_boost(path: &str) -> f32 {
+    let path = path.replace('\\', "/");
+    if path.ends_with(".rs")
+        || path.ends_with(".ts")
+        || path.ends_with(".js")
+        || path.ends_with(".go")
+        || path.ends_with(".py")
+    {
+        15.0
+    } else {
+        5.0
+    }
+}
+
+/// Declaration inserted at index 0 when the ordinary merge has no matching row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WitnessSeat {
+    pub path: String,
+    pub line: usize,
+    pub content: String,
+}
+
+/// What an empty seated hybrid list does. A seated witness is not empty, so it
+/// emits and does not call the identifier fallback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HybridEmptyAction {
+    Emit,
+    IdentifierFallback,
+    Fuzzy,
+}
+
+pub(crate) fn hybrid_empty_action(
+    seated_empty: bool,
+    identifier_likely: bool,
+) -> HybridEmptyAction {
+    if !seated_empty {
+        HybridEmptyAction::Emit
+    } else if identifier_likely {
+        HybridEmptyAction::IdentifierFallback
+    } else {
+        HybridEmptyAction::Fuzzy
+    }
+}
+
+fn norm_search_path(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+fn line_sort_key(line: Option<usize>) -> (bool, usize) {
+    match line {
+        Some(number) => (false, number),
+        None => (true, 0),
+    }
+}
+
+pub(crate) fn sort_hybrid_rows(rows: &mut [HybridRow]) {
+    rows.sort_by(|left, right| {
+        let score_left = left.score.unwrap_or(0.0);
+        let score_right = right.score.unwrap_or(0.0);
+        score_right.total_cmp(&score_left).then_with(|| {
+            norm_search_path(&left.path)
+                .cmp(&norm_search_path(&right.path))
+                .then_with(|| {
+                    line_sort_key(left.line_number).cmp(&line_sort_key(right.line_number))
+                })
+        })
+    });
+}
+
+/// Sort, move or insert the witness at index 0, then truncate.
+/// `truncated` is decided from the seated length (and the existing regex
+/// candidate-cap signal) before truncation.
+pub(crate) fn seat_definition_witness(
+    mut rows: Vec<HybridRow>,
+    witness: Option<&WitnessSeat>,
+    limit: usize,
+    regex_candidates_truncated: bool,
+    regex_had_hits: bool,
+) -> (Vec<HybridRow>, bool) {
+    sort_hybrid_rows(&mut rows);
+    if let Some(witness) = witness {
+        let key_path = norm_search_path(&witness.path);
+        if let Some(idx) = rows.iter().position(|row| {
+            norm_search_path(&row.path) == key_path && row.line_number == Some(witness.line)
+        }) {
+            let row = rows.remove(idx);
+            rows.insert(0, row);
+        } else {
+            rows.insert(
+                0,
+                HybridRow {
+                    path: key_path.clone(),
+                    line_number: Some(witness.line),
+                    content: witness.content.clone(),
+                    highlight_ranges: Vec::new(),
+                    score: Some(code_extension_boost(&key_path)),
+                    is_regex: true,
+                },
+            );
+        }
+    }
+    let truncated = rows.len() > limit || (regex_candidates_truncated && regex_had_hits);
+    rows.truncate(limit);
+    (rows, truncated)
+}
+
 pub(crate) fn perform_search(
     engine: TantivySearchEngine,
     root: &Utf8Path,
@@ -179,18 +300,7 @@ pub(crate) fn perform_search(
         let regex_had_hits = !regex_matches.is_empty();
         let bm25_results = engine.search(&args.query, overfetch).unwrap_or_default();
 
-        struct MergedResult {
-            path: String,
-            line_number: Option<usize>,
-            /// Plain fragment for JSON and for emphasis application at print time.
-            content: String,
-            /// Byte ranges into `content` for gated owo_colors emphasis (human only).
-            highlight_ranges: Vec<(usize, usize)>,
-            score: Option<f32>,
-            is_regex: bool,
-        }
-
-        let mut merged: std::collections::HashMap<(String, Option<usize>), MergedResult> =
+        let mut merged: std::collections::HashMap<(String, Option<usize>), HybridRow> =
             std::collections::HashMap::new();
 
         for r in bm25_results {
@@ -200,7 +310,7 @@ pub(crate) fn perform_search(
             let highlight_ranges = r.highlight_ranges.unwrap_or_default();
             merged.insert(
                 (r.path.clone(), r.line_number),
-                MergedResult {
+                HybridRow {
                     path: r.path,
                     line_number: r.line_number,
                     content,
@@ -213,15 +323,7 @@ pub(crate) fn perform_search(
 
         for m in regex_matches {
             let key = (m.path.clone(), Some(m.line_number));
-            let mut boost = 5.0;
-            if m.path.ends_with(".rs")
-                || m.path.ends_with(".ts")
-                || m.path.ends_with(".js")
-                || m.path.ends_with(".go")
-                || m.path.ends_with(".py")
-            {
-                boost += 10.0;
-            }
+            let boost = code_extension_boost(&m.path);
             if let Some(existing) = merged.get_mut(&key) {
                 // Boost existing BM25 score
                 let current_score = existing.score.unwrap_or(0.0);
@@ -230,7 +332,7 @@ pub(crate) fn perform_search(
             } else {
                 merged.insert(
                     key,
-                    MergedResult {
+                    HybridRow {
                         path: m.path,
                         line_number: Some(m.line_number),
                         content: m.content,
@@ -242,135 +344,152 @@ pub(crate) fn perform_search(
             }
         }
 
-        let mut merged_results: Vec<MergedResult> = merged.into_values().collect();
-        merged_results.sort_by(|a, b| {
-            let score_a = a.score.unwrap_or(0.0);
-            let score_b = b.score.unwrap_or(0.0);
-            score_b
-                .partial_cmp(&score_a)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        let truncated =
-            merged_results.len() > args.limit || (regex_candidates_truncated && regex_had_hits);
-        merged_results.truncate(args.limit);
+        let merged_results: Vec<HybridRow> = merged.into_values().collect();
+        let witness = if is_identifier_likely(&args.query) {
+            filter
+                .definition_witness(root, &args.query)
+                .ok()
+                .flatten()
+                .map(|hit| WitnessSeat {
+                    path: hit.path,
+                    line: hit.line,
+                    content: hit.content,
+                })
+        } else {
+            None
+        };
+        let (merged_results, truncated) = seat_definition_witness(
+            merged_results,
+            witness.as_ref(),
+            args.limit,
+            regex_candidates_truncated,
+            regex_had_hits,
+        );
         collector.set_truncated(truncated);
 
-        if merged_results.is_empty() && is_identifier_likely(&args.query) {
-            // Empty hybrid fallback: escaped literal + all_paths candidates.
-            match try_identifier_literal_fallback(&filter, root, &args.query, overfetch) {
-                Ok(Some(fallback)) => {
-                    if !args.is_machine() {
+        match hybrid_empty_action(merged_results.is_empty(), is_identifier_likely(&args.query)) {
+            HybridEmptyAction::IdentifierFallback => {
+                // Empty hybrid fallback: escaped literal + all_paths candidates.
+                match try_identifier_literal_fallback(&filter, root, &args.query, overfetch) {
+                    Ok(Some(fallback)) => {
+                        if !args.is_machine() {
+                            println!(
+                                "{} identifier literal fallback (all_paths candidates)",
+                                "INFO".if_supports_color(Stream::Stdout, |s| s
+                                    .style(Style::new().yellow().bold()))
+                            );
+                        }
+                        collector.set_fallback_used("identifier_literal");
+                        if fallback.candidates_truncated {
+                            collector.set_truncated(true);
+                        }
+                        let mut matches = fallback.matches;
+                        let truncated_hits = matches.len() > args.limit;
+                        matches.truncate(args.limit);
+                        if truncated_hits {
+                            collector.set_truncated(true);
+                        }
+                        emit_regex_style_hits(args, collector, matches, truncated_hits);
+                    }
+                    _ => {
+                        handle_fuzzy_fallback(&engine, args, collector);
+                    }
+                }
+            }
+            HybridEmptyAction::Fuzzy => {
+                handle_fuzzy_fallback(&engine, args, collector);
+            }
+            HybridEmptyAction::Emit => {
+                if args.is_machine() {
+                    for res in merged_results {
+                        let kind = if res.is_regex {
+                            "regex_match"
+                        } else {
+                            "bm25_match"
+                        };
+                        let score = res.score.map(|s| s as f64);
+                        let bridge_content = if res.is_regex {
+                            format!(
+                                "{}:{}: {}",
+                                res.path,
+                                res.line_number.unwrap_or(0),
+                                res.content
+                            )
+                        } else {
+                            format!("{} ({})", res.path, res.content)
+                        };
+                        let memory_id = if let Some(line) = res.line_number {
+                            format!("{}::{}", res.path, line)
+                        } else {
+                            res.path.clone()
+                        };
+                        let relevance = res.score.unwrap_or(1.0) as f64;
+                        collector.push_hit(HitEmit {
+                            kind,
+                            path: res.path,
+                            line: res.line_number,
+                            score,
+                            content: res.content,
+                            bridge_content,
+                            bridge_relevance: relevance,
+                            bridge_memory_id: memory_id,
+                            engine: None,
+                            preview_unavailable_reason: None,
+                        });
+                    }
+                } else {
+                    println!(
+                        "\n{}",
+                        "Hybrid Search Results (BM25 + Regex):"
+                            .if_supports_color(Stream::Stdout, |s| s
+                                .style(Style::new().bold().cyan()))
+                    );
+                    for res in merged_results {
+                        let line_info = if let Some(line) = res.line_number {
+                            format!(
+                                ":{}",
+                                line.to_string()
+                                    .if_supports_color(Stream::Stdout, |s| s.yellow())
+                            )
+                        } else {
+                            String::new()
+                        };
+                        let source_label = if res.is_regex {
+                            "[Regex]"
+                                .if_supports_color(Stream::Stdout, |s| s.magenta())
+                                .to_string()
+                        } else {
+                            "[BM25]"
+                                .if_supports_color(Stream::Stdout, |s| s.green())
+                                .to_string()
+                        };
+                        let score_info = if let Some(score) = res.score {
+                            format!(" [score: {:.2}]", score)
+                        } else {
+                            String::new()
+                        };
+                        // Apply emphasis at print time via if_supports_color (0131 colour
+                        // gate). Under NO_COLOR / non-TTY, escapes are suppressed.
+                        let display = emphasize_snippet(&res.content, &res.highlight_ranges);
                         println!(
-                            "{} identifier literal fallback (all_paths candidates)",
-                            "INFO".if_supports_color(Stream::Stdout, |s| s
-                                .style(Style::new().yellow().bold()))
+                            "{} {}{} {}",
+                            source_label,
+                            format!(
+                                "{}{}",
+                                res.path.if_supports_color(Stream::Stdout, |s| s.cyan()),
+                                line_info
+                            )
+                            .if_supports_color(Stream::Stdout, |s| s.bold()),
+                            score_info.if_supports_color(Stream::Stdout, |s| s.yellow()),
+                            display.trim()
                         );
                     }
-                    collector.set_fallback_used("identifier_literal");
-                    if fallback.candidates_truncated {
-                        collector.set_truncated(true);
+                    if truncated {
+                        print_search_truncation_affordance();
                     }
-                    let mut matches = fallback.matches;
-                    let truncated_hits = matches.len() > args.limit;
-                    matches.truncate(args.limit);
-                    if truncated_hits {
-                        collector.set_truncated(true);
-                    }
-                    emit_regex_style_hits(args, collector, matches, truncated_hits);
-                }
-                _ => {
-                    handle_fuzzy_fallback(&engine, args, collector);
+                    println!();
                 }
             }
-        } else if merged_results.is_empty() {
-            handle_fuzzy_fallback(&engine, args, collector);
-        } else if args.is_machine() {
-            for res in merged_results {
-                let kind = if res.is_regex {
-                    "regex_match"
-                } else {
-                    "bm25_match"
-                };
-                let score = res.score.map(|s| s as f64);
-                let bridge_content = if res.is_regex {
-                    format!(
-                        "{}:{}: {}",
-                        res.path,
-                        res.line_number.unwrap_or(0),
-                        res.content
-                    )
-                } else {
-                    format!("{} ({})", res.path, res.content)
-                };
-                let memory_id = if let Some(line) = res.line_number {
-                    format!("{}::{}", res.path, line)
-                } else {
-                    res.path.clone()
-                };
-                let relevance = res.score.unwrap_or(1.0) as f64;
-                collector.push_hit(HitEmit {
-                    kind,
-                    path: res.path,
-                    line: res.line_number,
-                    score,
-                    content: res.content,
-                    bridge_content,
-                    bridge_relevance: relevance,
-                    bridge_memory_id: memory_id,
-                    engine: None,
-                    preview_unavailable_reason: None,
-                });
-            }
-        } else {
-            println!(
-                "\n{}",
-                "Hybrid Search Results (BM25 + Regex):"
-                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
-            );
-            for res in merged_results {
-                let line_info = if let Some(line) = res.line_number {
-                    format!(
-                        ":{}",
-                        line.to_string()
-                            .if_supports_color(Stream::Stdout, |s| s.yellow())
-                    )
-                } else {
-                    String::new()
-                };
-                let source_label = if res.is_regex {
-                    "[Regex]"
-                        .if_supports_color(Stream::Stdout, |s| s.magenta())
-                        .to_string()
-                } else {
-                    "[BM25]"
-                        .if_supports_color(Stream::Stdout, |s| s.green())
-                        .to_string()
-                };
-                let score_info = if let Some(score) = res.score {
-                    format!(" [score: {:.2}]", score)
-                } else {
-                    String::new()
-                };
-                // Apply emphasis at print time via if_supports_color (0131 colour
-                // gate). Under NO_COLOR / non-TTY, escapes are suppressed.
-                let display = emphasize_snippet(&res.content, &res.highlight_ranges);
-                println!(
-                    "{} {}{} {}",
-                    source_label,
-                    format!(
-                        "{}{}",
-                        res.path.if_supports_color(Stream::Stdout, |s| s.cyan()),
-                        line_info
-                    )
-                    .if_supports_color(Stream::Stdout, |s| s.bold()),
-                    score_info.if_supports_color(Stream::Stdout, |s| s.yellow()),
-                    display.trim()
-                );
-            }
-            if truncated {
-                print_search_truncation_affordance();
-            }
-            println!();
         }
     } else if use_regex {
         if !args.is_machine() {
@@ -887,5 +1006,181 @@ mod identifier_fallback_tests {
         assert!(is_identifier_likely("verify_step_key"));
         assert!(!is_identifier_likely("hello world"));
         assert!(!is_identifier_likely(""));
+    }
+}
+
+#[cfg(test)]
+mod definition_seat_tests {
+    use super::{
+        HybridEmptyAction, HybridRow, WitnessSeat, code_extension_boost, hybrid_empty_action,
+        seat_definition_witness, sort_hybrid_rows,
+    };
+
+    fn row(path: &str, line: Option<usize>, score: f32, is_regex: bool) -> HybridRow {
+        HybridRow {
+            path: path.to_string(),
+            line_number: line,
+            content: path.to_string(),
+            highlight_ranges: Vec::new(),
+            score: Some(score),
+            is_regex,
+        }
+    }
+
+    #[test]
+    fn code_extension_boost_js_is_15_java_is_5_dts_is_15() {
+        assert_eq!(code_extension_boost("pkg/widget.js"), 15.0);
+        assert_eq!(code_extension_boost("types/widget.d.ts"), 15.0);
+        assert_eq!(code_extension_boost("src/Widget.java"), 5.0);
+        assert_eq!(code_extension_boost("pkg/widget.jsx"), 5.0);
+    }
+
+    #[test]
+    fn seat_inserted_js_is_regex_match_score_15() {
+        let (rows, truncated) = seat_definition_witness(
+            vec![row("tests/other.js", Some(2), 40.0, false)],
+            Some(&WitnessSeat {
+                path: "pkg/widget.js".to_string(),
+                line: 4,
+                content: "widget_open(source) {".to_string(),
+            }),
+            5,
+            false,
+            false,
+        );
+        assert!(!truncated);
+        assert!(rows[0].is_regex);
+        assert_eq!(rows[0].score, Some(15.0));
+        assert_eq!(rows[0].line_number, Some(4));
+        assert_eq!(rows[0].content, "widget_open(source) {");
+        assert_eq!(rows[1].path, "tests/other.js");
+    }
+
+    #[test]
+    fn seat_inserted_java_is_regex_match_score_5() {
+        let (rows, _) = seat_definition_witness(
+            Vec::new(),
+            Some(&WitnessSeat {
+                path: "src/Widget.java".to_string(),
+                line: 3,
+                content: "void widget_open() {".to_string(),
+            }),
+            5,
+            false,
+            false,
+        );
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].is_regex);
+        assert_eq!(rows[0].score, Some(5.0));
+        assert_eq!(
+            hybrid_empty_action(false, true),
+            HybridEmptyAction::Emit,
+            "a seated witness does not take the identifier fallback"
+        );
+    }
+
+    #[test]
+    fn seat_moved_row_keeps_kind_and_score() {
+        let (rows, _) = seat_definition_witness(
+            vec![row("pkg/widget.js", Some(4), 5.0, false)],
+            Some(&WitnessSeat {
+                path: "pkg/widget.js".to_string(),
+                line: 4,
+                content: "widget_open(source) {".to_string(),
+            }),
+            5,
+            false,
+            false,
+        );
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].is_regex, "moved row stays bm25_match");
+        assert_eq!(rows[0].score, Some(5.0));
+        assert_eq!(rows[0].content, "pkg/widget.js");
+    }
+
+    #[test]
+    fn equal_scores_sort_path_then_line_missing_last() {
+        let mut rows = vec![
+            row("b.rs", Some(1), 10.0, false),
+            row("a.rs", None, 10.0, false),
+            row("a.rs", Some(5), 10.0, false),
+            row("a.rs", Some(2), 10.0, true),
+            row("c.rs", Some(1), 11.0, false),
+        ];
+        sort_hybrid_rows(&mut rows);
+        let order: Vec<_> = rows
+            .iter()
+            .map(|row| (row.path.as_str(), row.line_number))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                ("c.rs", Some(1)),
+                ("a.rs", Some(2)),
+                ("a.rs", Some(5)),
+                ("a.rs", None),
+                ("b.rs", Some(1)),
+            ]
+        );
+    }
+
+    #[test]
+    fn seat_at_limit_sets_truncated_and_drops_last_ordinary_row() {
+        let ordinary = vec![
+            row("a.js", Some(1), 3.0, false),
+            row("b.js", Some(1), 2.0, false),
+            row("c.js", Some(1), 1.0, false),
+        ];
+        let (rows, truncated) = seat_definition_witness(
+            ordinary,
+            Some(&WitnessSeat {
+                path: "pkg/widget.js".to_string(),
+                line: 8,
+                content: "widget_open(source) {".to_string(),
+            }),
+            3,
+            false,
+            false,
+        );
+        assert!(truncated);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].path, "pkg/widget.js");
+        assert!(rows[0].is_regex);
+        assert!(rows.iter().all(|row| row.path != "c.js"));
+        assert_eq!(rows[1].path, "a.js");
+        assert_eq!(rows[2].path, "b.js");
+    }
+
+    #[test]
+    fn seat_keeps_second_row_for_the_same_path() {
+        let (rows, _) = seat_definition_witness(
+            vec![
+                row("pkg/widget.js", Some(1), 20.0, false),
+                row("pkg/widget.js", Some(9), 8.0, true),
+            ],
+            Some(&WitnessSeat {
+                path: "pkg/widget.js".to_string(),
+                line: 4,
+                content: "widget_open(source) {".to_string(),
+            }),
+            10,
+            false,
+            false,
+        );
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].line_number, Some(4));
+        assert!(rows.iter().any(|row| row.line_number == Some(1)));
+        assert!(rows.iter().any(|row| row.line_number == Some(9)));
+    }
+
+    #[test]
+    fn empty_merge_branches_stay_distinct() {
+        assert_eq!(
+            hybrid_empty_action(true, true),
+            HybridEmptyAction::IdentifierFallback
+        );
+        assert_eq!(hybrid_empty_action(true, false), HybridEmptyAction::Fuzzy);
+        assert_eq!(hybrid_empty_action(false, true), HybridEmptyAction::Emit);
+        assert_eq!(hybrid_empty_action(false, false), HybridEmptyAction::Emit);
     }
 }
