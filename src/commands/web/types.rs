@@ -214,6 +214,45 @@ pub(crate) struct LedgerDetailResponse {
     pub(crate) hotspots_crossed: usize,
     pub(crate) tests_run: usize,
     pub(crate) flakes: usize,
+    /// Bound `verification_runs` for this transaction. Empty means the query
+    /// succeeded and no run is bound. It does not mean the ledger fields were cleared.
+    pub(crate) bound_runs: Vec<BoundVerificationRun>,
+    /// Snapshot of the newest bound run. Null when `bound_runs` is empty.
+    pub(crate) bound_snapshot: Option<BoundSnapshot>,
+}
+
+/// One command row stored for a bound verification run.
+#[derive(Serialize)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
+pub(crate) struct BoundVerificationCommand {
+    pub(crate) command: String,
+    pub(crate) exit_code: i64,
+    pub(crate) duration_ms: i64,
+}
+
+/// One `verification_runs` row bound by `tx_id`. No `schemaVersion`.
+#[derive(Serialize)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
+pub(crate) struct BoundVerificationRun {
+    pub(crate) run_id: i64,
+    pub(crate) run_timestamp: String,
+    pub(crate) overall_pass: bool,
+    pub(crate) stale: bool,
+    /// `true` when the parsed plan is longer than its result list.
+    /// `false` when `plan_json` is null or the step count equals the result count.
+    /// `null` when `plan_json` does not parse, or the parsed plan has fewer steps than results.
+    pub(crate) partial: Option<bool>,
+    pub(crate) commands: Vec<BoundVerificationCommand>,
+}
+
+/// History head recorded for the newest bound run. Not the current git HEAD.
+#[derive(Serialize)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
+pub(crate) struct BoundSnapshot {
+    pub(crate) run_timestamp: String,
+    pub(crate) head: Option<String>,
+    /// `recorded` when `head` is a non-empty string. `unknown` otherwise.
+    pub(crate) head_status: String,
 }
 
 #[derive(Serialize)]
@@ -410,7 +449,9 @@ pub fn map_hotspots_to_responses(
 ///   with `message = "Last verification run is stale (older than 7 days)"`.
 ///   (A stale failing run stays `FAILING` — failure takes precedence over
 ///   staleness.)
-/// - Otherwise → `HEALTHY`.
+/// - Otherwise → `HEALTHY`. A passing, fresh run whose commands are all
+///   `git --version` stays `HEALTHY` and sets `message` to the cheap-command
+///   sentence. Any other fresh pass omits `message`.
 #[derive(Debug, Serialize)]
 #[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
 #[serde(rename_all = "camelCase")]

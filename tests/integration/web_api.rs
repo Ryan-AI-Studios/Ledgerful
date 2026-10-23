@@ -155,6 +155,22 @@ fn seed_ledger_entry(
             observed INTEGER,
             prev_hash TEXT,
             sig_version INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE TABLE IF NOT EXISTS verification_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            plan_json TEXT,
+            overall_pass INTEGER NOT NULL,
+            tx_id TEXT
+        );
+        CREATE TABLE IF NOT EXISTS verification_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER,
+            command TEXT NOT NULL,
+            exit_code INTEGER NOT NULL,
+            duration_ms INTEGER NOT NULL,
+            truncated INTEGER NOT NULL,
+            tx_id TEXT
         );",
     )
     .unwrap();

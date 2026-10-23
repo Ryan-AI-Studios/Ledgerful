@@ -11,10 +11,11 @@ use crate::commands::web::server::middleware::{origin_is_loopback, record_rate_l
 use crate::commands::web::server::startup::open_ledger_connection;
 use crate::commands::web::state::{AppState, RATE_LIMIT_MAX_KEYS, evaluate_handoff_exchange};
 use crate::commands::web::types::{
-    ChangeResponse, ChangedFileResponse, ChangesQuery, ConfigResponse, HotspotResponse,
-    HotspotsQueryParams, LedgerDetailResponse, LedgerEntryResponse, LedgerListQuery,
-    LedgerSearchQuery, ProjectResponse, SessionExchangeRequest, SessionExchangeResponse,
-    SnapshotResponse, StatusResponse, SyncStatusResponse, UserSession, map_hotspots_to_responses,
+    BoundSnapshot, BoundVerificationCommand, BoundVerificationRun, ChangeResponse,
+    ChangedFileResponse, ChangesQuery, ConfigResponse, HotspotResponse, HotspotsQueryParams,
+    LedgerDetailResponse, LedgerEntryResponse, LedgerListQuery, LedgerSearchQuery, ProjectResponse,
+    SessionExchangeRequest, SessionExchangeResponse, SnapshotResponse, StatusResponse,
+    SyncStatusResponse, UserSession, map_hotspots_to_responses,
 };
 use crate::config::model::Config;
 use crate::git::repo::open_repo;
@@ -622,13 +623,9 @@ fn fetch_ledger_entry(layout: &Layout, tx_id: &str) -> Result<Option<LedgerDetai
         tracing::warn!("Failed to count hotspots crossed for tx {}: {}", tx_id, e);
         0
     });
-    let (tests_run, flakes) = match fetch_verification_stats(&conn, tx_id) {
-        Ok(stats) => stats,
-        Err(e) => {
-            tracing::warn!("Failed to fetch verification stats for tx {}: {}", tx_id, e);
-            (0, 0)
-        }
-    };
+    let (tests_run, flakes) = fetch_verification_stats(&conn, tx_id)
+        .map_err(|e| miette!("Failed to fetch verification stats for tx {tx_id}: {e}"))?;
+    let (bound_runs, bound_snapshot) = fetch_bound_verification(&conn, layout, tx_id)?;
 
     Ok(Some(LedgerDetailResponse {
         base,
@@ -636,7 +633,193 @@ fn fetch_ledger_entry(layout: &Layout, tx_id: &str) -> Result<Option<LedgerDetai
         hotspots_crossed,
         tests_run,
         flakes,
+        bound_runs,
+        bound_snapshot,
     }))
+}
+
+struct BoundRunRow {
+    run_id: i64,
+    timestamp: String,
+    overall_pass: bool,
+    plan_json: Option<String>,
+}
+
+struct BoundCommandRow {
+    run_id: i64,
+    command: String,
+    exit_code: i64,
+    duration_ms: i64,
+}
+
+/// Load bound runs for `tx_id`. SQL stays in this handler.
+///
+/// A verification-table error is returned. History parse failure is not: the
+/// snapshot head is unknown and the file is left in place.
+fn fetch_bound_verification(
+    conn: &rusqlite::Connection,
+    layout: &Layout,
+    tx_id: &str,
+) -> Result<(Vec<BoundVerificationRun>, Option<BoundSnapshot>)> {
+    let runs = query_bound_runs(conn, tx_id)?;
+    if runs.is_empty() {
+        return Ok((Vec::new(), None));
+    }
+    let commands = query_bound_commands(conn, tx_id)?;
+    let mut bound_runs = Vec::with_capacity(runs.len());
+    for run in &runs {
+        let mut run_commands = Vec::new();
+        for command in &commands {
+            if command.run_id != run.run_id {
+                continue;
+            }
+            run_commands.push(BoundVerificationCommand {
+                command: command.command.clone(),
+                exit_code: command.exit_code,
+                duration_ms: command.duration_ms,
+            });
+        }
+        bound_runs.push(BoundVerificationRun {
+            run_id: run.run_id,
+            run_timestamp: run.timestamp.clone(),
+            overall_pass: run.overall_pass,
+            stale: crate::commands::web::api::handlers::is_stale_timestamp(
+                &run.timestamp,
+                crate::commands::web::api::handlers::STALE_VERIFY_THRESHOLD_SECS,
+            ),
+            partial: partial_flag(run.plan_json.as_deref(), run_commands.len()),
+            commands: run_commands,
+        });
+    }
+    let snapshot = bound_runs.last().map(|run| {
+        let (head, head_status) = history_head_for_run(layout, tx_id, &run.run_timestamp);
+        BoundSnapshot {
+            run_timestamp: run.run_timestamp.clone(),
+            head,
+            head_status,
+        }
+    });
+    Ok((bound_runs, snapshot))
+}
+
+fn query_bound_runs(conn: &rusqlite::Connection, tx_id: &str) -> Result<Vec<BoundRunRow>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, timestamp, overall_pass, plan_json
+             FROM verification_runs
+             WHERE tx_id IS NOT NULL AND TRIM(tx_id) != '' AND TRIM(tx_id) = TRIM(?1)
+             ORDER BY id ASC",
+        )
+        .map_err(|e| miette!("Failed to query bound verification runs: {e}"))?;
+    let rows = stmt
+        .query_map(rusqlite::params![tx_id], |row| {
+            let overall: i64 = row.get(2)?;
+            Ok(BoundRunRow {
+                run_id: row.get(0)?,
+                timestamp: row.get(1)?,
+                overall_pass: overall != 0,
+                plan_json: row.get(3)?,
+            })
+        })
+        .map_err(|e| miette!("Failed to read bound verification runs: {e}"))?;
+    let mut runs = Vec::new();
+    for row in rows {
+        runs.push(row.map_err(|e| miette!("Failed to read a bound verification run: {e}"))?);
+    }
+    Ok(runs)
+}
+
+fn query_bound_commands(conn: &rusqlite::Connection, tx_id: &str) -> Result<Vec<BoundCommandRow>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT res.run_id, res.command, res.exit_code, res.duration_ms
+             FROM verification_results res
+             INNER JOIN verification_runs r ON r.id = res.run_id
+             WHERE r.tx_id IS NOT NULL AND TRIM(r.tx_id) != '' AND TRIM(r.tx_id) = TRIM(?1)
+             ORDER BY res.command ASC, res.rowid ASC",
+        )
+        .map_err(|e| miette!("Failed to query bound verification commands: {e}"))?;
+    let rows = stmt
+        .query_map(rusqlite::params![tx_id], |row| {
+            Ok(BoundCommandRow {
+                run_id: row.get(0)?,
+                command: row.get(1)?,
+                exit_code: row.get(2)?,
+                duration_ms: row.get(3)?,
+            })
+        })
+        .map_err(|e| miette!("Failed to read bound verification commands: {e}"))?;
+    let mut commands = Vec::new();
+    for row in rows {
+        commands
+            .push(row.map_err(|e| miette!("Failed to read a bound verification command: {e}"))?);
+    }
+    Ok(commands)
+}
+
+/// `false` for SQL NULL and for an equal step/result count.
+/// `true` when the parsed plan is longer than the result list.
+/// `null` when the JSON does not parse, or the plan has fewer steps than results.
+fn partial_flag(plan_json: Option<&str>, result_count: usize) -> Option<bool> {
+    let Some(raw) = plan_json else {
+        return Some(false);
+    };
+    match serde_json::from_str::<crate::verify::plan::VerificationPlan>(raw) {
+        Ok(plan) => {
+            let steps = plan.steps.len();
+            if steps > result_count {
+                Some(true)
+            } else if steps == result_count {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+fn history_head_for_run(
+    layout: &Layout,
+    tx_id: &str,
+    run_timestamp: &str,
+) -> (Option<String>, String) {
+    let history_path = layout
+        .reports_dir()
+        .join(crate::verify::results::VERIFY_HISTORY);
+    if !history_path.exists() {
+        return (None, "unknown".to_string());
+    }
+    let content = match std::fs::read_to_string(&history_path) {
+        Ok(content) => content,
+        Err(err) => {
+            tracing::warn!(
+                "failed to read verify history at {}: {}; leaving the file unchanged",
+                history_path,
+                err
+            );
+            return (None, "unknown".to_string());
+        }
+    };
+    match crate::verify::results::parse_verify_history(&content) {
+        Ok(records) => {
+            let matched = records.iter().rev().find(|record| {
+                record.tx_id.as_deref() == Some(tx_id) && record.timestamp == run_timestamp
+            });
+            match matched.and_then(|record| record.head.as_deref()) {
+                Some(head) if !head.is_empty() => (Some(head.to_string()), "recorded".to_string()),
+                _ => (None, "unknown".to_string()),
+            }
+        }
+        Err(err) => {
+            tracing::warn!(
+                "failed to parse verify history at {}: {}; leaving the file unchanged",
+                history_path,
+                err
+            );
+            (None, "unknown".to_string())
+        }
+    }
 }
 
 /// Fetch the list of files changed by a transaction, joined via the

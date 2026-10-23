@@ -8,6 +8,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Verification evidence readout (0556):** a manual `git --version` recording is a cheap command. Human verify prints `Cheap command recorded: git --version. Not a project-suite pass.` instead of a line equal to `Verification passed`, and executed JSON adds limitation code `cheap-command` while `ok` stays true and `schemaVersion` stays 1. Ledger detail adds `bound_runs` and `bound_snapshot` and does not write `verification_status` or `verification_basis`. `GET /api/verify/health` stays `HEALTHY` | `DEGRADED` | `FAILING`; a fresh passing cheap run sets `message` to that recorded sentence, and a stale cheap run keeps the stale sentence. `tests_run` still counts command rows. SOC2 mapping version stays `"1"`. Package stays `0.2.17`.
+
 - **PR wall clock (0573):** required PR checks no longer run the slow tier, a Windows clippy lane, or an SPA download on every pull request, and profile `ci` does not retry a hang (`retries` count 0; profile `slow` keeps count 2). A docs-only pull request skips the Rust test jobs when every changed file is cheap and off the compile-time and runtime exception lists. The merge wait remains `test (windows-latest)`. `schemaVersion` stays 1. Package stays `0.2.17`.
 
 ### Added

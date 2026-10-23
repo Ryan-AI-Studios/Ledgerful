@@ -98,6 +98,25 @@ enum CommandClass {
     Unknown,
 }
 
+/// The only recorded command that this track calls cheap.
+pub const CHEAP_GIT_VERSION_COMMAND: &str = "git --version";
+
+/// Human sentence for an executed, passing, all-`git --version` recording.
+pub const CHEAP_COMMAND_RECORDED_SENTENCE: &str =
+    "Cheap command recorded: git --version. Not a project-suite pass.";
+
+/// Human sentence for an executed, failing, all-`git --version` recording.
+pub const CHEAP_COMMAND_FAILED_SENTENCE: &str =
+    "Cheap command failed: git --version. Not a project-suite result.";
+
+/// True only when the list is non-empty and every trimmed command is `git --version`.
+pub fn recorded_commands_are_only_git_version(commands: &[impl AsRef<str>]) -> bool {
+    !commands.is_empty()
+        && commands
+            .iter()
+            .all(|command| command.as_ref().trim() == CHEAP_GIT_VERSION_COMMAND)
+}
+
 pub fn build_execution_assurance(input: AssuranceInputs<'_>) -> ExecutionAssuranceJson {
     let planned = len_u64(input.planned_steps.len());
     let recorded = len_u64(input.results.len());
@@ -166,6 +185,14 @@ pub fn build_execution_assurance(input: AssuranceInputs<'_>) -> ExecutionAssuran
     }
     if runner_reported_no_tests {
         limitation_codes.push("runner-reported-no-tests".to_string());
+    }
+    let recorded_commands: Vec<&str> = input
+        .results
+        .iter()
+        .map(|result| result.command.as_str())
+        .collect();
+    if recorded_commands_are_only_git_version(&recorded_commands) {
+        limitation_codes.push("cheap-command".to_string());
     }
     limitation_codes.sort();
     limitation_codes.dedup();
@@ -1152,6 +1179,57 @@ mod tests {
             assert!(line.is_ascii());
             assert!(!line.contains('\n') && !line.contains('\r'));
             assert!(line.len() <= 512);
+        }
+    }
+
+    #[test]
+    fn cheap_command_only_when_every_result_is_git_version() {
+        let mut built = executed(&[("git --version", 0)]);
+        built.manual = true;
+        let packet = build(&built);
+        assert!(
+            packet
+                .limitation_codes
+                .iter()
+                .any(|code| code == "cheap-command")
+        );
+        assert!(
+            packet
+                .limitation_codes
+                .iter()
+                .any(|code| code == "unknown-command-semantics")
+        );
+        assert_eq!(packet.test_command_evidence, TestCommandEvidence::Unknown);
+        assert_eq!(packet.test_cases_run, None);
+        assert_eq!(packet.schema_version, EXECUTION_ASSURANCE_SCHEMA_VERSION);
+        assert!(
+            !format_assurance_line(&packet).contains("Cheap command"),
+            "the assurance line does not grow the cheap-command words"
+        );
+
+        let trimmed = executed(&[("  git --version  ", 0)]);
+        assert!(
+            build(&trimmed)
+                .limitation_codes
+                .iter()
+                .any(|code| code == "cheap-command")
+        );
+
+        for pairs in [
+            &[("git --version --build-options", 0)][..],
+            &[],
+            &[("cargo fmt", 0)],
+            &[("git --version", 0), ("cargo fmt", 0)],
+        ] {
+            let packet = build(&executed(pairs));
+            assert!(
+                !packet
+                    .limitation_codes
+                    .iter()
+                    .any(|code| code == "cheap-command"),
+                "not an all-git-version recording: {pairs:?} codes={:?}",
+                packet.limitation_codes
+            );
         }
     }
 }

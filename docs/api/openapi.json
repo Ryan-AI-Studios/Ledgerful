@@ -924,6 +924,90 @@
           }
         }
       },
+      "BoundSnapshot": {
+        "type": "object",
+        "description": "History head recorded for the newest bound run. Not the current git HEAD.",
+        "required": [
+          "run_timestamp",
+          "head_status"
+        ],
+        "properties": {
+          "head": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "head_status": {
+            "type": "string",
+            "description": "`recorded` when `head` is a non-empty string. `unknown` otherwise."
+          },
+          "run_timestamp": {
+            "type": "string"
+          }
+        }
+      },
+      "BoundVerificationCommand": {
+        "type": "object",
+        "description": "One command row stored for a bound verification run.",
+        "required": [
+          "command",
+          "exit_code",
+          "duration_ms"
+        ],
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "exit_code": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "BoundVerificationRun": {
+        "type": "object",
+        "description": "One `verification_runs` row bound by `tx_id`. No `schemaVersion`.",
+        "required": [
+          "run_id",
+          "run_timestamp",
+          "overall_pass",
+          "stale",
+          "commands"
+        ],
+        "properties": {
+          "commands": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BoundVerificationCommand"
+            }
+          },
+          "overall_pass": {
+            "type": "boolean"
+          },
+          "partial": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`true` when the parsed plan is longer than its result list.\n`false` when `plan_json` is null or the step count equals the result count.\n`null` when `plan_json` does not parse, or the parsed plan has fewer steps than results."
+          },
+          "run_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "run_timestamp": {
+            "type": "string"
+          },
+          "stale": {
+            "type": "boolean"
+          }
+        }
+      },
       "ChangeResponse": {
         "type": "object",
         "required": [
@@ -1434,9 +1518,28 @@
               "files",
               "hotspots_crossed",
               "tests_run",
-              "flakes"
+              "flakes",
+              "bound_runs"
             ],
             "properties": {
+              "bound_runs": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/BoundVerificationRun"
+                },
+                "description": "Bound `verification_runs` for this transaction. Empty means the query\nsucceeded and no run is bound. It does not mean the ledger fields were cleared."
+              },
+              "bound_snapshot": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/BoundSnapshot",
+                    "description": "Snapshot of the newest bound run. Null when `bound_runs` is empty."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "files": {
                 "type": "array",
                 "items": {
@@ -1962,7 +2065,7 @@
       },
       "VerificationHealthResponse": {
         "type": "object",
-        "description": "`GET /api/verify/health` — overall verification health derived from the\nlatest `verification_runs` row.\n\nStatus mapping (documented for the reviewer):\n- No runs recorded → `DEGRADED` with `message = \"No verification runs\n  recorded\"` and `lastRunAt = null`. This is NOT an error (200, not 404)\n  so the dashboard can render its empty state.\n- Latest run `overall_pass = false` → `FAILING`.\n- Latest run `overall_pass = true` but older than 7 days → `DEGRADED`\n  with `message = \"Last verification run is stale (older than 7 days)\"`.\n  (A stale failing run stays `FAILING` — failure takes precedence over\n  staleness.)\n- Otherwise → `HEALTHY`.",
+        "description": "`GET /api/verify/health` — overall verification health derived from the\nlatest `verification_runs` row.\n\nStatus mapping (documented for the reviewer):\n- No runs recorded → `DEGRADED` with `message = \"No verification runs\n  recorded\"` and `lastRunAt = null`. This is NOT an error (200, not 404)\n  so the dashboard can render its empty state.\n- Latest run `overall_pass = false` → `FAILING`.\n- Latest run `overall_pass = true` but older than 7 days → `DEGRADED`\n  with `message = \"Last verification run is stale (older than 7 days)\"`.\n  (A stale failing run stays `FAILING` — failure takes precedence over\n  staleness.)\n- Otherwise → `HEALTHY`. A passing, fresh run whose commands are all\n  `git --version` stays `HEALTHY` and sets `message` to the cheap-command\n  sentence. Any other fresh pass omits `message`.",
         "required": [
           "status"
         ],

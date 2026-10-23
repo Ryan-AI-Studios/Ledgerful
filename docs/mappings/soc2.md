@@ -82,8 +82,8 @@ These keywords represent bundle/system-level evidence rather than per-entry pred
 
 ### CC8.1 — Change Management
 
-* **Provenance:** Signed ledger entry per change (category, intent/reason, committed_at) = documentation; verification-run outcome (tests_run, pass/fail) = tested; risk/blast-radius = impact-assessed; tamper-evident chain = integrity/continuity of the presented chain, with an independently retained head needed for rollback detection.
-* **Honest limit:** Covers documentation, testing, risk-assessment, completeness. Does not by itself prove authorization/approval (who approved) — that comes from PR reviews / branch protection, which Ledgerful can reference but doesn't provide.
+* **Provenance:** Signed ledger entry per change (category, intent/reason, committed_at) = documentation; verification-run command rows (tests_run counts verification_results rows; flakes counts failed verification_runs) record which commands exited; that is not a test-case count, and a manual git --version row is a cheap command, not a project-suite pass; risk/blast-radius = impact-assessed; tamper-evident chain = integrity/continuity of the presented chain, with an independently retained head needed for rollback detection.
+* **Honest limit:** Covers documentation, testing, risk-assessment, completeness. Does not by itself prove authorization/approval (who approved) — that comes from PR reviews / branch protection, which Ledgerful can reference but doesn't provide. A null verification_status does not mean no bound run exists.
 
 ### CC3.4 — Assessing Changes to Internal Control
 

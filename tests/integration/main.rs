@@ -218,3 +218,5 @@ mod openapi_contract;
 mod web_api;
 #[cfg(feature = "web")]
 mod web_security;
+#[cfg(feature = "web")]
+mod web_verification_evidence;
