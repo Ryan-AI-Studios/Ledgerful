@@ -1,3 +1,4 @@
+use crate::search::definition_line::{self, WitnessCandidate};
 use crate::search::encoding::{normalize_to_utf8, strip_control_characters};
 use crate::search::tantivy_engine::TantivySearchEngine;
 use crate::search::trigram::regex_to_trigrams;
@@ -9,6 +10,9 @@ use std::fs;
 
 /// Max candidate paths from trigram prefilter or all_paths scan.
 pub const REGEX_CANDIDATE_CAP: usize = 5000;
+
+/// Max trigram candidates the definition-witness walk will consider.
+pub const WITNESS_FILE_CAP: usize = 256;
 
 /// How [`RegexFilter`] selects candidate paths before line-level matching.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -60,18 +64,7 @@ impl<'a> RegexFilter<'a> {
         source: RegexCandidateSource,
     ) -> Result<RegexSearchResult> {
         let regex = Regex::new(pattern).into_diagnostic()?;
-
-        let candidates = match source {
-            RegexCandidateSource::AllPaths => self.engine.all_paths(REGEX_CANDIDATE_CAP)?,
-            RegexCandidateSource::Auto => {
-                if let Some(trigrams) = regex_to_trigrams(pattern) {
-                    self.engine
-                        .search_trigrams(&trigrams, REGEX_CANDIDATE_CAP)?
-                } else {
-                    self.engine.all_paths(REGEX_CANDIDATE_CAP)?
-                }
-            }
-        };
+        let candidates = self.candidate_paths(pattern, source)?;
 
         let candidates_truncated = candidates.len() >= REGEX_CANDIDATE_CAP;
 
@@ -118,6 +111,57 @@ impl<'a> RegexFilter<'a> {
             matches,
             candidates_truncated,
         })
+    }
+
+    /// Walk Auto trigram candidates and return one definition witness.
+    ///
+    /// At most [`WITNESS_FILE_CAP`] candidate paths are considered. An
+    /// ineligible extension still consumes a slot and is not read. Line
+    /// handling matches [`Self::search_with`]: UTF-8 normalization, control
+    /// stripping, and the 1000-character skip. This does not change the
+    /// match limit of [`Self::search_with`].
+    pub(crate) fn definition_witness(
+        &self,
+        root: &Utf8Path,
+        token: &str,
+    ) -> Result<Option<WitnessCandidate>> {
+        let pattern = regex::escape(token);
+        let candidates = self.candidate_paths(&pattern, RegexCandidateSource::Auto)?;
+        let mut seen_paths = std::collections::HashSet::new();
+        let mut considered = 0usize;
+        let mut declarations = Vec::new();
+        for path_str in candidates {
+            if !seen_paths.insert(path_str.clone()) {
+                continue;
+            }
+            if considered >= WITNESS_FILE_CAP {
+                break;
+            }
+            considered += 1;
+            if !definition_line::extension_eligible(&path_str) {
+                continue;
+            }
+            let full_path = root.join(&path_str);
+            if let Ok(content_bytes) = fs::read(&full_path) {
+                let content = normalize_to_utf8(&content_bytes);
+                let clean_content = strip_control_characters(&content);
+                declarations.extend(definition_line::scan_file(&path_str, &clean_content, token));
+            }
+        }
+        Ok(definition_line::choose_witness(&declarations))
+    }
+
+    fn candidate_paths(&self, pattern: &str, source: RegexCandidateSource) -> Result<Vec<String>> {
+        match source {
+            RegexCandidateSource::AllPaths => self.engine.all_paths(REGEX_CANDIDATE_CAP),
+            RegexCandidateSource::Auto => {
+                if let Some(trigrams) = regex_to_trigrams(pattern) {
+                    self.engine.search_trigrams(&trigrams, REGEX_CANDIDATE_CAP)
+                } else {
+                    self.engine.all_paths(REGEX_CANDIDATE_CAP)
+                }
+            }
+        }
     }
 }
 
@@ -222,5 +266,41 @@ mod tests {
             matches.iter().any(|m| m.path == file_rel),
             "empty queryable trigrams must use AllPaths: {matches:?}"
         );
+    }
+
+    #[test]
+    fn definition_witness_later_body_beats_signature_and_test_local() {
+        assert_eq!(WITNESS_FILE_CAP, 256);
+        assert_eq!(REGEX_CANDIDATE_CAP, 5000);
+        let dir = TempDir::new().expect("tempdir");
+        let engine = make_engine(&dir);
+        let root = dir.path().join("repo");
+        let files = [
+            ("Readme.md", "function widget_open() {\n    return 1;\n}\n"),
+            ("types/early.d.ts", "widget_open(source: Widget): void;\n"),
+            (
+                "tests/early.test.js",
+                "test(\"opens\", () => {\n    widget_open(source) {\n        return 1;\n    }\n});\n",
+            ),
+            (
+                "pkg/later.js",
+                "widget_open(source) {\n    return source;\n}\n",
+            ),
+        ];
+        for (path, body) in files {
+            let full = root.join(path);
+            std::fs::create_dir_all(full.parent().expect("parent")).expect("mkdir");
+            std::fs::write(&full, body).expect("write");
+            index_doc(&engine, path, body);
+        }
+        let filter = RegexFilter::new(&engine);
+        let root_utf8 = camino::Utf8Path::from_path(&root).expect("utf8 root");
+        let witness = filter
+            .definition_witness(root_utf8, "widget_open")
+            .expect("witness walk")
+            .expect("a body exists");
+        assert_eq!(witness.path, "pkg/later.js");
+        assert!(witness.has_body);
+        assert!(!witness.test_local);
     }
 }
