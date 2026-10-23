@@ -10,7 +10,7 @@ use tempfile::tempdir;
 /// DoD-15: clap-level fatal under `verify --json` must exit non-zero with empty
 /// stdout (no partial JSON). Captures real process streams.
 #[test]
-fn test_verify_json_invalid_scope_fatal_empty_stdout() {
+fn test_verify_json_invalid_scope_fatal_empty_stdout__slow() {
     let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
     let output = Command::new(ledgerful_bin)
         .args(["verify", "--json", "--scope", "not-a-scope"])
@@ -37,7 +37,7 @@ fn test_verify_json_invalid_scope_fatal_empty_stdout() {
 /// Hermetic repo: CI checkout has no `.ledgerful` (gitignored), so a
 /// CWD-relative spawn would fail before emit (empty stdout).
 #[test]
-fn test_verify_json_signatures_emits_kind() {
+fn test_verify_json_signatures_emits_kind__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     let _guard = DirGuard::from_utf8(root);
@@ -86,7 +86,7 @@ fn test_verify_json_signatures_emits_kind() {
 }
 
 #[test]
-fn test_verify_json_health_emits_kind() {
+fn test_verify_json_health_emits_kind__slow() {
     let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
     let output = Command::new(ledgerful_bin)
         .args(["verify", "--json", "--health"])
@@ -101,7 +101,7 @@ fn test_verify_json_health_emits_kind() {
 }
 
 #[test]
-fn test_verify_json_dry_run_emits_kind_executed_false() {
+fn test_verify_json_dry_run_emits_kind_executed_false__slow() {
     let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
     let output = Command::new(ledgerful_bin)
         .args(["verify", "--json", "--dry-run"])
@@ -116,7 +116,7 @@ fn test_verify_json_dry_run_emits_kind_executed_false() {
 }
 
 #[test]
-fn test_verify_json_health_signatures_refuse_empty_stdout() {
+fn test_verify_json_health_signatures_refuse_empty_stdout__slow() {
     let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
     let output = Command::new(ledgerful_bin)
         .args(["verify", "--json", "--health", "--signatures"])
@@ -131,7 +131,7 @@ fn test_verify_json_health_signatures_refuse_empty_stdout() {
 }
 
 #[test]
-fn test_verify_json_diagnostics_do_not_write_latest_verify() {
+fn test_verify_json_diagnostics_do_not_write_latest_verify__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     let _guard = DirGuard::from_utf8(root);
@@ -158,7 +158,7 @@ fn test_verify_json_diagnostics_do_not_write_latest_verify() {
 }
 
 #[test]
-fn test_verify_command_pass() {
+fn test_verify_command_pass__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     let _guard = DirGuard::from_utf8(root);
@@ -182,7 +182,7 @@ fn test_verify_command_pass() {
 }
 
 #[test]
-fn test_verify_command_fail() {
+fn test_verify_command_fail__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     let _guard = DirGuard::from_utf8(root);
@@ -206,7 +206,7 @@ fn test_verify_command_fail() {
 }
 
 #[test]
-fn test_verify_command_timeout() {
+fn test_verify_command_timeout__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     let _guard = DirGuard::from_utf8(root);
@@ -249,7 +249,7 @@ fn test_verify_command_timeout() {
 }
 
 #[test]
-fn test_verify_command_not_found() {
+fn test_verify_command_not_found__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     let _guard = DirGuard::from_utf8(root);
@@ -276,7 +276,7 @@ fn test_verify_command_not_found() {
 // CR5: --dry-run with a manual command succeeds without executing (still Ok).
 // MappingRefuse under dry-run is the opposite — see test_verify_dry_run_mapping_refuse_is_err.
 #[test]
-fn test_verify_dry_run_does_not_execute() {
+fn test_verify_dry_run_does_not_execute__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     let _guard = DirGuard::from_utf8(root);
@@ -307,7 +307,7 @@ fn test_verify_dry_run_does_not_execute() {
 /// Must not MappingRefuse solely from phantom packet + head lag, and must not
 /// schedule scoped nextest on obsolete change paths.
 #[test]
-fn test_verify_fast_live_clean_empty_changes_despite_stale_packet() {
+fn test_verify_fast_live_clean_empty_changes_despite_stale_packet__slow() {
     use ledgerful::state::layout::Layout;
     use std::fs;
 
@@ -382,7 +382,7 @@ fn test_verify_fast_live_clean_empty_changes_despite_stale_packet() {
 /// not the historical always-Ok dry-run assumption that still holds for
 /// manual commands / full scope.
 #[test]
-fn test_verify_dry_run_mapping_refuse_is_err() {
+fn test_verify_dry_run_mapping_refuse_is_err__slow() {
     use ledgerful::state::layout::Layout;
     use std::fs;
 
@@ -443,7 +443,7 @@ fn test_verify_dry_run_mapping_refuse_is_err() {
 /// 0135 final codex P1: missing impact packet + dirty working tree must
 /// MappingRefuse under `--scope fast` (not EmptyChanges under-verify).
 #[test]
-fn test_verify_fast_missing_packet_dirty_tree_refuses() {
+fn test_verify_fast_missing_packet_dirty_tree_refuses__slow() {
     use ledgerful::state::layout::Layout;
     use std::fs;
 
@@ -490,7 +490,7 @@ fn test_verify_fast_missing_packet_dirty_tree_refuses() {
 
 // CR5: --health flag should pass for a known executable.
 #[test]
-fn test_verify_health_check_known_executable() {
+fn test_verify_health_check_known_executable__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     let _guard = DirGuard::from_utf8(root);
@@ -518,7 +518,7 @@ fn test_verify_health_check_known_executable() {
 
 // CR5: --health flag should fail for a missing executable.
 #[test]
-fn test_verify_health_check_missing_executable() {
+fn test_verify_health_check_missing_executable__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     let _guard = DirGuard::from_utf8(root);
@@ -549,7 +549,7 @@ fn test_verify_health_check_missing_executable() {
 
 // CR4 regression: env-var prefix commands must correctly identify the real executable.
 #[test]
-fn test_verify_health_check_env_prefix_command() {
+fn test_verify_health_check_env_prefix_command__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     let _guard = DirGuard::from_utf8(root);
@@ -668,7 +668,7 @@ fn test_verify_warns_on_stale_cached_impact_packet__slow() {
 // `test_verify_manual_command_does_not_warn_on_stale_cached_impact_packet`
 // below, but for the config-plan case instead of the manual-command case.
 #[test]
-fn test_verify_config_plan_does_not_warn_on_stale_cached_impact_packet() {
+fn test_verify_config_plan_does_not_warn_on_stale_cached_impact_packet__slow() {
     let tmp = tempdir().unwrap();
     let root_owned = nested_repo_root(tmp.path());
     let root = root_owned.as_path();
@@ -760,7 +760,7 @@ fn test_verify_config_plan_does_not_warn_on_stale_cached_impact_packet() {
 // `ctx.packet` -- it just runs the literal command. Warning there would
 // falsely imply a prediction was made from stale data.
 #[test]
-fn test_verify_manual_command_does_not_warn_on_stale_cached_impact_packet() {
+fn test_verify_manual_command_does_not_warn_on_stale_cached_impact_packet__slow() {
     let tmp = tempdir().unwrap();
     let root_owned = nested_repo_root(tmp.path());
     let root = root_owned.as_path();
@@ -871,7 +871,7 @@ fn assert_cached_impact_report_is_stale(root: &std::path::Path) {
 
 #[test]
 #[should_panic(expected = "latest-impact.json must exist")]
-fn cached_report_guard_rejects_missing_report() {
+fn cached_report_guard_rejects_missing_report__slow() {
     let tmp = tempdir().unwrap();
     assert_cached_impact_report_is_stale(tmp.path());
 }
@@ -893,7 +893,7 @@ mod escape_cozo_string_tests {
 }
 
 #[test]
-fn test_verify_fails_with_unresolvable_tx_id() {
+fn test_verify_fails_with_unresolvable_tx_id__slow() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     crate::common::setup_git_repo(root);
@@ -926,7 +926,7 @@ fn test_verify_fails_with_unresolvable_tx_id() {
 }
 
 #[test]
-fn test_verify_persists_with_resolved_tx_id() {
+fn test_verify_persists_with_resolved_tx_id__slow() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     crate::common::setup_git_repo(root);
@@ -994,7 +994,7 @@ fn test_verify_persists_with_resolved_tx_id() {
 }
 
 #[test]
-fn test_verify_explicit_tx_id_must_be_pending() {
+fn test_verify_explicit_tx_id_must_be_pending__slow() {
     let tmp = tempfile::tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(root.as_std_path());
@@ -1074,7 +1074,7 @@ fn test_verify_explicit_tx_id_must_be_pending() {
 }
 
 #[test]
-fn test_verify_tx_id_deferred_on_dry_run_or_health() {
+fn test_verify_tx_id_deferred_on_dry_run_or_health__slow() {
     let tmp = tempfile::tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(root.as_std_path());
@@ -1119,7 +1119,7 @@ fn test_verify_tx_id_deferred_on_dry_run_or_health() {
 }
 
 #[test]
-fn test_verify_commit_editmsg_without_index_lock_does_not_autobind() {
+fn test_verify_commit_editmsg_without_index_lock_does_not_autobind__slow() {
     use std::fs;
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
@@ -1212,7 +1212,7 @@ fn test_verify_commit_editmsg_without_index_lock_does_not_autobind() {
 }
 
 #[test]
-fn test_verify_commit_editmsg_with_index_lock_autobinds() {
+fn test_verify_commit_editmsg_with_index_lock_autobinds__slow() {
     use std::fs;
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
@@ -1318,7 +1318,7 @@ fn test_verify_commit_editmsg_with_index_lock_autobinds() {
 /// git activity (e.g., a concurrent `git add` in another terminal) and HEAD
 /// matching the sidecar is the signature of a stale "post-commit failed" sidecar.
 #[test]
-fn test_verify_head_match_with_index_lock_but_no_editmsg_does_not_autobind() {
+fn test_verify_head_match_with_index_lock_but_no_editmsg_does_not_autobind__slow() {
     use std::fs;
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
@@ -1430,7 +1430,7 @@ fn test_verify_head_match_with_index_lock_but_no_editmsg_does_not_autobind() {
 /// (`allow_shell_steps` defaults false) through the full load_config →
 /// build_plan_from_config → prepare_rule_step path (no `-c`).
 #[test]
-fn test_verify_hostile_config_shell_step_refused_by_default() {
+fn test_verify_hostile_config_shell_step_refused_by_default__slow() {
     use ledgerful::state::layout::Layout;
     use std::fs;
 
@@ -1485,7 +1485,7 @@ timeout_secs = 5
 /// DoD-1 (F-001): even with `allow_shell_steps = true`, an un-allowlisted
 /// second command in a shell chain is refused (inner-command inspection).
 #[test]
-fn test_verify_hostile_config_shell_chain_second_command_refused() {
+fn test_verify_hostile_config_shell_chain_second_command_refused__slow() {
     use ledgerful::state::layout::Layout;
     use std::fs;
 
@@ -1542,7 +1542,7 @@ timeout_secs = 5
 /// DoD-1 (F-001): direct (shell:false) un-allowlisted verify step is refused
 /// under default-strict without needing shell mode.
 #[test]
-fn test_verify_hostile_config_direct_unallowlisted_refused() {
+fn test_verify_hostile_config_direct_unallowlisted_refused__slow() {
     use ledgerful::state::layout::Layout;
     use std::fs;
 
@@ -1597,7 +1597,7 @@ timeout_secs = 5
 /// Sanity: a config-declared allowlisted direct step still runs end-to-end
 /// (proves the integration path is not over-blocking cargo).
 #[test]
-fn test_verify_config_allowlisted_cargo_version_runs() {
+fn test_verify_config_allowlisted_cargo_version_runs__slow() {
     use ledgerful::state::layout::Layout;
     use std::fs;
 

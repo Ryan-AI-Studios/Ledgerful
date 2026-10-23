@@ -222,7 +222,7 @@ fn git_add_and_commit_if_dirty(dir: &Path, msg: &str) {
 
 #[test]
 #[serial(env, cwd)]
-fn policy_check_json_schema_version_and_fields() {
+fn policy_check_json_schema_version_and_fields__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_green_repo(root);
@@ -269,7 +269,7 @@ fail_on = "off"
 
 #[test]
 #[serial(env, cwd)]
-fn observe_mode_never_exits_nonzero() {
+fn observe_mode_never_exits_nonzero__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_green_repo(root);
@@ -330,7 +330,7 @@ fail_on = "off"
 
 #[test]
 #[serial(env, cwd)]
-fn enforce_mode_exits_nonzero_on_violation() {
+fn enforce_mode_exits_nonzero_on_violation__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_green_repo(root);
@@ -387,7 +387,7 @@ fail_on = "off"
 
 #[test]
 #[serial(env, cwd)]
-fn no_pending_tx_fails_locally_on_sidecar() {
+fn no_pending_tx_fails_locally_on_sidecar__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_green_repo(root);
@@ -457,7 +457,7 @@ fail_on = "off"
 /// DoD-1c / CX-P2: pending DB txs are workspace state; `--pr` skips them.
 #[test]
 #[serial(env, cwd)]
-fn no_pending_tx_db_pending_local_only_skipped_in_pr() {
+fn no_pending_tx_db_pending_local_only_skipped_in_pr__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_green_repo(root);
@@ -524,7 +524,7 @@ fail_on = "off"
 
 #[test]
 #[serial(env, cwd)]
-fn verification_must_pass_fails_when_no_runs() {
+fn verification_must_pass_fails_when_no_runs__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -566,7 +566,7 @@ fail_on = "off"
 /// CX2-P1: unbound-only runs never satisfy verification_must_pass.
 #[test]
 #[serial(env, cwd)]
-fn verification_must_pass_rejects_unbound_only_runs() {
+fn verification_must_pass_rejects_unbound_only_runs__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -618,7 +618,7 @@ fail_on = "off"
 /// 0214-A: idle local target + no bound run is a note, not a violation.
 #[test]
 #[serial(env, cwd)]
-fn verification_must_pass_idle_no_runs_is_note() {
+fn verification_must_pass_idle_no_runs_is_note__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -675,7 +675,7 @@ fail_on = "off"
 /// 0292: synthesized idle (no policy.toml) is idle JSON, not a merge-gate pass.
 #[test]
 #[serial(env, cwd)]
-fn verification_must_pass_synthesized_idle_is_idle_pass() {
+fn verification_must_pass_synthesized_idle_is_idle_pass__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -735,7 +735,7 @@ fn verification_must_pass_synthesized_idle_is_idle_pass() {
 /// 0325 DoD-2: local policy.toml `off` thresholds are `off`, not checked/idle.
 #[test]
 #[serial(env, cwd)]
-fn evaluation_off_thresholds_are_off() {
+fn evaluation_off_thresholds_are_off__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -784,7 +784,7 @@ fail_on = "off"
 /// 0214-A: idle local target + unbound-only passing run is still a note.
 #[test]
 #[serial(env, cwd)]
-fn verification_must_pass_idle_unbound_only_is_note() {
+fn verification_must_pass_idle_unbound_only_is_note__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -845,7 +845,7 @@ fail_on = "off"
 /// 0214-A2: `--pr` empty change set + no bound + rule on is the same idle note.
 #[test]
 #[serial(env, cwd)]
-fn verification_must_pass_pr_empty_range_no_bound_is_note() {
+fn verification_must_pass_pr_empty_range_no_bound_is_note__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -897,7 +897,7 @@ fail_on = "off"
 
 #[test]
 #[serial(env, cwd)]
-fn verification_must_pass_fails_when_last_run_failed() {
+fn verification_must_pass_fails_when_last_run_failed__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_green_repo(root);
@@ -935,7 +935,7 @@ fail_on = "off"
 /// CX2-P1: bound passing run satisfies local verification_must_pass.
 #[test]
 #[serial(env, cwd)]
-fn verification_must_pass_bound_pass_succeeds() {
+fn verification_must_pass_bound_pass_succeeds__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -974,7 +974,7 @@ fail_on = "off"
 /// CX2-P1: --pr mode — bound run for unrelated entity does not cover change set.
 #[test]
 #[serial(env, cwd)]
-fn verification_must_pass_pr_unrelated_entity_does_not_cover() {
+fn verification_must_pass_pr_unrelated_entity_does_not_cover__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -1027,7 +1027,7 @@ fail_on = "off"
 /// CX2-P1: --pr mode — bound run whose entity covers a changed path + pass → ok.
 #[test]
 #[serial(env, cwd)]
-fn verification_must_pass_pr_covering_bound_pass() {
+fn verification_must_pass_pr_covering_bound_pass__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -1077,7 +1077,7 @@ fail_on = "off"
 /// CX3: multi-file PR — bound pass covering only one of two paths still violates.
 #[test]
 #[serial(env, cwd)]
-fn verification_must_pass_pr_partial_path_cover_violates() {
+fn verification_must_pass_pr_partial_path_cover_violates__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -1135,7 +1135,7 @@ fail_on = "off"
 /// CX3: multi-file PR — bound passes whose entities cover every path → ok.
 #[test]
 #[serial(env, cwd)]
-fn verification_must_pass_pr_full_path_cover_passes() {
+fn verification_must_pass_pr_full_path_cover_passes__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -1191,7 +1191,7 @@ fail_on = "off"
 /// CX4: newer failing bound run for a path vetoes an older pass for that path.
 #[test]
 #[serial(env, cwd)]
-fn verification_must_pass_pr_newer_fail_vetoes_older_pass() {
+fn verification_must_pass_pr_newer_fail_vetoes_older_pass__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -1247,7 +1247,7 @@ fail_on = "off"
 /// CX2-P2: require_signed_entries fail-closed when ledger.db absent.
 #[test]
 #[serial(env, cwd)]
-fn require_signed_entries_fails_when_ledger_db_absent() {
+fn require_signed_entries_fails_when_ledger_db_absent__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -1288,7 +1288,7 @@ fail_on = "off"
 
 #[test]
 #[serial(env, cwd)]
-fn require_signed_entries_flags_unsigned() {
+fn require_signed_entries_flags_unsigned__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_green_repo(root);
@@ -1342,7 +1342,7 @@ fail_on = "off"
 
 #[test]
 #[serial(env, cwd)]
-fn fail_on_high_triggers_on_sensitive_path() {
+fn fail_on_high_triggers_on_sensitive_path__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_green_repo(root);
@@ -1380,7 +1380,7 @@ fail_on = "high"
 
 #[test]
 #[serial(env, cwd)]
-fn max_risk_without_adr_requires_adr_on_high_risk() {
+fn max_risk_without_adr_requires_adr_on_high_risk__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_green_repo(root);
@@ -1450,7 +1450,7 @@ fail_on = "off"
 /// Full coverage: entity covers Cargo.toml + ADR doc path self-covers.
 #[test]
 #[serial(env, cwd)]
-fn max_risk_without_adr_cleared_by_changed_adr_document() {
+fn max_risk_without_adr_cleared_by_changed_adr_document__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_green_repo(root);
@@ -1500,7 +1500,7 @@ fail_on = "off"
 /// CX3: multi-file — ADR entity covers only Cargo.toml; src/new.rs uncovered → still violates.
 #[test]
 #[serial(env, cwd)]
-fn max_risk_without_adr_partial_path_cover_violates() {
+fn max_risk_without_adr_partial_path_cover_violates__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_green_repo(root);
@@ -1549,7 +1549,7 @@ fail_on = "off"
 /// CX3: multi-file — ADR entities cover every changed path → no violation.
 #[test]
 #[serial(env, cwd)]
-fn max_risk_without_adr_full_path_cover_passes() {
+fn max_risk_without_adr_full_path_cover_passes__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_green_repo(root);
@@ -1594,7 +1594,7 @@ fail_on = "off"
 
 #[test]
 #[serial(env, cwd)]
-fn cli_fail_on_overrides_config() {
+fn cli_fail_on_overrides_config__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_green_repo(root);
@@ -1636,7 +1636,7 @@ fail_on = "off"
 
 #[test]
 #[serial(env, cwd)]
-fn base_branch_policy_not_bypassed_by_pr_head_edit() {
+fn base_branch_policy_not_bypassed_by_pr_head_edit__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -1789,7 +1789,7 @@ fn force_pending_violation(root: &Path) {
 
 #[test]
 #[serial(env, cwd)]
-fn missing_policy_file_synthesizes_from_gate_mode() {
+fn missing_policy_file_synthesizes_from_gate_mode__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_green_repo(root);
@@ -1810,7 +1810,7 @@ fn missing_policy_file_synthesizes_from_gate_mode() {
 /// DoD-3: no policy.toml + gate.mode=observe → synthesize observe; never exit nonzero.
 #[test]
 #[serial(env, cwd)]
-fn no_policy_gate_observe_never_exits_nonzero_on_violations() {
+fn no_policy_gate_observe_never_exits_nonzero_on_violations__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_green_repo(root);
@@ -1846,7 +1846,7 @@ fn no_policy_gate_observe_never_exits_nonzero_on_violations() {
 /// DoD-3: no policy.toml + gate.mode=enforce → synthesize enforce; exit nonzero on violations.
 #[test]
 #[serial(env, cwd)]
-fn no_policy_gate_enforce_exits_nonzero_on_violations() {
+fn no_policy_gate_enforce_exits_nonzero_on_violations__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_green_repo(root);
@@ -1886,7 +1886,7 @@ fn no_policy_gate_enforce_exits_nonzero_on_violations() {
 /// `--pr` with a forced violation must use enforce and exit nonzero.
 #[test]
 #[serial(env, cwd)]
-fn pr_mode_defaults_to_enforce_when_preset_omitted() {
+fn pr_mode_defaults_to_enforce_when_preset_omitted__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -1965,7 +1965,7 @@ fail_on = "off"
 /// Missing base policy.toml under `--pr` synthesizes CI-safe enforce (ledger rules off).
 #[test]
 #[serial(env, cwd)]
-fn pr_mode_missing_base_policy_synthesizes_enforce() {
+fn pr_mode_missing_base_policy_synthesizes_enforce__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_green_repo(root);
@@ -2023,7 +2023,7 @@ fn pr_mode_missing_base_policy_synthesizes_enforce() {
 
 #[test]
 #[serial(env, cwd)]
-fn trusted_policy_path_source() {
+fn trusted_policy_path_source__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_green_repo(root);
@@ -2056,7 +2056,7 @@ fail_on = "off"
 // ---------------------------------------------------------------------------
 
 #[test]
-fn signing_basis_intact_v2_provenance_fields() {
+fn signing_basis_intact_v2_provenance_fields__slow() {
     // Document and assert the v2 signing basis (must not include policy/mode).
     use ledgerful::ledger::crypto::{
         LedgerSignInput, sign_ledger_entry_in_v2, verify_entry_signature,
@@ -2105,7 +2105,7 @@ fail_on = "high"
 
 #[test]
 #[serial(env, cwd)]
-fn violations_sorted_by_rule_id_file_message() {
+fn violations_sorted_by_rule_id_file_message__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_green_repo(root);
@@ -2166,7 +2166,7 @@ fail_on = "off"
 // ---------------------------------------------------------------------------
 
 #[test]
-fn policy_check_report_roundtrip() {
+fn policy_check_report_roundtrip__slow() {
     let report = PolicyCheckReport {
         schema_version: 1,
         violations: vec![],

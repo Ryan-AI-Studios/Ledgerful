@@ -47,7 +47,7 @@ fn read_pub(root: &Utf8Path) -> [u8; 32] {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn invite_round_trip_accept_writes_peer_and_list_sees_device() {
+fn invite_round_trip_accept_writes_peer_and_list_sees_device__slow() {
     // Device A layout
     let tmp_a = tempdir().unwrap();
     let root_a = Utf8Path::from_path(tmp_a.path()).unwrap();
@@ -84,7 +84,7 @@ fn invite_round_trip_accept_writes_peer_and_list_sees_device() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn wrong_secret_accept_fails_no_peer_file() {
+fn wrong_secret_accept_fails_no_peer_file__slow() {
     let tmp_a = tempdir().unwrap();
     let root_a = Utf8Path::from_path(tmp_a.path()).unwrap();
     setup_git_repo(tmp_a.path());
@@ -119,7 +119,7 @@ fn wrong_secret_accept_fails_no_peer_file() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn tampered_invite_fails() {
+fn tampered_invite_fails__slow() {
     let secret = TEST_SECRET.as_bytes();
     // Need a valid curve point for format; use a real key from init.
     let tmp = tempdir().unwrap();
@@ -141,7 +141,7 @@ fn tampered_invite_fails() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn self_pair_fails() {
+fn self_pair_fails__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());
@@ -159,7 +159,7 @@ fn self_pair_fails() {
 
 #[test]
 #[cfg(feature = "sync")]
-fn path_unsafe_device_id_rejected() {
+fn path_unsafe_device_id_rejected__slow() {
     for id in ["../x", "a/b", "a.b", "unknown", "", ".", ".."] {
         assert!(
             validate_device_id_for_path(id).is_err(),
@@ -171,7 +171,7 @@ fn path_unsafe_device_id_rejected() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn path_unsafe_invite_rejects_before_write() {
+fn path_unsafe_invite_rejects_before_write__slow() {
     // Craft invites with path-unsafe ids that still parse as 4 `.` parts (valid MAC).
     // Accept must fail at path validation with path/device messaging — no peer write.
     // (`..` embeds extra dots and fails parse; covered separately below.)
@@ -215,7 +215,7 @@ fn path_unsafe_invite_rejects_before_write() {
 
 #[test]
 #[cfg(feature = "sync")]
-fn path_unsafe_dotdot_invite_fails_parse() {
+fn path_unsafe_dotdot_invite_fails_parse__slow() {
     // `..` as device_id injects extra `.` separators → not 4 parts after split.
     let secret = TEST_SECRET.as_bytes();
     let pk = [9u8; 32];
@@ -238,7 +238,7 @@ fn invalid_curve_pub_fixture() -> [u8; 32] {
 
 #[test]
 #[cfg(feature = "sync")]
-fn invalid_curve_point_rejected_on_trust_path() {
+fn invalid_curve_point_rejected_on_trust_path__slow() {
     let bad = invalid_curve_pub_fixture();
     assert!(
         ed25519_dalek::VerifyingKey::from_bytes(&bad).is_err(),
@@ -255,7 +255,7 @@ fn invalid_curve_point_rejected_on_trust_path() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn invalid_curve_point_rejected_on_accept_path() {
+fn invalid_curve_point_rejected_on_accept_path__slow() {
     // Build a real invite with invalid pub under a valid MAC; accept must fail at curve check.
     let bad = invalid_curve_pub_fixture();
     assert!(
@@ -297,7 +297,7 @@ fn invalid_curve_point_rejected_on_accept_path() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn reaccept_same_idempotent_different_key_needs_force() {
+fn reaccept_same_idempotent_different_key_needs_force__slow() {
     let tmp_a = tempdir().unwrap();
     let root_a = Utf8Path::from_path(tmp_a.path()).unwrap();
     setup_git_repo(tmp_a.path());
@@ -348,7 +348,7 @@ fn reaccept_same_idempotent_different_key_needs_force() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn revoke_removes_from_load_peer_keys() {
+fn revoke_removes_from_load_peer_keys__slow() {
     let tmp_a = tempdir().unwrap();
     let root_a = Utf8Path::from_path(tmp_a.path()).unwrap();
     setup_git_repo(tmp_a.path());
@@ -382,7 +382,7 @@ fn revoke_removes_from_load_peer_keys() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn conflicting_flags_clear_error() {
+fn conflicting_flags_clear_error__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());
@@ -407,7 +407,7 @@ fn conflicting_flags_clear_error() {
 
 #[test]
 #[cfg(feature = "sync")]
-fn malformed_peer_file_load_no_panic() {
+fn malformed_peer_file_load_no_panic__slow() {
     let tmp = tempdir().unwrap();
     let sync_dir = tmp.path().join("sync");
     let peers = sync_dir.join("peers");
@@ -419,7 +419,7 @@ fn malformed_peer_file_load_no_panic() {
 
 #[test]
 #[cfg(feature = "sync")]
-fn temp_not_matching_pub_not_trusted() {
+fn temp_not_matching_pub_not_trusted__slow() {
     let tmp = tempdir().unwrap();
     let sync_dir = tmp.path().join("sync");
     let peers = sync_dir.join("peers");
@@ -431,7 +431,7 @@ fn temp_not_matching_pub_not_trusted() {
 
 #[test]
 #[cfg(feature = "sync")]
-fn mac_not_old_hash_truncation() {
+fn mac_not_old_hash_truncation__slow() {
     let secret = b"team-secret";
     let pk = [9u8; 32];
     let device_id = "device-aabbccdd";
@@ -447,7 +447,7 @@ fn mac_not_old_hash_truncation() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn generate_invite_emits_lf_pair_prefix() {
+fn generate_invite_emits_lf_pair_prefix__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());

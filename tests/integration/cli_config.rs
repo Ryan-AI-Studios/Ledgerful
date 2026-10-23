@@ -10,7 +10,7 @@ use std::process::Command;
 use tempfile::tempdir;
 
 #[test]
-fn test_config_verify_default() {
+fn test_config_verify_default__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
@@ -27,7 +27,7 @@ fn test_config_verify_default() {
 }
 
 #[test]
-fn test_config_view_shows_values() {
+fn test_config_view_shows_values__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
@@ -43,7 +43,7 @@ fn test_config_view_shows_values() {
 }
 
 #[test]
-fn test_config_schema_output() {
+fn test_config_schema_output__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
@@ -61,7 +61,7 @@ fn test_config_schema_output() {
 /// 0131 DoD-2 end-to-end: `config schema` human + JSON empty wiring (not only
 /// pure helpers). Fresh index with no `.env.example` → NoMatches honesty.
 #[test]
-fn test_config_schema_empty_cli_human_and_json_envelope() {
+fn test_config_schema_empty_cli_human_and_json_envelope__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
@@ -161,7 +161,7 @@ fn test_config_schema_empty_cli_human_and_json_envelope() {
 /// list. The test/example-only signal must stay visible (not hidden behind
 /// a flag) in both human and JSON output, just clearly separated.
 #[test]
-fn test_config_diff_separates_test_only_from_production_missing_declarations() {
+fn test_config_diff_separates_test_only_from_production_missing_declarations__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
@@ -260,7 +260,7 @@ fn test_config_diff_separates_test_only_from_production_missing_declarations() {
 /// for `config diff` it must be ignored so the report stays readable.
 #[test]
 #[serial_test::serial(env)]
-fn config_diff_global_verbose_does_not_emit_debug_tracing() {
+fn config_diff_global_verbose_does_not_emit_debug_tracing__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
@@ -647,7 +647,7 @@ fn config_diff_internal_var_handling(#[case] case: ConfigDiffCase) {
 }
 
 #[test]
-fn config_verify_json_malformed_toml_fail_envelope() {
+fn config_verify_json_malformed_toml_fail_envelope__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -696,7 +696,7 @@ fn config_verify_json_malformed_toml_fail_envelope() {
 
 #[test]
 #[serial_test::serial(env)]
-fn config_verify_base_url_origin_env() {
+fn config_verify_base_url_origin_env__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -768,7 +768,7 @@ fn config_verify_base_url_origin_env() {
 
 #[test]
 #[serial_test::serial(env)]
-fn config_verify_base_url_origin_dotenv() {
+fn config_verify_base_url_origin_dotenv__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -852,7 +852,7 @@ fn inited_config_repo() -> tempfile::TempDir {
 
 #[test]
 #[serial(cwd)]
-fn config_verify_human_unscoped_catalog_then_valid_then_next() {
+fn config_verify_human_unscoped_catalog_then_valid_then_next__slow() {
     let tmp = inited_config_repo();
     let (stdout, stderr, code) = run_cli(tmp.path(), &["config", "verify"]);
     assert_eq!(code, 0, "verify failed: {stdout}{stderr}");
@@ -888,7 +888,7 @@ fn config_verify_human_unscoped_catalog_then_valid_then_next() {
 
 #[test]
 #[serial(cwd)]
-fn config_verify_json_unscoped_is_bare_array_auto_omits_origin() {
+fn config_verify_json_unscoped_is_bare_array_auto_omits_origin__slow() {
     let tmp = inited_config_repo();
     let (stdout, stderr, code) = run_cli(tmp.path(), &["config", "verify", "--json"]);
     assert_eq!(code, 0, "verify --json failed: {stdout}{stderr}");
@@ -919,7 +919,7 @@ fn config_verify_json_unscoped_is_bare_array_auto_omits_origin() {
 
 #[test]
 #[serial(cwd)]
-fn config_verify_json_verbose_embed_concurrency_has_default_origin() {
+fn config_verify_json_verbose_embed_concurrency_has_default_origin__slow() {
     let tmp = inited_config_repo();
     let (stdout, stderr, code) = run_cli(tmp.path(), &["config", "verify", "--json", "--verbose"]);
     assert_eq!(code, 0, "verify --json --verbose failed: {stdout}{stderr}");
@@ -959,7 +959,7 @@ fn config_verify_json_verbose_embed_concurrency_has_default_origin() {
 
 #[test]
 #[serial(cwd)]
-fn config_verify_section_backend_human_next_and_json() {
+fn config_verify_section_backend_human_next_and_json__slow() {
     let tmp = inited_config_repo();
     let (json_out, err, code) = run_cli(
         tmp.path(),
@@ -995,7 +995,7 @@ fn config_verify_section_backend_human_next_and_json() {
 
 #[test]
 #[serial(cwd)]
-fn config_view_human_unscoped_names_section_key_and_json_has_no_envelope() {
+fn config_view_human_unscoped_names_section_key_and_json_has_no_envelope__slow() {
     let tmp = inited_config_repo();
     let (human, herr, hcode) = run_cli(tmp.path(), &["config", "view"]);
     assert_eq!(hcode, 0, "{human}{herr}");
@@ -1015,7 +1015,7 @@ fn config_view_human_unscoped_names_section_key_and_json_has_no_envelope() {
 
 #[test]
 #[serial(cwd)]
-fn config_view_section_gate_json_stays_object_slice() {
+fn config_view_section_gate_json_stays_object_slice__slow() {
     let tmp = inited_config_repo();
     let (stdout, stderr, code) = run_cli(
         tmp.path(),
@@ -1029,7 +1029,7 @@ fn config_view_section_gate_json_stays_object_slice() {
 
 #[test]
 #[serial(cwd)]
-fn config_view_human_scoped_omits_next() {
+fn config_view_human_scoped_omits_next__slow() {
     let tmp = inited_config_repo();
     let (section_out, err, code) = run_cli(tmp.path(), &["config", "view", "--section", "gate"]);
     assert_eq!(code, 0, "{section_out}{err}");

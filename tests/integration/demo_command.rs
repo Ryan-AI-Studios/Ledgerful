@@ -78,7 +78,7 @@ fn production_keys_fingerprint() -> Vec<(String, u64)> {
 
 #[test]
 #[serial(cwd, env)]
-fn demo__hook_fires_and_produces_signed_entries() {
+fn demo__hook_fires_and_produces_signed_entries__slow() {
     let _ni = non_interactive();
     let tmp = tempdir().unwrap();
 
@@ -142,7 +142,7 @@ fn demo__hook_fires_and_produces_signed_entries() {
 
 #[test]
 #[serial(cwd, env)]
-fn demo__manifest_contains_demo_marker() {
+fn demo__manifest_contains_demo_marker__slow() {
     let _ni = non_interactive();
     let tmp = tempdir().unwrap();
 
@@ -175,7 +175,7 @@ fn demo__manifest_contains_demo_marker() {
 
 #[test]
 #[serial(cwd, env)]
-fn demo__cleanup_by_default_removes_dir() {
+fn demo__cleanup_by_default_removes_dir__slow() {
     let _ni = non_interactive();
     let tmp = tempdir().unwrap();
 
@@ -192,7 +192,7 @@ fn demo__cleanup_by_default_removes_dir() {
 
 #[test]
 #[serial(cwd, env)]
-fn demo__keep_retains_dir() {
+fn demo__keep_retains_dir__slow() {
     let _ni = non_interactive();
     let tmp = tempdir().unwrap();
 
@@ -220,7 +220,7 @@ fn demo__keep_retains_dir() {
 
 #[test]
 #[serial(cwd, env)]
-fn demo__refuses_non_empty_without_force() {
+fn demo__refuses_non_empty_without_force__slow() {
     let _ni = non_interactive();
     let tmp = tempdir().unwrap();
     let target = tmp.path().join("existing-dir");
@@ -237,7 +237,7 @@ fn demo__refuses_non_empty_without_force() {
 
 #[test]
 #[serial(cwd, env)]
-fn demo__force_overwrites_non_empty() {
+fn demo__force_overwrites_non_empty__slow() {
     let _ni = non_interactive();
     let tmp = tempdir().unwrap();
     let target = tmp.path().join("existing-dir");
@@ -257,7 +257,7 @@ fn demo__force_overwrites_non_empty() {
 
 #[test]
 #[serial(cwd, env)]
-fn demo__global_git_config_unchanged() {
+fn demo__global_git_config_unchanged__slow() {
     let _ni = non_interactive();
     let tmp = tempdir().unwrap();
 
@@ -286,7 +286,7 @@ fn demo__global_git_config_unchanged() {
 
 #[test]
 #[serial(cwd, env)]
-fn demo__stdout_contains_demo_marker_and_export_path() {
+fn demo__stdout_contains_demo_marker_and_export_path__slow() {
     let _ni = non_interactive();
     let tmp = tempdir().unwrap();
 
@@ -321,7 +321,7 @@ fn demo__stdout_contains_demo_marker_and_export_path() {
 /// noise demoted; evidence kept with --keep.
 #[test]
 #[serial(cwd, env)]
-fn demo__crypto_valid_beat_on_automated_path() {
+fn demo__crypto_valid_beat_on_automated_path__slow() {
     let _ni = non_interactive();
     let tmp = tempdir().unwrap();
 

@@ -6,7 +6,7 @@ use tempfile::tempdir;
 /// Isolated child: synthetic home and a known-missing default template, so
 /// key lookup and template inspection cannot reach the host.
 #[test]
-fn doctor_reports_system_health() {
+fn doctor_reports_system_health__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     let home = root.join("home");
@@ -30,7 +30,7 @@ fn doctor_reports_system_health() {
 
 /// 0109: `doctor --json` stdout is pure schema-v1 JSON (no human banners).
 #[test]
-fn doctor_json_stdout_is_pure_schema_v1() {
+fn doctor_json_stdout_is_pure_schema_v1__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -105,7 +105,7 @@ fn doctor_json_stdout_is_pure_schema_v1() {
 
 /// 0137 B5: short `-V` is package version only; long `--version` may include SHA.
 #[test]
-fn version_flags_short_without_sha_long_may_include_embed() {
+fn version_flags_short_without_sha_long_may_include_embed__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -151,7 +151,7 @@ fn version_flags_short_without_sha_long_may_include_embed() {
 
 /// 0137: non-engine temp layout must not emit `binary-behind-tree`.
 #[test]
-fn doctor_non_engine_repo_has_no_binary_behind_tree() {
+fn doctor_non_engine_repo_has_no_binary_behind_tree__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -188,7 +188,7 @@ version = "1.0.0"
 
 /// 0205 T0+T12: consumer repos skip GitHub Latest (zero HTTP, no 0205 codes).
 #[test]
-fn doctor_non_engine_repo_has_no_binary_latest_codes() {
+fn doctor_non_engine_repo_has_no_binary_latest_codes__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -231,7 +231,7 @@ version = "1.0.0"
 
 /// 0205 F5: `environment.githubLatest` is always an object with string `status`.
 #[test]
-fn doctor_json_environment_github_latest_always_object() {
+fn doctor_json_environment_github_latest_always_object__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -263,7 +263,7 @@ version = "1.0.0"
 
 /// 0109: malformed config is a structured warn, not a hard abort (JSON still pure).
 #[test]
-fn doctor_malformed_config_emits_legacy_config_warn_json() {
+fn doctor_malformed_config_emits_legacy_config_warn_json__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -297,7 +297,7 @@ fn doctor_malformed_config_emits_legacy_config_warn_json() {
 
 /// 0109 / 0074 residual: exit 1 when a block finding is present (enforce + intent never).
 #[test]
-fn doctor_exit_1_on_block_finding() {
+fn doctor_exit_1_on_block_finding__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -342,7 +342,7 @@ require_signing = true
 
 /// 0126: production empty path — init/ensure_state_dir yields 0 docs → search-empty.
 #[test]
-fn doctor_json_emits_search_empty_on_unindexed_repo() {
+fn doctor_json_emits_search_empty_on_unindexed_repo__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -384,7 +384,7 @@ fn doctor_json_emits_search_empty_on_unindexed_repo() {
 /// Asserts exact B1.2 line + search-empty finding print (not bare "empty",
 /// which graph-empty also satisfies on greenfield doctor).
 #[test]
-fn doctor_human_empty_search_index_not_ok() {
+fn doctor_human_empty_search_index_not_ok__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -411,7 +411,7 @@ fn doctor_human_empty_search_index_not_ok() {
 
 /// 0126: after real index with files, search-empty is gone; OK (N) with N>0.
 #[test]
-fn doctor_after_index_no_search_empty() {
+fn doctor_after_index_no_search_empty__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -448,7 +448,7 @@ fn doctor_after_index_no_search_empty() {
 
 /// 0422: file-assigned provider key emits `config-plaintext-secret` (values never leak).
 #[test]
-fn test_doctor_json_plaintext_secret_file_key() {
+fn test_doctor_json_plaintext_secret_file_key__slow() {
     const SENTINEL: &str = "test-key-not-a-secret";
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -581,7 +581,7 @@ fn doctor_codes(v: &serde_json::Value) -> Vec<String> {
 }
 
 #[test]
-fn user_template_secret_project_key_reports_path_not_value() {
+fn user_template_secret_project_key_reports_path_not_value__slow() {
     const SENTINEL: &str = "SENTINEL-0554-PROJECT-VALUE";
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -619,7 +619,7 @@ fn user_template_secret_project_key_reports_path_not_value() {
 }
 
 #[test]
-fn user_template_secret_malformed_project_is_incomplete_and_value_free() {
+fn user_template_secret_malformed_project_is_incomplete_and_value_free__slow() {
     const SENTINEL: &str = "SENTINEL-0554-MALFORMED-VALUE";
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -655,7 +655,7 @@ fn user_template_secret_malformed_project_is_incomplete_and_value_free() {
 }
 
 #[test]
-fn user_template_secret_project_directory_codes() {
+fn user_template_secret_project_directory_codes__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     let home = root.join("home");
@@ -673,7 +673,7 @@ fn user_template_secret_project_directory_codes() {
 }
 
 #[test]
-fn user_template_secret_override_template_scanned_only_without_project() {
+fn user_template_secret_override_template_scanned_only_without_project__slow() {
     const SENTINEL: &str = "SENTINEL-0554-TEMPLATE-VALUE";
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -722,7 +722,7 @@ fn user_template_secret_override_template_scanned_only_without_project() {
 }
 
 #[test]
-fn doctor_json_fix_dry_run_blocked_when_project_config_missing() {
+fn doctor_json_fix_dry_run_blocked_when_project_config_missing__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     let home = root.join("home");
@@ -763,7 +763,7 @@ fn doctor_json_fix_dry_run_blocked_when_project_config_missing() {
 }
 
 #[test]
-fn doctor_json_fix_allowed_preview_omits_blocked_fields() {
+fn doctor_json_fix_allowed_preview_omits_blocked_fields__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     let home = root.join("home");
@@ -797,7 +797,7 @@ fn doctor_json_fix_allowed_preview_omits_blocked_fields() {
 }
 
 #[test]
-fn doctor_fix_yes_blocked_refuses_with_exit_one_and_no_writes() {
+fn doctor_fix_yes_blocked_refuses_with_exit_one_and_no_writes__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     let home = root.join("home");
@@ -835,7 +835,7 @@ fn doctor_fix_yes_blocked_refuses_with_exit_one_and_no_writes() {
 }
 
 #[test]
-fn user_template_secret_bare_fix_keeps_validation_error_and_exit_one() {
+fn user_template_secret_bare_fix_keeps_validation_error_and_exit_one__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     let home = root.join("home");
@@ -854,7 +854,7 @@ fn user_template_secret_bare_fix_keeps_validation_error_and_exit_one() {
 /// current behavior pending 0554-opencode-M-2-public-materialization; it is not
 /// approval of copying credentials.
 #[test]
-fn user_template_secret_public_set_current_behavior_pending_followup() {
+fn user_template_secret_public_set_current_behavior_pending_followup__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     let home = root.join("home");
@@ -882,7 +882,7 @@ fn user_template_secret_public_set_current_behavior_pending_followup() {
 /// Determinism (0554): the same repo state and fixture produce identical
 /// config-* findings on two consecutive `doctor --json` runs.
 #[test]
-fn user_template_secret_findings_deterministic_twice() {
+fn user_template_secret_findings_deterministic_twice__slow() {
     const SENTINEL: &str = "SENTINEL-0554-DETERMINISM-VALUE";
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -922,7 +922,7 @@ fn user_template_secret_findings_deterministic_twice() {
 /// key name by design; the changed plaintext-key findings never do. Credential
 /// values never appear anywhere.
 #[test]
-fn user_template_secret_unknown_key_name_contract() {
+fn user_template_secret_unknown_key_name_contract__slow() {
     const VALUE: &str = "SENTINEL-0554-KEYNAME-VALUE";
     const KEY_MARKER: &str = "zz_0554_unknown_key_marker";
     let tmp = tempdir().unwrap();
@@ -976,7 +976,7 @@ fn user_template_secret_unknown_key_name_contract() {
 /// bump path; the guard must refuse first, leave the template byte-identical,
 /// and print no sentinel.
 #[test]
-fn user_template_secret_positive_risk_refused_no_materialization() {
+fn user_template_secret_positive_risk_refused_no_materialization__slow() {
     const SENTINEL: &str = "SENTINEL-0554-POSITIVE-RISK";
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -1016,7 +1016,7 @@ fn user_template_secret_positive_risk_refused_no_materialization() {
 /// Existing-project control: the same write-bearing plan applies when the
 /// regular project config exists.
 #[test]
-fn user_template_secret_existing_project_control_applies() {
+fn user_template_secret_existing_project_control_applies__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     let home = root.join("home");
@@ -1048,7 +1048,7 @@ fn user_template_secret_existing_project_control_applies() {
 /// No-action control: a trusted key and min_sig_version=2 leave an empty plan,
 /// which succeeds without a project config and creates none.
 #[test]
-fn user_template_secret_no_action_control_creates_no_config() {
+fn user_template_secret_no_action_control_creates_no_config__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     let home = root.join("home");
@@ -1085,7 +1085,7 @@ fn user_template_secret_no_action_control_creates_no_config() {
 /// Human `-v` debug oracle (0554): the fixed marker proves the load-failure
 /// branch ran; the malformed content's sentinel must stay absent.
 #[test]
-fn user_template_secret_debug_marker_is_value_free() {
+fn user_template_secret_debug_marker_is_value_free__slow() {
     const SENTINEL: &str = "SENTINEL-0554-DEBUG-VALUE";
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -1139,7 +1139,7 @@ fn run_cli_user_profile_template(
 /// read the same template. The marker `watch.debounce_ms` proves the loader
 /// used the override; the secret proves the diagnostic inspected it.
 #[test]
-fn user_template_secret_loader_parity_override_marker() {
+fn user_template_secret_loader_parity_override_marker__slow() {
     const VALUE: &str = "PARITY-VALUE-0554-OVERRIDE";
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -1182,7 +1182,7 @@ fn user_template_secret_loader_parity_override_marker() {
 /// Loader parity for the USERPROFILE origin: with no override the loader and
 /// the diagnostic both select USERPROFILE/.ledgerful/default-config.toml.
 #[test]
-fn user_template_secret_loader_parity_userprofile_marker() {
+fn user_template_secret_loader_parity_userprofile_marker__slow() {
     const VALUE: &str = "PARITY-VALUE-0554-USERPROFILE";
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -1223,7 +1223,7 @@ fn user_template_secret_loader_parity_userprofile_marker() {
 /// inspected; a symlink to a directory is refused as a metadata gap.
 #[cfg(unix)]
 #[test]
-fn user_template_secret_unix_symlink_regular_inspected_directory_refused() {
+fn user_template_secret_unix_symlink_regular_inspected_directory_refused__slow() {
     use std::os::unix::fs::symlink;
     const VALUE: &str = "SYMLINK-VALUE-0554";
     let tmp = tempdir().unwrap();
@@ -1265,7 +1265,7 @@ fn user_template_secret_unix_symlink_regular_inspected_directory_refused() {
 /// gap: the raw table still parses, so the secret is reported and the typed
 /// load failure is legacy-config only.
 #[test]
-fn user_template_secret_debounce_zero_is_legacy_plus_secret() {
+fn user_template_secret_debounce_zero_is_legacy_plus_secret__slow() {
     const VALUE: &str = "DEBOUNCE-VALUE-0554";
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -1292,7 +1292,7 @@ fn user_template_secret_debounce_zero_is_legacy_plus_secret() {
 /// Invalid-only project (wrong-typed provider key): typed load fails and the
 /// raw inspection reports the type gap. No secret claim.
 #[test]
-fn user_template_secret_project_invalid_only_code_set() {
+fn user_template_secret_project_invalid_only_code_set__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     let home = root.join("home");
@@ -1318,7 +1318,7 @@ fn user_template_secret_project_invalid_only_code_set() {
 /// doctor set is exactly the three codes, and the invalid suffix names only
 /// the allowlisted path.
 #[test]
-fn user_template_secret_project_mixed_code_set() {
+fn user_template_secret_project_mixed_code_set__slow() {
     const VALUE: &str = "MIXED-VALUE-0554";
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -1362,7 +1362,7 @@ fn user_template_secret_project_mixed_code_set() {
 /// Wrong-typed template fields are an inspection gap for that template and
 /// never add a project-only legacy-config finding (DoD-3).
 #[test]
-fn user_template_secret_template_invalid_type_adds_no_legacy_config() {
+fn user_template_secret_template_invalid_type_adds_no_legacy_config__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     let home = root.join("home");
@@ -1393,7 +1393,7 @@ fn user_template_secret_template_invalid_type_adds_no_legacy_config() {
 /// the invalid template body must stay out of every output and every file the
 /// command writes under `.ledgerful`, including doctor-results.json.
 #[test]
-fn user_template_secret_override_filename_sentinel_absent_everywhere() {
+fn user_template_secret_override_filename_sentinel_absent_everywhere__slow() {
     const ATTR: &str = "ATTR-SENTINEL-0554-FILENAME";
     const CRED: &str = "CRED-SENTINEL-0554-BODY";
     let tmp = tempdir().unwrap();
@@ -1443,7 +1443,7 @@ fn user_template_secret_override_filename_sentinel_absent_everywhere() {
 /// Startup fallback WARN (DoD-4): a malformed override triggers the fixed
 /// neutral warning on stderr, with no path or parser text.
 #[test]
-fn user_template_secret_fixed_startup_warn_on_stderr() {
+fn user_template_secret_fixed_startup_warn_on_stderr__slow() {
     const ATTR: &str = "WARN-ATTR-SENTINEL-0554";
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -1474,7 +1474,7 @@ fn user_template_secret_fixed_startup_warn_on_stderr() {
 /// Human blocked dry-run (DoD-4): the refusal is the last fix-preview line
 /// before the ordinary human report, not the last stdout line.
 #[test]
-fn user_template_secret_human_fix_dry_run_refusal_is_last_preview_line() {
+fn user_template_secret_human_fix_dry_run_refusal_is_last_preview_line__slow() {
     const REFUSAL: &str = "Doctor config fixes require a readable regular project config with valid TOML and supported fix target types. Write access is checked when applying. If the project config in the Ledgerful state directory is missing, run ledgerful init; otherwise repair its contents, type or permissions. Inspect the project config, then rerun ledgerful doctor --fix --yes.";
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -1508,7 +1508,7 @@ fn user_template_secret_human_fix_dry_run_refusal_is_last_preview_line() {
 /// Global rollup fallback WARN (DoD-4): a malformed user-level config emits the
 /// fixed neutral global warning on stderr, with no path or parser text.
 #[test]
-fn user_template_secret_global_rollup_warn_on_stderr() {
+fn user_template_secret_global_rollup_warn_on_stderr__slow() {
     const ATTR: &str = "GLOBAL-ATTR-SENTINEL-0554";
     let tmp = tempdir().unwrap();
     let root = tmp.path();

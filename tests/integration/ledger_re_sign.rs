@@ -81,7 +81,7 @@ fn corrupt_entry(db_path: &std::path::Path, tx_id: &str, new_sig: &str, new_pub:
 
 #[test]
 #[serial(cwd)]
-fn corrupted_ledger_re_sign_all_invalid_repairs_to_valid() {
+fn corrupted_ledger_re_sign_all_invalid_repairs_to_valid__slow() {
     let _env_non_interactive = non_interactive();
     let (_dir, root, db_path) = setup_initialized_repo();
     let _guard = DirGuard::from_utf8(&root);
@@ -191,7 +191,7 @@ fn corrupted_ledger_re_sign_all_invalid_repairs_to_valid() {
 
 #[test]
 #[serial(cwd)]
-fn dry_run_does_not_mutate_db() {
+fn dry_run_does_not_mutate_db__slow() {
     let _env_non_interactive = non_interactive();
     let (_dir, root, db_path) = setup_initialized_repo();
     let _guard = DirGuard::from_utf8(&root);
@@ -263,7 +263,7 @@ fn dry_run_does_not_mutate_db() {
 
 #[test]
 #[serial(cwd)]
-fn batch_re_sign_emits_one_maintenance_entry() {
+fn batch_re_sign_emits_one_maintenance_entry__slow() {
     let _env_non_interactive = non_interactive();
     let (_dir, root, db_path) = setup_initialized_repo();
     let _guard = DirGuard::from_utf8(&root);
@@ -352,7 +352,7 @@ fn batch_re_sign_emits_one_maintenance_entry() {
 
 #[test]
 #[serial(cwd)]
-fn re_sign_creates_backup_and_aborts_if_backup_fails() {
+fn re_sign_creates_backup_and_aborts_if_backup_fails__slow() {
     // Placeholder: simulating a failed backup requires a database whose backup cannot
     // be completed (e.g. read-only destination). We test the backup file is produced
     // and passes integrity_check instead.
@@ -445,7 +445,7 @@ fn re_sign_creates_backup_and_aborts_if_backup_fails() {
 
 #[test]
 #[serial(cwd)]
-fn valid_v1_entry_re_sign_all_upgrades_to_v2() {
+fn valid_v1_entry_re_sign_all_upgrades_to_v2__slow() {
     let _env_non_interactive = non_interactive();
     let (_dir, root, db_path) = setup_initialized_repo();
     let _guard = DirGuard::from_utf8(&root);
@@ -587,7 +587,7 @@ fn valid_v1_entry_re_sign_all_upgrades_to_v2() {
 
 #[test]
 #[serial(cwd)]
-fn re_sign_all_empty_candidates_dry_run_clean() {
+fn re_sign_all_empty_candidates_dry_run_clean__slow() {
     let _env_non_interactive = non_interactive();
     let (_dir, root, db_path) = setup_initialized_repo();
     let _guard = DirGuard::from_utf8(&root);
@@ -611,7 +611,7 @@ fn re_sign_all_empty_candidates_dry_run_clean() {
 
 #[test]
 #[serial(cwd)]
-fn dry_run_does_not_create_key_store() {
+fn dry_run_does_not_create_key_store__slow() {
     let _env_non_interactive = non_interactive();
     let (_dir, root, db_path) = setup_initialized_repo();
     let _guard = DirGuard::from_utf8(&root);
@@ -687,7 +687,7 @@ fn dry_run_does_not_create_key_store() {
 
 #[test]
 #[serial(cwd)]
-fn maintenance_entry_is_signed_when_signing_required() {
+fn maintenance_entry_is_signed_when_signing_required__slow() {
     let _env_non_interactive = non_interactive();
     let (_dir, root, db_path) = setup_initialized_repo();
     let _guard = DirGuard::from_utf8(&root);
@@ -801,7 +801,7 @@ fn maintenance_entry_is_signed_when_signing_required() {
 
 #[test]
 #[serial(cwd, env)]
-fn re_sign_then_verify_chain_passes() {
+fn re_sign_then_verify_chain_passes__slow() {
     let _env_non_interactive = non_interactive();
     let (_dir, root, db_path) = setup_initialized_repo();
     let _guard = DirGuard::from_utf8(&root);
@@ -877,7 +877,7 @@ fn re_sign_then_verify_chain_passes() {
 
 #[test]
 #[serial(cwd, env)]
-fn re_sign_blocked_yes_does_not_create_default_keys_dir() {
+fn re_sign_blocked_yes_does_not_create_default_keys_dir__slow() {
     let _non_interactive = non_interactive();
     let (_dir, root, db_path) = setup_initialized_repo();
     let _guard = DirGuard::from_utf8(&root);
@@ -918,7 +918,7 @@ fn re_sign_blocked_yes_does_not_create_default_keys_dir() {
 
 #[test]
 #[serial(cwd)]
-fn re_sign_v1_parent_rewrites_child_prev_hash() {
+fn re_sign_v1_parent_rewrites_child_prev_hash__slow() {
     let _env = non_interactive();
     let (_dir, root, db_path) = setup_initialized_repo();
     let _guard = DirGuard::from_utf8(&root);
@@ -1056,7 +1056,7 @@ fn re_sign_v1_parent_rewrites_child_prev_hash() {
 
 #[test]
 #[serial(cwd)]
-fn re_sign_empty_captured_order_and_broken_post_walk_errors() {
+fn re_sign_empty_captured_order_and_broken_post_walk_errors__slow() {
     let _env = non_interactive();
     let (dir, root, db_path) = setup_initialized_repo();
     let _guard = DirGuard::from_utf8(&root);
@@ -1170,7 +1170,7 @@ fn re_sign_empty_captured_order_and_broken_post_walk_errors() {
 
 #[test]
 #[serial(cwd)]
-fn re_sign_blocked_extra_genesis_dry_run_and_yes() {
+fn re_sign_blocked_extra_genesis_dry_run_and_yes__slow() {
     let _env = non_interactive();
     let (dir, root, db_path) = setup_initialized_repo();
     let _guard = DirGuard::from_utf8(&root);
@@ -1242,7 +1242,7 @@ fn file_fingerprint(path: &std::path::Path) -> Option<u64> {
 
 #[test]
 #[serial(cwd)]
-fn re_sign_single_valid_entry_fails_with_error() {
+fn re_sign_single_valid_entry_fails_with_error__slow() {
     let _env = non_interactive();
     let (dir, root, db_path) = setup_initialized_repo();
     let _guard = DirGuard::from_utf8(&root);
@@ -1320,7 +1320,7 @@ fn fs_backup(dir: &std::path::Path) -> bool {
 
 #[test]
 #[serial(cwd, env)]
-fn re_sign_backup_failure_aborts_before_mutation() {
+fn re_sign_backup_failure_aborts_before_mutation__slow() {
     let _env = non_interactive();
     let (dir, root, db_path) = setup_initialized_repo();
     let _guard = DirGuard::from_utf8(&root);

@@ -28,7 +28,7 @@ fn storage_in_dir(dir: &Path) -> StorageManager {
 }
 
 #[test]
-fn test_register_tech_stack_rule() {
+fn test_register_tech_stack_rule__slow() {
     let dir = tempdir().unwrap();
     let storage = storage_in_dir(dir.path());
     let db = LedgerDb::new(storage.get_connection());
@@ -65,7 +65,7 @@ fn test_register_tech_stack_rule() {
 }
 
 #[test]
-fn test_register_commit_validator() {
+fn test_register_commit_validator__slow() {
     let dir = tempdir().unwrap();
     let storage = storage_in_dir(dir.path());
     let db = LedgerDb::new(storage.get_connection());
@@ -96,7 +96,7 @@ fn test_register_commit_validator() {
 }
 
 #[test]
-fn test_register_category_mapping() {
+fn test_register_category_mapping__slow() {
     let dir = tempdir().unwrap();
     let storage = storage_in_dir(dir.path());
     let db = LedgerDb::new(storage.get_connection());
@@ -133,7 +133,7 @@ fn test_register_category_mapping() {
 }
 
 #[test]
-fn test_register_watcher_pattern() {
+fn test_register_watcher_pattern__slow() {
     let dir = tempdir().unwrap();
     let storage = storage_in_dir(dir.path());
     let db = LedgerDb::new(storage.get_connection());
@@ -155,7 +155,7 @@ fn test_register_watcher_pattern() {
 }
 
 #[test]
-fn test_serde_defaults() {
+fn test_serde_defaults__slow() {
     let payload = r#"{"category": "TEST_CAT", "name": "Test Rule"}"#;
     let rule: TechStackRule = serde_json::from_str(payload).unwrap();
     assert_eq!(rule.category, "TEST_CAT");
@@ -175,7 +175,7 @@ fn test_serde_defaults() {
 }
 
 #[test]
-fn test_foreign_key_enforcement() {
+fn test_foreign_key_enforcement__slow() {
     let dir = tempdir().unwrap();
     let storage = storage_in_dir(dir.path());
     let db = LedgerDb::new(storage.get_connection());
@@ -194,7 +194,7 @@ fn test_foreign_key_enforcement() {
 }
 
 #[test]
-fn test_category_filtering() {
+fn test_category_filtering__slow() {
     let dir = tempdir().unwrap();
     let storage = storage_in_dir(dir.path());
     let db = LedgerDb::new(storage.get_connection());
@@ -222,7 +222,7 @@ fn test_category_filtering() {
 }
 
 #[test]
-fn test_tech_stack_enforcement_at_start() {
+fn test_tech_stack_enforcement_at_start__slow() {
     let dir = tempdir().unwrap();
     let mut storage = storage_in_dir(dir.path());
 
@@ -374,7 +374,7 @@ fn enforce_config_with_validator(exe: &str) -> Config {
 }
 
 #[test]
-fn test_commit_validator_blocking() {
+fn test_commit_validator_blocking__slow() {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("ledger.db");
     let (exe, args) = get_failing_validator(dir.path());
@@ -433,7 +433,7 @@ fn test_commit_validator_blocking() {
 }
 
 #[test]
-fn test_commit_validator_warning() {
+fn test_commit_validator_warning__slow() {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("ledger.db");
     let (exe, args) = get_failing_validator(dir.path());
@@ -485,7 +485,7 @@ fn test_commit_validator_warning() {
 }
 
 #[test]
-fn test_commit_validator_timeout() {
+fn test_commit_validator_timeout__slow() {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("ledger.db");
     let (exe, args) = get_timeout_validator(dir.path());
@@ -547,7 +547,7 @@ fn test_commit_validator_timeout() {
 }
 
 #[test]
-fn test_commit_validator_absolute_path() {
+fn test_commit_validator_absolute_path__slow() {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("ledger.db");
     let (exe, args) = get_path_validator(dir.path());
@@ -618,7 +618,7 @@ fn test_commit_validator_absolute_path() {
 }
 
 #[test]
-fn test_all_category_validators() {
+fn test_all_category_validators__slow() {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("ledger.db");
     let (exe, args) = get_failing_validator(dir.path());
@@ -679,7 +679,7 @@ fn test_all_category_validators() {
 }
 
 #[test]
-fn test_verification_gate_blocks_high_risk_categories() {
+fn test_verification_gate_blocks_high_risk_categories__slow() {
     let dir = tempdir().unwrap();
     let mut storage = storage_in_dir(dir.path());
     let repo_root = dir.path().to_path_buf();
@@ -745,7 +745,7 @@ fn test_verification_gate_blocks_high_risk_categories() {
 }
 
 #[test]
-fn test_verification_gate_allows_with_status() {
+fn test_verification_gate_allows_with_status__slow() {
     let dir = tempdir().unwrap();
     let mut storage = storage_in_dir(dir.path());
     let repo_root = dir.path().to_path_buf();
@@ -785,7 +785,7 @@ fn test_verification_gate_allows_with_status() {
 }
 
 #[test]
-fn test_verification_gate_force_override() {
+fn test_verification_gate_force_override__slow() {
     let dir = tempdir().unwrap();
     let mut storage = storage_in_dir(dir.path());
     let repo_root = dir.path().to_path_buf();
@@ -823,7 +823,7 @@ fn test_verification_gate_force_override() {
 }
 
 #[test]
-fn test_verification_gate_disabled_by_default() {
+fn test_verification_gate_disabled_by_default__slow() {
     let dir = tempdir().unwrap();
     let mut storage = storage_in_dir(dir.path());
     let repo_root = dir.path().to_path_buf();
@@ -861,7 +861,7 @@ fn test_verification_gate_disabled_by_default() {
 }
 
 #[test]
-fn test_verification_gate_allows_low_risk_categories() {
+fn test_verification_gate_allows_low_risk_categories__slow() {
     let dir = tempdir().unwrap();
     let mut storage = storage_in_dir(dir.path());
     let repo_root = dir.path().to_path_buf();

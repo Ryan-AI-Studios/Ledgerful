@@ -92,7 +92,7 @@ fn plant_similar_snippet_embeddings(root: &std::path::Path) {
 }
 
 #[test]
-fn endpoints_json_is_object_envelope() {
+fn endpoints_json_is_object_envelope__slow() {
     let tmp = init_indexed_repo();
     let (stdout, stderr, code) = run_cli(tmp.path(), &["endpoints", "--json"]);
     assert_eq!(code, 0, "endpoints --json; stderr={stderr}");
@@ -116,7 +116,7 @@ fn endpoints_json_is_object_envelope() {
 }
 
 #[test]
-fn hotspots_json_is_object_envelope() {
+fn hotspots_json_is_object_envelope__slow() {
     let tmp = init_indexed_repo();
     let (stdout, stderr, code) = run_cli(tmp.path(), &["hotspots", "--json", "--limit", "3"]);
     assert_eq!(code, 0, "hotspots --json; stderr={stderr}");
@@ -136,7 +136,7 @@ fn hotspots_json_is_object_envelope() {
 }
 
 #[test]
-fn hotspots_semantic_json_echoes_limit() {
+fn hotspots_semantic_json_echoes_limit__slow() {
     let tmp = init_indexed_repo();
     plant_similar_snippet_embeddings(tmp.path());
     let (stdout, stderr, code) = run_cli(
@@ -170,7 +170,7 @@ fn hotspots_semantic_json_echoes_limit() {
 /// `index --incremental` does not create `snippet_embedding`. Missing relation
 /// must fail-closed (`run_script?`), not `Ok([])`.
 #[test]
-fn hotspots_semantic_json_missing_relation_is_fail_closed() {
+fn hotspots_semantic_json_missing_relation_is_fail_closed__slow() {
     let tmp = init_indexed_repo();
     let (stdout, stderr, code) = run_cli(
         tmp.path(),
@@ -201,13 +201,13 @@ fn assert_ci_json_envelope(root: &std::path::Path, sub: &str) {
 }
 
 #[test]
-fn ci_list_json_is_object_envelope() {
+fn ci_list_json_is_object_envelope__slow() {
     let tmp = init_indexed_repo();
     assert_ci_json_envelope(tmp.path(), "list");
 }
 
 #[test]
-fn ci_diff_json_is_object_envelope() {
+fn ci_diff_json_is_object_envelope__slow() {
     let tmp = init_indexed_repo();
     assert_ci_json_envelope(tmp.path(), "diff");
 }
@@ -232,13 +232,13 @@ fn assert_services_json_envelope(root: &std::path::Path, sub: &str) {
 }
 
 #[test]
-fn services_diff_json_is_object_envelope() {
+fn services_diff_json_is_object_envelope__slow() {
     let tmp = init_indexed_repo();
     assert_services_json_envelope(tmp.path(), "diff");
 }
 
 #[test]
-fn services_list_json_is_object_envelope() {
+fn services_list_json_is_object_envelope__slow() {
     let tmp = init_indexed_repo();
     assert_services_json_envelope(tmp.path(), "list");
 }
@@ -282,7 +282,7 @@ fn seed_data_model_rows(root: &std::path::Path, product: bool, fixture: bool) {
 }
 
 #[test]
-fn data_models_list_json_echoes_fixture_flags() {
+fn data_models_list_json_echoes_fixture_flags__slow() {
     let tmp = init_indexed_repo();
     seed_data_model_rows(tmp.path(), true, true);
 
@@ -338,7 +338,7 @@ fn data_models_list_json_echoes_fixture_flags() {
 }
 
 #[test]
-fn data_models_list_json_post_omit_empty_is_no_matches() {
+fn data_models_list_json_post_omit_empty_is_no_matches__slow() {
     let tmp = init_indexed_repo();
     seed_data_model_rows(tmp.path(), false, true);
 

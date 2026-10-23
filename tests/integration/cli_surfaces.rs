@@ -15,7 +15,7 @@ use std::fs;
 use tempfile::tempdir;
 
 #[test]
-fn test_endpoints_json() {
+fn test_endpoints_json__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
@@ -49,7 +49,7 @@ fn test_endpoints_json() {
 
 /// DoD-7: human `endpoints` table never shows raw JSON array syntax in Auth.
 #[test]
-fn test_endpoints_human_auth_no_raw_json() {
+fn test_endpoints_human_auth_no_raw_json__slow() {
     use crate::common::run_cli_isolated;
     use rusqlite::Connection;
 
@@ -126,7 +126,7 @@ fn test_endpoints_human_auth_no_raw_json() {
 }
 
 #[test]
-fn test_data_models_impact_changed() {
+fn test_data_models_impact_changed__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
@@ -149,7 +149,7 @@ fn test_data_models_impact_changed() {
 }
 
 #[test]
-fn test_data_models_include_fixtures_parses_on_list_and_impact() {
+fn test_data_models_include_fixtures_parses_on_list_and_impact__slow() {
     use clap::Parser;
     use ledgerful::cli::{Cli, Commands};
 
@@ -207,7 +207,7 @@ fn test_data_models_include_fixtures_parses_on_list_and_impact() {
 /// `execute_impact_silent` were reintroduced, `write_impact_report` would
 /// clobber a seeded report (or create one when absent).
 #[test]
-fn test_data_models_impact_changed_does_not_rewrite_latest_impact() {
+fn test_data_models_impact_changed_does_not_rewrite_latest_impact__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
@@ -284,7 +284,7 @@ fn test_data_models_impact_changed_does_not_rewrite_latest_impact() {
 }
 
 #[test]
-fn test_observability_coverage_json() {
+fn test_observability_coverage_json__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
@@ -306,7 +306,7 @@ fn test_observability_coverage_json() {
 }
 
 #[test]
-fn test_security_boundaries_human() {
+fn test_security_boundaries_human__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
@@ -328,7 +328,7 @@ fn test_security_boundaries_human() {
 }
 
 #[test]
-fn test_services_diff() {
+fn test_services_diff__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
@@ -419,7 +419,7 @@ fn setup_surfaces_mint_repo() -> tempfile::TempDir {
 }
 
 #[test]
-fn surfaces_json_default_config_is_two_gated_three_empty_one_ready() {
+fn surfaces_json_default_config_is_two_gated_three_empty_one_ready__slow() {
     use crate::common::run_cli_isolated;
 
     let tmp = setup_surfaces_mint_repo();
@@ -466,7 +466,7 @@ fn surfaces_json_default_config_is_two_gated_three_empty_one_ready() {
 }
 
 #[test]
-fn surfaces_json_fixture_only_data_models_is_empty() {
+fn surfaces_json_fixture_only_data_models_is_empty__slow() {
     use crate::common::run_cli_isolated;
 
     let tmp = tempdir().unwrap();
@@ -523,7 +523,7 @@ fn surfaces_json_fixture_only_data_models_is_empty() {
 }
 
 #[test]
-fn tour_alias_matches_surfaces_json() {
+fn tour_alias_matches_surfaces_json__slow() {
     use crate::common::run_cli_isolated;
 
     let tmp = setup_surfaces_mint_repo();
@@ -541,7 +541,7 @@ fn tour_alias_matches_surfaces_json() {
 }
 
 #[test]
-fn surfaces_human_table_and_summary() {
+fn surfaces_human_table_and_summary__slow() {
     use crate::common::run_cli_isolated;
 
     let tmp = setup_surfaces_mint_repo();
@@ -567,7 +567,7 @@ fn surfaces_human_table_and_summary() {
 }
 
 #[test]
-fn surfaces_is_read_only() {
+fn surfaces_is_read_only__slow() {
     use crate::common::run_cli_isolated;
 
     let tmp = setup_surfaces_mint_repo();
@@ -588,7 +588,7 @@ fn surfaces_is_read_only() {
 }
 
 #[test]
-fn doctor_json_includes_surfaces_gated_without_blocking_publish() {
+fn doctor_json_includes_surfaces_gated_without_blocking_publish__slow() {
     use crate::common::run_cli_isolated;
 
     let tmp = setup_surfaces_mint_repo();
@@ -616,7 +616,7 @@ fn doctor_json_includes_surfaces_gated_without_blocking_publish() {
 }
 
 #[test]
-fn surfaces_malformed_config_does_not_emit_default_inventory() {
+fn surfaces_malformed_config_does_not_emit_default_inventory__slow() {
     use crate::common::run_cli_isolated;
 
     let tmp = setup_surfaces_mint_repo();
@@ -635,7 +635,7 @@ fn surfaces_malformed_config_does_not_emit_default_inventory() {
 }
 
 #[test]
-fn doctor_default_human_collapses_surfaces_gated() {
+fn doctor_default_human_collapses_surfaces_gated__slow() {
     use crate::common::run_cli_isolated;
 
     let tmp = setup_surfaces_mint_repo();

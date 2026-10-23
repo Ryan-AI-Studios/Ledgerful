@@ -7,7 +7,7 @@ use std::process::Command;
 use tempfile::tempdir;
 
 #[test]
-fn test_data_models_impact_binary_output() {
+fn test_data_models_impact_binary_output__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     let root_utf8 = Utf8Path::from_path(root).unwrap();
@@ -86,7 +86,7 @@ fn test_data_models_impact_binary_output() {
 }
 
 #[test]
-fn test_data_models_impact_binary_output_no_models_at_all() {
+fn test_data_models_impact_binary_output_no_models_at_all__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
@@ -126,7 +126,7 @@ fn test_data_models_impact_binary_output_no_models_at_all() {
 }
 
 #[test]
-fn test_data_models_impact_json_output() {
+fn test_data_models_impact_json_output__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
@@ -341,7 +341,7 @@ fn setup_stacked_data_models_fixture() -> (tempfile::TempDir, std::path::PathBuf
 /// 0155 DoD-3: `data-models list --json` must emit unique rows through the real
 /// CLI binary when the DB holds stacked identical model identities.
 #[test]
-fn data_models_list_json_dedupes_stacked_rows() {
+fn data_models_list_json_dedupes_stacked_rows__slow() {
     let (_tmp, root, ledgerful_bin) = setup_stacked_data_models_fixture();
 
     let output = Command::new(ledgerful_bin)
@@ -420,7 +420,7 @@ fn data_models_list_json_dedupes_stacked_rows() {
 /// 0155 DoD-3: `data-models impact --json` (all models, no --changed) must emit
 /// unique (name, file_path) pairs when the DB holds stacked identical rows.
 #[test]
-fn data_models_impact_json_dedupes_stacked_rows() {
+fn data_models_impact_json_dedupes_stacked_rows__slow() {
     let (_tmp, root, ledgerful_bin) = setup_stacked_data_models_fixture();
 
     let output = Command::new(ledgerful_bin)
