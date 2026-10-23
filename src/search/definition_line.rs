@@ -84,6 +84,7 @@ pub(crate) fn choose_witness(candidates: &[WitnessCandidate]) -> Option<WitnessC
 }
 
 /// Scan caller-supplied file texts. Ineligible paths are ignored.
+#[cfg(test)]
 pub(crate) fn choose_witness_in_files(
     files: &[(&str, &str)],
     token: &str,
@@ -274,10 +275,8 @@ fn brace_marks_body(after: &str) -> bool {
                 }
                 depth += 1;
             }
-            '}' => {
-                if depth > 0 {
-                    depth -= 1;
-                }
+            '}' if depth > 0 => {
+                depth -= 1;
             }
             _ => {}
         }
