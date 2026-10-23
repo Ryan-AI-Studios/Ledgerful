@@ -170,6 +170,21 @@ fn cli_verify_assurance_live_git_version() {
             .contains("git --version"),
         "real command recorded: {value}"
     );
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["scopeExecuted"], "full");
+    assert_eq!(value["schemaVersion"], 1);
+    assert_eq!(value["executionAssurance"]["schemaVersion"], 1);
+    let codes = value["executionAssurance"]["limitationCodes"]
+        .as_array()
+        .expect("limitationCodes");
+    assert!(
+        codes.iter().any(|code| code == "cheap-command"),
+        "cheap-command missing: {value}"
+    );
+    assert!(
+        !stdout.contains("Cheap command"),
+        "json mode prints no cheap sentence: {stdout}"
+    );
 }
 
 #[test]
@@ -520,6 +535,7 @@ fn cli_verify_assurance_docs_contract() {
         "runner-reported-no-tests",
         "results recorded",
         "runner reported no tests",
+        "cheap-command",
     ] {
         assert!(contract.contains(token), "agent contract missing {token}");
     }
@@ -663,4 +679,267 @@ fn cli_verify_assurance_verbose_cheap_has_one_line_and_no_pass_banner() {
             .is_some_and(|line| line.contains("results recorded")),
         "assurance follows the reporter: {lines:?}"
     );
+}
+
+fn write_failing_git_shim(bin_dir: &Path) {
+    fs::create_dir_all(bin_dir).expect("shim dir");
+    #[cfg(windows)]
+    {
+        fs::write(bin_dir.join("git.bat"), "@echo off\r\nexit /b 1\r\n").expect("git.bat");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let script_path = bin_dir.join("git");
+        fs::write(&script_path, "#!/bin/sh\nexit 1\n").expect("git script");
+        let mut perms = fs::metadata(&script_path).expect("meta").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script_path, perms).expect("chmod");
+    }
+}
+
+fn assert_no_exact_pass_line(stdout: &str) {
+    let lines = nonempty_lines(stdout);
+    assert!(
+        lines.iter().all(|line| *line != "Verification passed"),
+        "no line equals Verification passed: {lines:?}"
+    );
+}
+
+#[test]
+fn cli_verify_assurance_quiet_git_version_prints_recorded_sentence() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let out = spawn_verify(root, &["verify", "git --version"], None);
+    let stdout = stdout_text(&out);
+    let stderr = stderr_text(&out);
+    assert!(
+        out.status.success(),
+        "quiet git --version must exit 0; stdout={stdout:?} stderr={stderr:?}"
+    );
+    let lines = nonempty_lines(&stdout);
+    let assurance = lines
+        .iter()
+        .position(|line| line.contains("results recorded"))
+        .expect("assurance");
+    assert_eq!(stdout.matches("results recorded").count(), 1, "{lines:?}");
+    assert_eq!(
+        lines.get(assurance + 1).copied(),
+        Some("Cheap command recorded: git --version. Not a project-suite pass."),
+        "{lines:?}"
+    );
+    assert_no_exact_pass_line(&stdout);
+    assert!(
+        !stdout.contains("Verification passed for:"),
+        "quiet success has no per-step SUCCESS line: {stdout}"
+    );
+}
+
+#[test]
+fn cli_verify_assurance_git_version_failure_prints_failed_sentence() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let shim = tempdir().unwrap();
+    write_failing_git_shim(shim.path());
+    let out = spawn_verify(root, &["verify", "git --version"], Some(shim.path()));
+    let stdout = stdout_text(&out);
+    let stderr = stderr_text(&out);
+    assert!(
+        !out.status.success(),
+        "failing git --version wrapper must be non-zero; stdout={stdout:?} stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("[Ledgerful] verify failed"),
+        "fail block on stdout: {stdout}"
+    );
+    assert_eq!(
+        stdout
+            .matches("Cheap command failed: git --version. Not a project-suite result.")
+            .count(),
+        1,
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("results recorded"),
+        "assurance line stays: {stdout}"
+    );
+    assert!(
+        stderr.contains("Verification failed"),
+        "stderr keeps Verification failed: {stderr}"
+    );
+    assert_no_exact_pass_line(&stdout);
+}
+
+#[test]
+fn cli_verify_assurance_verbose_git_version_prints_recorded_sentence() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let out = spawn_verify(root, &["verify", "git --version", "--verbose"], None);
+    let stdout = stdout_text(&out);
+    let stderr = stderr_text(&out);
+    assert!(
+        out.status.success(),
+        "verbose git --version must exit 0; stdout={stdout:?} stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("Verification passed for: git --version"),
+        "verbose keeps the per-step SUCCESS line: {stdout}"
+    );
+    let lines = nonempty_lines(&stdout);
+    let assurance = lines
+        .iter()
+        .position(|line| line.contains("results recorded"))
+        .expect("assurance");
+    assert_eq!(stdout.matches("results recorded").count(), 1, "{lines:?}");
+    assert_eq!(
+        lines.get(assurance + 1).copied(),
+        Some("Cheap command recorded: git --version. Not a project-suite pass."),
+        "{lines:?}"
+    );
+    assert_no_exact_pass_line(&stdout);
+}
+
+#[test]
+fn cli_verify_assurance_git_version_tx_id_leaves_ledger_columns() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+
+    let init = Command::new(ledgerful_bin)
+        .arg("init")
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .expect("init");
+    assert!(
+        init.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let start = Command::new(ledgerful_bin)
+        .args([
+            "ledger",
+            "start",
+            "my-feature",
+            "--category",
+            "FEATURE",
+            "--message",
+            "test tx",
+        ])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .expect("ledger start");
+    assert!(
+        start.status.success(),
+        "ledger start failed: {}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+
+    let status = Command::new(ledgerful_bin)
+        .args(["ledger", "status", "--json"])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .expect("ledger status");
+    assert!(
+        status.status.success(),
+        "status failed: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let status_json: serde_json::Value =
+        serde_json::from_slice(&status.stdout).expect("status json");
+    let tx_id = status_json["pendingTxIds"][0]
+        .as_str()
+        .expect("pending id")
+        .to_string();
+
+    let db_path = root.join(".ledgerful").join("state").join("ledger.db");
+    let before = {
+        let db = rusqlite::Connection::open(&db_path).expect("open ledger");
+        db.execute(
+            "INSERT INTO ledger_entries (
+                tx_id, category, entry_type, entity, entity_normalized, change_type,
+                summary, reason, committed_at, origin, author,
+                verification_status, verification_basis, signature, public_key, sig_version
+             ) VALUES (
+                ?1, 'FEATURE', 'IMPLEMENTATION', 'my-feature', 'my-feature', 'MODIFY',
+                'seed', 'proof', '2026-10-23T00:00:00Z', 'LOCAL', 'test',
+                NULL, NULL, 'sig-fixed', 'pk-fixed', 2
+             )",
+            rusqlite::params![tx_id],
+        )
+        .expect("seed pending ledger_entries row");
+        read_ledger_proof_columns(&db, &tx_id)
+    };
+    assert!(before.0.is_none(), "status starts null: {before:?}");
+    assert!(before.1.is_none(), "basis starts null: {before:?}");
+    assert_eq!(before.2.as_deref(), Some("sig-fixed"));
+    assert_eq!(before.3.as_deref(), Some("pk-fixed"));
+    assert_eq!(before.4, Some(2));
+
+    let out = spawn_verify(root, &["verify", "git --version", "--tx-id", &tx_id], None);
+    let stdout = stdout_text(&out);
+    let stderr = stderr_text(&out);
+    assert!(
+        out.status.success(),
+        "verify --tx-id must exit 0; stdout={stdout:?} stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("Cheap command recorded: git --version. Not a project-suite pass."),
+        "{stdout}"
+    );
+    assert_no_exact_pass_line(&stdout);
+
+    let db = rusqlite::Connection::open(&db_path).expect("reopen ledger");
+    let after = read_ledger_proof_columns(&db, &tx_id);
+    assert_eq!(before, after, "the five ledger columns stay unchanged");
+
+    let runs: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM verification_runs WHERE tx_id = ?1",
+            rusqlite::params![tx_id],
+            |row| row.get(0),
+        )
+        .expect("count runs");
+    let results: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM verification_results WHERE tx_id = ?1 AND command = 'git --version'",
+            rusqlite::params![tx_id],
+            |row| row.get(0),
+        )
+        .expect("count results");
+    assert_eq!(runs, 1, "one bound verification_runs row");
+    assert_eq!(results, 1, "one git --version verification_results row");
+}
+
+type LedgerProofColumns = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+);
+
+fn read_ledger_proof_columns(db: &rusqlite::Connection, tx_id: &str) -> LedgerProofColumns {
+    db.query_row(
+        "SELECT verification_status, verification_basis, signature, public_key, sig_version
+         FROM ledger_entries WHERE tx_id = ?1",
+        rusqlite::params![tx_id],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        },
+    )
+    .expect("read ledger proof columns")
 }

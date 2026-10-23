@@ -17,6 +17,10 @@ use crate::ledger::db::LedgerDb;
 use crate::ledger::types::LedgerEntry;
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
+use crate::verify::assurance::{
+    CHEAP_COMMAND_FAILED_SENTENCE, CHEAP_COMMAND_RECORDED_SENTENCE,
+    recorded_commands_are_only_git_version,
+};
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -114,7 +118,7 @@ fn fetch_verify_health(layout: &Layout) -> Result<VerificationHealthResponse> {
     let storage = StorageManager::open_read_only_sqlite_only(layout)?;
     let latest = storage.get_latest_verification_run()?;
 
-    let Some((_id, timestamp, overall_pass)) = latest else {
+    let Some((id, timestamp, overall_pass)) = latest else {
         return Ok(VerificationHealthResponse {
             status: "DEGRADED".to_string(),
             last_run_at: None,
@@ -122,21 +126,35 @@ fn fetch_verify_health(layout: &Layout) -> Result<VerificationHealthResponse> {
         });
     };
 
+    let commands = read_run_commands(storage.get_connection(), id)?;
+    let cheap = recorded_commands_are_only_git_version(&commands);
+
     if !overall_pass {
         return Ok(VerificationHealthResponse {
             status: "FAILING".to_string(),
             last_run_at: Some(timestamp),
-            message: None,
+            message: if cheap {
+                Some(CHEAP_COMMAND_FAILED_SENTENCE.to_string())
+            } else {
+                None
+            },
         });
     }
 
     // Latest run passed — check staleness against the 7-day threshold.
+    // A stale cheap command keeps the stale sentence. Failure already returned.
     let stale = is_stale_timestamp(&timestamp, STALE_VERIFY_THRESHOLD_SECS);
     if stale {
         Ok(VerificationHealthResponse {
             status: "DEGRADED".to_string(),
             last_run_at: Some(timestamp),
             message: Some("Last verification run is stale (older than 7 days)".to_string()),
+        })
+    } else if cheap {
+        Ok(VerificationHealthResponse {
+            status: "HEALTHY".to_string(),
+            last_run_at: Some(timestamp),
+            message: Some(CHEAP_COMMAND_RECORDED_SENTENCE.to_string()),
         })
     } else {
         Ok(VerificationHealthResponse {
@@ -145,6 +163,20 @@ fn fetch_verify_health(layout: &Layout) -> Result<VerificationHealthResponse> {
             message: None,
         })
     }
+}
+
+fn read_run_commands(conn: &rusqlite::Connection, run_id: i64) -> Result<Vec<String>> {
+    let mut stmt = conn
+        .prepare("SELECT command FROM verification_results WHERE run_id = ?1 ORDER BY rowid ASC")
+        .into_diagnostic()?;
+    let rows = stmt
+        .query_map(rusqlite::params![run_id], |row| row.get(0))
+        .into_diagnostic()?;
+    let mut commands = Vec::new();
+    for row in rows {
+        commands.push(row.into_diagnostic()?);
+    }
+    Ok(commands)
 }
 
 /// `GET /api/verify/history?days=30` — per-date pass/fail counts over the
@@ -278,7 +310,7 @@ fn friendly_step_name(description: Option<&str>, command: &str) -> String {
 }
 
 /// Seconds before now that counts as a "stale" latest verification run.
-const STALE_VERIFY_THRESHOLD_SECS: i64 = 7 * 24 * 60 * 60;
+pub(crate) const STALE_VERIFY_THRESHOLD_SECS: i64 = 7 * 24 * 60 * 60;
 
 /// Number of most-recent verification runs to scan for `recentFailures` on
 /// `/api/verify/steps`.
@@ -302,7 +334,7 @@ fn iso_cutoff_now(days: u64) -> String {
 /// Returns `false` if the timestamp cannot be parsed (treat unparseable
 /// timestamps as non-stale so a malformed row never masks a FAILING/HEALTHY
 /// signal behind a spurious DEGRADED).
-fn is_stale_timestamp(timestamp_rfc3339: &str, threshold_secs: i64) -> bool {
+pub(crate) fn is_stale_timestamp(timestamp_rfc3339: &str, threshold_secs: i64) -> bool {
     let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(timestamp_rfc3339) else {
         return false;
     };

@@ -6,7 +6,10 @@ use crate::output::verification::{
     should_print_suggested_actions,
 };
 use crate::state::storage::StorageManager;
-use crate::verify::assurance::{AssuranceInputs, build_execution_assurance};
+use crate::verify::assurance::{
+    AssuranceInputs, CHEAP_COMMAND_FAILED_SENTENCE, CHEAP_COMMAND_RECORDED_SENTENCE,
+    build_execution_assurance, recorded_commands_are_only_git_version,
+};
 use crate::verify::engine::{VerificationContext, VerifyEngine};
 use crate::verify::plan::{VerificationStep, VerifyScope, build_plan_from_config};
 use crate::verify::predictor::OutcomePredictor;
@@ -805,15 +808,20 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
         if should_print_suggested_actions(verbose, report.overall_pass) {
             VerificationReporter::report(&ctx, &report);
             println!("{}", format_assurance_line(&assurance));
+            print_cheap_command_line(&report.results, report.overall_pass);
         } else {
             // Quiet green: still surface prediction warnings on stderr; no
             // Suggested Actions header on stdout. Assurance sits immediately
-            // before the trailing success line.
+            // before the trailing success line, unless every recorded command
+            // is `git --version`. That recording prints the cheap sentence
+            // instead of `Verification passed`.
             if !report.prediction_warnings.is_empty() {
                 VerificationReporter::print_prediction_warnings(&report.prediction_warnings);
             }
             println!("{}", format_assurance_line(&assurance));
-            println!("Verification passed");
+            if !print_cheap_command_line(&report.results, report.overall_pass) {
+                println!("Verification passed");
+            }
         }
     }
 
@@ -1123,6 +1131,29 @@ fn working_tree_has_material_changes(material: WorkingTreeMaterial) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Print the cheap-command sentence when every recorded result is `git --version`.
+///
+/// Returns true when the sentence was printed. Callers that would otherwise
+/// print a line equal to `Verification passed` skip that line.
+fn print_cheap_command_line(
+    results: &[crate::verify::results::VerificationResult],
+    overall_pass: bool,
+) -> bool {
+    let commands: Vec<&str> = results
+        .iter()
+        .map(|result| result.command.as_str())
+        .collect();
+    if !recorded_commands_are_only_git_version(&commands) {
+        return false;
+    }
+    if overall_pass {
+        println!("{CHEAP_COMMAND_RECORDED_SENTENCE}");
+    } else {
+        println!("{CHEAP_COMMAND_FAILED_SENTENCE}");
+    }
+    true
+}
+
 fn execution_assurance_for(
     steps: &[VerificationStep],
     results: &[crate::verify::results::VerificationResult],
