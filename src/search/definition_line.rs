@@ -162,15 +162,70 @@ fn classify_span(line: &str, start: usize, end: usize, lines: &[&str], idx: usiz
 
 fn is_keyword_declaration(prefix: &str) -> bool {
     let words = prefix_words(prefix);
-    for word in words.iter().rev() {
-        if is_qualifier(word) {
-            continue;
-        }
-        return is_decl_keyword(word);
+    let Some(keyword) = words.last().copied() else {
+        return false;
+    };
+    if !is_decl_keyword(keyword) {
+        return false;
     }
-    false
+    let trimmed_end = prefix.trim_end_matches(|ch: char| ch.is_ascii_whitespace());
+    if !trimmed_end.ends_with(keyword) {
+        return false;
+    }
+    let head = &trimmed_end[..trimmed_end.len() - keyword.len()];
+    prefix_before_keyword_allowed(head)
 }
 
+fn prefix_before_keyword_allowed(head: &str) -> bool {
+    let qualifiers: &[&str] = &[
+        "pub(crate)",
+        "pub(super)",
+        "protected",
+        "private",
+        "public",
+        "export",
+        "default",
+        "unsafe",
+        "static",
+        "async",
+        "const",
+        "pub",
+    ];
+    let mut rest = head;
+    loop {
+        rest = rest.trim_start_matches(|ch: char| ch.is_ascii_whitespace());
+        if rest.is_empty() {
+            return true;
+        }
+        if rest.starts_with("#![") || rest.starts_with("#[") {
+            let Some(end) = rest.find(']') else {
+                return false;
+            };
+            rest = &rest[end + 1..];
+            continue;
+        }
+        let mut matched = false;
+        for qualifier in qualifiers {
+            if rest.starts_with(qualifier) {
+                let after = &rest[qualifier.len()..];
+                let boundary_ok = match after.chars().next() {
+                    None => true,
+                    Some(ch) => !(ch.is_ascii_alphanumeric() || ch == '_'),
+                };
+                if boundary_ok {
+                    rest = after;
+                    matched = true;
+                    break;
+                }
+            }
+        }
+        if !matched {
+            return false;
+        }
+    }
+}
+
+#[allow(dead_code)]
 fn is_qualifier(word: &str) -> bool {
     matches!(
         word,
@@ -408,16 +463,54 @@ fn strict_less_test_local(lines: &[&str], idx: usize, decl_indent: usize) -> boo
         return false;
     }
     let start = idx.saturating_sub(40);
-    for line in &lines[start..idx] {
+    for opener_idx in start..idx {
+        let line = lines[opener_idx];
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
-        if indent_width(line) < decl_indent && is_test_opener(trimmed) {
+        let opener_indent = indent_width(line);
+        if opener_indent >= decl_indent || !is_test_opener(trimmed) {
+            continue;
+        }
+        if test_block_still_open(lines, opener_idx, idx, opener_indent) {
             return true;
         }
     }
     false
+}
+
+fn test_block_still_open(
+    lines: &[&str],
+    opener_idx: usize,
+    decl_idx: usize,
+    opener_indent: usize,
+) -> bool {
+    if lines[opener_idx].contains('}') {
+        return false;
+    }
+    let opener_trimmed = lines[opener_idx].trim();
+    let attribute_opener = opener_trimmed.starts_with("#[") || opener_trimmed.starts_with('@');
+    let mut skipped_header = false;
+    for line in &lines[opener_idx + 1..decl_idx] {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if attribute_opener && indent_width(line) == opener_indent {
+            if trimmed.starts_with("#[") || trimmed.starts_with("#![") || trimmed.starts_with('@') {
+                continue;
+            }
+            if !skipped_header && !trimmed.starts_with('}') {
+                skipped_header = true;
+                continue;
+            }
+        }
+        if indent_width(line) <= opener_indent {
+            return false;
+        }
+    }
+    true
 }
 
 fn equal_indent_test_attribute(lines: &[&str], idx: usize, decl_indent: usize) -> bool {
@@ -780,5 +873,228 @@ fn widget_open() {
         let text = "function widget_open();\n";
         let chosen = witness(&[("pkg/widget.js", text)], "widget_open").expect("keyword");
         assert!(!chosen.has_body);
+    }
+
+    #[test]
+    fn definition_line__type_field__is_not_a_declaration() {
+        assert!(
+            witness(&[("pkg/action.js", "({ type: ADD_TODO })\n")], "ADD_TODO").is_none(),
+            "a type field is not a declaration"
+        );
+        assert!(
+            witness(
+                &[("pkg/action.js", "dispatch({ type: ADD_TODO })\n")],
+                "ADD_TODO",
+            )
+            .is_none(),
+            "a dispatch type field is not a declaration"
+        );
+        let alias = witness(
+            &[("types/add.d.ts", "type ADD_TODO = string;\n")],
+            "ADD_TODO",
+        )
+        .expect("type alias");
+        assert_eq!(alias.path, "types/add.d.ts");
+        assert!(!alias.has_body);
+        assert!(!alias.test_local);
+        assert!(
+            witness(
+                &[(
+                    "pkg/check.py",
+                    "isinstance(x, type) and widget_open(source);\n"
+                )],
+                "widget_open",
+            )
+            .is_none(),
+            "isinstance stays unmatched"
+        );
+        let qualified = witness(
+            &[(
+                "src/widget.rs",
+                "pub(crate) async fn widget_open() {\n    let _ = 1;\n}\n",
+            )],
+            "widget_open",
+        )
+        .expect("qualified fn");
+        assert!(qualified.has_body);
+        assert!(!qualified.test_local);
+        let attributed = witness(
+            &[(
+                "src/widget.rs",
+                "#[cfg(test)] fn widget_open() {\n    let _ = 1;\n}\n",
+            )],
+            "widget_open",
+        )
+        .expect("attributed fn");
+        assert!(attributed.has_body);
+        assert!(!attributed.test_local);
+        let inner = witness(
+            &[(
+                "src/widget.rs",
+                "#![allow(dead_code)] fn widget_open() {\n    let _ = 1;\n}\n",
+            )],
+            "widget_open",
+        )
+        .expect("inner attribute");
+        assert!(inner.has_body);
+        assert!(!inner.test_local);
+        let inner_pub = witness(
+            &[(
+                "src/widget.rs",
+                "#![allow(dead_code)] pub fn widget_open() {\n    let _ = 1;\n}\n",
+            )],
+            "widget_open",
+        )
+        .expect("inner attribute with pub");
+        assert!(inner_pub.has_body);
+        assert!(!inner_pub.test_local);
+    }
+
+    #[test]
+    fn definition_line__comment_line__is_not_a_declaration() {
+        assert!(
+            witness(
+                &[("pkg/widget.js", "// calls function widget_open\n")],
+                "widget_open",
+            )
+            .is_none(),
+            "a calls-function comment is not a declaration"
+        );
+        assert!(
+            witness(
+                &[("pkg/widget.js", "// the function widget_open does this\n")],
+                "widget_open",
+            )
+            .is_none(),
+            "a function comment is not a declaration"
+        );
+        assert!(
+            witness(&[("pkg/widget.rs", "/// see struct Foo\n")], "Foo").is_none(),
+            "a doc comment is not a declaration"
+        );
+        assert!(
+            witness(&[("pkg/widget.rs", " * struct Foo\n")], "Foo").is_none(),
+            "a block-comment star line is not a declaration"
+        );
+        assert!(
+            witness(
+                &[("pkg/widget.js", "/* see function widget_open */\n")],
+                "widget_open",
+            )
+            .is_none(),
+            "a block comment is not a declaration"
+        );
+        let real = witness(
+            &[(
+                "pkg/widget.js",
+                "function widget_open() {\n    return 1;\n}\n",
+            )],
+            "widget_open",
+        )
+        .expect("function");
+        assert_eq!(real.path, "pkg/widget.js");
+        assert!(real.has_body);
+        assert!(!real.test_local);
+    }
+
+    #[test]
+    fn definition_line__closed_test_then_method__seats_the_method() {
+        let method_file = "\
+test(\"x\", () => {
+    return 1;
+});
+
+class Widget {
+    widget_open(source) {
+        return source;
+    }
+}
+";
+        let chosen = witness(
+            &[
+                ("pkg/widget.js", method_file),
+                ("types/widget.d.ts", "widget_open(source: Widget): void;\n"),
+            ],
+            "widget_open",
+        )
+        .expect("class method");
+        assert_eq!(chosen.path, "pkg/widget.js");
+        assert!(chosen.has_body);
+        assert!(!chosen.test_local);
+        assert_eq!(chosen.line, 6, "class method after the closed test");
+    }
+
+    #[test]
+    fn definition_line__closed_test_then_impl_method__seats_the_method() {
+        let method_file = "\
+#[test]
+fn test_widget() {
+    let _ = 1;
+}
+
+impl Widget {
+    fn widget_open() {
+        let _ = 2;
+    }
+}
+";
+        let chosen = witness(
+            &[
+                ("src/widget.rs", method_file),
+                ("types/widget.d.ts", "widget_open(): void;\n"),
+            ],
+            "widget_open",
+        )
+        .expect("impl method");
+        assert_eq!(chosen.path, "src/widget.rs");
+        assert!(chosen.has_body);
+        assert!(!chosen.test_local);
+        assert_eq!(chosen.line, 7, "impl method after the closed test");
+    }
+
+    #[test]
+    fn definition_line__open_rust_test_any_name__nested_fn_is_test_local() {
+        let text = "\
+#[test]
+fn verifies_widget_open() {
+    fn widget_open() {}
+}
+";
+        let chosen = witness(&[("src/widget.rs", text)], "widget_open").expect("nested fn");
+        assert!(chosen.test_local);
+        let stacked = "\
+#[test]
+#[ignore]
+fn verifies_widget_open() {
+    fn widget_open() {}
+}
+";
+        let stacked_hit =
+            witness(&[("src/widget.rs", stacked)], "widget_open").expect("ignore stack");
+        assert!(
+            stacked_hit.test_local,
+            "an ignore attribute between the test attribute and the function is not a closure"
+        );
+    }
+
+    #[test]
+    fn definition_line__single_line_test__seats_the_following_method() {
+        let method_file = "\
+test(\"empty\", () => {});
+    widget_open(source) {
+        return source;
+    }
+";
+        let chosen = witness(
+            &[
+                ("pkg/widget.js", method_file),
+                ("types/widget.d.ts", "widget_open(source: Widget): void;\n"),
+            ],
+            "widget_open",
+        )
+        .expect("method after single-line test");
+        assert_eq!(chosen.path, "pkg/widget.js");
+        assert!(chosen.has_body);
+        assert!(!chosen.test_local);
     }
 }
