@@ -1328,10 +1328,6 @@ values can contain them; the serialized body keeps LF as `\n`, so they cannot
 start a standalone Markdown line in the framed body. Do not treat decoded
 values as Markdown-safe after your own rendering.
 
-`GET /api/events` has no `id:` field and no `Last-Event-ID` resume. The bearer
-token does not expire. Handoff codes expire after 120 seconds; that case is
-`session_exchange_expired_and_absent_forbid` in `tests/integration/web_security.rs`.
-
 ### Size and refusal outcomes
 
 | Condition | Result |
@@ -1348,6 +1344,14 @@ bytes; escaping and indentation can push a valid document over the limit.
 A refusal emits one `WARN` on the MCP stderr logging route with the trusted tool
 name and stdout byte length only. It never logs the stdout body, snippets,
 query, paths or parser text.
+
+---
+
+## Web events stream (`GET /api/events`)
+
+`GET /api/events` has no `id:` field and no `Last-Event-ID` resume. The bearer
+token does not expire. Handoff codes expire after 120 seconds; that case is
+`session_exchange_expired_and_absent_forbid` in `tests/integration/web_security.rs`.
 
 ---
 
