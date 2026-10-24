@@ -1299,7 +1299,23 @@ new one for these four tools.
 ### String sanitation (structured)
 
 Only string **values** are transformed; keys come from trusted CLI serializers.
-The transform set is the existing structured sanitizer:
+
+A string whose object key is exactly `path`, `oldPath`, `filePath`,
+`callerFilePath`, `sourceFile`, `registrationFile`, `handlerFile`, or `entity`
+is an identifier. It is copied unchanged except these scalars are deleted:
+`U+0000`–`U+0008`, `U+000B`–`U+001F`, `U+007F`–`U+009F`, `U+200B`–`U+200F`,
+`U+202A`–`U+202E`, and `U+2066`–`U+2069`. LF (`U+000A`) and TAB (`U+0009`) stay.
+Brackets, parentheses, backslash, `<`, `>`, and backticks stay. Do not
+HTML-entity-encode an identifier and do not insert backslashes. Nested objects
+are walked, including an object inside an array. A decoded `path` opens as
+returned. Do not render identifier fields as Markdown.
+
+Every other string stays on the display sanitizer below, including a string in
+an array that has no key of its own, `symbolName`, `content`, and `query`.
+Display strings are not filesystem paths and are not reversible. Strip the
+structured prefix once, parse JSON, and do not unescape by hand.
+
+The display transform set is:
 
 - backtick → `U+02CB`; `<` → `&lt;`; `>` → `&gt;`
 - `!` before `[` → `\!`; `[`, `]`, `(`, `)` → backslash-escaped
@@ -1307,10 +1323,14 @@ The transform set is the existing structured sanitizer:
   `U+200B`–`U+200F`, `U+202A`–`U+202E`, `U+2066`–`U+2069`
 - LF and TAB survive as JSON escapes.
 
-Unlike raw-text sanitation, `#` and `|` are **not** escaped here. Decoded values
-can contain them; the serialized body keeps LF as `\n`, so they cannot start a
-standalone Markdown line in the framed body. Do not treat decoded values as
-Markdown-safe after your own rendering.
+Unlike raw-text sanitation, `#` and `|` are **not** escaped here. Decoded display
+values can contain them; the serialized body keeps LF as `\n`, so they cannot
+start a standalone Markdown line in the framed body. Do not treat decoded
+values as Markdown-safe after your own rendering.
+
+`GET /api/events` has no `id:` field and no `Last-Event-ID` resume. The bearer
+token does not expire. Handoff codes expire after 120 seconds; that case is
+`session_exchange_expired_and_absent_forbid` in `tests/integration/web_security.rs`.
 
 ### Size and refusal outcomes
 
