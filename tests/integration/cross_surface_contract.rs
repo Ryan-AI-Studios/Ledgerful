@@ -267,7 +267,39 @@ async fn read_sse_body_until(
     body
 }
 
+/// The first daemon frame is complete once `data:` is followed by a blank line.
+/// Stopping on `event: daemon` alone can return before that line arrives.
+fn daemon_frame_ready(text: &str) -> bool {
+    let Some(start) = text
+        .find("event: daemon")
+        .or_else(|| text.find("event:daemon"))
+    else {
+        return false;
+    };
+    let Some(data_at) = text[start..].find("data:") else {
+        return false;
+    };
+    let after_data = &text[start + data_at..];
+    after_data.contains("\n\n") || after_data.contains("\r\n\r\n")
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn daemon_frame_ready__partial_event__waits_for_blank_line() {
+    assert!(!daemon_frame_ready("event: daemon\n"));
+    assert!(!daemon_frame_ready(
+        "event: daemon\ndata: {\"pendingTransactions\":0}"
+    ));
+    assert!(daemon_frame_ready(
+        "event: daemon\ndata: {\"pendingTransactions\":0}\n\n"
+    ));
+}
+
 fn first_daemon_event(body: &str) -> Value {
+    assert!(
+        daemon_frame_ready(body),
+        "daemon frame was not complete: {body:?}"
+    );
     let start = body
         .find("event: daemon")
         .or_else(|| body.find("event:daemon"))
@@ -286,7 +318,7 @@ async fn first_sse_counts(base_url: &str, token: &str) -> (u64, u64) {
     let body = read_sse_body_until(
         &mut stream,
         &prefix,
-        |text| text.contains("event: daemon") || text.contains("event:daemon"),
+        daemon_frame_ready,
         Duration::from_secs(3),
     )
     .await;
