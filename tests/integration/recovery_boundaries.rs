@@ -290,6 +290,7 @@ fn recovery_boundaries__include_ledger_without_yes__refuses() {
     let utf8 = Utf8PathBuf::from_path_buf(root.clone()).expect("utf-8 repo");
     let layout = Layout::new(&utf8);
     layout.ensure_state_dir().expect("state dir");
+    let _home = HomeGuard::new(tmp.path());
     let storage = StorageManager::init_with_layout(&layout).expect("init");
     storage.shutdown().expect("shutdown");
     let db = root.join(".ledgerful").join("state").join("ledger.db");
