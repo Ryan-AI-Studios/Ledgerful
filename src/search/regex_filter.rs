@@ -118,7 +118,7 @@ impl<'a> RegexFilter<'a> {
     /// At most [`WITNESS_FILE_CAP`] candidate paths are considered. An
     /// ineligible extension still consumes a slot and is not read. Line
     /// handling matches [`Self::search_with`]: UTF-8 normalization, control
-    /// stripping, and the 1000-character skip. This does not change the
+    /// stripping, and the 1000-byte skip. This does not change the
     /// match limit of [`Self::search_with`].
     pub(crate) fn definition_witness(
         &self,
