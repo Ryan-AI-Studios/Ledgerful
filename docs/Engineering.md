@@ -411,8 +411,8 @@ to separate fast PR feedback from heavy/nightly validation.
 | Tier | Profile | What it runs | Target | When |
 |---|---|---|---|---|
 | 1 | `default` | Fast unit + integration tests, excludes `__slow` tests | local loop | Local dev |
-| 2 | `ci` | Same as `default`, retries `count=0` (the child value replaces the parent), 60s slow-timeout | PR gate | CI pull requests and the pre-push gate |
-| 3 | `slow` | Only tests whose name ends in `__slow`; own retries `count=2`; 300s slow-timeout | nightly | On-demand / nightly / pre-release |
+| 2 | `ci` | Same as `default`, retries `count=0` (the child value replaces the parent), 60s slow-timeout. Excludes tests whose names end in `__slow`. | PR gate | CI pull requests and the pre-push gate |
+| 3 | `slow` | Only tests whose name ends in `__slow`; own retries `count=2`; 300s slow-timeout | PR `test-slow` | Every pull request, in parallel with the fast tier |
 | 4 | doctests | `cargo test --workspace --all-features --doc` | seconds | Every PR |
 
 Note: compile-fail tier removed in 0067; `--profile compile-fail` no longer exists.
@@ -425,7 +425,13 @@ without special flags and tier selection lives entirely in `nextest.toml`.
 
 **Important:** tracks that rename tests (for example TA7) must preserve an
 existing `__slow` suffix. If a slow test is renamed and the suffix is dropped,
-it silently re-enters profile `ci`, which is the PR gate. The merge wait is the `test (windows-latest)` job, not a 60-second wall clock.
+it silently re-enters profile `ci`, which is the PR gate. The moved heavy
+integration tests stay on the slow tier and run in `test-slow` on every pull
+request. The merge wait is the `test (windows-latest)` job. On 2026-10-24,
+after that move, two Windows runs with the same `Swatinem/rust-cache` full hit
+took 18m14s and 19m24s for `test`, and 14m1s and 17m45s for `test-slow`
+(runs 40046859628 and 40044982073). `test-slow` did not exceed `test`. The
+step-level table is in the 0578 conductor review.
 
 ### Test hermeticity
 
@@ -447,7 +453,7 @@ cargo nextest run --workspace --all-features --profile default
 # the merge wait is `test (windows-latest)`, not a fixed wall-clock budget.
 cargo nextest run --workspace --all-features --profile ci
 
-# Slow tier only (115 tests whose names end in __slow; `rg "fn .*__slow"`)
+# Slow tier only (tests whose names end in __slow; the PR job is test-slow)
 cargo nextest run --workspace --all-features --profile slow
 
 # Doctests (nextest cannot run doctests on stable)
