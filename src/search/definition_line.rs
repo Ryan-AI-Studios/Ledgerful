@@ -225,6 +225,7 @@ fn prefix_before_keyword_allowed(head: &str) -> bool {
     }
 }
 
+#[allow(dead_code)]
 fn is_qualifier(word: &str) -> bool {
     matches!(
         word,
