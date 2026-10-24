@@ -214,6 +214,8 @@ mod cli_daemon_help;
 mod cli_tests_command;
 #[cfg(feature = "web")]
 mod cli_web_status;
+#[cfg(all(feature = "web", feature = "mcp"))]
+mod cross_surface_contract;
 #[cfg(feature = "web")]
 mod openapi_contract;
 #[cfg(feature = "web")]
