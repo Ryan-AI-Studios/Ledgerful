@@ -538,7 +538,7 @@ fn recovery_boundary__tantivy_clear_stop__empty_index_ledger_remains() {
         assert_eq!(
             engine.document_count(),
             2,
-            "rebuild indexes src/ledger_seed.rs and src/probe.rs; home/ is an empty directory in the temp root and is not a source file"
+            "2 is the two fixture sources src/ledger_seed.rs and src/probe.rs; the count also fails if the walker indexes an extra file under home/"
         );
     }
     assert_eq!(
