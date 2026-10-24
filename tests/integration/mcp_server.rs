@@ -1,5 +1,5 @@
 #[cfg(feature = "mcp")]
-mod tests {
+pub(crate) mod tests {
     use crate::common::{git_add_and_commit, setup_git_repo};
     use camino::Utf8Path;
     use std::io::{BufRead, BufReader, Read, Write};
@@ -637,8 +637,12 @@ mod tests {
     /// forwards whole Content-Length frames over mpsc; callers wait with
     /// `recv_timeout` bounded by the session deadline. Drop closes stdin, kills and
     /// reaps the owned child, then joins the readers.
-    mod structured_harness {
+    pub(crate) mod structured_harness {
         use super::{get_mcp_binary, git_add_and_commit, setup_git_repo};
+        use crate::common::nested_repo_root;
+        use ledgerful::config::model::Config;
+        use ledgerful::ledger::drift::DriftManager;
+        use ledgerful::state::storage::StorageManager;
         use serde_json::{Value, json};
         use std::io::{BufRead, BufReader, Read, Write};
         use std::panic::AssertUnwindSafe;
@@ -921,16 +925,55 @@ mod tests {
             out
         }
 
-        /// Expected MCP tree: CLI tree with only the D2 string transforms applied.
+        /// Identifier keys keep brackets. Every other string stays on the D2 display set.
+        const IDENTIFIER_KEYS: &[&str] = &[
+            "callerFilePath",
+            "entity",
+            "filePath",
+            "handlerFile",
+            "oldPath",
+            "path",
+            "registrationFile",
+            "sourceFile",
+        ];
+
+        fn copy_identifier(input: &str) -> String {
+            input
+                .chars()
+                .filter(|c| {
+                    !matches!(
+                        c,
+                        '\0'..='\u{08}' | '\u{0B}'..='\u{1F}' | '\u{7F}'..='\u{9F}'
+                            | '\u{200B}'..='\u{200F}'
+                            | '\u{202A}'..='\u{202E}'
+                            | '\u{2066}'..='\u{2069}'
+                    )
+                })
+                .collect()
+        }
+
+        /// Expected MCP tree: CLI tree with display transforms, except identifier keys.
         pub fn expected_structured_tree(cli: &Value) -> Value {
+            expected_structured_tree_keyed(cli, None)
+        }
+
+        fn expected_structured_tree_keyed(cli: &Value, key: Option<&str>) -> Value {
             match cli {
-                Value::String(s) => Value::String(oracle_structured_string(s)),
-                Value::Array(items) => {
-                    Value::Array(items.iter().map(expected_structured_tree).collect())
+                Value::String(s)
+                    if key.is_some_and(|name| IDENTIFIER_KEYS.binary_search(&name).is_ok()) =>
+                {
+                    Value::String(copy_identifier(s))
                 }
+                Value::String(s) => Value::String(oracle_structured_string(s)),
+                Value::Array(items) => Value::Array(
+                    items
+                        .iter()
+                        .map(|item| expected_structured_tree_keyed(item, None))
+                        .collect(),
+                ),
                 Value::Object(map) => Value::Object(
                     map.iter()
-                        .map(|(k, v)| (k.clone(), expected_structured_tree(v)))
+                        .map(|(k, v)| (k.clone(), expected_structured_tree_keyed(v, Some(k))))
                         .collect(),
                 ),
                 other => other.clone(),
@@ -1327,6 +1370,223 @@ mod tests {
                 reaped.load(Ordering::SeqCst),
                 "Drop must reap the child on panic"
             );
+        }
+
+        fn bracket_paren_repo() -> (TempDir, std::path::PathBuf) {
+            let tmp = tempdir().expect("tempdir");
+            let root = nested_repo_root(tmp.path());
+            setup_git_repo(&root);
+            let slug_dir = root.join("app").join("[slug]");
+            std::fs::create_dir_all(&slug_dir).expect("create app/[slug]");
+            std::fs::write(
+                slug_dir.join("page.tsx"),
+                "// slug_needle Vec<String> ![exfil](https://evil.example/x)\n",
+            )
+            .expect("write page.tsx");
+            let auth_dir = root.join("app").join("(auth)");
+            std::fs::create_dir_all(&auth_dir).expect("create app/(auth)");
+            std::fs::write(auth_dir.join("login.tsx"), "// auth_needle\n")
+                .expect("write login.tsx");
+            git_add_and_commit(&root, "fixture: bracket and paren paths");
+            let init = Command::new(get_mcp_binary())
+                .current_dir(&root)
+                .arg("-C")
+                .arg(&root)
+                .arg("init")
+                .env("LEDGERFUL_NON_INTERACTIVE", "1")
+                .output()
+                .expect("spawn init");
+            assert!(
+                init.status.success(),
+                "init failed: {}",
+                String::from_utf8_lossy(&init.stderr)
+            );
+            (tmp, root)
+        }
+
+        fn hit_with_path<'a>(body: &'a Value, path: &str) -> &'a Value {
+            body["results"]
+                .as_array()
+                .and_then(|hits| hits.iter().find(|hit| hit["path"].as_str() == Some(path)))
+                .unwrap_or_else(|| panic!("no hit with path {path}: {body}"))
+        }
+
+        fn assert_opens(root: &std::path::Path, path: &str) {
+            let full = root.join(path);
+            assert!(full.is_file(), "decoded path must open: {}", full.display());
+        }
+
+        #[test]
+        #[allow(non_snake_case)]
+        fn mcp_search__bracket_path__opens_file() {
+            let (_tmp, root) = bracket_paren_repo();
+            let mut session = spawn_session(&root);
+            session.initialize();
+            let mcp =
+                assert_structured_success(&session.call_tool("search", search_args("slug_needle")));
+            let hit = hit_with_path(&mcp, "app/[slug]/page.tsx");
+            assert_opens(&root, "app/[slug]/page.tsx");
+            let content = hit["content"].as_str().expect("mcp content");
+            assert!(
+                !content.contains("![exfil]("),
+                "raw image must not survive: {content}"
+            );
+            assert!(
+                content.contains("&lt;"),
+                "angle brackets stay encoded: {content}"
+            );
+
+            let cli = run_cli_json(&root, &cli_search_argv("slug_needle"));
+            let cli_hit = hit_with_path(&cli, "app/[slug]/page.tsx");
+            assert_eq!(cli_hit["path"].as_str(), Some("app/[slug]/page.tsx"));
+            let cli_content = cli_hit["content"].as_str().expect("cli content");
+            assert!(
+                cli_content.contains("Vec<String>"),
+                "CLI snippet keeps the type: {cli_content}"
+            );
+            assert!(
+                cli_content.contains("![exfil](https://evil.example/x"),
+                "CLI snippet keeps the raw image: {cli_content}"
+            );
+        }
+
+        #[test]
+        #[allow(non_snake_case)]
+        fn mcp_search__paren_path__opens_file() {
+            let (_tmp, root) = bracket_paren_repo();
+            let mut session = spawn_session(&root);
+            session.initialize();
+            let mcp =
+                assert_structured_success(&session.call_tool("search", search_args("auth_needle")));
+            let hit = hit_with_path(&mcp, "app/(auth)/login.tsx");
+            assert_eq!(hit["path"].as_str(), Some("app/(auth)/login.tsx"));
+            assert_opens(&root, "app/(auth)/login.tsx");
+
+            let cli = run_cli_json(&root, &cli_search_argv("auth_needle"));
+            assert_eq!(
+                hit_with_path(&cli, "app/(auth)/login.tsx")["path"].as_str(),
+                Some("app/(auth)/login.tsx")
+            );
+        }
+
+        #[test]
+        #[allow(non_snake_case)]
+        fn mcp_change_context__prospective_bracket_path__read_set_matches() {
+            let (_tmp, root) = bracket_paren_repo();
+            let mut session = spawn_session(&root);
+            session.initialize();
+            let body = assert_structured_success(&session.call_tool(
+                "change_context",
+                json!({ "paths": ["app/[slug]/page.tsx"] }),
+            ));
+            let paths: Vec<&str> = body["readSet"]
+                .as_array()
+                .expect("readSet array")
+                .iter()
+                .filter_map(|row| row["path"].as_str())
+                .collect();
+            assert!(
+                paths.contains(&"app/[slug]/page.tsx"),
+                "readSet paths: {paths:?}"
+            );
+        }
+
+        fn count_fixture() -> (TempDir, std::path::PathBuf) {
+            let tmp = tempdir().expect("tempdir");
+            let root = nested_repo_root(tmp.path());
+            setup_git_repo(&root);
+            std::fs::create_dir_all(root.join("src")).expect("src");
+            std::fs::create_dir_all(root.join("notes")).expect("notes");
+            std::fs::write(root.join("src/pending.rs"), "pub fn pending() {}\n").expect("pending");
+            std::fs::write(root.join("notes/unaudited.txt"), "note\n").expect("note");
+            git_add_and_commit(&root, "fixture: count files");
+            (tmp, root)
+        }
+
+        fn seed_double_drift_then_pending(root: &std::path::Path) {
+            let init = Command::new(get_mcp_binary())
+                .current_dir(root)
+                .arg("-C")
+                .arg(root)
+                .arg("init")
+                .env("LEDGERFUL_NON_INTERACTIVE", "1")
+                .output()
+                .expect("spawn init");
+            assert!(
+                init.status.success(),
+                "init failed: {}",
+                String::from_utf8_lossy(&init.stderr)
+            );
+            let db_path = root.join(".ledgerful").join("state").join("ledger.db");
+            {
+                let mut storage = StorageManager::init(&db_path).expect("open ledger");
+                {
+                    let mut drift = DriftManager::new(
+                        storage.get_connection_mut(),
+                        root.to_path_buf(),
+                        Config::default(),
+                    );
+                    drift
+                        .process_event("notes/unaudited.txt")
+                        .expect("first drift");
+                    drift
+                        .process_event("notes/unaudited.txt")
+                        .expect("second drift");
+                }
+                storage.shutdown().expect("drop ledger connection");
+            }
+            let start = Command::new(get_mcp_binary())
+                .current_dir(root)
+                .arg("-C")
+                .arg(root)
+                .args([
+                    "ledger",
+                    "start",
+                    "src/pending.rs",
+                    "--category",
+                    "CHORE",
+                    "--message",
+                    "0560 count fixture",
+                ])
+                .env("LEDGERFUL_NON_INTERACTIVE", "1")
+                .output()
+                .expect("spawn ledger start");
+            assert!(
+                start.status.success(),
+                "ledger start failed: {}",
+                String::from_utf8_lossy(&start.stderr)
+            );
+        }
+
+        #[test]
+        #[allow(non_snake_case)]
+        fn mcp_ledger_status__seeded_counts__match_cli() {
+            let (_tmp, root) = count_fixture();
+            seed_double_drift_then_pending(&root);
+            let mut session = spawn_session(&root);
+            session.initialize();
+            let body = assert_structured_success(&session.call_tool("ledger_status", json!({})));
+            assert_eq!(body["pending"], 1);
+            assert_eq!(body["unaudited_drift"], 1);
+            assert_eq!(body["unaudited_file_count"], 2);
+
+            let cli = run_cli_json(&root, &["ledger", "status", "--json"]);
+            assert_eq!(cli["pendingCount"], 1);
+            assert_eq!(cli["unauditedCount"], 1);
+            assert_eq!(cli["unauditedFileCount"], 2);
+        }
+
+        #[test]
+        #[allow(non_snake_case)]
+        fn mcp_unknown_tool__not_implemented__is_error() {
+            let tmp = tempdir().expect("tempdir");
+            setup_git_repo(tmp.path());
+            let mut session = spawn_session(tmp.path());
+            session.initialize();
+            let result = session.call_tool("not_a_real_tool", json!({}));
+            assert_eq!(result["isError"], true, "{result}");
+            let text = result["content"][0]["text"].as_str().expect("text");
+            assert!(text.contains("not implemented"), "{text}");
         }
     }
 }
