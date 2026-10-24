@@ -270,6 +270,16 @@ mod tests {
     }
 
     #[test]
+    fn identifier_path__image_syntax_and_backtick__round_trips() {
+        let raw = "![x](https:/evil.example/leak.png)`";
+        let parsed = decode_structured(&serde_json::json!({ "path": raw }).to_string());
+        assert_eq!(
+            parsed["path"].as_str(),
+            Some("![x](https:/evil.example/leak.png)`")
+        );
+    }
+
+    #[test]
     fn display_symbol_name__angle_brackets__entity_encoded() {
         let parsed =
             decode_structured(&serde_json::json!({ "symbolName": "Vec<String>" }).to_string());
