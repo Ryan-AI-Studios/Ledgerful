@@ -1130,7 +1130,6 @@ fn working_tree_has_material_changes(material: WorkingTreeMaterial) -> bool {
     matches!(material, WorkingTreeMaterial::Dirty)
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Print the cheap-command sentence when every recorded result is `git --version`.
 ///
 /// Returns true when the sentence was printed. Callers that would otherwise
