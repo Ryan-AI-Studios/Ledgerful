@@ -292,6 +292,7 @@ fn recovery_boundary__page_ceiling_batch__seed_remains() {
     )
     .expect_err("page-ceiling insert must fail");
     let text = error_chain(err.as_ref());
+    // Intentional 0561 oracle. This contains() locks third-party error text. Do not loosen it.
     assert!(
         text.contains("database or disk is full"),
         "SQLite max_page_count ceiling (not a full volume) must report database or disk is full; got {text}"
@@ -367,6 +368,7 @@ fn recovery_boundary__busy_lock__seed_remains_then_read() {
     )
     .expect_err("locked insert must fail");
     let text = error_chain(err.as_ref());
+    // Intentional 0561 oracle. This contains() locks third-party error text. Do not loosen it.
     assert!(
         text.contains("database is locked"),
         "busy_timeout 0 under BEGIN IMMEDIATE must report database is locked; got {text}"
@@ -472,6 +474,7 @@ fn recovery_boundary__page_ceiling_ledger__pending_unchanged() {
         )
         .expect_err("ceiling commit must fail");
     let text = error_chain(&err);
+    // Intentional 0561 oracle. This contains() locks third-party error text. Do not loosen it.
     assert!(
         text.contains("database or disk is full"),
         "SQLite max_page_count ceiling (not a full volume) must report database or disk is full; got {text}"
@@ -532,9 +535,10 @@ fn recovery_boundary__tantivy_clear_stop__empty_index_ledger_remains() {
     {
         let engine =
             TantivySearchEngine::open_or_create(index_dir.as_std_path()).expect("after rebuild");
-        assert!(
-            engine.document_count() > 0,
-            "rebuild of a one-file repo makes document_count greater than 0"
+        assert_eq!(
+            engine.document_count(),
+            2,
+            "rebuild indexes src/ledger_seed.rs and src/probe.rs; home/ is an empty directory in the temp root and is not a source file"
         );
     }
     assert_eq!(
@@ -568,6 +572,7 @@ fn recovery_boundary__missing_segment__open_fails() {
         Err(err) => err,
     };
     let text = error_chain(err.as_ref());
+    // Intentional 0561 oracle. This contains() locks third-party error text. Do not loosen it.
     assert!(
         text.contains("Files does not exist") && text.contains(".store"),
         "cross-platform open must report Files does not exist for the missing .store; got {text}"
@@ -664,6 +669,7 @@ fn recovery_boundary__garbage_sqlite__bytes_unchanged() {
         Err(err) => err,
     };
     let text = error_chain(err.as_ref());
+    // Intentional 0561 oracle. This contains() locks third-party error text. Do not loosen it.
     assert!(
         text.contains("file is not a database"),
         "garbage ledger.db must report file is not a database; got {text}"
@@ -702,6 +708,7 @@ fn recovery_boundary__user_version_too_high__row_remains() {
         Err(err) => err,
     };
     let text = error_chain(err.as_ref());
+    // Intentional 0561 oracle. This contains() locks third-party error text. Do not loosen it.
     assert!(
         text.contains("Attempt to migrate a database with a migration number that is too high"),
         "too-high user_version display; got {text}"
@@ -795,6 +802,7 @@ fn recovery_boundary__shared_worktree__second_writer_busy() {
     )
     .expect_err("second writer must fail");
     let text = error_chain(err.as_ref());
+    // Intentional 0561 oracle. This contains() locks third-party error text. Do not loosen it.
     assert!(
         text.contains("database is locked"),
         "shared worktree writer must report database is locked; got {text}"
@@ -876,6 +884,7 @@ fn recovery_boundary__readonly_db_file__write_error() {
     )
     .expect_err("insert on a read-only manager must fail");
     let text = error_chain(err.as_ref());
+    // Intentional 0561 oracle. This contains() locks third-party error text. Do not loosen it.
     assert!(
         text.contains("readonly"),
         "readonly write on {} must contain readonly; got {text}",
