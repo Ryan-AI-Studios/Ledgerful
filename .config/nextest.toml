@@ -8,7 +8,7 @@
 # Tiers:
 #   default      fast unit + integration tests, PR loop
 #   ci           default with retries count 0, CI/PR gate
-#   slow         heavy integration tests, nightly / on-demand
+#   slow         heavy integration tests; the CI test-slow job runs on every pull request
 #   doctests     `cargo test --doc` (nextest doesn't run doctests on stable)
 
 [profile.default]
