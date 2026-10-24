@@ -180,6 +180,8 @@ fn prefix_before_keyword_allowed(head: &str) -> bool {
     let qualifiers: &[&str] = &[
         "pub(crate)",
         "pub(super)",
+        "pub(self)",
+        "extern \"C\"",
         "protected",
         "private",
         "public",
@@ -189,6 +191,10 @@ fn prefix_before_keyword_allowed(head: &str) -> bool {
         "static",
         "async",
         "const",
+        "declare",
+        "abstract",
+        "final",
+        "sealed",
         "pub",
     ];
     let mut rest = head;
@@ -1096,5 +1102,229 @@ test(\"empty\", () => {});
         assert_eq!(chosen.path, "pkg/widget.js");
         assert!(chosen.has_body);
         assert!(!chosen.test_local);
+    }
+
+    #[test]
+    fn definition_line__export_declare_function__is_a_declaration() {
+        let line = "export declare function widget_open(): void;\n";
+        assert!(
+            prefix_before_keyword_allowed("export declare "),
+            "export declare function widget_open"
+        );
+        let hit = scan_file("types/widget.d.ts", line, "widget_open");
+        assert_eq!(hit.len(), 1, "export declare function widget_open");
+        assert!(!hit[0].has_body, "export declare function widget_open");
+        assert!(!hit[0].test_local, "export declare function widget_open");
+        assert_eq!(
+            hit[0].content,
+            "export declare function widget_open(): void;"
+        );
+    }
+
+    #[test]
+    fn definition_line__declare_class__is_a_declaration() {
+        let line = "declare class Widget {}\n";
+        assert!(
+            prefix_before_keyword_allowed("declare "),
+            "declare class Widget"
+        );
+        let hit = scan_file("types/widget.d.ts", line, "Widget");
+        assert_eq!(hit.len(), 1, "declare class Widget");
+        assert!(hit[0].has_body, "declare class Widget");
+        assert!(!hit[0].test_local, "declare class Widget");
+        assert_eq!(hit[0].content, "declare class Widget {}");
+    }
+
+    #[test]
+    fn definition_line__abstract_class__is_a_declaration() {
+        let line = "abstract class Widget {}\n";
+        assert!(
+            prefix_before_keyword_allowed("abstract "),
+            "abstract class Widget"
+        );
+        let hit = scan_file("pkg/widget.ts", line, "Widget");
+        assert_eq!(hit.len(), 1, "abstract class Widget");
+        assert!(hit[0].has_body, "abstract class Widget");
+        assert!(!hit[0].test_local, "abstract class Widget");
+        assert_eq!(hit[0].content, "abstract class Widget {}");
+    }
+
+    #[test]
+    fn definition_line__export_abstract_class__is_a_declaration() {
+        let line = "export abstract class Widget {}\n";
+        assert!(
+            prefix_before_keyword_allowed("export abstract "),
+            "export abstract class Widget"
+        );
+        let hit = scan_file("pkg/widget.ts", line, "Widget");
+        assert_eq!(hit.len(), 1, "export abstract class Widget");
+        assert!(hit[0].has_body, "export abstract class Widget");
+        assert!(!hit[0].test_local, "export abstract class Widget");
+        assert_eq!(hit[0].content, "export abstract class Widget {}");
+    }
+
+    #[test]
+    fn definition_line__public_final_class__is_a_declaration() {
+        let line = "public final class Widget {}\n";
+        assert!(
+            prefix_before_keyword_allowed("public final "),
+            "public final class Widget"
+        );
+        let hit = scan_file("src/Widget.java", line, "Widget");
+        assert_eq!(hit.len(), 1, "public final class Widget");
+        assert!(hit[0].has_body, "public final class Widget");
+        assert!(!hit[0].test_local, "public final class Widget");
+        assert_eq!(hit[0].content, "public final class Widget {}");
+    }
+
+    #[test]
+    fn definition_line__sealed_class__is_a_declaration() {
+        let line = "sealed class Widget {}\n";
+        assert!(
+            prefix_before_keyword_allowed("sealed "),
+            "sealed class Widget"
+        );
+        let hit = scan_file("src/Widget.java", line, "Widget");
+        assert_eq!(hit.len(), 1, "sealed class Widget");
+        assert!(hit[0].has_body, "sealed class Widget");
+        assert!(!hit[0].test_local, "sealed class Widget");
+        assert_eq!(hit[0].content, "sealed class Widget {}");
+    }
+
+    #[test]
+    fn definition_line__pub_self_fn__is_a_declaration() {
+        let line = "pub(self) fn widget_open() {}\n";
+        assert!(
+            prefix_before_keyword_allowed("pub(self) "),
+            "pub(self) fn widget_open"
+        );
+        let hit = scan_file("src/widget.rs", line, "widget_open");
+        assert_eq!(hit.len(), 1, "pub(self) fn widget_open");
+        assert!(hit[0].has_body, "pub(self) fn widget_open");
+        assert!(!hit[0].test_local, "pub(self) fn widget_open");
+        assert_eq!(hit[0].content, "pub(self) fn widget_open() {}");
+    }
+
+    #[test]
+    fn definition_line__extern_c_fn__is_a_declaration() {
+        let line = "extern \"C\" fn widget_open() {}\n";
+        assert!(
+            prefix_before_keyword_allowed("extern \"C\" "),
+            "extern \"C\" fn widget_open"
+        );
+        let hit = scan_file("src/widget.rs", line, "widget_open");
+        assert_eq!(hit.len(), 1, "extern \"C\" fn widget_open");
+        assert!(hit[0].has_body, "extern \"C\" fn widget_open");
+        assert!(!hit[0].test_local, "extern \"C\" fn widget_open");
+        assert_eq!(hit[0].content, "extern \"C\" fn widget_open() {}");
+    }
+
+    #[test]
+    fn definition_line__pub_unsafe_extern_c_fn__is_a_declaration() {
+        let line = "pub unsafe extern \"C\" fn widget_open() {}\n";
+        assert!(
+            prefix_before_keyword_allowed("pub unsafe extern \"C\" "),
+            "pub unsafe extern \"C\" fn widget_open"
+        );
+        let hit = scan_file("src/widget.rs", line, "widget_open");
+        assert_eq!(hit.len(), 1, "pub unsafe extern \"C\" fn widget_open");
+        assert!(hit[0].has_body, "pub unsafe extern \"C\" fn widget_open");
+        assert!(!hit[0].test_local, "pub unsafe extern \"C\" fn widget_open");
+        assert_eq!(
+            hit[0].content,
+            "pub unsafe extern \"C\" fn widget_open() {}"
+        );
+    }
+
+    #[test]
+    fn definition_line__extern_c_struct__is_a_declaration() {
+        let line = "extern \"C\" struct Foo { int x; };\n";
+        assert!(
+            prefix_before_keyword_allowed("extern \"C\" "),
+            "extern \"C\" struct Foo"
+        );
+        let hit = scan_file("src/widget.cpp", line, "Foo");
+        assert_eq!(hit.len(), 1, "extern \"C\" struct Foo");
+        assert!(hit[0].has_body, "extern \"C\" struct Foo");
+        assert!(!hit[0].test_local, "extern \"C\" struct Foo");
+        assert_eq!(hit[0].content, "extern \"C\" struct Foo { int x; };");
+    }
+
+    #[test]
+    fn definition_line__unseated_prefix__is_not_a_declaration() {
+        assert!(
+            scan_file("src/Widget.java", "internal class Widget {}\n", "Widget").is_empty(),
+            "internal class Widget"
+        );
+        assert!(
+            !prefix_before_keyword_allowed("internal "),
+            "internal class Widget"
+        );
+        assert!(
+            scan_file("src/Widget.java", "partial class Widget {}\n", "Widget").is_empty(),
+            "partial class Widget"
+        );
+        assert!(
+            scan_file("pkg/widget.ts", "override class Widget {}\n", "Widget").is_empty(),
+            "override class Widget"
+        );
+        assert!(
+            scan_file("src/widget.rs", "readonly struct Widget {}\n", "Widget").is_empty(),
+            "readonly struct Widget"
+        );
+        assert!(
+            scan_file(
+                "src/widget.rs",
+                "pub(in crate::x) fn widget_open() {}\n",
+                "widget_open",
+            )
+            .is_empty(),
+            "pub(in crate::x) fn widget_open"
+        );
+        assert!(
+            scan_file(
+                "src/widget.rs",
+                "extern fn widget_open() {}\n",
+                "widget_open"
+            )
+            .is_empty(),
+            "extern fn widget_open"
+        );
+        assert!(
+            scan_file(
+                "src/widget.rs",
+                "extern \"system\" fn widget_open() {}\n",
+                "widget_open",
+            )
+            .is_empty(),
+            "extern \"system\" fn widget_open"
+        );
+        assert!(
+            scan_file(
+                "src/widget.rs",
+                "pub (crate) fn widget_open() {}\n",
+                "widget_open",
+            )
+            .is_empty(),
+            "pub (crate) fn widget_open"
+        );
+        assert!(
+            scan_file(
+                "src/widget.rs",
+                "# [cfg(test)] fn widget_open() {}\n",
+                "widget_open"
+            )
+            .is_empty(),
+            "# [cfg(test)] fn widget_open"
+        );
+        assert!(
+            scan_file(
+                "types/widget.d.ts",
+                "// export declare function widget_open(): void;\n",
+                "widget_open",
+            )
+            .is_empty(),
+            "// export declare function widget_open"
+        );
     }
 }
