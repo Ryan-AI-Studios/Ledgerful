@@ -320,6 +320,7 @@ async fn assert_refused(response: reqwest::Response, token: &str) {
 }
 
 #[tokio::test]
+#[allow(non_snake_case)]
 async fn cross_surface__fresh_repo__counts_are_zero() {
     let (_tmp, root) = repo();
     init_repo(&root);
@@ -342,6 +343,7 @@ async fn cross_surface__fresh_repo__counts_are_zero() {
 }
 
 #[tokio::test]
+#[allow(non_snake_case)]
 async fn cross_surface__seeded_drift_and_pending__counts_agree() {
     let (_tmp, root) = repo();
     seed_drift_and_pending(&root);
@@ -367,6 +369,7 @@ async fn cross_surface__seeded_drift_and_pending__counts_agree() {
 }
 
 #[tokio::test]
+#[allow(non_snake_case)]
 async fn cross_surface__ledger_search__cli_is_bare_array() {
     let (_tmp, root) = repo();
     commit_search_hit(&root);
@@ -414,6 +417,7 @@ fn urlencoding_query(query: &str) -> String {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn cross_surface__empty_search__exit_zero_envelope() {
     let (_tmp, root) = repo();
     std::fs::write(root.join("README.md"), "nothing to find\n").expect("readme");
@@ -433,6 +437,7 @@ fn cross_surface__empty_search__exit_zero_envelope() {
 /// echo the token). This test locks them on the contract file. It does not
 /// replace those tests.
 #[tokio::test]
+#[allow(non_snake_case)]
 async fn cross_surface__missing_bearer_foreign_host_and_origin__403() {
     let (_tmp, root) = repo();
     init_repo(&root);
