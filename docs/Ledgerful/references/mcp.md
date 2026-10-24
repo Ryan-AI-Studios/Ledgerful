@@ -65,6 +65,7 @@ still writes concrete command/args and never writes secrets or embedding URLs.
 2. `scan`: Run impact scan on current repo. Success text is the structured `scan --impact --json` document after the provenance line (0552).
 3. `search`: BM25/regex code search. Tool text is a **single JSON object**
    (`schemaVersion` 1, `results[]`) from CLI `search --json` — not NDJSON lines — behind the structured provenance line (0552): strip that line, then parse the rest. See `docs/agent-output-contract.md` § MCP structured output frame.
+   `results[].path` is an identifier (`path`, `oldPath`, `filePath`, `callerFilePath`, `sourceFile`, `registrationFile`, `handlerFile`, and ledger `entity`): open it as returned. Snippets and every other string stay display text and are not unescaped. See `docs/agent-output-contract.md` § String sanitation (structured).
 4. `ask`: Semantic Q&A with context assembly (MCP children default to zero cloud egress). Tool text includes the CLI stdout `[AskMeta]` trailer after a model answer; the MCP envelope stays `{content,isError}`.
 5. `ledger_status`: Current pending/unaudited state. Envelope stays `{content,isError}` (0190). Inner JSON may add `degraded` + sorted `warnings` when pending/unaudited loads fail; `pending` remains present.
 6. `ledger_search`: Full-text search transactions. Default omits ROLLBACK; pass `include_rollback` to restore.

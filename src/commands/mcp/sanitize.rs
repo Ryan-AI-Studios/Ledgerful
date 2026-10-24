@@ -68,10 +68,11 @@ pub fn sanitize_mcp_content(input: &str) -> String {
 /// valid JSON), but **string values** inside the JSON can contain
 /// repo-derived content with Markdown image/link syntax
 /// (`![exfil](https://evil)`) that an MCP client would zero-click render.
-/// We parse the JSON, recursively sanitize every string value, and
-/// re-serialize — this guarantees structurally valid JSON while neutralizing
-/// Markdown vectors inside string contents. We also strip bidi/control/
-/// zero-width chars and replace backticks everywhere.
+/// We parse the JSON, walk every value, and re-serialize. Display strings
+/// are sanitized. A string whose object key is an identifier (`path`,
+/// `oldPath`, `filePath`, `callerFilePath`, `sourceFile`, `registrationFile`,
+/// `handlerFile`, `entity`) is copied unchanged except control, bidi, and
+/// zero-width scalars are deleted. That keeps a decoded path openable.
 pub fn sanitize_mcp_structured(input: &str) -> String {
     let mut out = String::with_capacity(
         input.len().min(MCP_STRUCTURED_MAX_LEN) + STRUCTURED_FRAME.len() + TRUNCATION_MARKER.len(),
@@ -108,19 +109,64 @@ pub fn sanitize_mcp_structured(input: &str) -> String {
     out
 }
 
+/// Object keys whose string values are filesystem or ledger identifiers.
+/// Sorted so lookup stays a binary search. Display strings are every other key.
+const IDENTIFIER_KEYS: &[&str] = &[
+    "callerFilePath",
+    "entity",
+    "filePath",
+    "handlerFile",
+    "oldPath",
+    "path",
+    "registrationFile",
+    "sourceFile",
+];
+
+fn is_identifier_key(key: &str) -> bool {
+    IDENTIFIER_KEYS.binary_search(&key).is_ok()
+}
+
+fn is_deleted_identifier_scalar(c: char) -> bool {
+    matches!(
+        c,
+        '\0'..='\u{08}' | '\u{0B}'..='\u{1F}' | '\u{7F}'..='\u{9F}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}'
+    )
+}
+
+/// Identifier strings stay openable: brackets, parentheses, backslash, `<`,
+/// `>`, and backticks are kept. LF and TAB stay. The same control, bidi, and
+/// zero-width ranges the display sanitizer deletes are removed.
+fn copy_identifier_string(input: &str) -> String {
+    input
+        .chars()
+        .filter(|c| !is_deleted_identifier_scalar(*c))
+        .collect()
+}
+
 fn sanitize_json_value_in_place(value: &mut serde_json::Value) {
+    sanitize_json_value(value, None);
+}
+
+fn sanitize_json_value(value: &mut serde_json::Value, key: Option<&str>) {
     match value {
         serde_json::Value::String(s) => {
-            *s = sanitize_json_string_value(s);
+            if key.is_some_and(is_identifier_key) {
+                *s = copy_identifier_string(s);
+            } else {
+                *s = sanitize_json_string_value(s);
+            }
         }
-        serde_json::Value::Array(arr) => {
-            for v in arr {
-                sanitize_json_value_in_place(v);
+        serde_json::Value::Array(items) => {
+            for item in items {
+                sanitize_json_value(item, None);
             }
         }
         serde_json::Value::Object(map) => {
-            for (_, v) in map.iter_mut() {
-                sanitize_json_value_in_place(v);
+            for (field, child) in map.iter_mut() {
+                sanitize_json_value(child, Some(field));
             }
         }
         _ => {}
@@ -156,7 +202,109 @@ fn sanitize_json_string_value(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(non_snake_case)]
+
     use super::*;
+    use rstest::rstest;
+
+    fn decode_structured(input: &str) -> serde_json::Value {
+        let sanitized = sanitize_mcp_structured(input);
+        let body = sanitized
+            .strip_prefix(super::STRUCTURED_FRAME)
+            .expect("structured frame");
+        serde_json::from_str(body).expect("structured body is one JSON document")
+    }
+
+    #[rstest]
+    #[case("path")]
+    #[case("oldPath")]
+    #[case("filePath")]
+    #[case("callerFilePath")]
+    #[case("sourceFile")]
+    #[case("registrationFile")]
+    #[case("handlerFile")]
+    #[case("entity")]
+    fn identifier_key__bracket_path__round_trips(#[case] key: &str) {
+        let raw = "app/[slug]/page.tsx";
+        let top = decode_structured(&serde_json::json!({ key: raw }).to_string());
+        assert_eq!(top[key].as_str(), Some(raw), "top-level {key}");
+
+        let nested = decode_structured(&serde_json::json!({ "items": [{ key: raw }] }).to_string());
+        assert_eq!(
+            nested["items"][0][key].as_str(),
+            Some(raw),
+            "nested array object {key}"
+        );
+    }
+
+    #[test]
+    fn identifier_path__paren_file__round_trips() {
+        let raw = "app/(auth)/login.tsx";
+        let parsed = decode_structured(&serde_json::json!({ "path": raw }).to_string());
+        assert_eq!(parsed["path"].as_str(), Some(raw));
+    }
+
+    #[test]
+    fn identifier_file_path__plain_source__unchanged() {
+        let parsed =
+            decode_structured(&serde_json::json!({ "filePath": "src/lib.rs" }).to_string());
+        assert_eq!(parsed["filePath"].as_str(), Some("src/lib.rs"));
+    }
+
+    #[test]
+    fn identifier_path__bidi_override__deleted_in_order() {
+        let raw = format!("app/{ch}slug/page.tsx", ch = '\u{202E}');
+        let parsed = decode_structured(&serde_json::json!({ "path": raw }).to_string());
+        assert_eq!(parsed["path"].as_str(), Some("app/slug/page.tsx"));
+        assert_eq!(
+            parsed["path"].as_str().unwrap(),
+            copy_identifier_string(&raw)
+        );
+    }
+
+    #[test]
+    fn identifier_path__lf_and_tab__kept() {
+        let raw = "app/\t[slug]\npage.tsx";
+        let parsed = decode_structured(&serde_json::json!({ "path": raw }).to_string());
+        assert_eq!(parsed["path"].as_str(), Some(raw));
+    }
+
+    #[test]
+    fn display_symbol_name__angle_brackets__entity_encoded() {
+        let parsed =
+            decode_structured(&serde_json::json!({ "symbolName": "Vec<String>" }).to_string());
+        assert_eq!(parsed["symbolName"].as_str(), Some("Vec&lt;String&gt;"));
+    }
+
+    #[test]
+    fn display_content__image_syntax__neutralized() {
+        let parsed = decode_structured(
+            &serde_json::json!({ "content": "![exfil](https://evil.example/x)" }).to_string(),
+        );
+        let content = parsed["content"].as_str().expect("content string");
+        assert!(
+            !content.contains("![exfil]("),
+            "raw image must not survive: {content}"
+        );
+    }
+
+    #[test]
+    fn non_identifier__array_and_file_key__stay_display_sanitized() {
+        let parsed = decode_structured(
+            &serde_json::json!({
+                "mustTouchSample": ["app/[slug]/page.tsx"],
+                "file": "app/[slug]/page.tsx"
+            })
+            .to_string(),
+        );
+        let sample = parsed["mustTouchSample"][0].as_str().expect("sample");
+        let file = parsed["file"].as_str().expect("file");
+        assert!(
+            sample.contains("\\["),
+            "array string under a non-identifier key stays escaped: {sample}"
+        );
+        assert!(file.contains("\\["), "file key stays escaped: {file}");
+    }
 
     #[test]
     fn fence_breakout_and_image_exfil_are_neutralized() {
