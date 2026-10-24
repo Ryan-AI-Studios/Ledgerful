@@ -292,7 +292,8 @@ fn set_mtime_to_past(path: &Path) {
 
 #[test]
 #[serial(env, cwd)]
-fn discovery_hit_miss_corrupt_populates_and_reuses_cache_then_recovers() {
+#[allow(non_snake_case)]
+fn discovery_hit_miss_corrupt_populates_and_reuses_cache_then_recovers__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let home = tmp.path().join("home");
@@ -325,7 +326,8 @@ fn discovery_hit_miss_corrupt_populates_and_reuses_cache_then_recovers() {
 
 #[test]
 #[serial(env, cwd)]
-fn cache_with_non_ok_integrity_check_triggers_rewalk() {
+#[allow(non_snake_case)]
+fn cache_with_non_ok_integrity_check_triggers_rewalk__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let home = tmp.path().join("home");
@@ -397,7 +399,8 @@ fn timeout_bound_completes_within_deadline() {
 
 #[test]
 #[serial(env, cwd)]
-fn cyclic_symlink_survives_without_hang() {
+#[allow(non_snake_case)]
+fn cyclic_symlink_survives_without_hang__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -430,7 +433,8 @@ fn cyclic_symlink_survives_without_hang() {
 
 #[test]
 #[serial(env, cwd)]
-fn unreadable_dir_mid_walk_skipped_without_crash() {
+#[allow(non_snake_case)]
+fn unreadable_dir_mid_walk_skipped_without_crash__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -453,7 +457,8 @@ fn unreadable_dir_mid_walk_skipped_without_crash() {
 
 #[test]
 #[serial(env, cwd)]
-fn open_read_only_from_path_rejects_write_attempt() {
+#[allow(non_snake_case)]
+fn open_read_only_from_path_rejects_write_attempt__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -477,7 +482,8 @@ fn open_read_only_from_path_rejects_write_attempt() {
 
 #[test]
 #[serial(env, cwd)]
-fn read_only_invariant_no_write_to_per_repo_db() {
+#[allow(non_snake_case)]
+fn read_only_invariant_no_write_to_per_repo_db__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -500,7 +506,8 @@ fn read_only_invariant_no_write_to_per_repo_db() {
 
 #[test]
 #[serial(env, cwd)]
-fn deep_repo_at_depth_six_or_more_is_discovered() {
+#[allow(non_snake_case)]
+fn deep_repo_at_depth_six_or_more_is_discovered__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let root = tmp.path().join("a").join("b").join("c").join("d").join("e");
@@ -527,7 +534,8 @@ fn deep_repo_at_depth_six_or_more_is_discovered() {
 
 #[test]
 #[serial(env, cwd)]
-fn posture_correctness_matches_per_repo_values_sorted_worst_first() {
+#[allow(non_snake_case)]
+fn posture_correctness_matches_per_repo_values_sorted_worst_first__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -555,7 +563,8 @@ fn posture_correctness_matches_per_repo_values_sorted_worst_first() {
 
 #[test]
 #[serial(env, cwd)]
-fn repo_filter_matches_last_component_not_substring() {
+#[allow(non_snake_case)]
+fn repo_filter_matches_last_component_not_substring__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -577,7 +586,8 @@ fn repo_filter_matches_last_component_not_substring() {
 
 #[test]
 #[serial(env, cwd)]
-fn empty_repo_posture_is_all_zeros_no_error() {
+#[allow(non_snake_case)]
+fn empty_repo_posture_is_all_zeros_no_error__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -597,7 +607,8 @@ fn empty_repo_posture_is_all_zeros_no_error() {
 
 #[test]
 #[serial(env, cwd)]
-fn repo_without_ledger_db_is_skipped_gracefully() {
+#[allow(non_snake_case)]
+fn repo_without_ledger_db_is_skipped_gracefully__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -618,7 +629,8 @@ fn repo_without_ledger_db_is_skipped_gracefully() {
 
 #[test]
 #[serial(env, cwd)]
-fn corrupt_ledger_db_is_warned_and_skipped_run_completes() {
+#[allow(non_snake_case)]
+fn corrupt_ledger_db_is_warned_and_skipped_run_completes__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -643,7 +655,8 @@ fn corrupt_ledger_db_is_warned_and_skipped_run_completes() {
 
 #[test]
 #[serial(env, cwd)]
-fn old_schema_ledger_db_is_warned_and_skipped_run_completes() {
+#[allow(non_snake_case)]
+fn old_schema_ledger_db_is_warned_and_skipped_run_completes__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -694,7 +707,8 @@ fn old_schema_ledger_db_is_warned_and_skipped_run_completes() {
 
 #[test]
 #[serial(env, cwd)]
-fn no_repos_prints_empty_message_and_exits_zero() {
+#[allow(non_snake_case)]
+fn no_repos_prints_empty_message_and_exits_zero__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -747,7 +761,8 @@ fn cache_older_than_staleness_secs_triggers_rewalk__slow() {
 
 #[test]
 #[serial(env, cwd)]
-fn cache_within_staleness_window_but_root_newer_triggers_rewalk() {
+#[allow(non_snake_case)]
+fn cache_within_staleness_window_but_root_newer_triggers_rewalk__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let home = tmp.path().join("home");
@@ -779,7 +794,8 @@ fn cache_within_staleness_window_but_root_newer_triggers_rewalk() {
 
 #[test]
 #[serial(env, cwd)]
-fn cache_within_window_and_root_older_uses_cache_no_rewalk() {
+#[allow(non_snake_case)]
+fn cache_within_window_and_root_older_uses_cache_no_rewalk__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let home = tmp.path().join("home");
@@ -837,7 +853,8 @@ fn cache_within_window_and_root_older_uses_cache_no_rewalk() {
 
 #[test]
 #[serial(env, cwd)]
-fn fd_safe_many_repo_query_no_descriptor_exhaustion() {
+#[allow(non_snake_case)]
+fn fd_safe_many_repo_query_no_descriptor_exhaustion__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -853,7 +870,8 @@ fn fd_safe_many_repo_query_no_descriptor_exhaustion() {
 
 #[test]
 #[serial(env, cwd)]
-fn locked_db_warns_and_skips_completes_with_others() {
+#[allow(non_snake_case)]
+fn locked_db_warns_and_skips_completes_with_others__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -878,7 +896,8 @@ fn locked_db_warns_and_skips_completes_with_others() {
 
 #[test]
 #[serial(env, cwd)]
-fn opt_out_opt_in_toggles_enabled_flag() {
+#[allow(non_snake_case)]
+fn opt_out_opt_in_toggles_enabled_flag__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let home = tmp.path();
@@ -955,7 +974,8 @@ fn perf_hundred_repo_first_call_under_budget_subsequent_call_fast() {
 
 #[test]
 #[serial(env, cwd)]
-fn reindex_forces_fresh_walk() {
+#[allow(non_snake_case)]
+fn reindex_forces_fresh_walk__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -988,7 +1008,8 @@ fn reindex_forces_fresh_walk() {
 
 #[test]
 #[serial(env, cwd)]
-fn cache_hit_uses_cached_postures_no_requery() {
+#[allow(non_snake_case)]
+fn cache_hit_uses_cached_postures_no_requery__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let home = tmp.path().join("home");
@@ -1071,7 +1092,8 @@ fn cache_hit_uses_cached_postures_no_requery() {
 
 #[test]
 #[serial(env, cwd)]
-fn stale_root_triggers_requery_for_that_root_only() {
+#[allow(non_snake_case)]
+fn stale_root_triggers_requery_for_that_root_only__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let home = tmp.path().join("home");
@@ -1149,7 +1171,8 @@ fn stale_root_triggers_requery_for_that_root_only() {
 
 #[test]
 #[serial(env, cwd)]
-fn repo_scoping_filters_to_one_repo() {
+#[allow(non_snake_case)]
+fn repo_scoping_filters_to_one_repo__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -1167,7 +1190,8 @@ fn repo_scoping_filters_to_one_repo() {
 
 #[test]
 #[serial(env, cwd)]
-fn timings_gate_absent_table_prints_honest_message() {
+#[allow(non_snake_case)]
+fn timings_gate_absent_table_prints_honest_message__slow() {
     // Default config roots=["~"] is heavy; use an empty-root enabled config
     // with isolated cache/home so discovery finds nothing.
     let tmp = tempdir().unwrap();
@@ -1287,7 +1311,8 @@ fn setup_global_timings_env(
 
 #[test]
 #[serial(env, cwd)]
-fn global_timings_pools_outer_samples_across_two_repos() {
+#[allow(non_snake_case)]
+fn global_timings_pools_outer_samples_across_two_repos__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let home = tmp.path().join("home");
@@ -1387,7 +1412,8 @@ fn global_timings_pools_outer_samples_across_two_repos() {
 
 #[test]
 #[serial(env, cwd)]
-fn global_timings_skips_repo_without_table() {
+#[allow(non_snake_case)]
+fn global_timings_skips_repo_without_table__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let home = tmp.path().join("home");
@@ -1448,7 +1474,8 @@ fn global_timings_skips_repo_without_table() {
 
 #[test]
 #[serial(env, cwd)]
-fn global_timings_no_tables_anywhere_honest_empty() {
+#[allow(non_snake_case)]
+fn global_timings_no_tables_anywhere_honest_empty__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let home = tmp.path().join("home");
@@ -1498,7 +1525,8 @@ fn global_timings_no_tables_anywhere_honest_empty() {
 
 #[test]
 #[serial(env, cwd)]
-fn global_timings_json_schema_keys_present() {
+#[allow(non_snake_case)]
+fn global_timings_json_schema_keys_present__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let home = tmp.path().join("home");
@@ -1592,7 +1620,8 @@ fn global_timings_json_schema_keys_present() {
 
 #[test]
 #[serial(env, cwd)]
-fn global_timings_corrupt_repo_warned_and_skipped() {
+#[allow(non_snake_case)]
+fn global_timings_corrupt_repo_warned_and_skipped__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let home = tmp.path().join("home");
@@ -1638,7 +1667,8 @@ fn global_timings_corrupt_repo_warned_and_skipped() {
 
 #[test]
 #[serial(env, cwd)]
-fn global_timings_disabled_exits_cleanly() {
+#[allow(non_snake_case)]
+fn global_timings_disabled_exits_cleanly__slow() {
     let config = GlobalRollupConfig {
         enabled: false,
         ..Default::default()
@@ -1649,7 +1679,8 @@ fn global_timings_disabled_exits_cleanly() {
 
 #[test]
 #[serial(env, cwd)]
-fn global_timings_inner_and_explain_include_skip_warnings() {
+#[allow(non_snake_case)]
+fn global_timings_inner_and_explain_include_skip_warnings__slow() {
     // Non-summary modes must carry skipped-repo honesty (codex Phase C R1 P2).
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
@@ -1742,7 +1773,8 @@ fn global_timings_inner_and_explain_include_skip_warnings() {
 
 #[test]
 #[serial(env, cwd)]
-fn global_timings_prune_refused() {
+#[allow(non_snake_case)]
+fn global_timings_prune_refused__slow() {
     let config = GlobalRollupConfig {
         enabled: true,
         roots: vec![],
@@ -1766,7 +1798,8 @@ fn global_timings_prune_refused() {
 
 #[test]
 #[serial(env, cwd)]
-fn global_timings_tables_present_but_empty_window() {
+#[allow(non_snake_case)]
+fn global_timings_tables_present_but_empty_window__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let home = tmp.path().join("home");
@@ -1805,7 +1838,8 @@ fn global_timings_tables_present_but_empty_window() {
 
 #[test]
 #[serial(env, cwd)]
-fn global_timings_inner_rows_seeded_for_pool() {
+#[allow(non_snake_case)]
+fn global_timings_inner_rows_seeded_for_pool__slow() {
     // Smoke: outer pooling already covered; ensure inner rows do not pollute outer.
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
@@ -1857,7 +1891,8 @@ fn global_timings_inner_rows_seeded_for_pool() {
 
 #[test]
 #[serial(env, cwd)]
-fn global_timings_inner_pools_spans_across_two_repos() {
+#[allow(non_snake_case)]
+fn global_timings_inner_pools_spans_across_two_repos__slow() {
     // Two repos with known inner span samples; --inner export pools totals.
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
@@ -1936,7 +1971,8 @@ fn global_timings_inner_pools_spans_across_two_repos() {
 
 #[test]
 #[serial(env, cwd)]
-fn global_timings_flame_folds_prefixed_stacks() {
+#[allow(non_snake_case)]
+fn global_timings_flame_folds_prefixed_stacks__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let home = tmp.path().join("home");
@@ -1988,7 +2024,8 @@ fn global_timings_flame_folds_prefixed_stacks() {
 
 #[test]
 #[serial(env, cwd)]
-fn global_timings_top_truncates_pooled_summary() {
+#[allow(non_snake_case)]
+fn global_timings_top_truncates_pooled_summary__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let home = tmp.path().join("home");
@@ -2030,7 +2067,8 @@ fn global_timings_top_truncates_pooled_summary() {
 
 #[test]
 #[serial(env, cwd)]
-fn global_timings_days_window_filters_old_rows() {
+#[allow(non_snake_case)]
+fn global_timings_days_window_filters_old_rows__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let home = tmp.path().join("home");
@@ -2072,7 +2110,8 @@ fn global_timings_days_window_filters_old_rows() {
 
 #[test]
 #[serial(env, cwd)]
-fn unsigned_entries_counts_invalid_and_missing_signatures() {
+#[allow(non_snake_case)]
+fn unsigned_entries_counts_invalid_and_missing_signatures__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -2092,7 +2131,8 @@ fn unsigned_entries_counts_invalid_and_missing_signatures() {
 
 #[test]
 #[serial(env, cwd)]
-fn global_command_does_not_migrate_legacy_state_dir() {
+#[allow(non_snake_case)]
+fn global_command_does_not_migrate_legacy_state_dir__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -2150,7 +2190,8 @@ fn global_command_does_not_migrate_legacy_state_dir() {
 
 #[test]
 #[serial(env, cwd)]
-fn json_output_is_deterministic_same_fixture_same_bytes() {
+#[allow(non_snake_case)]
+fn json_output_is_deterministic_same_fixture_same_bytes__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -2173,7 +2214,8 @@ fn json_output_is_deterministic_same_fixture_same_bytes() {
 
 #[test]
 #[serial(env, cwd)]
-fn privacy_negative_test_rollup_source_contains_no_network_crate_symbols() {
+#[allow(non_snake_case)]
+fn privacy_negative_test_rollup_source_contains_no_network_crate_symbols__slow() {
     let source = fs::read_to_string("src/state/rollup.rs").unwrap();
     let forbidden = [
         "use ureq",
@@ -2192,7 +2234,8 @@ fn privacy_negative_test_rollup_source_contains_no_network_crate_symbols() {
 
 #[test]
 #[serial(env, cwd)]
-fn canonicalize_failure_on_nonexistent_root_warns_and_skips() {
+#[allow(non_snake_case)]
+fn canonicalize_failure_on_nonexistent_root_warns_and_skips__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -2243,7 +2286,8 @@ fn canonicalize_failure_on_nonexistent_root_warns_and_skips() {
 
 #[test]
 #[serial(env, cwd)]
-fn canonicalize_failure_on_nonexistent_root_warns_timings_collector() {
+#[allow(non_snake_case)]
+fn canonicalize_failure_on_nonexistent_root_warns_timings_collector__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -2279,7 +2323,8 @@ fn canonicalize_failure_on_nonexistent_root_warns_timings_collector() {
 
 #[test]
 #[serial(env, cwd)]
-fn config_home_env_var_is_respected_for_opt_out_read_path() {
+#[allow(non_snake_case)]
+fn config_home_env_var_is_respected_for_opt_out_read_path__slow() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let home = tmp.path().join("home");

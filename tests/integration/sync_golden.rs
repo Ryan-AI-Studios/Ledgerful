@@ -127,7 +127,8 @@ fn peer_origin_tx(root: &Utf8Path, tx_id: &str) -> Option<String> {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn two_layout_golden_path_full_crypto_chain() {
+#[allow(non_snake_case)]
+fn two_layout_golden_path_full_crypto_chain__slow() {
     let share_tmp = tempdir().unwrap();
     let share = share_tmp.path();
 
@@ -225,7 +226,8 @@ fn two_layout_golden_path_full_crypto_chain() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn golden_negative_poison_quarantines_no_bogus_row() {
+#[allow(non_snake_case)]
+fn golden_negative_poison_quarantines_no_bogus_row__slow() {
     let share_tmp = tempdir().unwrap();
     let share = share_tmp.path();
 
@@ -311,7 +313,8 @@ fn golden_negative_poison_quarantines_no_bogus_row() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn clock_drift_over_max_quarantines() {
+#[allow(non_snake_case)]
+fn clock_drift_over_max_quarantines__slow() {
     use ed25519_dalek::SigningKey;
     use ledgerful::sync::bundle::{Bundle, Manifest};
     use ledgerful::sync::hlc::HLC;
@@ -400,7 +403,8 @@ fn clock_drift_over_max_quarantines() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn verify_uses_load_peer_keys_fail_closed() {
+#[allow(non_snake_case)]
+fn verify_uses_load_peer_keys_fail_closed__slow() {
     use ed25519_dalek::SigningKey;
     use ledgerful::commands::sync::verify::handle as handle_verify;
     use ledgerful::sync::bundle::{Bundle, Manifest};

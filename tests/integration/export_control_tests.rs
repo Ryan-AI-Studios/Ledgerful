@@ -180,7 +180,8 @@ fn any_banned_term_present(text: &str) -> Option<&'static str> {
 
 #[test]
 #[serial(cwd, env)]
-fn control_export__contains_whole_bundle_plus_lens__no_truncation() {
+#[allow(non_snake_case)]
+fn control_export__contains_whole_bundle_plus_lens__no_truncation__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger_with_varied_entries(&repo);
@@ -214,7 +215,8 @@ fn control_export__contains_whole_bundle_plus_lens__no_truncation() {
 
 #[test]
 #[serial(cwd, env)]
-fn control_export__default_unchanged_when_no_control() {
+#[allow(non_snake_case)]
+fn control_export__default_unchanged_when_no_control__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger_with_varied_entries(&repo);
@@ -243,7 +245,8 @@ fn control_export__default_unchanged_when_no_control() {
 
 #[test]
 #[serial(cwd, env)]
-fn control_export__signature_still_verifies_and_hashes_match() {
+#[allow(non_snake_case)]
+fn control_export__signature_still_verifies_and_hashes_match__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger_with_varied_entries(&repo);
@@ -293,7 +296,8 @@ fn control_export__signature_still_verifies_and_hashes_match() {
 
 #[test]
 #[serial(cwd, env)]
-fn control_export__base_payloads_byte_identical() {
+#[allow(non_snake_case)]
+fn control_export__base_payloads_byte_identical__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger_with_varied_entries(&repo);
@@ -321,7 +325,8 @@ fn control_export__base_payloads_byte_identical() {
 
 #[test]
 #[serial(cwd, env)]
-fn control_lens__lists_matching_tx_ids() {
+#[allow(non_snake_case)]
+fn control_lens__lists_matching_tx_ids__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger_with_varied_entries(&repo);
@@ -369,7 +374,8 @@ fn control_lens__lists_matching_tx_ids() {
 
 #[test]
 #[serial(cwd, env)]
-fn control_lens__contains_disclaimer_and_no_banned_terms() {
+#[allow(non_snake_case)]
+fn control_lens__contains_disclaimer_and_no_banned_terms__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger_with_varied_entries(&repo);
@@ -418,7 +424,8 @@ fn control_lens__contains_disclaimer_and_no_banned_terms() {
 
 #[test]
 #[serial(cwd, env)]
-fn control_lens__availability_aware_wording_with_chain_head() {
+#[allow(non_snake_case)]
+fn control_lens__availability_aware_wording_with_chain_head__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger_with_varied_entries(&repo);
@@ -442,7 +449,8 @@ fn control_lens__availability_aware_wording_with_chain_head() {
 
 #[test]
 #[serial(cwd, env)]
-fn control_lens__availability_aware_wording_without_chain_head() {
+#[allow(non_snake_case)]
+fn control_lens__availability_aware_wording_without_chain_head__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger_with_varied_entries(&repo);
@@ -487,7 +495,8 @@ fn control_lens__availability_aware_wording_without_chain_head() {
 
 #[test]
 #[serial(cwd, env)]
-fn control_lens__framework_wide_evidence_marked_not_in_bundle() {
+#[allow(non_snake_case)]
+fn control_lens__framework_wide_evidence_marked_not_in_bundle__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger_with_varied_entries(&repo);
@@ -518,7 +527,8 @@ fn control_lens__framework_wide_evidence_marked_not_in_bundle() {
 
 #[test]
 #[serial(cwd, env)]
-fn control_export__multiple_controls_requested() {
+#[allow(non_snake_case)]
+fn control_export__multiple_controls_requested__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger_with_varied_entries(&repo);
@@ -549,7 +559,8 @@ fn control_export__multiple_controls_requested() {
 
 #[test]
 #[serial(cwd, env)]
-fn control_export__duplicate_controls_deduplicated() {
+#[allow(non_snake_case)]
+fn control_export__duplicate_controls_deduplicated__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger_with_varied_entries(&repo);
@@ -570,7 +581,8 @@ fn control_export__duplicate_controls_deduplicated() {
 
 #[test]
 #[serial(cwd, env)]
-fn control_export__control_order_canonical() {
+#[allow(non_snake_case)]
+fn control_export__control_order_canonical__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger_with_varied_entries(&repo);
@@ -596,7 +608,8 @@ fn control_export__control_order_canonical() {
 
 #[test]
 #[serial(cwd, env)]
-fn control_export__family_wildcard_matches() {
+#[allow(non_snake_case)]
+fn control_export__family_wildcard_matches__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger_with_varied_entries(&repo);
@@ -639,7 +652,8 @@ fn control_export__family_wildcard_matches() {
 
 #[test]
 #[serial(cwd, env)]
-fn unknown_control_lowercase_rejected() {
+#[allow(non_snake_case)]
+fn unknown_control_lowercase_rejected__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger_with_varied_entries(&repo);
@@ -659,7 +673,8 @@ fn unknown_control_lowercase_rejected() {
 
 #[test]
 #[serial(cwd, env)]
-fn family_wildcard_no_matches_rejected() {
+#[allow(non_snake_case)]
+fn family_wildcard_no_matches_rejected__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger_with_varied_entries(&repo);
@@ -679,7 +694,8 @@ fn family_wildcard_no_matches_rejected() {
 
 #[test]
 #[serial(cwd, env)]
-fn control_export__unknown_control_rejected() {
+#[allow(non_snake_case)]
+fn control_export__unknown_control_rejected__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger_with_varied_entries(&repo);
@@ -696,7 +712,8 @@ fn control_export__unknown_control_rejected() {
 
 #[test]
 #[serial(cwd, env)]
-fn control_export__no_banned_terms_in_export() {
+#[allow(non_snake_case)]
+fn control_export__no_banned_terms_in_export__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger_with_varied_entries(&repo);
@@ -716,7 +733,8 @@ fn control_export__no_banned_terms_in_export() {
 
 #[test]
 #[serial(cwd, env)]
-fn control_export__signing_basis_unchanged() {
+#[allow(non_snake_case)]
+fn control_export__signing_basis_unchanged__slow() {
     // Lock the v2 canonical codec (14-line payload) in encode_v2_payload.
     // entity/origin/author/risk/etc. are intentionally in the signed basis
     // (0072); residual fields (observed, prev_hash, verification_*, …) must not.
@@ -799,7 +817,8 @@ fn control_export__signing_basis_unchanged() {
 
 #[test]
 #[serial(cwd, env)]
-fn control_export__deterministic_for_same_repo_state() {
+#[allow(non_snake_case)]
+fn control_export__deterministic_for_same_repo_state__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger_with_varied_entries(&repo);
@@ -815,7 +834,8 @@ fn control_export__deterministic_for_same_repo_state() {
 
 #[test]
 #[serial(cwd, env)]
-fn control_export__chain_verification_passes() {
+#[allow(non_snake_case)]
+fn control_export__chain_verification_passes__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger_with_varied_entries(&repo);
@@ -914,7 +934,8 @@ fn control_export__chain_verification_passes() {
 
 #[test]
 #[serial(cwd, env)]
-fn control_export__cli_supports_control_flag() {
+#[allow(non_snake_case)]
+fn control_export__cli_supports_control_flag__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger_with_varied_entries(&repo);
@@ -954,7 +975,8 @@ fn control_export__cli_supports_control_flag() {
 
 #[test]
 #[serial(cwd, env)]
-fn export_head__stdout__pure_json_no_success_no_default_file() {
+#[allow(non_snake_case)]
+fn export_head__stdout__pure_json_no_success_no_default_file__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger(&repo);
@@ -1009,7 +1031,8 @@ fn export_head__stdout__pure_json_no_success_no_default_file() {
 
 #[test]
 #[serial(cwd, env)]
-fn export_head__out_dash__stdout_not_file_named_dash() {
+#[allow(non_snake_case)]
+fn export_head__out_dash__stdout_not_file_named_dash__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger(&repo);
@@ -1043,7 +1066,8 @@ fn export_head__out_dash__stdout_not_file_named_dash() {
 
 #[test]
 #[serial(cwd, env)]
-fn export_head__stdout_plus_path__errors() {
+#[allow(non_snake_case)]
+fn export_head__stdout_plus_path__errors__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger(&repo);
@@ -1077,7 +1101,8 @@ fn export_head__stdout_plus_path__errors() {
 
 #[test]
 #[serial(cwd, env)]
-fn export_head__file_path_bytes_match_stdout() {
+#[allow(non_snake_case)]
+fn export_head__file_path_bytes_match_stdout__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger(&repo);
@@ -1117,7 +1142,8 @@ fn export_head__file_path_bytes_match_stdout() {
 
 #[test]
 #[serial(cwd, env)]
-fn export_head_file_banner_says_not_verification() {
+#[allow(non_snake_case)]
+fn export_head_file_banner_says_not_verification__slow() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger(&repo);
@@ -1153,7 +1179,8 @@ fn read_repo_file(path: &str) -> String {
 }
 
 #[test]
-fn source_artifacts__no_banned_terms() {
+#[allow(non_snake_case)]
+fn source_artifacts__no_banned_terms__slow() {
     let toml = read_repo_file("mappings/soc2.toml");
     let md = read_repo_file("docs/mappings/soc2.md");
     let features = read_repo_file("docs/Features.md");
@@ -1169,7 +1196,8 @@ fn source_artifacts__no_banned_terms() {
 }
 
 #[test]
-fn mappings_doc_drift__toml_and_doc_agree() {
+#[allow(non_snake_case)]
+fn mappings_doc_drift__toml_and_doc_agree__slow() {
     use ledgerful::export::control_mapping::render_mapping_doc;
 
     let mapping = ControlMapping::load_static().expect("static mapping must parse");
@@ -1183,7 +1211,8 @@ fn mappings_doc_drift__toml_and_doc_agree() {
 }
 
 #[test]
-fn evidence_predicate__matches_expected_entry_characteristics() {
+#[allow(non_snake_case)]
+fn evidence_predicate__matches_expected_entry_characteristics__slow() {
     use ledgerful::export::control_mapping::matches_evidence_keyword;
 
     let entry_signed = LedgerEntry {

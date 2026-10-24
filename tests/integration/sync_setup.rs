@@ -56,7 +56,8 @@ fn add_dummy_peer(root: &Utf8Path, peer_id: &str) {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn setup_checklist_exit_zero_when_incomplete() {
+#[allow(non_snake_case)]
+fn setup_checklist_exit_zero_when_incomplete__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());
@@ -71,7 +72,8 @@ fn setup_checklist_exit_zero_when_incomplete() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn setup_enable_refuses_without_peers() {
+#[allow(non_snake_case)]
+fn setup_enable_refuses_without_peers__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());
@@ -102,7 +104,8 @@ fn setup_enable_refuses_without_peers() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn setup_enable_refuses_not_initialized() {
+#[allow(non_snake_case)]
+fn setup_enable_refuses_not_initialized__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());
@@ -120,7 +123,8 @@ fn setup_enable_refuses_not_initialized() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn setup_enable_success_when_all_green() {
+#[allow(non_snake_case)]
+fn setup_enable_success_when_all_green__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());
@@ -154,7 +158,8 @@ fn setup_enable_success_when_all_green() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn setup_enable_refuses_unreachable_target() {
+#[allow(non_snake_case)]
+fn setup_enable_refuses_unreachable_target__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());
@@ -189,7 +194,8 @@ fn setup_enable_refuses_unreachable_target() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn setup_json_is_parseable_schema_v1() {
+#[allow(non_snake_case)]
+fn setup_json_is_parseable_schema_v1__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());
@@ -216,7 +222,8 @@ fn setup_json_is_parseable_schema_v1() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn setup_json_stdout_is_pure_json_object() {
+#[allow(non_snake_case)]
+fn setup_json_stdout_is_pure_json_object__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());
@@ -249,7 +256,8 @@ fn setup_json_stdout_is_pure_json_object() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn setup_enable_json_stdout_is_pure_json_enabled() {
+#[allow(non_snake_case)]
+fn setup_enable_json_stdout_is_pure_json_enabled__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());
@@ -308,7 +316,8 @@ fn setup_enable_json_stdout_is_pure_json_enabled() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn status_next_action_when_incomplete() {
+#[allow(non_snake_case)]
+fn status_next_action_when_incomplete__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());
@@ -333,7 +342,8 @@ fn status_next_action_when_incomplete() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn status_json_stdout_is_pure_json_object() {
+#[allow(non_snake_case)]
+fn status_json_stdout_is_pure_json_object__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());
@@ -370,7 +380,8 @@ fn status_json_stdout_is_pure_json_object() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn setup_enable_refuse_config_immutable_no_bak() {
+#[allow(non_snake_case)]
+fn setup_enable_refuse_config_immutable_no_bak__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());
@@ -420,7 +431,8 @@ fn setup_enable_refuse_config_immutable_no_bak() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn setup_enable_success_bak_matches_pre_enable_bytes() {
+#[allow(non_snake_case)]
+fn setup_enable_success_bak_matches_pre_enable_bytes__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());
@@ -467,7 +479,8 @@ fn setup_enable_success_bak_matches_pre_enable_bytes() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn readiness_windows_style_target_parse_ok() {
+#[allow(non_snake_case)]
+fn readiness_windows_style_target_parse_ok__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());
@@ -495,7 +508,8 @@ fn readiness_windows_style_target_parse_ok() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn cursor_json_lag_reasons() {
+#[allow(non_snake_case)]
+fn cursor_json_lag_reasons__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());
@@ -572,7 +586,8 @@ fn cursor_json_lag_reasons() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn log_json_states() {
+#[allow(non_snake_case)]
+fn log_json_states__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());
@@ -646,7 +661,8 @@ fn log_json_states() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn cursor_json_watermark_compare_parseable_and_human() {
+#[allow(non_snake_case)]
+fn cursor_json_watermark_compare_parseable_and_human__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());
@@ -683,7 +699,8 @@ fn cursor_json_watermark_compare_parseable_and_human() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn log_events_failed_filter_and_disabled_run_writes_nothing() {
+#[allow(non_snake_case)]
+fn log_events_failed_filter_and_disabled_run_writes_nothing__slow() {
     use ledgerful::config::load::load_config;
     use ledgerful::sync::event_log::{
         EVENT_EXTRACT, EVENT_QUARANTINE, SyncLogEvent, append_sync_event,
@@ -758,7 +775,8 @@ fn log_events_failed_filter_and_disabled_run_writes_nothing() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn verify_json_verdicts_signed_tampered_missing() {
+#[allow(non_snake_case)]
+fn verify_json_verdicts_signed_tampered_missing__slow() {
     use ed25519_dalek::{Signer, SigningKey};
     use ledgerful::sync::bundle::{Bundle, Manifest};
     use ledgerful::sync::hlc::HLC;
@@ -948,7 +966,8 @@ fn verify_json_verdicts_signed_tampered_missing() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(cwd, env)]
-fn cursor_log_human_tokens_without_sync_init() {
+#[allow(non_snake_case)]
+fn cursor_log_human_tokens_without_sync_init__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());
@@ -983,7 +1002,8 @@ fn cursor_log_human_tokens_without_sync_init() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(cwd, env)]
-fn cursor_set_skips_unknown_lag_line() {
+#[allow(non_snake_case)]
+fn cursor_set_skips_unknown_lag_line__slow() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());

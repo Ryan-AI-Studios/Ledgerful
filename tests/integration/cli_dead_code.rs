@@ -6,7 +6,8 @@ use std::fs;
 use tempfile::tempdir;
 
 #[test]
-fn dead_code_reports_unused_symbols() {
+#[allow(non_snake_case)]
+fn dead_code_reports_unused_symbols__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
@@ -25,7 +26,8 @@ fn dead_code_reports_unused_symbols() {
 }
 
 #[test]
-fn test_dead_code_include_traits_flag() {
+#[allow(non_snake_case)]
+fn test_dead_code_include_traits_flag__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
@@ -85,7 +87,8 @@ fn test_dead_code_bounded_latency_on_nontrivial_fixture() {
 /// files regardless of how the user types the path (forward slash, backslash,
 /// `./` prefix, absolute path within repo).
 #[test]
-fn test_dead_code_explain_resolves_varied_path_formats() {
+#[allow(non_snake_case)]
+fn test_dead_code_explain_resolves_varied_path_formats__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
@@ -130,7 +133,8 @@ fn test_dead_code_explain_resolves_varied_path_formats() {
 /// TA24 integration: `dead-code --explain <file>` on a non-indexed file prints
 /// the "not found" message and exits 0 (informational, not an error).
 #[test]
-fn test_dead_code_explain_non_indexed_file_exits_zero() {
+#[allow(non_snake_case)]
+fn test_dead_code_explain_non_indexed_file_exits_zero__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
@@ -163,7 +167,8 @@ fn test_dead_code_explain_non_indexed_file_exits_zero() {
 /// 0149: `dead-code --json` exercises the real scan + envelope path (not just
 /// hand-built serializers or early-reject arms).
 #[test]
-fn dead_code_json_emits_schema_version_1_envelope() {
+#[allow(non_snake_case)]
+fn dead_code_json_emits_schema_version_1_envelope__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
@@ -207,7 +212,8 @@ fn dead_code_json_emits_schema_version_1_envelope() {
 }
 
 #[test]
-fn dead_code_json_echoes_include_flags() {
+#[allow(non_snake_case)]
+fn dead_code_json_echoes_include_flags__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
@@ -246,7 +252,8 @@ fn dead_code_json_echoes_include_flags() {
 
 /// 0149 C2: overfetch honesty — limit smaller than fixture candidates ⇒ truncated.
 #[test]
-fn dead_code_json_truncated_via_overfetch() {
+#[allow(non_snake_case)]
+fn dead_code_json_truncated_via_overfetch__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
@@ -279,7 +286,8 @@ fn dead_code_json_truncated_via_overfetch() {
 
 /// 0149 DoD-2: top-level `status --json` payload identity with `ledger status --json`.
 #[test]
-fn status_json_matches_ledger_status_json_field_set() {
+#[allow(non_snake_case)]
+fn status_json_matches_ledger_status_json_field_set__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
@@ -395,7 +403,8 @@ fn seed_dead_code_fixture(symbol_count: usize) {
 /// unused trait-impl `name` stays Unreachable when this fixture has no `.name()` calls.
 #[test]
 #[serial(cwd)]
-fn dead_code_trait_impl_analyze_not_unreachable_unused_stays() {
+#[allow(non_snake_case)]
+fn dead_code_trait_impl_analyze_not_unreachable_unused_stays__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -512,7 +521,8 @@ fn main() {
 /// 0363 / agy O-02: indexed file whose callables all drop below threshold.
 #[test]
 #[serial(cwd)]
-fn dead_code_explain_indexed_empty_findings_copy() {
+#[allow(non_snake_case)]
+fn dead_code_explain_indexed_empty_findings_copy__slow() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);

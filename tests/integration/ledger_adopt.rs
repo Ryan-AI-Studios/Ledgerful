@@ -111,7 +111,8 @@ fn plan(repo: &Repo) -> std::path::PathBuf {
 
 #[test]
 #[serial(cwd, env)]
-fn adopt_plan_is_read_only() {
+#[allow(non_snake_case)]
+fn adopt_plan_is_read_only__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
     let _home = TempEnv::set("USERPROFILE", home.path().to_str().unwrap());
@@ -141,7 +142,8 @@ fn adopt_plan_is_read_only() {
 
 #[test]
 #[serial(cwd, env)]
-fn adopt_plan_rejects_invalid_signature() {
+#[allow(non_snake_case)]
+fn adopt_plan_rejects_invalid_signature__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
     let _home = TempEnv::set("USERPROFILE", home.path().to_str().unwrap());
@@ -175,7 +177,8 @@ fn adopt_plan_rejects_invalid_signature() {
 
 #[test]
 #[serial(cwd, env)]
-fn adopt_plan_rejects_fork() {
+#[allow(non_snake_case)]
+fn adopt_plan_rejects_fork__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
     let _home = TempEnv::set("USERPROFILE", home.path().to_str().unwrap());
@@ -225,7 +228,8 @@ fn adopt_plan_rejects_fork() {
 
 #[test]
 #[serial(cwd, env)]
-fn adopt_apply_preserves_original_rows() {
+#[allow(non_snake_case)]
+fn adopt_apply_preserves_original_rows__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
     let _home = TempEnv::set("USERPROFILE", home.path().to_str().unwrap());
@@ -276,7 +280,8 @@ fn adopt_apply_preserves_original_rows() {
 
 #[test]
 #[serial(cwd, env)]
-fn adopt_second_apply_is_already_applied() {
+#[allow(non_snake_case)]
+fn adopt_second_apply_is_already_applied__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
     let _home = TempEnv::set("USERPROFILE", home.path().to_str().unwrap());
@@ -317,7 +322,8 @@ fn adopt_second_apply_is_already_applied() {
 
 #[test]
 #[serial(cwd, env)]
-fn adopt_verify_strict_still_fails() {
+#[allow(non_snake_case)]
+fn adopt_verify_strict_still_fails__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
     let _home = TempEnv::set("USERPROFILE", home.path().to_str().unwrap());
@@ -355,7 +361,8 @@ fn adopt_verify_strict_still_fails() {
 
 #[test]
 #[serial(cwd, env)]
-fn adopt_verify_accept_adoption_labels_unestablished() {
+#[allow(non_snake_case)]
+fn adopt_verify_accept_adoption_labels_unestablished__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
     let _home = TempEnv::set("USERPROFILE", home.path().to_str().unwrap());
@@ -400,7 +407,8 @@ fn adopt_verify_accept_adoption_labels_unestablished() {
 
 #[test]
 #[serial(cwd, env)]
-fn adopt_backup_failure_does_not_mutate() {
+#[allow(non_snake_case)]
+fn adopt_backup_failure_does_not_mutate__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
     let _home = TempEnv::set("USERPROFILE", home.path().to_str().unwrap());
@@ -432,7 +440,8 @@ fn adopt_backup_failure_does_not_mutate() {
 
 #[test]
 #[serial(cwd, env)]
-fn adopt_does_not_create_keys_on_refusal() {
+#[allow(non_snake_case)]
+fn adopt_does_not_create_keys_on_refusal__slow() {
     let _env = non_interactive();
     let repo = setup();
     let _guard = DirGuard::from_utf8(&repo.root);
@@ -465,7 +474,8 @@ fn adopt_does_not_create_keys_on_refusal() {
 
 #[test]
 #[serial(cwd, env)]
-fn adopt_rejects_tampered_manifest() {
+#[allow(non_snake_case)]
+fn adopt_rejects_tampered_manifest__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
     let _home = TempEnv::set("USERPROFILE", home.path().to_str().unwrap());
@@ -500,7 +510,8 @@ fn adopt_rejects_tampered_manifest() {
 
 #[test]
 #[serial(cwd, env)]
-fn adopt_manifest_omits_absolute_path_and_keys() {
+#[allow(non_snake_case)]
+fn adopt_manifest_omits_absolute_path_and_keys__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
     let _home = TempEnv::set("USERPROFILE", home.path().to_str().unwrap());
@@ -524,7 +535,8 @@ fn adopt_manifest_omits_absolute_path_and_keys() {
 
 #[test]
 #[serial(cwd, env)]
-fn adopt_preserves_checkpoint_extension() {
+#[allow(non_snake_case)]
+fn adopt_preserves_checkpoint_extension__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
     let _home = TempEnv::set("USERPROFILE", home.path().to_str().unwrap());
@@ -578,7 +590,8 @@ fn prepared() -> (Repo, std::path::PathBuf, DirGuard) {
 
 #[test]
 #[serial(cwd, env)]
-fn adopt_rejects_omitted_row() {
+#[allow(non_snake_case)]
+fn adopt_rejects_omitted_row__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
     let _home = TempEnv::set("USERPROFILE", home.path().to_str().unwrap());
@@ -602,7 +615,8 @@ fn adopt_rejects_omitted_row() {
 
 #[test]
 #[serial(cwd, env)]
-fn adopt_verify_rejects_new_extra_genesis() {
+#[allow(non_snake_case)]
+fn adopt_verify_rejects_new_extra_genesis__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
     let _home = TempEnv::set("USERPROFILE", home.path().to_str().unwrap());
@@ -637,7 +651,8 @@ fn adopt_verify_rejects_new_extra_genesis() {
 
 #[test]
 #[serial(cwd, env)]
-fn adopt_verify_rejects_mutated_row() {
+#[allow(non_snake_case)]
+fn adopt_verify_rejects_mutated_row__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
     let _home = TempEnv::set("USERPROFILE", home.path().to_str().unwrap());
@@ -672,7 +687,8 @@ fn adopt_verify_rejects_mutated_row() {
 
 #[test]
 #[serial(cwd, env)]
-fn adopt_restore_backup_matches_preimage() {
+#[allow(non_snake_case)]
+fn adopt_restore_backup_matches_preimage__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
     let _home = TempEnv::set("USERPROFILE", home.path().to_str().unwrap());
@@ -714,7 +730,8 @@ fn adopt_restore_backup_matches_preimage() {
 
 #[test]
 #[serial(cwd, env)]
-fn adopt_stale_head_aborts() {
+#[allow(non_snake_case)]
+fn adopt_stale_head_aborts__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
     let _home = TempEnv::set("USERPROFILE", home.path().to_str().unwrap());
@@ -752,7 +769,8 @@ fn adopt_stale_head_aborts() {
 
 #[test]
 #[serial(cwd, env)]
-fn adopt_signing_failure_leaves_rows() {
+#[allow(non_snake_case)]
+fn adopt_signing_failure_leaves_rows__slow() {
     let _env = non_interactive();
     let home = tempdir().unwrap();
     let _home = TempEnv::set("USERPROFILE", home.path().to_str().unwrap());
