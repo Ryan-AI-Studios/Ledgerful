@@ -215,6 +215,14 @@ mod tests {
         serde_json::from_str(body).expect("structured body is one JSON document")
     }
 
+    #[test]
+    fn identifier_keys__adjacent_pair__stays_strictly_increasing() {
+        let found = IDENTIFIER_KEYS.windows(2).find(|pair| !(pair[0] < pair[1]));
+        let left = found.map(|pair| pair[0]);
+        let right = found.map(|pair| pair[1]);
+        assert!(found.is_none(), "{left:?} >= {right:?}");
+    }
+
     #[rstest]
     #[case("path")]
     #[case("oldPath")]
