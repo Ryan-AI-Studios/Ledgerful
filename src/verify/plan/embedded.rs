@@ -824,38 +824,8 @@ fn production_fn_bodies(
 
 /// Keep a file whose only interesting text is a call that passes a path literal.
 fn may_contain_path_literal_call(src: &str) -> bool {
-    if !src.contains('(') || !src.contains('"') {
-        return false;
-    }
-    let b = src.as_bytes();
-    let mut i = 0usize;
-    while i < b.len() {
-        if b[i] != b'"' {
-            i += 1;
-            continue;
-        }
-        let start = i + 1;
-        let mut j = start;
-        let mut slash = false;
-        let mut dot = false;
-        while j < b.len() && b[j] != b'"' && b[j] != b'\n' && j - start < 200 {
-            if b[j] == b'\\' {
-                j = j.saturating_add(2);
-                continue;
-            }
-            if b[j] == b'/' || b[j] == b'\\' {
-                slash = true;
-            } else if b[j] == b'.' {
-                dot = true;
-            }
-            j += 1;
-        }
-        if slash || dot {
-            return true;
-        }
-        i = j.max(i + 1);
-    }
-    false
+    // A basename such as "LICENSE" has neither a separator nor a dot.
+    src.contains('(') && src.contains('"')
 }
 
 /// Whitespace and comments immediately before `end`.
@@ -2962,6 +2932,25 @@ mod tests {
             "#[test]\nfn helper_reader() { let _ = fx::load(\"assets/logo.png\", false); }\n",
         );
         let decision = decide_for(dir.path(), &["assets/logo.png"]);
+        assert_eq!(decision.stems, vec!["helper_reader".to_string()]);
+        assert!(decision.refuse.is_none(), "{:?}", decision.refuse);
+    }
+
+    #[test]
+    fn basename_only_helper_path_is_attributed() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "Cargo.toml", "[package]\nname=\"fx\"\n");
+        write(
+            dir.path(),
+            "src/lib.rs",
+            "pub fn load(p: &std::path::Path) -> String { std::fs::read_to_string(p).unwrap_or_default() }\n",
+        );
+        write(
+            dir.path(),
+            "tests/reader.rs",
+            "#[test]\nfn helper_reader() { let _ = fx::load(std::path::Path::new(\"LICENSE\")); }\n",
+        );
+        let decision = decide_for(dir.path(), &["LICENSE"]);
         assert_eq!(decision.stems, vec!["helper_reader".to_string()]);
         assert!(decision.refuse.is_none(), "{:?}", decision.refuse);
     }
