@@ -3858,11 +3858,10 @@ fn engine_tree_looks_up_non_cheap_fixture_but_keeps_table_for_cheap_docs() {
 #[rstest::rstest]
 #[case::nested_cargo_manifest("crates/core/Cargo.toml")]
 #[case::cargo_config(".cargo/config.toml")]
-#[case::json_fixture("tests/fixtures/a.json")]
 #[case::yaml_fixture("tests/fixtures/a.yaml")]
 #[case::sql_fixture("db/seed.sql")]
 fn unreferenced_formerly_material_path_still_refuses(#[case] changed: &str) {
-    // Fixture read through a production helper: the scan finds no reference.
+    // These paths are not the literal helper argument. The production dynamic read must not be what refuses them.
     let (_tmp, root) = foreign_fixture(&[
         ("Cargo.toml", "[package]\nname=\"fx\"\n"),
         (
@@ -3880,6 +3879,85 @@ fn unreferenced_formerly_material_path_still_refuses(#[case] changed: &str) {
         "{changed} must not become a fmt+clippy-only pass: {:?}",
         plan.steps
     );
+}
+
+#[test]
+fn referenced_helper_json_selects_its_test() {
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname=\"fx\"\n"),
+        (
+            "src/loader.rs",
+            "pub fn load(p: &std::path::Path) -> String { std::fs::read_to_string(p).unwrap_or_default() }\n",
+        ),
+        (
+            "tests/it.rs",
+            "#[test]\nfn it() { let _ = fx::loader::load(std::path::Path::new(\"tests/fixtures/a.json\")); }\n",
+        ),
+    ]);
+    let plan = plan_at(
+        &root,
+        &packet_with_paths(&["tests/fixtures/a.json"]),
+        None,
+        &rust_profile(),
+    );
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+    assert!(
+        nextest_step(&plan)
+            .expect("nextest")
+            .command
+            .contains("test(it)")
+    );
+}
+
+#[test]
+fn literal_helper_path_is_attributed_and_runtime_built_path_stays_accepted() {
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname=\"fx\"\n"),
+        (
+            "src/lib.rs",
+            "pub fn load(p: &std::path::Path) -> String { std::fs::read_to_string(p).unwrap_or_default() }\npub fn render() { let path = format!(\"data/case.csv\"); let _ = std::fs::read_to_string(path); }\n",
+        ),
+        (
+            "tests/reader.rs",
+            "#[test]\nfn helper_reader() { let _ = fx::load(std::path::Path::new(\"assets/logo.png\")); }\n",
+        ),
+    ]);
+    let logo = plan_at(
+        &root,
+        &packet_with_paths(&["assets/logo.png"]),
+        None,
+        &rust_profile(),
+    );
+    assert!(!logo.refused, "{:?}", logo.fallback_reason);
+    let nextest = nextest_step(&logo).expect("nextest");
+    assert!(
+        nextest.command.contains("test(helper_reader)"),
+        "{}",
+        nextest.command
+    );
+    assert!(
+        !nextest
+            .description
+            .contains("no direct include/read found by the lexical lookup"),
+        "{}",
+        nextest.description
+    );
+    let other = plan_at(
+        &root,
+        &packet_with_paths(&["assets/other.png"]),
+        None,
+        &rust_profile(),
+    );
+    assert!(!other.refused, "{:?}", other.fallback_reason);
+    assert!(nextest_step(&other).is_none(), "{:?}", other.steps);
+    let built = plan_at(
+        &root,
+        &packet_with_paths(&["data/case.csv"]),
+        None,
+        &rust_profile(),
+    );
+    assert!(!built.refused, "{:?}", built.fallback_reason);
+    assert!(nextest_step(&built).is_none(), "{:?}", built.steps);
 }
 
 #[test]
@@ -3961,10 +4039,10 @@ fn embedded_engine_edit_refusal_rate_qualification() {
 }
 
 #[rstest::rstest]
-#[case("png", false)]
-#[case("csv", false)]
-#[case("json", true)]
-fn helper_mediated_read_residual_is_explicit(#[case] extension: &str, #[case] refuses: bool) {
+#[case("png")]
+#[case("csv")]
+#[case("json")]
+fn helper_mediated_read_residual_is_explicit(#[case] extension: &str) {
     let helper_test = format!(
         "#[test] fn helper_reader() {{ let _ = fx::load(std::path::Path::new(\"tests/fixtures/value.{extension}\")); }}"
     );
@@ -3982,14 +4060,20 @@ fn helper_mediated_read_residual_is_explicit(#[case] extension: &str, #[case] re
         None,
         &rust_profile(),
     );
-    assert_eq!(plan.refused, refuses, "{:?}", plan.fallback_reason);
-    if !refuses {
-        assert!(nextest_step(&plan).is_none());
-        assert!(plan.steps.iter().any(|s| {
-            s.description
-                .contains("no direct include/read found by the lexical lookup")
-        }));
-    }
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+    let nextest = nextest_step(&plan).expect("nextest");
+    assert!(
+        nextest.command.contains("test(helper_reader)"),
+        "{}",
+        nextest.command
+    );
+    assert!(
+        !nextest
+            .description
+            .contains("no direct include/read found by the lexical lookup"),
+        "{}",
+        nextest.description
+    );
 }
 
 #[test]

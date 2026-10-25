@@ -31,18 +31,10 @@ pub(crate) const MAX_WALK_ENTRIES: usize = 200_000;
 pub(crate) const MAX_OVERSIZED_FILES: usize = 64;
 pub(crate) const MAX_STREAMED_BYTES: u64 = 128 * 1024 * 1024;
 
-/// Directory names never walked.
-const SKIP_DIRS: &[&str] = &[
-    "target",
-    ".git",
-    ".ledgerful",
-    "node_modules",
-    "vendor",
-    "deps_src",
-    "third_party",
-    ".venv",
-    "venv",
-];
+/// Skipped at every depth below the walk root.
+const DEPTH_WIDE_SKIP: &[&str] = &[".git", ".ledgerful", "node_modules", ".venv", "venv"];
+/// Skipped only as a direct child of the walk root (depth 1).
+const ROOT_CHILD_SKIP: &[&str] = &["vendor", "deps_src", "third_party"];
 
 /// Extensions the index maps as source; every other changed path is a
 /// non-code candidate for the embedded lookup.
@@ -74,6 +66,16 @@ struct RuntimeFile {
     resolution: Option<Resolution>,
 }
 
+/// A path literal passed to a call, matched to helpers after the file walk.
+#[derive(Debug)]
+struct HelperCall {
+    crate_root: String,
+    name: String,
+    includer: String,
+    resolution: Resolution,
+    literals: BTreeSet<String>,
+}
+
 /// Result of one bounded scan of the repo's Rust sources.
 #[derive(Debug, Default)]
 pub(crate) struct EmbeddedScan {
@@ -91,6 +93,9 @@ pub(crate) struct EmbeddedScan {
     /// Non-literal compile-time include forms (except generated `OUT_DIR`) and
     /// non-literal runtime reads in test scope (sorted, `file: form`).
     pub unresolved_reads: BTreeSet<String>,
+    /// Production helper final idents, keyed by crate root (`""` is the repo root).
+    helpers: BTreeMap<String, BTreeSet<String>>,
+    helper_calls: Vec<HelperCall>,
 }
 
 fn fold(path: &str) -> String {
@@ -616,11 +621,11 @@ const READ_CALLS: &[&str] = &["read_to_string", "fs::read", "File::open"];
 
 /// Literals that are arguments of a runtime file read (`read_to_string`,
 /// `fs::read`, `File::open`), including nested `join("..")` / `Path::new("..")`
-/// pieces, plus the count of reads with no literal at all in their argument.
-fn collect_literals(src: &str, rel: &str) -> Result<(BTreeSet<String>, usize), String> {
+/// pieces, plus the byte offsets of reads with no literal at all in their argument.
+fn collect_literals(src: &str, rel: &str) -> Result<(BTreeSet<String>, Vec<usize>), String> {
     let b = src.as_bytes();
     let mut lits = BTreeSet::new();
-    let mut dynamic = 0usize;
+    let mut dynamic = Vec::new();
     let mut i = 0;
     while i < b.len() {
         if let Some(next) = consume_skipped(src, i, rel)? {
@@ -652,11 +657,11 @@ fn collect_literals(src: &str, rel: &str) -> Result<(BTreeSet<String>, usize), S
                                 {
                                     lits.insert(value);
                                 } else {
-                                    dynamic += 1;
+                                    dynamic.push(i);
                                 }
                             }
                         } else {
-                            dynamic += 1;
+                            dynamic.push(i);
                         }
                     }
                     break;
@@ -666,6 +671,257 @@ fn collect_literals(src: &str, rel: &str) -> Result<(BTreeSet<String>, usize), S
         i += src[i..].chars().next().map(char::len_utf8).unwrap_or(1);
     }
     Ok((lits, dynamic))
+}
+
+fn is_whole_crate_embed(kind: &str, raw: &str) -> bool {
+    (kind == "include_dir" || kind == "folder") && normalize_repo_path(raw).as_deref() == Some("")
+}
+
+fn crate_root_only(crate_root: &str) -> BTreeSet<String> {
+    join_norm(crate_root, "").into_iter().collect()
+}
+
+fn offset_in_test_item(layout: &TestLayout, offset: usize) -> bool {
+    layout
+        .fns
+        .iter()
+        .any(|(_, start, end)| *start <= offset && offset < *end)
+        || layout
+            .cfg_items
+            .iter()
+            .any(|(start, end, _)| *start <= offset && offset < *end)
+}
+
+/// A dynamic read sets `unresolved_reads` in a test file, in a `#[test]` or
+/// `#[cfg(test)]` body, or elsewhere in a file that already has tests. A read
+/// inside a production helper body does not, even when that file has an inline test.
+fn dynamic_read_is_unresolved(
+    is_test_file: bool,
+    layout: &TestLayout,
+    offset: usize,
+    helper_bodies: &[(usize, usize)],
+    file_has_tests: bool,
+) -> bool {
+    if is_test_file || offset_in_test_item(layout, offset) {
+        return true;
+    }
+    if helper_bodies
+        .iter()
+        .any(|(start, end)| *start <= offset && offset < *end)
+    {
+        return false;
+    }
+    file_has_tests
+}
+
+fn repository_path_literal(value: String) -> Option<String> {
+    if value.starts_with(GENERATED_MARKER) {
+        return None;
+    }
+    let value = value
+        .strip_prefix(MANIFEST_MARKER)
+        .map(|tail| tail.trim_start_matches(['/', '\\']).to_string())
+        .unwrap_or(value);
+    if value.starts_with('/') || value.starts_with('\\') || value.as_bytes().get(1) == Some(&b':') {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn top_level_argument_ranges(args: &str, rel: &str) -> Result<Vec<(usize, usize)>, String> {
+    let b = args.as_bytes();
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    let mut depth = 0i32;
+    while i < b.len() {
+        if let Some(next) = consume_skipped(args, i, rel)? {
+            i = next.max(i + 1);
+            continue;
+        }
+        match b[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' if depth > 0 => depth -= 1,
+            b',' if depth == 0 => {
+                parts.push((start, i));
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += args[i..].chars().next().map(char::len_utf8).unwrap_or(1);
+    }
+    if start < args.len() || parts.is_empty() {
+        parts.push((start, args.len()));
+    }
+    Ok(parts)
+}
+
+/// `fn` bodies that are not themselves inside a `#[test]` or `#[cfg(test)]` item.
+fn production_fn_bodies(
+    src: &str,
+    rel: &str,
+    layout: &TestLayout,
+) -> Result<Vec<(String, usize, usize)>, String> {
+    let b = src.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < b.len() {
+        if let Some(next) = consume_skipped(src, i, rel)? {
+            i = next.max(i + 1);
+            continue;
+        }
+        let ident_start = i == 0 || !is_ident_byte(b[i - 1]);
+        if ident_start
+            && src[i..].starts_with("fn")
+            && b.get(i + 2).is_none_or(|c| !is_ident_byte(*c))
+        {
+            if offset_in_test_item(layout, i) {
+                i += 2;
+                continue;
+            }
+            let name_at = skip_trivia(src, i + 2, rel)?;
+            if name_at >= b.len() || !is_ident_byte(b[name_at]) {
+                i += 2;
+                continue;
+            }
+            let mut name_end = name_at;
+            while name_end < b.len() && is_ident_byte(b[name_end]) {
+                name_end += 1;
+            }
+            let mut j = name_end;
+            let mut depth = 0i32;
+            let mut body = None;
+            while j < b.len() {
+                if let Some(next) = consume_skipped(src, j, rel)? {
+                    j = next.max(j + 1);
+                    continue;
+                }
+                match b[j] {
+                    b'(' | b'[' => depth += 1,
+                    b')' | b']' if depth > 0 => depth -= 1,
+                    b'{' if depth == 0 => {
+                        body = find_matching_delimiter(src, j, rel)?.map(|end| (j + 1, end));
+                        break;
+                    }
+                    b';' if depth == 0 => break,
+                    _ => {}
+                }
+                j += src[j..].chars().next().map(char::len_utf8).unwrap_or(1);
+            }
+            if let Some((lo, hi)) = body {
+                out.push((src[name_at..name_end].to_string(), lo, hi));
+                i = name_end;
+                continue;
+            }
+            i = name_end;
+            continue;
+        }
+        i += src[i..].chars().next().map(char::len_utf8).unwrap_or(1);
+    }
+    Ok(out)
+}
+
+/// Keep a file whose only interesting text is a call that passes a path literal.
+fn may_contain_path_literal_call(src: &str) -> bool {
+    // A basename such as "LICENSE" has neither a separator nor a dot.
+    src.contains('(') && src.contains('"')
+}
+
+/// Whitespace and comments immediately before `end`.
+fn skip_trivia_backward(src: &str, mut i: usize) -> usize {
+    let b = src.as_bytes();
+    loop {
+        while i > 0 && b[i - 1].is_ascii_whitespace() {
+            i -= 1;
+        }
+        if i >= 2 && b[i - 2] == b'*' && b[i - 1] == b'/' {
+            let mut depth = 1i32;
+            let mut k = i - 2;
+            let mut closed = false;
+            loop {
+                if k < 2 {
+                    break;
+                }
+                if b[k - 2] == b'*' && b[k - 1] == b'/' {
+                    depth += 1;
+                    k -= 2;
+                    continue;
+                }
+                if b[k - 2] == b'/' && b[k - 1] == b'*' {
+                    depth -= 1;
+                    k -= 2;
+                    if depth == 0 {
+                        i = k;
+                        closed = true;
+                        break;
+                    }
+                    continue;
+                }
+                k -= 1;
+            }
+            if !closed {
+                return i;
+            }
+            continue;
+        }
+        let line_start = src[..i].rfind('\n').map(|n| n + 1).unwrap_or(0);
+        if let Some(rel) = src[line_start..i].rfind("//") {
+            i = line_start + rel;
+            continue;
+        }
+        return i;
+    }
+}
+
+/// Final ident of a call, skipping trivia between the name and `(`.
+fn final_ident_before(src: &str, paren: usize) -> Option<(usize, usize)> {
+    let b = src.as_bytes();
+    let end = skip_trivia_backward(src, paren);
+    if end == 0 || !is_ident_byte(b[end - 1]) {
+        return None;
+    }
+    let mut start = end;
+    while start > 0 && is_ident_byte(b[start - 1]) {
+        start -= 1;
+    }
+    (start < end).then_some((start, end))
+}
+
+/// Matching `)` and whether the argument list holds a quote.
+///
+/// Skips strings and comments without calling the lexer on every byte.
+fn paren_close(src: &str, open: usize, rel: &str) -> Result<Option<(usize, bool)>, String> {
+    let b = src.as_bytes();
+    if b.get(open) != Some(&b'(') {
+        return Ok(None);
+    }
+    let mut i = open + 1;
+    let mut depth = 1i32;
+    let mut quoted = false;
+    while i < b.len() {
+        match b[i] {
+            b'/' | b'"' | b'\'' | b'b' | b'r' => {
+                if let Some(next) = consume_skipped(src, i, rel)? {
+                    if !quoted && (b[i] == b'"' || b[i] == b'\'' || src[i..next].contains('"')) {
+                        quoted = true;
+                    }
+                    i = next.max(i + 1);
+                    continue;
+                }
+            }
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(Some((i, quoted)));
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    Ok(None)
 }
 
 pub(crate) fn path_component_matches(actual: &str, expected: &str) -> bool {
@@ -687,11 +943,34 @@ fn pinned_walk(root: &Path) -> ignore::WalkBuilder {
         .require_git(false)
         .sort_by_file_path(|a, b| a.cmp(b))
         .filter_entry(|e| {
-            e.depth() == 0
-                || !SKIP_DIRS.iter().any(|skip| {
-                    let name = e.file_name().to_str().unwrap_or("");
-                    path_component_matches(name, skip)
-                })
+            if e.depth() == 0 {
+                return true;
+            }
+            let name = e.file_name().to_str().unwrap_or("");
+            if DEPTH_WIDE_SKIP
+                .iter()
+                .any(|skip| path_component_matches(name, skip))
+            {
+                return false;
+            }
+            // ignore::WalkBuilder reports the walk root at depth 0, so a direct child is depth 1.
+            if e.depth() == 1
+                && ROOT_CHILD_SKIP
+                    .iter()
+                    .any(|skip| path_component_matches(name, skip))
+            {
+                return false;
+            }
+            if path_component_matches(name, "target") {
+                let beside_manifest = e
+                    .path()
+                    .parent()
+                    .is_some_and(|parent| parent.join("Cargo.toml").is_file());
+                if beside_manifest {
+                    return false;
+                }
+            }
+            true
         });
     walk
 }
@@ -881,15 +1160,27 @@ impl EmbeddedScan {
                 .or_else(|| variable_suffix("$CARGO_MANIFEST_DIR"))
                 .or_else(|| variable_suffix("${CARGO_MANIFEST_DIR}"));
             let targets = if let Some(suffix) = manifest {
-                join_norm(crate_root, suffix.trim_start_matches(['/', '\\']))
-                    .into_iter()
-                    .collect()
+                let rel_suffix = suffix.trim_start_matches(['/', '\\']);
+                if is_whole_crate_embed(kind, rel_suffix) {
+                    crate_root_only(crate_root)
+                } else {
+                    join_norm(crate_root, rel_suffix).into_iter().collect()
+                }
             } else if path.contains('$') {
                 self.unresolved_reads
                     .insert(format!("{rel}: unresolved {kind} environment path"));
                 continue;
+            } else if is_whole_crate_embed(kind, &path) {
+                crate_root_only(crate_root)
             } else {
-                repo_targets(root, rel, crate_root, &path)
+                let mut targets = repo_targets(root, rel, crate_root, &path);
+                if kind == "template(path)" {
+                    let literal = path.replace('\\', "/");
+                    if let Some(extra) = join_norm(crate_root, &format!("templates/{literal}")) {
+                        targets.insert(extra);
+                    }
+                }
+                targets
             };
             if targets.is_empty() {
                 self.skipped
@@ -1211,6 +1502,7 @@ impl EmbeddedScan {
                 scan.errors.insert(format!("{rel}: unlexable"));
             }
         }
+        scan.attribute_helper_calls();
         scan
     }
 
@@ -1224,13 +1516,30 @@ impl EmbeddedScan {
         let has_include = src.contains("include");
         let has_runtime = RUNTIME_PREFILTER.iter().any(|p| src.contains(p));
         let has_consumer = UNMODELED_FILE_CONSUMERS.iter().any(|m| src.contains(m));
-        if !has_include && !has_runtime && !has_consumer {
+        let has_path_call = may_contain_path_literal_call(src);
+        if !has_include && !has_runtime && !has_consumer && !has_path_call {
             return Ok(());
         }
         let is_test_file = is_test_file_path(rel);
         let layout = analyze_tests(src, rel)?;
-        let in_test_scope = is_test_file || !layout.fns.is_empty() || !layout.cfg_items.is_empty();
+        let file_has_tests = !layout.fns.is_empty() || !layout.cfg_items.is_empty();
         let crate_root = nearest_crate_root(repo_root, rel, crate_cache);
+        let (literals, dynamic) = if has_runtime {
+            collect_literals(src, rel)?
+        } else {
+            (BTreeSet::new(), Vec::new())
+        };
+        let helper_bodies = if !is_test_file && has_runtime {
+            self.record_production_helpers(src, rel, &crate_root, &layout, &dynamic)?
+        } else {
+            Vec::new()
+        };
+        if has_path_call {
+            self.record_path_literal_calls(rel, src, &crate_root, &layout, is_test_file)?;
+        }
+        if !has_include && !has_runtime && !has_consumer {
+            return Ok(());
+        }
         if has_consumer {
             self.scan_consumers(repo_root, rel, &crate_root, src)?;
         }
@@ -1300,7 +1609,6 @@ impl EmbeddedScan {
             }
         }
         if has_runtime {
-            let (literals, dynamic) = collect_literals(src, rel)?;
             if literals
                 .iter()
                 .any(|p| join_norm("", p).is_none() && join_norm(&crate_root, p).is_none())
@@ -1308,9 +1616,21 @@ impl EmbeddedScan {
                 self.unresolved_reads
                     .insert(format!("{rel}: runtime literal escapes repo root"));
             }
-            if dynamic > 0 && in_test_scope {
+            let unresolved_dynamic = dynamic
+                .iter()
+                .filter(|offset| {
+                    dynamic_read_is_unresolved(
+                        is_test_file,
+                        &layout,
+                        **offset,
+                        &helper_bodies,
+                        file_has_tests,
+                    )
+                })
+                .count();
+            if unresolved_dynamic > 0 {
                 self.unresolved_reads.insert(format!(
-                    "{rel}: {dynamic} non-literal runtime read(s) in test scope"
+                    "{rel}: {unresolved_dynamic} non-literal runtime read(s) in test scope"
                 ));
             }
             if !literals.is_empty() {
@@ -1325,6 +1645,111 @@ impl EmbeddedScan {
             }
         }
         Ok(())
+    }
+
+    fn record_production_helpers(
+        &mut self,
+        src: &str,
+        rel: &str,
+        crate_root: &str,
+        layout: &TestLayout,
+        dynamic: &[usize],
+    ) -> Result<Vec<(usize, usize)>, String> {
+        let mut names = BTreeSet::new();
+        let mut bodies = Vec::new();
+        for (name, lo, hi) in production_fn_bodies(src, rel, layout)? {
+            let reads_outside_tests = dynamic.iter().any(|offset| {
+                *offset >= lo && *offset < hi && !offset_in_test_item(layout, *offset)
+            });
+            if reads_outside_tests {
+                names.insert(name);
+                bodies.push((lo, hi));
+            }
+        }
+        if !names.is_empty() {
+            self.helpers
+                .entry(crate_root.to_string())
+                .or_default()
+                .extend(names);
+        }
+        Ok(bodies)
+    }
+
+    fn record_path_literal_calls(
+        &mut self,
+        rel: &str,
+        src: &str,
+        crate_root: &str,
+        layout: &TestLayout,
+        is_test_file: bool,
+    ) -> Result<(), String> {
+        let b = src.as_bytes();
+        let mut i = 0usize;
+        while i < b.len() {
+            match b[i] {
+                b'/' | b'"' | b'\'' | b'b' | b'r' => {
+                    if let Some(next) = consume_skipped(src, i, rel)? {
+                        i = next.max(i + 1);
+                        continue;
+                    }
+                }
+                b'(' => {
+                    if let Some((seg_at, seg_end)) = final_ident_before(src, i)
+                        && let Some((close, quoted)) = paren_close(src, i, rel)?
+                    {
+                        if quoted {
+                            let args = &src[i + 1..close];
+                            let mut literals = BTreeSet::new();
+                            for (lo, hi) in top_level_argument_ranges(args, rel)? {
+                                if let Some(value) = literal_path_expression(&args[lo..hi], rel, 0)?
+                                    && let Some(path) = repository_path_literal(value)
+                                {
+                                    literals.insert(path);
+                                }
+                            }
+                            if !literals.is_empty() {
+                                self.helper_calls.push(HelperCall {
+                                    crate_root: crate_root.to_string(),
+                                    name: src[seg_at..seg_end].to_string(),
+                                    includer: rel.to_string(),
+                                    resolution: resolve_offset(layout, is_test_file, seg_at),
+                                    literals,
+                                });
+                            }
+                        }
+                        i = close + 1;
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        Ok(())
+    }
+
+    fn attribute_helper_calls(&mut self) {
+        let calls = std::mem::take(&mut self.helper_calls);
+        for call in calls {
+            let Some(names) = self.helpers.get(&call.crate_root) else {
+                continue;
+            };
+            if !names.contains(&call.name) {
+                continue;
+            }
+            for lit in &call.literals {
+                let targets = [join_norm("", lit), join_norm(&call.crate_root, lit)];
+                for path in targets.into_iter().flatten() {
+                    if path.is_empty() {
+                        continue;
+                    }
+                    self.refs.entry(fold(&path)).or_default().insert(EmbedRef {
+                        includer: call.includer.clone(),
+                        resolution: call.resolution.clone(),
+                    });
+                }
+            }
+        }
     }
 
     /// All includers of `path` (repo-relative, `/`-separated), sorted.
@@ -1452,10 +1877,9 @@ pub(crate) fn decide_with_scan(
     if refuse.is_empty() {
         for path in candidates {
             let key = fold(path);
-            let consumer = scan
-                .consumers
-                .iter()
-                .find(|(target, _)| key == **target || key.starts_with(&format!("{target}/")));
+            let consumer = scan.consumers.iter().find(|(target, _)| {
+                target.is_empty() || key == **target || key.starts_with(&format!("{target}/"))
+            });
             if let Some((_, readers)) = consumer {
                 refuse.push(format!(
                     "{path}: unmodeled file consumer ({})",
@@ -1610,13 +2034,19 @@ mod tests {
     #[case("vendor/lib.rs", true)]
     #[case("deps_src/lib.rs", true)]
     #[case("third_party/lib.rs", true)]
+    #[case("target/lib.rs", true)]
+    #[case("src/target/lib.rs", false)]
+    #[case("crates/vendor/lib.rs", false)]
     fn walk_is_pinned_and_vendor_excluded(#[case] rel: &str, #[case] excluded: bool) {
         let dir = tempdir().unwrap();
         write(dir.path(), ".gitignore", "ignored/\n");
+        write(dir.path(), "Cargo.toml", "[package]\nname=\"fx\"\n");
+        let ups = rel.matches('/').count();
+        let prefix = "../".repeat(ups);
         write(
             dir.path(),
             rel,
-            "#[test]\nfn pin() { include_str!(\"../x.txt\"); }\n",
+            &format!("#[test]\nfn pin() {{ include_str!(\"{prefix}x.txt\"); }}\n"),
         );
         let d = decide_for(dir.path(), &["x.txt"]);
         assert_eq!(
@@ -1846,22 +2276,50 @@ fn main() { let _ = std::fs::read_to_string(concat!(env!("OUT_DIR"), "/generated
     #[test]
     fn nested_vendor_and_virtualenv_directories_are_pruned() {
         let dir = tempdir().unwrap();
-        for skip in [
-            "vendor",
-            "deps_src",
-            "third_party",
-            "target",
-            ".venv",
-            "venv",
-        ] {
+        for skip in [".venv", "venv"] {
             write(
                 dir.path(),
                 &format!("nested/{skip}/tests/ref.rs"),
                 "#[test] fn vendored() { include_str!(\"../../../guide.md\"); }",
             );
         }
+        for visible in ["vendor", "deps_src", "third_party", "target"] {
+            write(
+                dir.path(),
+                &format!("nested/{visible}/tests/ref.rs"),
+                "#[test] fn vendored() { include_str!(\"../../../guide.md\"); }",
+            );
+        }
+        write(
+            dir.path(),
+            "member/Cargo.toml",
+            "[package]\nname=\"member\"\n",
+        );
+        write(
+            dir.path(),
+            "member/target/tests/ref.rs",
+            "#[test] fn vendored() { include_str!(\"../../../guide.md\"); }",
+        );
         let scan = EmbeddedScan::scan(dir.path());
-        assert!(scan.refs_for("guide.md").is_empty());
+        let refs = scan.refs_for("guide.md");
+        let includers: BTreeSet<&str> = refs.iter().map(|r| r.includer.as_str()).collect();
+        assert!(
+            !includers
+                .iter()
+                .any(|path| path.contains(".venv") || path.contains("/venv/")),
+            "{includers:?}"
+        );
+        for visible in ["vendor", "deps_src", "third_party", "target"] {
+            let path = format!("nested/{visible}/tests/ref.rs");
+            assert!(
+                includers.contains(path.as_str()),
+                "{visible} should be walked: {includers:?}"
+            );
+        }
+        assert!(
+            !includers.contains("member/target/tests/ref.rs"),
+            "{includers:?}"
+        );
         assert!(scan.errors.is_empty());
     }
 
@@ -2393,6 +2851,142 @@ mod tests {
                 "docs/old.md".to_string(),
                 "t/m.txt".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn askama_template_path_resolves_under_crate_templates() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "Cargo.toml", "[package]\nname=\"fx\"\n");
+        write(
+            dir.path(),
+            "src/lib.rs",
+            "#[template(path = \"index.html\")]\nstruct Home;\n",
+        );
+        let hit = decide_for(dir.path(), &["templates/index.html"]);
+        let reason = hit.refuse.unwrap_or_default();
+        assert!(reason.contains("src/lib.rs"), "{reason}");
+        assert!(reason.contains("template(path)"), "{reason}");
+        let other = decide_for(dir.path(), &["templates/other.html"]);
+        let other_reason = other.refuse.unwrap_or_default();
+        assert!(!other_reason.contains("template(path)"), "{other_reason}");
+        let png = decide_for(dir.path(), &["assets/logo.png"]);
+        assert!(png.refuse.is_none(), "{:?}", png.refuse);
+    }
+
+    #[test]
+    fn root_manifest_dir_embed_matches_paths_under_the_crate() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "Cargo.toml", "[package]\nname=\"fx\"\n");
+        write(
+            dir.path(),
+            "src/lib.rs",
+            "include_dir!(\"$CARGO_MANIFEST_DIR\");\n",
+        );
+        for path in ["assets/logo.png", "templates/index.html"] {
+            let decision = decide_for(dir.path(), &[path]);
+            let reason = decision.refuse.unwrap_or_default();
+            assert!(reason.contains("src/lib.rs"), "{path}: {reason}");
+            assert!(reason.contains("include_dir"), "{path}: {reason}");
+        }
+    }
+
+    #[test]
+    fn nested_folder_dot_matches_only_that_crate() {
+        let dir = tempdir().unwrap();
+        write(
+            dir.path(),
+            "Cargo.toml",
+            "[workspace]\nmembers=[\"crates/ui\"]\n",
+        );
+        write(
+            dir.path(),
+            "crates/ui/Cargo.toml",
+            "[package]\nname=\"ui\"\n",
+        );
+        write(
+            dir.path(),
+            "crates/ui/src/lib.rs",
+            "#[folder = \".\"]\n#[derive(RustEmbed)]\nstruct Assets;\n",
+        );
+        let inside = decide_for(dir.path(), &["crates/ui/assets/logo.png"]);
+        let reason = inside.refuse.unwrap_or_default();
+        assert!(reason.contains("crates/ui/src/lib.rs"), "{reason}");
+        assert!(reason.contains("folder"), "{reason}");
+        let outside = decide_for(dir.path(), &["other/logo.png"]);
+        assert!(outside.refuse.is_none(), "{:?}", outside.refuse);
+    }
+
+    #[test]
+    fn helper_call_with_extra_argument_still_sees_the_path() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "Cargo.toml", "[package]\nname=\"fx\"\n");
+        write(
+            dir.path(),
+            "src/lib.rs",
+            "pub fn load(p: &std::path::Path, _flag: bool) -> String { std::fs::read_to_string(p).unwrap_or_default() }\n",
+        );
+        write(
+            dir.path(),
+            "tests/reader.rs",
+            "#[test]\nfn helper_reader() { let _ = fx::load(\"assets/logo.png\", false); }\n",
+        );
+        let decision = decide_for(dir.path(), &["assets/logo.png"]);
+        assert_eq!(decision.stems, vec!["helper_reader".to_string()]);
+        assert!(decision.refuse.is_none(), "{:?}", decision.refuse);
+    }
+
+    #[test]
+    fn basename_only_helper_path_is_attributed() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "Cargo.toml", "[package]\nname=\"fx\"\n");
+        write(
+            dir.path(),
+            "src/lib.rs",
+            "pub fn load(p: &std::path::Path) -> String { std::fs::read_to_string(p).unwrap_or_default() }\n",
+        );
+        write(
+            dir.path(),
+            "tests/reader.rs",
+            "#[test]\nfn helper_reader() { let _ = fx::load(std::path::Path::new(\"LICENSE\")); }\n",
+        );
+        let decision = decide_for(dir.path(), &["LICENSE"]);
+        assert_eq!(decision.stems, vec!["helper_reader".to_string()]);
+        assert!(decision.refuse.is_none(), "{:?}", decision.refuse);
+    }
+
+    #[test]
+    fn production_helper_dynamic_read_with_inline_test_does_not_refuse_unrelated_asset() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "Cargo.toml", "[package]\nname=\"fx\"\n");
+        write(
+            dir.path(),
+            "src/lib.rs",
+            "pub fn load(p: &std::path::Path) -> String { std::fs::read_to_string(p).unwrap_or_default() }\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn inline_ok() {}\n}\n",
+        );
+        let decision = decide_for(dir.path(), &["assets/other.png"]);
+        assert!(decision.refuse.is_none(), "{:?}", decision.refuse);
+        assert!(decision.no_dependency.contains("assets/other.png"));
+    }
+
+    #[test]
+    fn inline_test_dynamic_read_still_refuses_unreferenced_asset() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), "Cargo.toml", "[package]\nname=\"fx\"\n");
+        write(
+            dir.path(),
+            "src/lib.rs",
+            "pub fn f() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn d() { let p = std::env::var(\"X\").unwrap(); let _ = std::fs::read(p); }\n}\n",
+        );
+        let decision = decide_for(dir.path(), &["assets/logo.png"]);
+        assert!(
+            decision
+                .refuse
+                .as_deref()
+                .unwrap_or("")
+                .contains("unresolved reads"),
+            "{:?}",
+            decision.refuse
         );
     }
 }
