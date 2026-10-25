@@ -932,7 +932,7 @@ pub(crate) fn path_component_matches(actual: &str, expected: &str) -> bool {
     }
 }
 
-fn pinned_walk(root: &Path) -> ignore::WalkBuilder {
+pub(crate) fn pinned_walk(root: &Path) -> ignore::WalkBuilder {
     let mut walk = ignore::WalkBuilder::new(root);
     walk.hidden(false)
         .ignore(false)

@@ -172,7 +172,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
     // One material snapshot feeds prediction, overlay, and JSON. Nested Rust
     // discovery is only needed here if strict and legacy materiality differ.
     let detect_rust = scope.is_fast() && !manual_requested && config_plan.is_none();
-    let (working_material, rust_crates) =
+    let (working_material, rust_crates, non_rust_present) =
         classify_working_tree_material(layout.root.as_std_path(), detect_rust);
 
     // 3. Build Plan
@@ -231,6 +231,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                                 auto_index,
                                 allow_full_fallback,
                                 rust_crates,
+                                non_rust_present,
                             )
                         } else {
                             let conn = ctx.storage.as_ref().map(|s| s.get_connection());
@@ -272,6 +273,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                                     auto_index,
                                     allow_full_fallback,
                                     rust_crates,
+                                    non_rust_present,
                                 )
                             } else {
                                 let conn = ctx.storage.as_ref().map(|s| s.get_connection());
@@ -885,11 +887,13 @@ fn overlay_fast_classifier_packet(
     layout: &crate::state::layout::Layout,
     packet: crate::impact::packet::ImpactPacket,
 ) -> miette::Result<crate::impact::packet::ImpactPacket> {
-    let (_, rust) = classify_working_tree_material(layout.root.as_std_path(), true);
+    let (_, rust, non_rust_present) =
+        classify_working_tree_material(layout.root.as_std_path(), true);
     overlay_fast_classifier_packet_with_rust(
         layout,
         packet,
         rust.is_some_and(crate::verify::plan::RustCrates::is_strict),
+        non_rust_present,
     )
 }
 
@@ -897,11 +901,15 @@ fn overlay_fast_classifier_packet_with_rust(
     layout: &crate::state::layout::Layout,
     mut packet: crate::impact::packet::ImpactPacket,
     rust: bool,
+    non_rust_present: bool,
 ) -> miette::Result<crate::impact::packet::ImpactPacket> {
     let live = crate::git::status::collect_changed_files_for_filter(layout)?;
     let mut changes: Vec<crate::impact::packet::ChangedFile> = live
         .into_iter()
-        .filter(|c| is_material_or_cheap_verify_path(&c.path, rust))
+        .filter(|c| {
+            is_material_or_cheap_verify_path(&c.path, rust)
+                || (non_rust_present && strict_nonlegacy_noncheap(&c.path))
+        })
         .map(file_change_to_changed_file)
         .collect();
     changes.sort_by(|a, b| a.path.cmp(&b.path));
@@ -961,12 +969,14 @@ fn build_fast_scoped_from_overlay_or_fail_closed(
     auto_index: bool,
     allow_full_fallback: bool,
     rust_crates: Option<crate::verify::plan::RustCrates>,
+    non_rust_present: bool,
 ) -> crate::verify::plan::VerificationPlan {
     let base = snapshot.cloned().unwrap_or_default();
     let overlaid = match overlay_fast_classifier_packet_with_rust(
         layout,
         base,
         rust_crates.is_some_and(crate::verify::plan::RustCrates::is_strict),
+        non_rust_present,
     ) {
         Ok(packet) => packet,
         Err(err) => {
@@ -1049,18 +1059,23 @@ enum WorkingTreeMaterial {
 fn classify_working_tree_material(
     repo_root: &std::path::Path,
     detect_nested: bool,
-) -> (WorkingTreeMaterial, Option<crate::verify::plan::RustCrates>) {
+) -> (
+    WorkingTreeMaterial,
+    Option<crate::verify::plan::RustCrates>,
+    bool,
+) {
     let Ok(repo) = crate::git::repo::open_repo(repo_root) else {
-        return (WorkingTreeMaterial::Unavailable, None);
+        return (WorkingTreeMaterial::Unavailable, None, false);
     };
     let Ok(changes) = crate::git::status::get_repo_status(&repo) else {
         return if detect_nested {
             (
                 WorkingTreeMaterial::Dirty,
                 Some(crate::verify::plan::RustCrates::Unknown("unreadable")),
+                false,
             )
         } else {
-            (WorkingTreeMaterial::Unavailable, None)
+            (WorkingTreeMaterial::Unavailable, None, false)
         };
     };
     classify_material_changes(
@@ -1088,7 +1103,11 @@ fn classify_material_changes(
     changes: &[crate::git::FileChange],
     detect_rust: bool,
     detect: impl FnOnce(&std::path::Path) -> crate::verify::plan::RustCrates,
-) -> (WorkingTreeMaterial, Option<crate::verify::plan::RustCrates>) {
+) -> (
+    WorkingTreeMaterial,
+    Option<crate::verify::plan::RustCrates>,
+    bool,
+) {
     let cheap_without_root = !repo_root.join("Cargo.toml").is_file()
         && changes
             .iter()
@@ -1103,16 +1122,52 @@ fn classify_material_changes(
     } else {
         None
     };
-    if changes.iter().any(|change| {
+    let non_rust_present = if detect_rust
+        && !rust.is_some_and(crate::verify::plan::RustCrates::is_strict)
+        && changes
+            .iter()
+            .any(|change| path_needs_non_rust_probe(&change.path))
+    {
+        matches!(
+            crate::verify::plan::repo_has_non_rust_sources(repo_root),
+            crate::verify::plan::NonRustPresence::Present
+                | crate::verify::plan::NonRustPresence::Bounded
+        )
+    } else {
+        false
+    };
+    let dirty = changes.iter().any(|change| {
         is_material_for_profile(
             &change.path,
             rust.is_some_and(crate::verify::plan::RustCrates::is_strict),
-        )
-    }) {
-        (WorkingTreeMaterial::Dirty, rust)
-    } else {
-        (WorkingTreeMaterial::Clean, rust)
-    }
+        ) || (non_rust_present
+            && (strict_nonlegacy_noncheap(&change.path) || is_license_path(&change.path)))
+    });
+    (
+        if dirty {
+            WorkingTreeMaterial::Dirty
+        } else {
+            WorkingTreeMaterial::Clean
+        },
+        rust,
+        non_rust_present,
+    )
+}
+
+fn strict_nonlegacy_noncheap(path: &std::path::Path) -> bool {
+    is_material_verify_path(path)
+        && !is_legacy_material_verify_path(path)
+        && !crate::verify::plan::is_non_code_cheap_path(path)
+}
+
+fn path_needs_non_rust_probe(path: &std::path::Path) -> bool {
+    strict_nonlegacy_noncheap(path) || is_license_path(path)
+}
+
+fn is_license_path(path: &std::path::Path) -> bool {
+    let norm = path.to_string_lossy().replace('\\', "/");
+    let norm = norm.trim_start_matches("./");
+    norm == "LICENSE"
 }
 
 /// True when the working tree has **material** changes that verify should not
@@ -1409,6 +1464,7 @@ mod overlay_fast_tests {
             false,
             allow_full,
             Some(crate::verify::plan::RustCrates::Unknown("unreadable")),
+            false,
         )
     }
 
@@ -1724,7 +1780,7 @@ mod rust_detection_trigger_tests {
         // Even root presence cannot bypass the single materiality trigger.
         std::fs::write(tmp.path().join("Cargo.toml"), "[package]\nname=\"fx\"\n").unwrap();
         let changes: Vec<_> = paths.iter().map(|p| change(p)).collect();
-        let (_, memo) = classify_material_changes(tmp.path(), &changes, enabled, |_| {
+        let (_, memo, _) = classify_material_changes(tmp.path(), &changes, enabled, |_| {
             panic!("NotNeeded must not discover Rust");
         });
         assert_eq!(memo, None);
@@ -1743,7 +1799,7 @@ mod rust_detection_trigger_tests {
     #[test]
     fn multiple_strict_paths_compute_one_unknown_memo_and_stay_dirty() {
         let calls = Cell::new(0);
-        let (material, memo) = classify_material_changes(
+        let (material, memo, _) = classify_material_changes(
             Path::new("unused"),
             &[change("a.txt"), change("b.csv")],
             true,
@@ -1759,7 +1815,7 @@ mod rust_detection_trigger_tests {
 
     #[test]
     fn absent_rust_keeps_non_source_legacy_clean() {
-        let (material, memo) =
+        let (material, memo, _) =
             classify_material_changes(Path::new("unused"), &[change("notes.txt")], true, |_| {
                 RustCrates::Absent
             });
@@ -1775,7 +1831,7 @@ mod rust_detection_trigger_tests {
         // though a `.md` edit matches strict *and* legacy materiality.
         let tmp = tempfile::tempdir().unwrap();
         let calls = Cell::new(0);
-        let (material, memo) =
+        let (material, memo, _) =
             classify_material_changes(tmp.path(), &[change("docs/contract.md")], true, |_| {
                 calls.set(calls.get() + 1);
                 RustCrates::Present
@@ -1789,7 +1845,7 @@ mod rust_detection_trigger_tests {
     fn root_manifest_keeps_a_docs_only_change_from_walking() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("Cargo.toml"), "[package]\nname=\"fx\"\n").unwrap();
-        let (material, memo) =
+        let (material, memo, _) =
             classify_material_changes(tmp.path(), &[change("docs/contract.md")], true, |_| {
                 panic!("a root manifest plus a docs-only edit must not walk");
             });
@@ -1800,7 +1856,7 @@ mod rust_detection_trigger_tests {
     #[test]
     fn no_root_manifest_still_respects_detect_rust_off() {
         let tmp = tempfile::tempdir().unwrap();
-        let (material, memo) =
+        let (material, memo, _) =
             classify_material_changes(tmp.path(), &[change("docs/contract.md")], false, |_| {
                 panic!("detect_rust=false must not walk")
             });
@@ -1814,11 +1870,52 @@ mod rust_detection_trigger_tests {
         // reaches the mapping/refusal route instead of the cheap plan. Walking
         // here would only add cost and could over-refuse a non-Rust repo.
         let tmp = tempfile::tempdir().unwrap();
-        let (material, memo) =
+        let (material, memo, _) =
             classify_material_changes(tmp.path(), &[change("notes/guide.md")], true, |_| {
                 panic!("a non-cheap legacy-only change must not walk")
             });
         assert_eq!(material, WorkingTreeMaterial::Dirty);
         assert_eq!(memo, None);
+    }
+
+    #[test]
+    #[allow(non_snake_case)] // project test naming: feature__condition__expected
+    fn non_rust_txt_only__sources_present__is_dirty() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("app.py"), b"x = 1\n").unwrap();
+        let (material, memo, present) =
+            classify_material_changes(tmp.path(), &[change("notes.txt")], true, |_| {
+                RustCrates::Absent
+            });
+        assert_eq!(material, WorkingTreeMaterial::Dirty);
+        assert_eq!(memo, Some(RustCrates::Absent));
+        assert!(present);
+    }
+
+    #[test]
+    #[allow(non_snake_case)] // project test naming: feature__condition__expected
+    fn non_rust_txt_only__no_sources__stays_clean() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (material, memo, present) =
+            classify_material_changes(tmp.path(), &[change("notes.txt")], true, |_| {
+                RustCrates::Absent
+            });
+        assert_eq!(material, WorkingTreeMaterial::Clean);
+        assert_eq!(memo, Some(RustCrates::Absent));
+        assert!(!present);
+    }
+
+    #[test]
+    #[allow(non_snake_case)] // project test naming: feature__condition__expected
+    fn python_basename_helper__license_only_tree__is_dirty() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("app.py"), b"x = 1\n").unwrap();
+        let (material, memo, present) =
+            classify_material_changes(tmp.path(), &[change("LICENSE")], true, |_| {
+                RustCrates::Absent
+            });
+        assert_eq!(material, WorkingTreeMaterial::Dirty);
+        assert_eq!(memo, Some(RustCrates::Absent));
+        assert!(present);
     }
 }

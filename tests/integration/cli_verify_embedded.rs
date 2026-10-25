@@ -400,8 +400,8 @@ mod tests {
 
 #[test]
 fn non_rust_repo_keeps_legacy_material_definition() {
-    // D8 applies where the lookup runs; a dirty `.gitignore`/`notes.txt` in a
-    // non-Rust repo stays a clean tree (non-Rust embedding is 0570).
+    // A dirty notes.txt next to app.py is material for the non-Rust scan.
+    // Nothing names the file, so the plan stays zero-step and is not a refusal.
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -420,8 +420,12 @@ fn non_rust_repo_keeps_legacy_material_definition() {
     );
 
     let v = dry_run_json(root, &[]);
-    assert_eq!(v["cleanTree"], true, "{v}");
+    assert_eq!(v["cleanTree"], false, "{v}");
     assert_eq!(v["refused"], false, "{v}");
+    assert!(
+        v["steps"].as_array().is_some_and(|steps| steps.is_empty()),
+        "{v}"
+    );
 }
 
 #[rstest::rstest]

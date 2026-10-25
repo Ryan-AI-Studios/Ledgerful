@@ -336,11 +336,46 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
             repo_root,
         );
     }
+    let non_rust_candidates: Vec<String> = if lookup_active {
+        emb.no_dependency
+            .iter()
+            .filter(|path| !engine_tree || !is_non_code_cheap_path(Path::new(path)))
+            .cloned()
+            .collect()
+    } else {
+        embedded::candidate_paths(packet)
+            .into_iter()
+            .filter(|path| !engine_tree || !is_non_code_cheap_path(Path::new(path)))
+            .collect()
+    };
+    if !non_rust_candidates.is_empty() {
+        let non_rust = super::decide_non_rust(repo_root, &non_rust_candidates, |path| {
+            is_non_code_cheap_path(Path::new(path))
+        });
+        if let Some(trigger) = non_rust.refuse {
+            return mapping_cannot_scope_outcome(
+                &trigger,
+                allow_full_fallback,
+                packet,
+                rules,
+                predicted,
+                config,
+                profile,
+                scope,
+                repo_root,
+            );
+        }
+    }
     let has_source = packet
         .changes
         .iter()
         .any(|c| embedded::is_source_path(&c.path));
     let pure_non_source = !packet.changes.is_empty() && !has_source;
+    let pure_non_legacy = pure_non_source
+        && packet
+            .changes
+            .iter()
+            .all(|change| !is_legacy_material_path(&change.path));
     // Gate2 P1-1: an unreferenced path that the pre-0549 definition treated as
     // material (nested `Cargo.toml`, `.json`/`.yaml`/`.sql` fixtures, ...) must
     // keep reaching the mapping gate (refuse), never become a fmt+clippy pass.
@@ -371,7 +406,8 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
             || (lookup_active
                 && pure_non_source
                 && legacy_unreferenced.is_empty()
-                && (!engine_tree || !emb.stems.is_empty())))
+                && (!engine_tree || !emb.stems.is_empty()))
+            || (!lookup_active && pure_non_legacy))
     {
         return build_non_code_cheap_plan(
             packet,
@@ -988,9 +1024,11 @@ mod rust_detection_memo_tests {
             None,
             VerifyScope::Fast,
         );
-        assert!(plan.refused);
+        // 0570: an unreferenced non-legacy path is a zero-step plan. The nested
+        // manifest is still not walked, so this is not a Rust-detection refusal.
+        assert!(!plan.refused, "{:?}", plan.fallback_reason);
+        assert!(plan.steps.is_empty(), "{:?}", plan.steps);
         let reason = plan.fallback_reason.as_deref().unwrap_or("");
-        assert!(reason.contains("test_mapping unavailable"), "{reason}");
         assert!(!reason.contains("Rust detection inconclusive"), "{reason}");
     }
 
