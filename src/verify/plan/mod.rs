@@ -71,6 +71,8 @@ pub(crate) fn resolve_verify_scope(scope: Option<VerifyScope>, dry_run: bool) ->
 
 mod embedded;
 pub(crate) use embedded::{RustCrates, path_component_matches, repo_has_rust_crates};
+mod non_rust_embed;
+pub(crate) use non_rust_embed::{NonRustPresence, decide_non_rust, repo_has_non_rust_sources};
 mod full;
 mod non_code;
 mod rust_lex;

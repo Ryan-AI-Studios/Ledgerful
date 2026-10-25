@@ -4354,3 +4354,554 @@ fn non_rust_zero_step_profile_has_no_annotation_step(#[case] changed: &str, #[ca
         plan.steps
     );
 }
+
+fn non_rust_plan(
+    root: &camino::Utf8Path,
+    paths: &[&str],
+    profile: &crate::platform::repository::RepositoryProfile,
+) -> VerificationPlan {
+    plan_at(root, &packet_with_paths(paths), None, profile)
+}
+
+fn default_non_rust_plan(root: &camino::Utf8Path, paths: &[&str]) -> VerificationPlan {
+    non_rust_plan(
+        root,
+        paths,
+        &crate::platform::repository::RepositoryProfile::default(),
+    )
+}
+
+fn assert_embed_reason(plan: &VerificationPlan, needle: &str) {
+    assert!(plan.refused, "{:?}", plan.fallback_reason);
+    let reason = plan.fallback_reason.as_deref().unwrap_or("");
+    assert!(
+        reason.contains("non-Rust embedded"),
+        "missing non-Rust refusal in {reason}"
+    );
+    assert!(reason.contains(needle), "{reason}");
+}
+
+fn assert_not_embed_refused(plan: &VerificationPlan) {
+    let reason = plan.fallback_reason.as_deref().unwrap_or("");
+    assert!(
+        !reason.contains("non-Rust embedded"),
+        "unexpected non-Rust refusal: {reason}"
+    );
+}
+
+const PY_LOAD: &str = "def load(p):\n    open(p).read()\n";
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn python_open_literal__changed_template__refuses() {
+    let (_tmp, root) = foreign_fixture(&[("app.py", "open(\"templates/message.txt\").read()\n")]);
+    let plan = default_non_rust_plan(&root, &["templates/message.txt"]);
+    assert_embed_reason(
+        &plan,
+        "templates/message.txt: non-Rust embedded read (app.py: open)",
+    );
+    let decision = decide_non_rust(
+        root.as_std_path(),
+        &["templates/message.txt".to_string()],
+        |_| false,
+    );
+    assert!(decision.stems.is_empty());
+    assert!(decision.needs_mapping.is_empty());
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn python_importlib_resources__resource_path__refuses() {
+    let src = "import importlib.resources\nimportlib.resources.read_text(\"app\", \"templates/message.txt\")\n";
+    let (_tmp, root) = foreign_fixture(&[("app.py", src)]);
+    let hit = default_non_rust_plan(&root, &["templates/message.txt"]);
+    assert_embed_reason(
+        &hit,
+        "templates/message.txt: non-Rust embedded read (app.py: importlib.resources)",
+    );
+    let readme = default_non_rust_plan(&root, &["README.md"]);
+    assert!(!readme.refused, "{:?}", readme.fallback_reason);
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn python_basename_helper__license__refuses() {
+    let (_tmp, root) = foreign_fixture(&[
+        ("app.py", PY_LOAD),
+        (
+            "test_app.py",
+            "def load(p):\n    open(p).read()\nload(\"LICENSE\")\n",
+        ),
+    ]);
+    let plan = default_non_rust_plan(&root, &["LICENSE"]);
+    assert_embed_reason(&plan, "LICENSE: non-Rust embedded read (test_app.py: open)");
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn python_basename_helper__docs_license__stays_unreferenced() {
+    let (_tmp, root) = foreign_fixture(&[(
+        "app.py",
+        "def load(p):\n    open(p).read()\nload(\"LICENSE\")\n",
+    )]);
+    let plan = default_non_rust_plan(&root, &["docs/LICENSE"]);
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+    assert!(plan.steps.is_empty(), "{:?}", plan.steps);
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn python_basename_helper__unreferenced_license__stays_zero_step() {
+    let (_tmp, root) = foreign_fixture(&[("app.py", "x = 1\n")]);
+    let plan = default_non_rust_plan(&root, &["LICENSE"]);
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+    assert!(plan.steps.is_empty(), "{:?}", plan.steps);
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn python_runtime_join__other_template__stays_accepted() {
+    let src = "import os\ndef load(p):\n    open(p).read()\nload(os.path.join(base, \"templates/other.txt\"))\n";
+    let (_tmp, root) = foreign_fixture(&[("app.py", src)]);
+    let plan = default_non_rust_plan(&root, &["templates/other.txt"]);
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn python_render_forward__message_literal__stays_outside_one_hop() {
+    let src = "import os\ndef load(p):\n    open(p).read()\ndef render(name):\n    return load(os.path.join(base, name))\nrender(\"templates/message.txt\")\n";
+    let (_tmp, root) = foreign_fixture(&[("app.py", src)]);
+    let plan = default_non_rust_plan(&root, &["templates/message.txt"]);
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn python_comment_open__is_not_a_consumer() {
+    let (_tmp, root) = foreign_fixture(&[("app.py", "# open(\"templates/message.txt\")\nx = 1\n")]);
+    let plan = default_non_rust_plan(&root, &["templates/message.txt"]);
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn python_open_literal__keyword_file__refuses() {
+    let (_tmp, root) = foreign_fixture(&[("app.py", "open(file=\"templates/message.txt\")\n")]);
+    let plan = default_non_rust_plan(&root, &["templates/message.txt"]);
+    assert_embed_reason(
+        &plan,
+        "templates/message.txt: non-Rust embedded read (app.py: open)",
+    );
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn python_importlib__joinpath_segments__refuses() {
+    let src = "import importlib.resources\nimportlib.resources.files(\"app\").joinpath(\"templates\", \"message.txt\").read_text()\n";
+    let (_tmp, root) = foreign_fixture(&[("app.py", src)]);
+    let plan = default_non_rust_plan(&root, &["templates/message.txt"]);
+    assert_embed_reason(
+        &plan,
+        "templates/message.txt: non-Rust embedded read (app.py: importlib.resources)",
+    );
+    let package = default_non_rust_plan(&root, &["app"]);
+    assert_not_embed_refused(&package);
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn go_embed_file__changed_template__refuses() {
+    let src = "package main\n//go:embed templates/message.txt\nvar b []byte\n";
+    let (_tmp, root) = foreign_fixture(&[("embed.go", src), ("templates/message.txt", "hi\n")]);
+    let plan = default_non_rust_plan(&root, &["templates/message.txt"]);
+    assert_embed_reason(
+        &plan,
+        "templates/message.txt: non-Rust embedded read (embed.go: go:embed)",
+    );
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn go_embed_dir__nested_file__refuses_and_other_tree_stays() {
+    let src = "package main\n//go:embed templates\nvar fs embed.FS\n";
+    let (_tmp, root) = foreign_fixture(&[
+        ("embed.go", src),
+        ("templates/message.txt", "hi\n"),
+        ("other/note.txt", "x\n"),
+    ]);
+    let hit = default_non_rust_plan(&root, &["templates/message.txt"]);
+    assert_embed_reason(
+        &hit,
+        "templates/message.txt: non-Rust embedded read (embed.go: go:embed)",
+    );
+    let miss = default_non_rust_plan(&root, &["other/note.txt"]);
+    assert!(!miss.refused, "{:?}", miss.fallback_reason);
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn go_readfile_basename__license__refuses() {
+    let src = "package main\nfunc load(p string) {\n\tos.ReadFile(p)\n}\nfunc main() { load(\"LICENSE\") }\n";
+    let (_tmp, root) = foreign_fixture(&[("read.go", src)]);
+    let plan = default_non_rust_plan(&root, &["LICENSE"]);
+    assert_embed_reason(
+        &plan,
+        "LICENSE: non-Rust embedded read (read.go: os.ReadFile)",
+    );
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn go_runtime_join__other_template__stays_accepted() {
+    let src = "package other\nfunc load(p string) {\n\tos.ReadFile(p)\n}\nfunc main() { load(filepath.Join(base, \"templates/other.txt\")) }\n";
+    let (_tmp, root) = foreign_fixture(&[("other/join.go", src)]);
+    let plan = default_non_rust_plan(&root, &["templates/other.txt"]);
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn go_embed_star__package_file_only() {
+    let src = "package main\n//go:embed *\nvar b embed.FS\n";
+    let (_tmp, root) = foreign_fixture(&[
+        ("embed.go", src),
+        ("LICENSE", "mit\n"),
+        ("templates/message.txt", "hi\n"),
+    ]);
+    let license = default_non_rust_plan(&root, &["LICENSE"]);
+    assert_embed_reason(
+        &license,
+        "LICENSE: non-Rust embedded read (embed.go: go:embed)",
+    );
+    let nested = default_non_rust_plan(&root, &["templates/message.txt"]);
+    assert!(!nested.refused, "{:?}", nested.fallback_reason);
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn go_readfile__os_open_fixture__refuses() {
+    let src = "package main\nfunc main() {\n\tos.Open(\"fixtures/data.txt\")\n}\n";
+    let (_tmp, root) = foreign_fixture(&[("read.go", src)]);
+    let plan = default_non_rust_plan(&root, &["fixtures/data.txt"]);
+    assert_embed_reason(
+        &plan,
+        "fixtures/data.txt: non-Rust embedded read (read.go: os.Open)",
+    );
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn go_readfile__ioutil_and_openfile__stay_accepted() {
+    let src = "package main\nfunc main() {\n\tioutil.ReadFile(\"fixtures/data.txt\")\n\tos.OpenFile(\"fixtures/data.txt\", os.O_RDONLY, 0)\n}\n";
+    let (_tmp, root) = foreign_fixture(&[("read.go", src)]);
+    let plan = default_non_rust_plan(&root, &["fixtures/data.txt"]);
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn js_readfilesync_literal__changed_template__refuses() {
+    let (_tmp, root) =
+        foreign_fixture(&[("read.js", "fs.readFileSync(\"templates/message.txt\")\n")]);
+    let plan = default_non_rust_plan(&root, &["templates/message.txt"]);
+    assert_embed_reason(
+        &plan,
+        "templates/message.txt: non-Rust embedded read (read.js: readFileSync)",
+    );
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn js_asset_import__png__refuses() {
+    let (_tmp, root) = foreign_fixture(&[("app.ts", "import logo from \"./assets/logo.png\"\n")]);
+    let plan = default_non_rust_plan(&root, &["assets/logo.png"]);
+    assert_embed_reason(
+        &plan,
+        "assets/logo.png: non-Rust embedded read (app.ts: import)",
+    );
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn js_basename_helper__license__refuses() {
+    let src = "function load(p) {\n  fs.readFileSync(p)\n}\nload(\"LICENSE\")\n";
+    let (_tmp, root) = foreign_fixture(&[("read.js", src)]);
+    let plan = default_non_rust_plan(&root, &["LICENSE"]);
+    assert_embed_reason(
+        &plan,
+        "LICENSE: non-Rust embedded read (read.js: readFileSync)",
+    );
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn js_template_literal__other_png__stays_accepted() {
+    let (_tmp, root) = foreign_fixture(&[("read.js", "fs.readFileSync(`assets/${name}.png`)\n")]);
+    let plan = default_non_rust_plan(&root, &["assets/other.png"]);
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn js_asset_import__extensionless_png__refuses() {
+    let (_tmp, root) = foreign_fixture(&[("app.ts", "import logo from \"./assets/logo\"\n")]);
+    let plan = default_non_rust_plan(&root, &["assets/logo.png"]);
+    assert_embed_reason(
+        &plan,
+        "assets/logo.png: non-Rust embedded read (app.ts: import)",
+    );
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn js_asset_import__extensionless_source__stays_source() {
+    let (_tmp, root) = foreign_fixture(&[("app.ts", "import logo from \"./assets/logo\"\n")]);
+    let decision = decide_non_rust(
+        root.as_std_path(),
+        &[
+            "assets/logo.ts".to_string(),
+            "assets/logo.mjs".to_string(),
+            "assets/logo/extra.png".to_string(),
+        ],
+        |_| false,
+    );
+    assert!(decision.refuse.is_none(), "{:?}", decision.refuse);
+    assert!(decision.stems.is_empty());
+    assert!(decision.needs_mapping.is_empty());
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn js_asset_import__alias_specifier__stays_accepted() {
+    let src = "import a from \"@/assets/logo.png\"\nimport b from \"~/assets/logo.png\"\n";
+    let (_tmp, root) = foreign_fixture(&[("app.ts", src)]);
+    let plan = default_non_rust_plan(&root, &["assets/logo.png"]);
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn non_rust_source_only__does_not_embed_refuse() {
+    let (_tmp, root) = foreign_fixture(&[("app.py", "open(\"templates/message.txt\")\n")]);
+    let plan = default_non_rust_plan(&root, &["app.py"]);
+    assert_not_embed_refused(&plan);
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn non_rust_source_only__mjs_edit__does_not_embed_refuse() {
+    let (_tmp, root) = foreign_fixture(&[("app.mjs", "import \"./assets/logo.png\"\n")]);
+    let plan = default_non_rust_plan(&root, &["app.mjs"]);
+    assert_not_embed_refused(&plan);
+}
+
+fn write_scan_sources(root: &std::path::Path, count: usize) {
+    let dir = root.join("pkg");
+    fs::create_dir_all(&dir).unwrap();
+    for index in 0..count {
+        fs::write(dir.join(format!("f{index:04}.py")), b"x = 1\n").unwrap();
+    }
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn non_rust_bounded_scan__noncheap__refuses() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_scan_sources(tmp.path(), 2501);
+    fs::write(tmp.path().join("notes.txt"), b"n\n").unwrap();
+    let root = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+    let plan = default_non_rust_plan(&root, &["notes.txt"]);
+    assert_embed_reason(&plan, "notes.txt: non-Rust embedded scan bound exceeded:");
+    assert!(
+        plan.fallback_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("source files (max 2500)"),
+        "{:?}",
+        plan.fallback_reason
+    );
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn non_rust_bounded_scan__cheap_docs__stays_zero_step() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_scan_sources(tmp.path(), 2501);
+    fs::create_dir_all(tmp.path().join("docs")).unwrap();
+    fs::write(tmp.path().join("docs/contract.md"), b"v1\n").unwrap();
+    let root = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+    let plan = default_non_rust_plan(&root, &["docs/contract.md"]);
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+    assert!(plan.steps.is_empty(), "{:?}", plan.steps);
+    let decision = decide_non_rust(
+        root.as_std_path(),
+        &["docs/contract.md".to_string()],
+        |path| path == "docs/contract.md",
+    );
+    assert!(decision.refuse.is_none(), "{:?}", decision.refuse);
+    assert!(
+        decision
+            .annotations
+            .iter()
+            .any(|note| note.contains("embedded lookup bounded: not verified")),
+        "{:?}",
+        decision.annotations
+    );
+}
+
+struct UnreadablePy {
+    path: PathBuf,
+    #[cfg(windows)]
+    _guard: fs::File,
+}
+
+impl UnreadablePy {
+    fn create(path: &Path) -> Self {
+        fs::write(path, b"print('x')\n").unwrap();
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(path)
+                .unwrap();
+            Self {
+                path: path.to_path_buf(),
+                _guard: file,
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(path).unwrap().permissions();
+            perms.set_mode(0o000);
+            fs::set_permissions(path, perms).unwrap();
+            Self {
+                path: path.to_path_buf(),
+            }
+        }
+    }
+}
+
+impl Drop for UnreadablePy {
+    fn drop(&mut self) {
+        let _ = &self.path;
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = fs::metadata(&self.path) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o644);
+                let _ = fs::set_permissions(&self.path, perms);
+            }
+        }
+    }
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn non_rust_unreadable__cheap_only__stays_zero_step() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = UnreadablePy::create(&tmp.path().join("bad.py"));
+    fs::create_dir_all(tmp.path().join("docs")).unwrap();
+    fs::write(tmp.path().join("docs/contract.md"), b"v1\n").unwrap();
+    let root = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+    let plan = default_non_rust_plan(&root, &["docs/contract.md"]);
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+    assert!(plan.steps.is_empty(), "{:?}", plan.steps);
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn non_rust_unreadable__noncheap__refuses_without_os_text() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = UnreadablePy::create(&tmp.path().join("bad.py"));
+    fs::write(tmp.path().join("notes.txt"), b"n\n").unwrap();
+    let root = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+    let plan = default_non_rust_plan(&root, &["notes.txt"]);
+    assert_embed_reason(&plan, "bad.py: unreadable");
+    let reason = plan.fallback_reason.as_deref().unwrap_or("");
+    assert!(
+        !reason.contains("os error") && !reason.contains("Access is denied"),
+        "{reason}"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn non_rust_unreadable__unterminated_string__refuses() {
+    let (_tmp, root) = foreign_fixture(&[("app.py", "open(\"templates/message.txt\n")]);
+    let plan = default_non_rust_plan(&root, &["notes.txt"]);
+    assert_embed_reason(&plan, "app.py: unlexable");
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn non_rust_unreadable__unclosed_comment__refuses() {
+    let (_tmp, root) =
+        foreign_fixture(&[("app.js", "/* never closed\nimport \"./assets/logo.png\"\n")]);
+    let plan = default_non_rust_plan(&root, &["notes.txt"]);
+    assert_embed_reason(&plan, "app.js: unlexable");
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn non_rust_bounded_scan__oversized_file_count__refuses() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("pkg");
+    fs::create_dir_all(&dir).unwrap();
+    let body = vec![b'x'; super::embedded::MAX_FILE_BYTES as usize + 1];
+    for index in 0..65 {
+        fs::write(dir.join(format!("f{index:02}.py")), &body).unwrap();
+    }
+    fs::write(tmp.path().join("notes.txt"), b"n\n").unwrap();
+    let root = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+    let plan = default_non_rust_plan(&root, &["notes.txt"]);
+    assert_embed_reason(&plan, "notes.txt: non-Rust embedded scan bound exceeded:");
+    assert!(
+        plan.fallback_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("max 64 oversized files"),
+        "{:?}",
+        plan.fallback_reason
+    );
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn polyglot_rust_stem__still_selects_nextest() {
+    let src = "pub fn contract() -> &'static str { include_str!(\"../docs/contract.md\") }\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t_doc() { let _ = contract(); }\n}\n";
+    let (_tmp, root) = foreign_fixture(&[
+        ("Cargo.toml", "[package]\nname=\"fx\"\n"),
+        ("src/lib.rs", src),
+        ("docs/contract.md", "v1\n"),
+    ]);
+    let plan = non_rust_plan(&root, &["docs/contract.md"], &rust_profile());
+    assert!(!plan.refused, "{:?}", plan.fallback_reason);
+    let nextest = nextest_step(&plan).expect("rust include still selects nextest");
+    assert!(
+        nextest.command.contains("test(t_doc)"),
+        "{}",
+        nextest.command
+    );
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn polyglot_python_read__no_rust_consumer__refuses() {
+    let (_tmp, root) = foreign_fixture(&[
+        ("src/lib.rs", "pub fn unused() {}\n"),
+        ("app.py", "open(\"assets/logo.png\").read()\n"),
+    ]);
+    let hit = default_non_rust_plan(&root, &["assets/logo.png"]);
+    assert_embed_reason(
+        &hit,
+        "assets/logo.png: non-Rust embedded read (app.py: open)",
+    );
+    let miss = default_non_rust_plan(&root, &["assets/other.png"]);
+    assert!(!miss.refused, "{:?}", miss.fallback_reason);
+    assert_not_embed_refused(&miss);
+}
