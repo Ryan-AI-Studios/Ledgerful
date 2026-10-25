@@ -827,9 +827,6 @@ fn may_contain_path_literal_call(src: &str) -> bool {
     if !src.contains('(') || !src.contains('"') {
         return false;
     }
-    if src.contains("(\"") || src.contains("( \"") || src.contains("(\n") || src.contains("(\r\n") {
-        return true;
-    }
     let b = src.as_bytes();
     let mut i = 0usize;
     while i < b.len() {
@@ -859,6 +856,102 @@ fn may_contain_path_literal_call(src: &str) -> bool {
         i = j.max(i + 1);
     }
     false
+}
+
+/// Whitespace and comments immediately before `end`.
+fn skip_trivia_backward(src: &str, mut i: usize) -> usize {
+    let b = src.as_bytes();
+    loop {
+        while i > 0 && b[i - 1].is_ascii_whitespace() {
+            i -= 1;
+        }
+        if i >= 2 && b[i - 2] == b'*' && b[i - 1] == b'/' {
+            let mut depth = 1i32;
+            let mut k = i - 2;
+            let mut closed = false;
+            loop {
+                if k < 2 {
+                    break;
+                }
+                if b[k - 2] == b'*' && b[k - 1] == b'/' {
+                    depth += 1;
+                    k -= 2;
+                    continue;
+                }
+                if b[k - 2] == b'/' && b[k - 1] == b'*' {
+                    depth -= 1;
+                    k -= 2;
+                    if depth == 0 {
+                        i = k;
+                        closed = true;
+                        break;
+                    }
+                    continue;
+                }
+                k -= 1;
+            }
+            if !closed {
+                return i;
+            }
+            continue;
+        }
+        let line_start = src[..i].rfind('\n').map(|n| n + 1).unwrap_or(0);
+        if let Some(rel) = src[line_start..i].rfind("//") {
+            i = line_start + rel;
+            continue;
+        }
+        return i;
+    }
+}
+
+/// Final ident of a call, skipping trivia between the name and `(`.
+fn final_ident_before(src: &str, paren: usize) -> Option<(usize, usize)> {
+    let b = src.as_bytes();
+    let end = skip_trivia_backward(src, paren);
+    if end == 0 || !is_ident_byte(b[end - 1]) {
+        return None;
+    }
+    let mut start = end;
+    while start > 0 && is_ident_byte(b[start - 1]) {
+        start -= 1;
+    }
+    (start < end).then_some((start, end))
+}
+
+/// Matching `)` and whether the argument list holds a quote.
+///
+/// Skips strings and comments without calling the lexer on every byte.
+fn paren_close(src: &str, open: usize, rel: &str) -> Result<Option<(usize, bool)>, String> {
+    let b = src.as_bytes();
+    if b.get(open) != Some(&b'(') {
+        return Ok(None);
+    }
+    let mut i = open + 1;
+    let mut depth = 1i32;
+    let mut quoted = false;
+    while i < b.len() {
+        match b[i] {
+            b'/' | b'"' | b'\'' | b'b' | b'r' => {
+                if let Some(next) = consume_skipped(src, i, rel)? {
+                    if !quoted && (b[i] == b'"' || b[i] == b'\'' || src[i..next].contains('"')) {
+                        quoted = true;
+                    }
+                    i = next.max(i + 1);
+                    continue;
+                }
+            }
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(Some((i, quoted)));
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    Ok(None)
 }
 
 pub(crate) fn path_component_matches(actual: &str, expected: &str) -> bool {
@@ -1461,8 +1554,13 @@ impl EmbeddedScan {
         let layout = analyze_tests(src, rel)?;
         let file_has_tests = !layout.fns.is_empty() || !layout.cfg_items.is_empty();
         let crate_root = nearest_crate_root(repo_root, rel, crate_cache);
+        let (literals, dynamic) = if has_runtime {
+            collect_literals(src, rel)?
+        } else {
+            (BTreeSet::new(), Vec::new())
+        };
         let helper_bodies = if !is_test_file && has_runtime {
-            self.record_production_helpers(src, rel, &crate_root, &layout)?
+            self.record_production_helpers(src, rel, &crate_root, &layout, &dynamic)?
         } else {
             Vec::new()
         };
@@ -1541,7 +1639,6 @@ impl EmbeddedScan {
             }
         }
         if has_runtime {
-            let (literals, dynamic) = collect_literals(src, rel)?;
             if literals
                 .iter()
                 .any(|p| join_norm("", p).is_none() && join_norm(&crate_root, p).is_none())
@@ -1586,8 +1683,8 @@ impl EmbeddedScan {
         rel: &str,
         crate_root: &str,
         layout: &TestLayout,
+        dynamic: &[usize],
     ) -> Result<Vec<(usize, usize)>, String> {
-        let (_, dynamic) = collect_literals(src, rel)?;
         let mut names = BTreeSet::new();
         let mut bodies = Vec::new();
         for (name, lo, hi) in production_fn_bodies(src, rel, layout)? {
@@ -1619,60 +1716,44 @@ impl EmbeddedScan {
         let b = src.as_bytes();
         let mut i = 0usize;
         while i < b.len() {
-            if let Some(next) = consume_skipped(src, i, rel)? {
-                i = next.max(i + 1);
-                continue;
-            }
-            let ident_start = i == 0 || !is_ident_byte(b[i - 1]);
-            if !(ident_start && is_ident_byte(b[i])) {
-                i += src[i..].chars().next().map(char::len_utf8).unwrap_or(1);
-                continue;
-            }
-            let mut cursor = i;
-            let mut seg_at;
-            let mut seg_end;
-            loop {
-                seg_at = cursor;
-                seg_end = cursor;
-                while seg_end < b.len() && is_ident_byte(b[seg_end]) {
-                    seg_end += 1;
-                }
-                let after = skip_trivia(src, seg_end, rel)?;
-                if src[after..].starts_with("::") {
-                    let next = skip_trivia(src, after + 2, rel)?;
-                    if next < b.len() && is_ident_byte(b[next]) {
-                        cursor = next;
+            match b[i] {
+                b'/' | b'"' | b'\'' | b'b' | b'r' => {
+                    if let Some(next) = consume_skipped(src, i, rel)? {
+                        i = next.max(i + 1);
                         continue;
                     }
                 }
-                cursor = after;
-                break;
-            }
-            if b.get(cursor) == Some(&b'(')
-                && let Some(close) = find_matching_delimiter(src, cursor, rel)?
-            {
-                let args = &src[cursor + 1..close];
-                let mut literals = BTreeSet::new();
-                for (lo, hi) in top_level_argument_ranges(args, rel)? {
-                    if let Some(value) = literal_path_expression(&args[lo..hi], rel, 0)?
-                        && let Some(path) = repository_path_literal(value)
+                b'(' => {
+                    if let Some((seg_at, seg_end)) = final_ident_before(src, i)
+                        && let Some((close, quoted)) = paren_close(src, i, rel)?
                     {
-                        literals.insert(path);
+                        if quoted {
+                            let args = &src[i + 1..close];
+                            let mut literals = BTreeSet::new();
+                            for (lo, hi) in top_level_argument_ranges(args, rel)? {
+                                if let Some(value) = literal_path_expression(&args[lo..hi], rel, 0)?
+                                    && let Some(path) = repository_path_literal(value)
+                                {
+                                    literals.insert(path);
+                                }
+                            }
+                            if !literals.is_empty() {
+                                self.helper_calls.push(HelperCall {
+                                    crate_root: crate_root.to_string(),
+                                    name: src[seg_at..seg_end].to_string(),
+                                    includer: rel.to_string(),
+                                    resolution: resolve_offset(layout, is_test_file, seg_at),
+                                    literals,
+                                });
+                            }
+                        }
+                        i = close + 1;
+                        continue;
                     }
                 }
-                if !literals.is_empty() {
-                    self.helper_calls.push(HelperCall {
-                        crate_root: crate_root.to_string(),
-                        name: src[seg_at..seg_end].to_string(),
-                        includer: rel.to_string(),
-                        resolution: resolve_offset(layout, is_test_file, seg_at),
-                        literals,
-                    });
-                }
-                i = close + 1;
-                continue;
+                _ => {}
             }
-            i = seg_end.max(i + 1);
+            i += 1;
         }
         Ok(())
     }
