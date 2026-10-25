@@ -492,7 +492,16 @@ fn test_block_still_open(
     decl_idx: usize,
     opener_indent: usize,
 ) -> bool {
-    if lines[opener_idx].contains('}') {
+    let mut opens = 0usize;
+    let mut closes = 0usize;
+    for ch in lines[opener_idx].chars() {
+        if ch == '{' {
+            opens += 1;
+        } else if ch == '}' {
+            closes += 1;
+        }
+    }
+    if closes > 0 && opens == closes {
         return false;
     }
     let opener_trimmed = lines[opener_idx].trim();
@@ -1102,6 +1111,22 @@ test(\"empty\", () => {});
         assert_eq!(chosen.path, "pkg/widget.js");
         assert!(chosen.has_body);
         assert!(!chosen.test_local);
+    }
+
+    #[test]
+    fn definition_line__template_literal_opener__nested_fn_is_test_local() {
+        let opener = "it(`opens ${kind}`, () => {";
+        let text = "\
+it(`opens ${kind}`, () => {
+    function widget_open() {
+        return 1;
+    }
+});
+";
+        assert!(text.starts_with(opener), "{opener}");
+        let chosen = witness(&[("pkg/widget.js", text)], "widget_open").expect("nested function");
+        assert!(chosen.has_body, "{opener}");
+        assert!(chosen.test_local, "{opener}");
     }
 
     #[test]
