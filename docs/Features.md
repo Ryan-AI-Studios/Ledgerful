@@ -221,9 +221,7 @@ literal-less consumers remain repo-wide uncertainty. Unreferenced legacy-materia
 paths refuse even alongside mapped code. Lookup-derived stems are function names. Production includers without inline
 tests use fresh per-includer test_mapping rows (D3(d)); those mapping-derived
 stems retain the file-level-stem limitation (0549-P3-2, owner 0550); the shipped `__slow` phrase is `runner reported no tests` (0555). Detection stays 0550. Dependency annotations appear in verbose plan step descriptions;
-dry-run JSON retains its existing fields. Helper-mediated reads remain a known
-limitation: "no direct include/read found by the lexical lookup" does not prove
-that no test depends on an unreferenced file. Unreferenced non-cheap material in
+dry-run JSON retains its existing fields. A literal path passed to a production helper is attributed through one hop in the same crate, and two helpers with the same final ident in that crate share those literals. A path built at runtime stays an accepted limit and does not refuse every unreferenced file. The annotation "no direct include/read found by the lexical lookup" remains when no literal consumer, include, or helper call names the candidate. An askama `#[template(path = ...)]` also resolves under `<crate>/templates/`. An empty embed key is that crate root and matches every path under it. A custom `askama.toml` directory list is not read. Unreferenced non-cheap material in
 the engine checkout refuses.
 
 Rust detection for fast verification is memoized and runs when a dirty path
@@ -237,14 +235,8 @@ An inconclusive result keeps strict materiality and refuses paths that need
 it; cheap-only and empty plans retain their existing behavior. A malformed or
 unreadable root manifest refuses a non-empty fast plan, including cheap docs.
 A root package.json with a valid nested Cargo.toml takes strict materiality
-when that trigger applies. Directory pruning is depth-agnostic: target,
-vendor, deps_src, third_party, node_modules, .git, .ledgerful, .venv and venv
-are excluded at any depth (case-insensitively on Windows).
+when that trigger applies. Directory pruning keeps `.git`, `.ledgerful`, `node_modules`, `.venv`, and `venv` excluded at every depth. `vendor`, `deps_src`, and `third_party` are excluded only as direct children of the walk root. `target` is excluded only when its parent contains `Cargo.toml`. Skip names stay case-insensitive on Windows.
 
-Non-literal production reads without inline tests are an accepted limitation:
-a production loader can read a changed template dynamically while fast
-verification omits its integration test. Helper-mediated literal reads have
-the same limitation (0549-P3-5, owner 0550); the owner must re-decide this
-tradeoff. A zero-step plan has no step description to annotate, and dry-run
+A literal path passed to a production helper is attributed through one hop in the same crate. Two helpers with the same final ident in one crate share those literals. A path built at runtime stays an accepted limit and that read does not refuse every unreferenced file. The annotation "no direct include/read found by the lexical lookup" remains when no literal consumer, include, or helper call names the candidate. An askama `#[template(path = ...)]` also resolves under `<crate>/templates/`. An empty embed key is that crate root and matches every path under it. A custom `askama.toml` directory list is not read. A zero-step plan has no step description to annotate, and dry-run
 JSON adds no annotation field. Generated OUT_DIR runtime reads, like includes,
 do not create unresolved repository reads.
