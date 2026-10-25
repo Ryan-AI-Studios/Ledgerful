@@ -1536,3 +1536,431 @@ fn manual_commit_then_hook_without_trailer_keeps_two_rows() {
     assert!(cli_after.1.as_ref().is_some_and(|s| !s.is_empty()));
     assert!(cli_after.2.is_none());
 }
+
+struct NothingPendingAmendPrelude {
+    tmp: tempfile::TempDir,
+    cli_tx: String,
+    hook_tx: String,
+}
+
+fn excluded_count_and_pending(db_path: &std::path::Path) -> (i32, i32) {
+    let db = rusqlite::Connection::open(db_path).unwrap();
+    let count: i32 = db
+        .query_row(
+            "SELECT COUNT(*) FROM transactions WHERE entity != 'ledgerful/gate-mode'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let pending: i32 = db
+        .query_row(
+            "SELECT COUNT(*) FROM transactions WHERE status = 'PENDING' AND entity != 'ledgerful/gate-mode'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    (count, pending)
+}
+
+fn excluded_rows(db_path: &std::path::Path) -> Vec<(String, String, String, String)> {
+    let db = rusqlite::Connection::open(db_path).unwrap();
+    let mut stmt = db
+        .prepare(
+            "SELECT tx_id, source, status, entity FROM transactions \
+             WHERE entity != 'ledgerful/gate-mode' ORDER BY tx_id",
+        )
+        .unwrap();
+    stmt.query_map([], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+    })
+    .unwrap()
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap()
+}
+
+/// First post-commit of `manual_commit_then_hook_without_trailer_keeps_two_rows`:
+/// two COMMITTED rows, pending 0, sidecar absent, message with no ledger line.
+fn nothing_pending_two_committed_rows() -> NothingPendingAmendPrelude {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    crate::common::setup_git_repo(root);
+
+    let ledgerful_bin = std::env!("CARGO_BIN_EXE_ledgerful");
+    let subject_a = "feat: record one edit";
+    let body_a = "Body records the same edit.";
+
+    let init = std::process::Command::new(ledgerful_bin)
+        .arg("init")
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        init.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let config = std::fs::read_to_string(root.join(".ledgerful").join("config.toml")).unwrap();
+    assert!(
+        config.contains("mode = \"observe\""),
+        "oracle stays on default observe gate mode"
+    );
+    assert!(
+        !config.contains("mode = \"enforce\""),
+        "oracle must not set enforce"
+    );
+
+    let start = std::process::Command::new(ledgerful_bin)
+        .args([
+            "ledger",
+            "start",
+            "alpha.rs",
+            "--category",
+            "FEATURE",
+            "--message",
+            "open the CLI row",
+        ])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "ledger start failed: {}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+
+    let status_out = std::process::Command::new(ledgerful_bin)
+        .args(["ledger", "status", "--json"])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    let status_json: serde_json::Value = serde_json::from_slice(&status_out.stdout).unwrap();
+    let cli_tx = status_json["pendingTxIds"][0]
+        .as_str()
+        .expect("pending tx id")
+        .to_string();
+
+    let commit = std::process::Command::new(ledgerful_bin)
+        .args([
+            "ledger",
+            "commit",
+            &cli_tx,
+            "--summary",
+            subject_a,
+            "--reason",
+            "manual ledger commit",
+        ])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        commit.status.success(),
+        "ledger commit failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&commit.stdout),
+        String::from_utf8_lossy(&commit.stderr)
+    );
+
+    std::fs::write(root.join("alpha.rs"), "fn alpha() {}\n").unwrap();
+    let add_a = std::process::Command::new("git")
+        .args(["add", "alpha.rs"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(add_a.status.success(), "git add alpha.rs failed");
+
+    let msg_file = root.join(".git").join("COMMIT_EDITMSG");
+    let msg_a = format!("{subject_a}\n\n{body_a}\n");
+    assert!(!msg_a.contains("Ledger:"));
+    assert!(!msg_a.contains("Ledger-Tx:"));
+    std::fs::write(&msg_file, &msg_a).unwrap();
+
+    let hook_a = std::process::Command::new(ledgerful_bin)
+        .args(["internal", "hook-commit-msg", msg_file.to_str().unwrap()])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        hook_a.status.success(),
+        "hook-commit-msg failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&hook_a.stdout),
+        String::from_utf8_lossy(&hook_a.stderr)
+    );
+
+    let empty_hooks = root.join("empty-hooks");
+    std::fs::create_dir_all(&empty_hooks).unwrap();
+    let git_commit_a = std::process::Command::new("git")
+        .args([
+            "-c",
+            &format!("core.hooksPath={}", empty_hooks.display()),
+            "commit",
+            "-F",
+            msg_file.to_str().unwrap(),
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        git_commit_a.status.success(),
+        "git commit (no hooks) failed: {}",
+        String::from_utf8_lossy(&git_commit_a.stderr)
+    );
+
+    let promote_a = std::process::Command::new(ledgerful_bin)
+        .args(["internal", "hook-post-commit"])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        promote_a.status.success(),
+        "post-commit failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&promote_a.stdout),
+        String::from_utf8_lossy(&promote_a.stderr)
+    );
+
+    let db_path = root.join(".ledgerful").join("state").join("ledger.db");
+    let (count, pending) = excluded_count_and_pending(&db_path);
+    assert_eq!(count, 2, "prelude excluded count is 2");
+    assert_eq!(pending, 0, "prelude pending is 0");
+    let sidecar = root
+        .join(".ledgerful")
+        .join("state")
+        .join("pending_hook_tx");
+    assert!(!sidecar.exists(), "prelude sidecar is absent");
+    let rows = excluded_rows(&db_path);
+    assert_eq!(rows.len(), 2, "prelude leaves two excluded rows");
+    assert!(
+        rows.iter().all(|row| row.2 == "COMMITTED"),
+        "prelude rows must be COMMITTED: {rows:?}"
+    );
+    let cli = rows
+        .iter()
+        .find(|row| row.1 == "CLI")
+        .expect("CLI source row");
+    let hook = rows
+        .iter()
+        .find(|row| row.1 == "HOOK")
+        .expect("HOOK source row");
+    assert_eq!(cli.0, cli_tx);
+    assert_eq!(hook.3, "alpha.rs");
+
+    NothingPendingAmendPrelude {
+        tmp,
+        cli_tx,
+        hook_tx: hook.0.clone(),
+    }
+}
+
+#[test]
+fn nothing_pending_amend_with_no_staged_files_appends_nothing() {
+    let prelude = nothing_pending_two_committed_rows();
+    let root = prelude.tmp.path();
+    let ledgerful_bin = std::env!("CARGO_BIN_EXE_ledgerful");
+    let db_path = root.join(".ledgerful").join("state").join("ledger.db");
+    let msg_file = root.join(".git").join("COMMIT_EDITMSG");
+    let empty_hooks = root.join("empty-hooks");
+    let cli_tx = prelude.cli_tx.clone();
+    let hook_tx = prelude.hook_tx.clone();
+    assert!(msg_file.is_file(), "COMMIT_EDITMSG missing");
+
+    let cached = std::process::Command::new("git")
+        .args(["diff", "--name-only", "--cached"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        cached.status.success(),
+        "git diff --cached failed: {}",
+        String::from_utf8_lossy(&cached.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&cached.stdout).trim(), "");
+
+    let (before_empty, pending_before) = excluded_count_and_pending(&db_path);
+
+    let hook = std::process::Command::new(ledgerful_bin)
+        .args(["internal", "hook-commit-msg", msg_file.to_str().unwrap()])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        hook.status.success(),
+        "hook-commit-msg failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&hook.stdout),
+        String::from_utf8_lossy(&hook.stderr)
+    );
+
+    let amend = std::process::Command::new("git")
+        .args([
+            "-c",
+            &format!("core.hooksPath={}", empty_hooks.display()),
+            "commit",
+            "--amend",
+            "--no-edit",
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        amend.status.success(),
+        "empty amend failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&amend.stdout),
+        String::from_utf8_lossy(&amend.stderr)
+    );
+
+    let promote = std::process::Command::new(ledgerful_bin)
+        .args(["internal", "hook-post-commit"])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        promote.status.success(),
+        "post-commit failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&promote.stdout),
+        String::from_utf8_lossy(&promote.stderr)
+    );
+
+    let rows_empty = excluded_rows(&db_path);
+    let after_empty = rows_empty.len();
+    let hook_count_empty = rows_empty.iter().filter(|row| row.1 == "HOOK").count();
+    let cli_count_empty = rows_empty.iter().filter(|row| row.1 == "CLI").count();
+    let (_, pending_after) = excluded_count_and_pending(&db_path);
+
+    assert_eq!(before_empty, 2, "two rows before amend");
+    assert_eq!(after_empty, 2, "empty amend appends nothing");
+    assert_eq!(hook_count_empty, 1, "empty amend keeps one HOOK");
+    assert_eq!(cli_count_empty, 1, "CLI row stays");
+    assert_eq!(pending_before, 0, "nothing is PENDING");
+    assert_eq!(pending_after, 0, "still nothing PENDING");
+    assert!(rows_empty.iter().any(|row| row.0 == hook_tx));
+    assert!(rows_empty.iter().any(|row| row.0 == cli_tx));
+}
+
+#[test]
+fn nothing_pending_amend_with_staged_files_appends_one_hook_row() {
+    let prelude = nothing_pending_two_committed_rows();
+    let root = prelude.tmp.path();
+    let ledgerful_bin = std::env!("CARGO_BIN_EXE_ledgerful");
+    let db_path = root.join(".ledgerful").join("state").join("ledger.db");
+    let msg_file = root.join(".git").join("COMMIT_EDITMSG");
+    let empty_hooks = root.join("empty-hooks");
+    let cli_tx = prelude.cli_tx.clone();
+    let hook_tx = prelude.hook_tx.clone();
+
+    std::fs::write(root.join("gamma.rs"), "fn gamma() {}\n").unwrap();
+    let add = std::process::Command::new("git")
+        .args(["add", "gamma.rs"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(add.status.success(), "git add gamma.rs failed");
+
+    let subject = "feat: amend a staged file";
+    let body = "Body records the staged amend.";
+    let msg = format!("{subject}\n\n{body}\n");
+    assert!(!msg.contains("Ledger:"));
+    assert!(!msg.contains("Ledger-Tx:"));
+    std::fs::write(&msg_file, &msg).unwrap();
+
+    let (before_staged, pending_before) = excluded_count_and_pending(&db_path);
+
+    let cached = std::process::Command::new("git")
+        .args(["diff", "--name-only", "--cached"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        cached.status.success(),
+        "git diff --cached failed: {}",
+        String::from_utf8_lossy(&cached.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&cached.stdout).trim(), "gamma.rs");
+
+    let hook = std::process::Command::new(ledgerful_bin)
+        .args(["internal", "hook-commit-msg", msg_file.to_str().unwrap()])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        hook.status.success(),
+        "hook-commit-msg failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&hook.stdout),
+        String::from_utf8_lossy(&hook.stderr)
+    );
+
+    let amend = std::process::Command::new("git")
+        .args([
+            "-c",
+            &format!("core.hooksPath={}", empty_hooks.display()),
+            "commit",
+            "--amend",
+            "-F",
+            msg_file.to_str().unwrap(),
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        amend.status.success(),
+        "staged amend failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&amend.stdout),
+        String::from_utf8_lossy(&amend.stderr)
+    );
+
+    let promote = std::process::Command::new(ledgerful_bin)
+        .args(["internal", "hook-post-commit"])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        promote.status.success(),
+        "post-commit failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&promote.stdout),
+        String::from_utf8_lossy(&promote.stderr)
+    );
+
+    let rows_staged = excluded_rows(&db_path);
+    let after_staged = rows_staged.len();
+    let hook_count_staged = rows_staged.iter().filter(|row| row.1 == "HOOK").count();
+    let cli_count_staged = rows_staged.iter().filter(|row| row.1 == "CLI").count();
+    let (_, pending_after) = excluded_count_and_pending(&db_path);
+    let new_row = rows_staged
+        .iter()
+        .find(|row| row.0 != cli_tx && row.0 != hook_tx)
+        .unwrap_or_else(|| panic!("staged amend rows: {rows_staged:?}"));
+
+    assert_eq!(before_staged, 2, "two rows before amend");
+    assert_eq!(after_staged, 3, "staged amend appends one row");
+    assert_eq!(hook_count_staged, 2, "earlier HOOK row stays");
+    assert_eq!(cli_count_staged, 1, "CLI row stays");
+    assert_eq!(pending_before, 0, "nothing is PENDING");
+    assert_eq!(pending_after, 0, "still nothing PENDING");
+    assert_eq!(new_row.1, "HOOK");
+    assert_eq!(new_row.2, "COMMITTED");
+    assert_eq!(new_row.3, "gamma.rs");
+    assert!(rows_staged.iter().any(|row| row.0 == hook_tx));
+    assert!(rows_staged.iter().any(|row| row.0 == cli_tx));
+
+    let earlier = rows_staged
+        .iter()
+        .find(|row| row.0 == hook_tx)
+        .expect("earlier HOOK id");
+    assert_eq!(earlier.3, "alpha.rs");
+    let db = rusqlite::Connection::open(&db_path).unwrap();
+    let new_entry: (String, Option<String>) = db
+        .query_row(
+            "SELECT summary, verification_status FROM ledger_entries WHERE tx_id = ?1",
+            rusqlite::params![&new_row.0],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(new_entry.0, subject);
+    assert_eq!(new_entry.1.as_deref(), Some("unverified"));
+}
