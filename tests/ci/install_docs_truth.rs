@@ -3561,3 +3561,205 @@ fn docs_only_rename_guard_dominates_rust_false() {
         }
     }
 }
+
+const PUBLISHED_V0217_ARCHIVES: &[&str] = &[
+    "ledgerful-x86_64-pc-windows-msvc.zip",
+    "ledgerful-x86_64-unknown-linux-gnu.tar.gz",
+    "ledgerful-x86_64-apple-darwin.tar.gz",
+    "ledgerful-aarch64-apple-darwin.tar.gz",
+];
+
+const UNPUBLISHED_V0217_ARCHIVES: &[&str] = &[
+    "ledgerful-aarch64-unknown-linux-gnu.tar.gz",
+    "ledgerful-x86_64-unknown-linux-musl.tar.gz",
+    "ledgerful-aarch64-pc-windows-msvc.zip",
+    "ledgerful-x86_64-pc-windows-gnu.zip",
+];
+
+const INSTALL_SH_ARMS: &[&str] = &[
+    "    Linux:x86_64) asset=\"ledgerful-x86_64-unknown-linux-gnu.tar.gz\" ;;",
+    "    Darwin:x86_64) asset=\"ledgerful-x86_64-apple-darwin.tar.gz\" ;;",
+    "    Darwin:arm64) asset=\"ledgerful-aarch64-apple-darwin.tar.gz\" ;;",
+    "    *) return 1 ;;",
+];
+
+fn floor_interior<'a>(source: &'a str, site: &str) -> &'a str {
+    let open = format!("<!-- lf-floor:{site} -->");
+    let close = format!("<!-- /lf-floor:{site} -->");
+    let at = source.find(open.as_str()).expect("floor open");
+    let after = &source[at + open.len()..];
+    let end = after.find(close.as_str()).expect("floor close");
+    &after[..end]
+}
+
+/// `0.2.17` remains after every `v0.2.17` and both exact lag clauses are removed.
+fn floor_presents_v0217_community_index(body: &str) -> bool {
+    let remainder = body
+        .replace("v0.2.17", "")
+        .replace("do not claim winget 0.2.17 until that directory exists", "")
+        .replace("do not claim 0.2.17 live until that directory exists", "");
+    remainder.contains("0.2.17")
+}
+
+fn strip_phrases(body: &str, phrases: &[&str]) -> String {
+    let mut remainder = body.to_string();
+    for phrase in phrases {
+        remainder = remainder.replace(phrase, "");
+    }
+    remainder
+}
+
+fn claims_clean_image(body: &str) -> bool {
+    strip_phrases(
+        body,
+        &[
+            "is not a clean image",
+            "not a clean image",
+            "isn't a clean image",
+        ],
+    )
+    .contains("clean image")
+}
+
+fn claims_without_the_vc(body: &str) -> bool {
+    strip_phrases(
+        body,
+        &[
+            "cannot run without the VC",
+            "can't run without the VC",
+            "does not run without the VC",
+            "will not run without the VC",
+            "not without the VC",
+            "needs the VC",
+        ],
+    )
+    .contains("without the VC")
+}
+
+fn claims_vcruntime_absent(body: &str) -> bool {
+    strip_phrases(
+        body,
+        &[
+            "does not show that vcruntime140.dll is absent",
+            "does not claim that vcruntime140.dll is absent",
+        ],
+    )
+    .contains("vcruntime140.dll is absent")
+}
+
+#[test]
+fn published_v0_2_17_docs_do_not_claim_an_unshipped_install() {
+    let installation = include_str!("../../docs/installation.md");
+    let package = include_str!("../../docs/package-distribution.md");
+    let install_ps1 = include_str!("../../install/install.ps1");
+    let install_sh = include_str!("../../install/install.sh");
+    for name in PUBLISHED_V0217_ARCHIVES {
+        assert!(
+            installation.contains(name),
+            "installation.md missing {name}"
+        );
+        assert!(
+            package.contains(name),
+            "package-distribution.md missing {name}"
+        );
+    }
+    for name in UNPUBLISHED_V0217_ARCHIVES {
+        assert!(
+            !installation.contains(name),
+            "installation.md claims {name}"
+        );
+        assert!(
+            !package.contains(name),
+            "package-distribution.md claims {name}"
+        );
+        assert!(!install_ps1.contains(name), "install.ps1 claims {name}");
+        assert!(!install_sh.contains(name), "install.sh claims {name}");
+    }
+    assert!(
+        install_ps1.contains("ledgerful-x86_64-pc-windows-msvc.zip"),
+        "install.ps1 missing the published Windows zip"
+    );
+    assert!(
+        !install_ps1.contains("ledgerful-x86_64-unknown-linux-gnu.tar.gz"),
+        "install.ps1 claims the Linux archive"
+    );
+    for arm in INSTALL_SH_ARMS {
+        assert!(install_sh.contains(arm), "install.sh missing {arm}");
+    }
+    assert!(
+        !install_sh.contains("Linux:aarch64"),
+        "install.sh maps aarch64 Linux"
+    );
+    assert!(
+        !install_sh.contains("Linux:arm64"),
+        "install.sh maps arm64 Linux"
+    );
+    let floors = [
+        ("I-57", floor_interior(installation, "I-57")),
+        ("P-13", floor_interior(package, "P-13")),
+        ("P-191", floor_interior(package, "P-191")),
+        ("P-215", floor_interior(package, "P-215")),
+        ("P-217", floor_interior(package, "P-217")),
+    ];
+    for (site, body) in floors {
+        if floor_presents_v0217_community_index(body) {
+            assert!(
+                body.contains("Microsoft.VCRedist.2015+.x64"),
+                "{site} names **0.2.17** without Microsoft.VCRedist.2015+.x64"
+            );
+        }
+        assert!(!claims_clean_image(body), "{site} claims a clean image");
+        assert!(
+            !claims_without_the_vc(body),
+            "{site} claims a launch without the VC runtime"
+        );
+        assert!(
+            !claims_vcruntime_absent(body),
+            "{site} claims vcruntime140.dll is absent"
+        );
+    }
+    assert!(!floor_presents_v0217_community_index("**v0.2.17**"));
+    assert!(!floor_presents_v0217_community_index(
+        "do not claim winget 0.2.17 until that directory exists"
+    ));
+    assert!(!floor_presents_v0217_community_index(
+        "do not claim 0.2.17 live until that directory exists"
+    ));
+    assert!(!floor_presents_v0217_community_index(
+        "**v0.2.17** do not claim winget 0.2.17 until that directory exists"
+    ));
+    let future_index = "community index is live at **0.2.17**";
+    assert!(floor_presents_v0217_community_index(future_index));
+    assert!(!future_index.contains("Microsoft.VCRedist.2015+.x64"));
+    let future_index_and_latest = "community index is live at **0.2.17** Latest **v0.2.17**";
+    assert!(floor_presents_v0217_community_index(
+        future_index_and_latest
+    ));
+    assert!(!future_index_and_latest.contains("Microsoft.VCRedist.2015+.x64"));
+    let future_winget = "winget 0.2.17 is live";
+    assert!(floor_presents_v0217_community_index(future_winget));
+    assert!(!future_winget.contains("Microsoft.VCRedist.2015+.x64"));
+    let named = "community index is live at **0.2.17** Microsoft.VCRedist.2015+.x64";
+    assert!(floor_presents_v0217_community_index(named));
+    assert!(named.contains("Microsoft.VCRedist.2015+.x64"));
+    assert!(!claims_clean_image("this is not a clean image"));
+    assert!(claims_clean_image("the install is a clean image"));
+    assert!(claims_clean_image("on a clean image"));
+    assert!(!claims_without_the_vc("cannot run without the VC"));
+    assert!(!claims_without_the_vc("the install needs the VC runtime"));
+    assert!(claims_without_the_vc("runs without the VC"));
+    assert!(claims_vcruntime_absent("vcruntime140.dll is absent"));
+    assert!(!claims_vcruntime_absent("vcruntime140.dll is not absent"));
+    assert!(claims_vcruntime_absent(
+        "does not show that vcruntime140.dll is absent vcruntime140.dll is absent"
+    ));
+    assert!(claims_vcruntime_absent(
+        "does not claim that vcruntime140.dll is absent vcruntime140.dll is absent"
+    ));
+    assert!(!claims_vcruntime_absent(
+        "does not show that vcruntime140.dll is absent"
+    ));
+    assert!(!claims_vcruntime_absent(
+        "does not claim that vcruntime140.dll is absent"
+    ));
+}
