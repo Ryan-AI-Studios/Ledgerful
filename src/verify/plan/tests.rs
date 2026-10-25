@@ -4831,6 +4831,47 @@ fn non_rust_unreadable__noncheap__refuses_without_os_text() {
 
 #[test]
 #[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn non_rust_unreadable__unterminated_string__refuses() {
+    let (_tmp, root) = foreign_fixture(&[("app.py", "open(\"templates/message.txt\n")]);
+    let plan = default_non_rust_plan(&root, &["notes.txt"]);
+    assert_embed_reason(&plan, "app.py: unlexable");
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn non_rust_unreadable__unclosed_comment__refuses() {
+    let (_tmp, root) =
+        foreign_fixture(&[("app.js", "/* never closed\nimport \"./assets/logo.png\"\n")]);
+    let plan = default_non_rust_plan(&root, &["notes.txt"]);
+    assert_embed_reason(&plan, "app.js: unlexable");
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn non_rust_bounded_scan__oversized_file_count__refuses() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("pkg");
+    fs::create_dir_all(&dir).unwrap();
+    let body = vec![b'x'; super::embedded::MAX_FILE_BYTES as usize + 1];
+    for index in 0..65 {
+        fs::write(dir.join(format!("f{index:02}.py")), &body).unwrap();
+    }
+    fs::write(tmp.path().join("notes.txt"), b"n\n").unwrap();
+    let root = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+    let plan = default_non_rust_plan(&root, &["notes.txt"]);
+    assert_embed_reason(&plan, "notes.txt: non-Rust embedded scan bound exceeded:");
+    assert!(
+        plan.fallback_reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("max 64 oversized files"),
+        "{:?}",
+        plan.fallback_reason
+    );
+}
+
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
 fn polyglot_rust_stem__still_selects_nextest() {
     let src = "pub fn contract() -> &'static str { include_str!(\"../docs/contract.md\") }\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t_doc() { let _ = contract(); }\n}\n";
     let (_tmp, root) = foreign_fixture(&[

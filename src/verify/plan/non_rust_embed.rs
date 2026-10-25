@@ -68,6 +68,7 @@ pub(crate) fn decide_non_rust(
                 return read_error_decision(&errors);
             }
             let mut facts = Vec::new();
+            let mut budget = StreamBudget::default();
             for rel in files {
                 let full = repo_root.join(&rel);
                 let meta = match std::fs::metadata(&full) {
@@ -82,7 +83,6 @@ pub(crate) fn decide_non_rust(
                     }
                 };
                 if meta.len() > MAX_FILE_BYTES {
-                    let mut budget = StreamBudget::default();
                     let tokens = tokens_for_ext(&rel);
                     match oversized_has_token(&full, &mut budget, tokens) {
                         Ok(Some(false)) => continue,
@@ -130,7 +130,17 @@ pub(crate) fn decide_non_rust(
                 let Some(lang) = lang_of(&rel) else {
                     continue;
                 };
-                facts.push(analyze_file(&rel, &text, lang, repo_root, &kept));
+                match analyze_file(&rel, &text, lang, repo_root, &kept) {
+                    Ok(file) => facts.push(file),
+                    Err(()) => {
+                        if !is_cheap_only(&kept, &is_cheap) {
+                            let mut errors = errors.clone();
+                            errors.insert(format!("{rel}: unlexable"));
+                            return read_error_decision(&errors);
+                        }
+                        continue;
+                    }
+                }
             }
             assemble(&kept, &facts)
         }
@@ -394,7 +404,16 @@ fn helpers_match(
     }
 }
 
-fn analyze_file(rel: &str, src: &str, lang: Lang, root: &Path, candidates: &[String]) -> FileFacts {
+fn analyze_file(
+    rel: &str,
+    src: &str,
+    lang: Lang,
+    root: &Path,
+    candidates: &[String],
+) -> Result<FileFacts, ()> {
+    if has_unlexable(src, lang) {
+        return Err(());
+    }
     let has_importlib = lang == Lang::Python && code_contains(src, lang, "importlib.resources");
     let mut facts = FileFacts {
         rel: rel.to_string(),
@@ -500,7 +519,7 @@ fn analyze_file(rel: &str, src: &str, lang: Lang, root: &Path, candidates: &[Str
             i = start + utf8_len(bytes[start]);
         }
     }
-    facts
+    Ok(facts)
 }
 
 struct Lex<'a> {
@@ -1071,6 +1090,55 @@ struct StrTok {
     end: usize,
     value: String,
     literal: bool,
+}
+
+fn has_unlexable(src: &str, lang: Lang) -> bool {
+    let bytes = src.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if lang == Lang::Python && bytes[i] == b'#' {
+            i = skip_line_comment(src, i);
+            continue;
+        }
+        if lang != Lang::Python && bytes[i] == b'/' && src[i..].starts_with("//") {
+            i = skip_line_comment(src, i);
+            continue;
+        }
+        if lang != Lang::Python && bytes[i] == b'/' && src[i..].starts_with("/*") {
+            if !src[i + 2..].contains("*/") {
+                return true;
+            }
+            i = skip_block_comment(src, i);
+            continue;
+        }
+        if unterminated_string(src, i, lang) {
+            return true;
+        }
+        if let Some(token) = try_string(src, i, lang) {
+            i = token.end;
+            continue;
+        }
+        i += utf8_len(bytes[i]);
+    }
+    false
+}
+
+fn unterminated_string(src: &str, i: usize, lang: Lang) -> bool {
+    if try_string(src, i, lang).is_some() {
+        return false;
+    }
+    let bytes = src.as_bytes();
+    match lang {
+        Lang::Python => {
+            if !matches!(bytes.get(i), Some(b'"' | b'\'')) {
+                return false;
+            }
+            let (prefix_start, _, _) = python_prefix(src, i);
+            prefix_start == i || is_py_prefix(&src[prefix_start..i])
+        }
+        Lang::Go => matches!(bytes.get(i), Some(b'"' | b'`')),
+        Lang::Script => matches!(bytes.get(i), Some(b'"' | b'\'' | b'`')),
+    }
 }
 
 fn try_string(src: &str, i: usize, lang: Lang) -> Option<StrTok> {
