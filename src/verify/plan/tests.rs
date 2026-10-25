@@ -4776,7 +4776,7 @@ impl UnreadablePy {
         {
             use std::os::unix::fs::PermissionsExt;
             let mut perms = fs::metadata(path).unwrap().permissions();
-            perms.set_mode(0);
+            perms.set_mode(0o000);
             fs::set_permissions(path, perms).unwrap();
             Self {
                 path: path.to_path_buf(),
