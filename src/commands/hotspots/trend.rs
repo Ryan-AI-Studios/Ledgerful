@@ -1,4 +1,4 @@
-use super::list::persist_hotspots_and_couplings;
+use super::list::{latest_hotspot_history_timestamp, persist_hotspots_and_couplings};
 use crate::impact::budget::{HotspotProvenance, HotspotProvenanceSource, format_provenance_footer};
 use crate::impact::hotspots::{HotspotQuery, calculate_hotspots, normalize_score};
 use crate::impact::temporal::GixHistoryProvider;
@@ -7,7 +7,7 @@ use crate::output::table::build_premium_table;
 use crate::state::storage::StorageManager;
 use crate::state::storage::hotspot_trends::insert_hotspot_trends_with_retry;
 use crate::util::term::prompt_yes_no;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream, Style};
 
@@ -648,6 +648,22 @@ fn classify_trend_absence(
     })
 }
 
+pub(super) fn later_history_snapshot_line(
+    last_trend_sample: Option<&str>,
+    history_snapshot: Option<&str>,
+) -> Option<String> {
+    let history = history_snapshot?;
+    let trend = last_trend_sample?;
+    let history_dt = DateTime::parse_from_rfc3339(history).ok()?;
+    let trend_dt = DateTime::parse_from_rfc3339(trend).ok()?;
+    if history_dt <= trend_dt {
+        return None;
+    }
+    Some(format!(
+        "  A later hotspot_history snapshot exists at {history}."
+    ))
+}
+
 fn attach_trend_absence(payload: &mut serde_json::Value, absence: &TrendAbsence) {
     let Some(obj) = payload.as_object_mut() else {
         return;
@@ -678,7 +694,7 @@ fn attach_trend_absence(payload: &mut serde_json::Value, absence: &TrendAbsence)
     }
 }
 
-fn print_empty_trend(absence: &TrendAbsence) {
+fn print_empty_trend(absence: &TrendAbsence, later_history: Option<&str>) {
     match absence.empty_reason {
         Some("noSeries") => {
             println!("  No stored trend samples for this path.");
@@ -687,6 +703,11 @@ fn print_empty_trend(absence: &TrendAbsence) {
             println!("  No trend data in this window.");
             if let Some(ts) = &absence.last_sample_at {
                 println!("  Last sample recorded at {ts}.");
+            }
+            if let Some(line) =
+                later_history_snapshot_line(absence.last_sample_at.as_deref(), later_history)
+            {
+                println!("{line}");
             }
         }
         _ if absence.history_available => {
@@ -789,6 +810,11 @@ pub(super) fn execute_hotspots_trend(
 
     let mode = resolve_trend_mode(&entity, all, limit);
     let absence = classify_trend_absence(storage, &entity, rows.is_empty(), bootstrapped)?;
+    let later_history = if entity.is_none() {
+        latest_hotspot_history_timestamp(storage)
+    } else {
+        None
+    };
 
     // C5: stale + single-datapoint hints from full rows before truncation.
     let (latest_hash, current_head_hash) = rows
@@ -916,7 +942,7 @@ pub(super) fn execute_hotspots_trend(
                     .if_supports_color(Stream::Stdout, |s| s.style(Style::new().blue().bold()))
                 );
                 if rows.is_empty() {
-                    print_empty_trend(&absence);
+                    print_empty_trend(&absence, later_history.as_deref());
                 } else {
                     println!("{}", render_trend_summary_table(&summary));
                     if summary.truncated {
@@ -946,7 +972,7 @@ pub(super) fn execute_hotspots_trend(
                         .if_supports_color(Stream::Stdout, |s| s.style(Style::new().blue().bold()))
                 );
                 if rows.is_empty() {
-                    print_empty_trend(&absence);
+                    print_empty_trend(&absence, later_history.as_deref());
                 } else {
                     println!("{}", render_hotspot_trend_table(&rows));
                     if single_datapoint {

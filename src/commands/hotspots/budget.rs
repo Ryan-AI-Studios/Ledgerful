@@ -286,6 +286,11 @@ pub(super) fn format_budget_human(report: &BudgetReport) -> String {
                     v.path, v.score, v.threshold
                 ));
             }
+            if let Some(ts) = &report.snapshot_at {
+                lines.push(format!(
+                    "  This is a hotspot_history sample at {ts}, not a 30-day hotspot_trends series."
+                ));
+            }
         }
         BudgetStatus::NoData => {
             if report.empty_reason == Some(BudgetEmptyReason::AllNonFinite) {

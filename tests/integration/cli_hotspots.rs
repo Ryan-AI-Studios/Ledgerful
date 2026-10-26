@@ -228,6 +228,110 @@ fn trend_window_empty_reports_last_sample__slow() {
 
 #[test]
 #[allow(non_snake_case)]
+fn trend_window_empty_names_later_history_snapshot__slow() {
+    let tmp = setup_young_indexed_repo();
+    let root = tmp.path();
+    let recorded_at = "2026-09-08T20:52:00Z";
+    seed_hotspot_trend_recorded_at(root, "src/lib.rs", 0.2, recorded_at);
+    seed_hotspot_history_score(root, "src/lib.rs", 0.97, "2026-10-20T00:54:53Z");
+
+    let output = run_hotspots_trend(root, &["--days", "30", "--json"]);
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).unwrap();
+    assert_eq!(json["emptyReason"], "windowEmpty");
+    assert_eq!(json["lastSampleAt"], recorded_at);
+    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["snapshotCount"], 0);
+    assert!(json.get("lastHistoryAt").is_none(), "{json}");
+    assert!(json.get("lastSampleSource").is_none(), "{json}");
+    assert!(json.get("honestyNotes").is_none(), "{json}");
+    assert!(json["provenance"].get("lastRecordedAt").is_none(), "{json}");
+
+    let human = run_hotspots_trend(root, &["--days", "30"]);
+    assert!(human.status.success());
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(stdout.contains("No trend data in this window."), "{stdout}");
+    assert!(stdout.contains("Last sample recorded at"), "{stdout}");
+    assert!(stdout.contains(recorded_at), "{stdout}");
+    assert!(
+        stdout.contains("A later hotspot_history snapshot exists at 2026-10-20T00:54:53Z."),
+        "{stdout}"
+    );
+
+    let entity_human = run_hotspots_trend(root, &["--entity", "src/lib.rs", "--days", "30"]);
+    assert!(entity_human.status.success());
+    let entity_stdout = String::from_utf8_lossy(&entity_human.stdout);
+    assert!(
+        !entity_stdout.contains("A later hotspot_history snapshot exists"),
+        "{entity_stdout}"
+    );
+
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let budget_json = Command::new(ledgerful_bin)
+        .args(["hotspots", "budget", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        budget_json.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&budget_json.stderr)
+    );
+    let budget: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&budget_json.stdout)).unwrap();
+    assert_eq!(budget["status"], "VIOLATION");
+    assert_eq!(budget["dataset"], "hotspot_history");
+    assert_eq!(budget["snapshotAt"], "2026-10-20T00:54:53Z");
+    assert!(budget.get("emptyReason").is_none(), "{budget}");
+    assert!(budget.get("schemaVersion").is_none(), "{budget}");
+
+    let budget_human = Command::new(ledgerful_bin)
+        .args(["hotspots", "budget"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(budget_human.status.success());
+    let budget_stdout = String::from_utf8_lossy(&budget_human.stdout);
+    assert!(
+        budget_stdout.contains("Status: VIOLATION"),
+        "{budget_stdout}"
+    );
+    assert!(
+        budget_stdout.contains(
+            "This is a hotspot_history sample at 2026-10-20T00:54:53Z, not a 30-day hotspot_trends series."
+        ),
+        "{budget_stdout}"
+    );
+    assert!(!budget_stdout.contains("series crossed"), "{budget_stdout}");
+
+    let history_before = hotspot_history_count(root);
+    let trends_before = hotspot_trends_count(root);
+    let list = run_hotspots(root, &["--limit", "5", "--json"]);
+    assert!(
+        list.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    let list_json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&list.stdout)).unwrap();
+    let files = list_json["files"]
+        .as_array()
+        .expect("files array after --limit 5");
+    assert!(
+        !files.is_empty() || list_json["resultCount"].as_u64().unwrap_or(0) >= 1,
+        "walk must reach persist: {list_json}"
+    );
+    assert_eq!(hotspot_history_count(root), history_before);
+    assert_eq!(hotspot_trends_count(root), trends_before);
+}
+
+#[test]
+#[allow(non_snake_case)]
 fn trend_entity_no_series__slow() {
     let tmp = setup_young_indexed_repo();
     let root = tmp.path();
