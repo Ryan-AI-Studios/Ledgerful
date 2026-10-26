@@ -887,4 +887,93 @@ mod tests {
             "expected cardinality warning, got: {warnings:?}"
         );
     }
+
+    fn old_outer_rows(n: usize, command: &str) -> Vec<TimingRow> {
+        (0..n)
+            .map(|i| TimingRow {
+                run_id: format!("old-{i}"),
+                ts_utc: "2019-01-01T00:00:00.000Z".into(),
+                command: command.into(),
+                duration_ms: 5,
+                exit_code: 0,
+                repo_size_bytes: None,
+                argv_hash: None,
+                ledger_tx_id: None,
+                parent_span_id: None,
+                span_name: None,
+                notes: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn doctor_timing_warnings__over_10000_old_outers__warns_then_clears_after_90d_prune() {
+        let mut conn = setup();
+        insert_timing_batch(&mut conn, &old_outer_rows(10_001, "verify")).unwrap();
+        let before = doctor_timing_warnings(&conn);
+        assert!(
+            before
+                .iter()
+                .any(|w| w.contains(">10k")
+                    && w.contains("ledgerful timings --prune --older-than 90d")),
+            "expected size warning, got: {before:?}"
+        );
+        assert!(
+            before.iter().all(|w| !w.contains("distinct span names")),
+            "size fixture must not trip cardinality: {before:?}"
+        );
+        assert_eq!(prune_timings(&conn, 90, false).unwrap(), 10_001);
+        assert_eq!(count_timings(&conn).unwrap(), 0);
+        let after = doctor_timing_warnings(&conn);
+        assert!(
+            after.iter().all(|w| !w.contains(">10k")),
+            "expected no size warning after prune, got: {after:?}"
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn doctor_timing_warnings__exactly_10000__omits_row_count_warning() {
+        let mut conn = setup();
+        insert_timing_batch(&mut conn, &old_outer_rows(10_000, "verify")).unwrap();
+        let warnings = doctor_timing_warnings(&conn);
+        assert!(
+            warnings.iter().all(|w| !w.contains(">10k")),
+            "10000 must not warn, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn doctor_timing_warnings__size_and_cardinality__size_stays_index_zero() {
+        let mut conn = setup();
+        insert_timing_batch(&mut conn, &old_outer_rows(10_001, "verify")).unwrap();
+        let mut rows = Vec::new();
+        for i in 0..1001 {
+            rows.push(TimingRow {
+                run_id: format!("card-{i}"),
+                ts_utc: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                command: "verify".into(),
+                duration_ms: 5,
+                exit_code: 0,
+                repo_size_bytes: None,
+                argv_hash: None,
+                ledger_tx_id: None,
+                parent_span_id: None,
+                span_name: Some(format!("high_card_span_{i}")),
+                notes: None,
+            });
+        }
+        insert_timing_batch(&mut conn, &rows).unwrap();
+        let warnings = doctor_timing_warnings(&conn);
+        assert!(
+            warnings[0].contains(">10k"),
+            "size must stay index 0 when both arms fire, got: {warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("distinct span names")),
+            "expected cardinality arm, got: {warnings:?}"
+        );
+    }
 }
