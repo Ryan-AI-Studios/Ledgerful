@@ -2682,6 +2682,131 @@ fn persist_view<'a>(
 
 #[test]
 #[allow(non_snake_case)]
+fn later_history_snapshot_line__newer_history__names_history_time() {
+    let line = super::trend::later_history_snapshot_line(
+        Some("2026-09-08T20:52:00Z"),
+        Some("2026-10-20T00:54:53Z"),
+    )
+    .expect("later history");
+    assert_eq!(
+        line,
+        "  A later hotspot_history snapshot exists at 2026-10-20T00:54:53Z."
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn later_history_snapshot_line__older_equal_or_unparseable__omits() {
+    assert!(
+        super::trend::later_history_snapshot_line(
+            Some("2026-10-20T00:54:53Z"),
+            Some("2026-09-08T20:52:00Z"),
+        )
+        .is_none()
+    );
+    assert!(
+        super::trend::later_history_snapshot_line(
+            Some("2026-10-20T00:54:53Z"),
+            Some("2026-10-20T00:54:53Z"),
+        )
+        .is_none()
+    );
+    assert!(
+        super::trend::later_history_snapshot_line(
+            Some("2026-09-08T20:52:00Z"),
+            Some("not-a-timestamp"),
+        )
+        .is_none()
+    );
+    assert!(
+        super::trend::later_history_snapshot_line(None, Some("2026-10-20T00:54:53Z")).is_none()
+    );
+    assert!(
+        super::trend::later_history_snapshot_line(
+            Some("not-a-timestamp"),
+            Some("2026-10-20T00:54:53Z"),
+        )
+        .is_none()
+    );
+    assert!(
+        super::trend::later_history_snapshot_line(
+            Some("2026-10-20T00:54:53+00:00"),
+            Some("2026-10-20T00:54:53Z"),
+        )
+        .is_none()
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn format_budget_human__violation__names_history_not_trend_series() {
+    use super::budget::{BudgetReport, BudgetStatus, BudgetViolation, format_budget_human};
+
+    let report = BudgetReport {
+        status: BudgetStatus::Violation,
+        dataset: "hotspot_history",
+        score_unit: "score",
+        threshold: Some(0.5),
+        threshold_source: None,
+        evaluated: 1,
+        violations: vec![BudgetViolation {
+            path: "src/lib.rs".to_string(),
+            score: 0.97,
+            threshold: 0.5,
+        }],
+        snapshot_at: Some("2026-10-20T00:54:53Z".to_string()),
+        snapshot_age_secs: Some(3600),
+        head: None,
+        legacy_score_count: 0,
+        skipped_non_finite: 0,
+        empty_reason: None,
+        next: None,
+    };
+    let human = format_budget_human(&report);
+    assert!(human.contains("Status: VIOLATION"), "{human}");
+    assert!(
+        human.contains(
+            "This is a hotspot_history sample at 2026-10-20T00:54:53Z, not a 30-day hotspot_trends series."
+        ),
+        "{human}"
+    );
+    assert!(!human.contains("series crossed"), "{human}");
+    let v = serde_json::to_value(&report).expect("json");
+    assert_eq!(v["status"], "VIOLATION");
+    assert_eq!(v["dataset"], "hotspot_history");
+    assert_eq!(v["snapshotAt"], "2026-10-20T00:54:53Z");
+    assert!(v.get("lastHistoryAt").is_none(), "{v}");
+    assert!(v.get("schemaVersion").is_none(), "{v}");
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn history_persist_decision__limit_five__silent_skip() {
+    use crate::cli::HotspotArgs;
+    use crate::impact::budget::HistoryWalkStop;
+
+    let scores = [0.97_f32];
+    let args = HotspotArgs {
+        limit: Some(5),
+        ..Default::default()
+    };
+    assert_eq!(
+        decide_history_persist(&persist_view(
+            &args,
+            &scores,
+            HistoryWalkStop::Complete,
+            false,
+            true,
+            false,
+            false,
+            true,
+        )),
+        HistoryPersistDecision::SilentSkip
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
 fn hotspots_list__post_walk_budget__sets_overall_stop() {
     assert_eq!(
         post_walk_snapshot_gate(Some(CompletenessStop::Budget), None),

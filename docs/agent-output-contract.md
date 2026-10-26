@@ -699,7 +699,7 @@ precedence: `--entity` > `-a/--all` > summary.
 | `schemaVersion` | always **1** |
 | `historyAvailable` | **true** when the window has rows, or lifetime `hotspot_trends` rows exist for the filter, or `hotspot_history` has any row, or this call just bootstrapped. **False** only when both tables are empty. **Never** false while `files`/`entries` are non-empty |
 | `emptyReason` | omit-empty; `windowEmpty` or `noSeries` |
-| `lastSampleAt` | omit-empty; stored `MAX(recorded_at)` text only for `windowEmpty` |
+| `lastSampleAt` | omit-empty; stored `MAX(recorded_at)` text only for `windowEmpty`. This is hotspot_trends.recorded_at, not hotspot_history.timestamp. A later history snapshot does not move this field. |
 | `bootstrapHint` | null when history available; bootstrap command string when empty |
 | `commitHash` | **full** hash (no abbreviate) |
 | `priorDisplayScore` / `delta` | omit when `sampleCount < 2` (never invent Δ from 0) |
@@ -793,7 +793,7 @@ budget-owned.
 | `threshold` / `thresholdSource` | omit on `NOT_CONFIGURED`; source is `cli` \| `config` \| `default` |
 | `evaluated` | finite rows in the latest snapshot (0 on `NO_DATA`) |
 | `violations` | always an array; empty unless `VIOLATION`; items `path`, `score`, `threshold` |
-| `snapshotAt` / `snapshotAgeSecs` | latest `MAX(timestamp)` when present and parseable |
+| `snapshotAt` / `snapshotAgeSecs` | latest `MAX(timestamp)` when present and parseable. This is hotspot_history.timestamp. It is not a 30-day hotspot_trends series. |
 | `head` | omit when HEAD id unknown |
 | `legacyScoreCount` / `skippedNonFinite` | omit when 0 |
 | `emptyReason` | omit-empty; `noSnapshot` \| `allNonFinite` only when `status` is `NO_DATA` (camelCase like `noMatches` / `emptyIndex`) |
