@@ -852,8 +852,81 @@ impl TokenStream for CodeIdentifierTokenStream<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::format_stamp::stamp_matches;
     use crate::search::trigram::extract_trigrams;
+    use std::collections::BTreeMap;
+    use std::path::Path;
     use tempfile::TempDir;
+
+    fn copy_dir(src: &Path, dst: &Path) {
+        std::fs::create_dir_all(dst).expect("create copy dir");
+        for entry in std::fs::read_dir(src).expect("read fixture dir") {
+            let entry = entry.expect("fixture entry");
+            let to = dst.join(entry.file_name());
+            if entry.file_type().expect("file type").is_dir() {
+                copy_dir(&entry.path(), &to);
+            } else {
+                std::fs::copy(entry.path(), &to).expect("copy fixture file");
+            }
+        }
+    }
+
+    fn payload_bytes(dir: &Path) -> BTreeMap<String, Vec<u8>> {
+        let mut out = BTreeMap::new();
+        for entry in std::fs::read_dir(dir).expect("read index dir") {
+            let entry = entry.expect("index entry");
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.contains(".tantivy-") && name.ends_with(".lock") {
+                continue;
+            }
+            if entry.file_type().expect("file type").is_file() {
+                out.insert(name, std::fs::read(entry.path()).expect("read payload"));
+            }
+        }
+        out
+    }
+
+    #[test]
+    #[allow(non_snake_case)] // 026/027 are the crate lines; rustc rejects this identifier as non_snake_case.
+    fn tantivy_026_index__opens_on_027__returns_stored_path() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tantivy_026_min");
+        let written_by = std::fs::read_to_string(root.join("WRITTEN_BY.txt")).expect("writer note");
+        assert_eq!(
+            written_by.trim(),
+            "tantivy v0.26.2",
+            "fixture must be the pre-bump lock, which resolves tantivy v0.26.2"
+        );
+
+        let fixture = root.join("index");
+        let tmp = TempDir::new().expect("tempdir");
+        copy_dir(&fixture, tmp.path());
+        let before = payload_bytes(tmp.path());
+        assert!(before.contains_key("meta.json"));
+        assert!(before.contains_key("ledgerful_search_format"));
+
+        let engine = TantivySearchEngine::open_or_create(tmp.path()).expect("open 0.26 fixture");
+        let searcher = engine.reader.searcher();
+        let path_field = engine.schema.get_field("path").expect("path field");
+        let line_field = engine.schema.get_field("line_count").expect("line_count");
+        let top = searcher
+            .search(
+                &tantivy::query::AllQuery,
+                &TopDocs::with_limit(5).order_by_score(),
+            )
+            .expect("search");
+        assert_eq!(top.len(), 1, "the fixture has one document");
+        let doc: TantivyDocument = searcher.doc(top[0].1).expect("doc");
+        assert_eq!(
+            doc.get_first(path_field).and_then(|v| v.as_str()),
+            Some("src/alpha.rs")
+        );
+        assert_eq!(doc.get_first(line_field).and_then(|v| v.as_u64()), Some(1));
+        assert!(stamp_matches(tmp.path()));
+        assert!(!crate::search::format_stamp::needs_format_rebuild(
+            tmp.path()
+        ));
+        assert_eq!(before, payload_bytes(tmp.path()));
+    }
 
     #[test]
     fn truncate_at_char_boundary_ascii() {
