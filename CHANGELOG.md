@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.18] - 2026-10-27
+
 ### Release-note completeness follow-up
 
 The following entries document work already on main since v0.2.17; this section does not introduce additional implementation changes.
