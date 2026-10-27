@@ -891,13 +891,10 @@ mod tests {
     fn tantivy_026_index__opens_on_027__returns_stored_path() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tantivy_026_min");
         let written_by = std::fs::read_to_string(root.join("WRITTEN_BY.txt")).expect("writer note");
-        assert!(
-            !written_by.contains("0.27"),
-            "fixture must be written before the 0.27 bump: {written_by}"
-        );
-        assert!(
-            written_by.contains("0.26."),
-            "fixture writer note must name the 0.26 line: {written_by}"
+        assert_eq!(
+            written_by.trim(),
+            "tantivy v0.26.2",
+            "fixture must be the pre-bump lock, which resolves tantivy v0.26.2"
         );
 
         let fixture = root.join("index");
