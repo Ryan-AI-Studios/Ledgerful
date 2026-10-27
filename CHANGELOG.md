@@ -20,7 +20,7 @@ The following entries document work already on main since v0.2.17; this section 
 - **Hotspot storage terminology (0591):** trend and budget output distinguish `hotspot_history` samples from the `hotspot_trends` series.
 - **Tantivy upgrade (0593, #665):** upgrades search from Tantivy 0.26.2 to 0.27.0, resolving zstd 0.14.3 / zstd-safe 8.2.0 / zstd-sys 2.1.2 without changing `deny.toml`. A regression fixture verifies that an index written by 0.26.2 opens without losing its stored source path or replacing its segment files; this is not a guarantee for every possible index.
 - **ZIP dependency security (#595):** upgrades zip to 9.0.4 for RUSTSEC-2026-0367, -0368 and -0369 and adapts ZIP member-name error handling.
-- **TLS dependency security and residual risk (#634):** updates the patched rustls-webpki and 1.x webpki roots paths. The existing documented RUSTSEC-2026-0381 ignore still covers the unpatched webpki-roots 0.26 dependency from ureq 2; this release does not claim that residual risk is fixed.
+- **TLS dependency security and residual risk (#634):** updates the patched rustls-webpki and 1.x webpki roots paths. The locked webpki-roots 0.26.11 compatibility package from ureq 2 re-exports patched 1.0.10 roots; RUSTSEC-2026-0381 is not detected for this locked chain. The existing advisory-ID-wide ignore remains pending the ureq migration and could mask future affected versions; that policy residual is not evidence this locked chain is vulnerable.
 
 
 ### Changed
