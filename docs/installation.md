@@ -60,7 +60,7 @@ scoop install ledgerful
 
 ### winget
 
-Package accepted on winget (2026-07-30); <!-- lf-floor:I-57 -->community index is live at **0.2.17** (`microsoft/winget-pkgs` `manifests/l/Ledgerful/Ledgerful`, 2026-10-27). GitHub Release **v0.2.18** is published; do not claim winget 0.2.18 until that directory exists.<!-- /lf-floor:I-57 --> History: 0.2.12 was [#430322](https://github.com/microsoft/winget-pkgs/pull/430322) merged 2026-09-06.
+Package accepted on winget (2026-07-30); <!-- lf-floor:I-57 -->community index is live at **0.2.17** (`microsoft/winget-pkgs` `manifests/l/Ledgerful/Ledgerful`, 2026-10-27). GitHub Release **v0.2.18** is published; do not claim winget 0.2.18 until that directory exists. Winget 0.2.17 requires `Microsoft.VCRedist.2015+.x64`; this prerequisite belongs to the indexed 0.2.17 package, not a claim about the v0.2.18 ZIP.<!-- /lf-floor:I-57 --> History: 0.2.12 was [#430322](https://github.com/microsoft/winget-pkgs/pull/430322) merged 2026-09-06.
 
 ```powershell
 winget install Ledgerful.Ledgerful
