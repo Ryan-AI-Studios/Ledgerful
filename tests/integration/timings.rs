@@ -221,6 +221,40 @@ fn prune_outer_and_inner() {
 }
 
 #[test]
+#[allow(non_snake_case)]
+fn summarize_outer__after_prune_old_mixed__stays_incomparable() {
+    let mut conn = migrated_conn();
+    let mut rows = Vec::new();
+    for i in 0..10 {
+        let mut old = outer(
+            &format!("old-{i}"),
+            "hotspots",
+            80,
+            Some(if i < 5 { "aaa" } else { "bbb" }),
+        );
+        old.ts_utc = "2019-01-01T00:00:00.000Z".into();
+        rows.push(old);
+    }
+    for i in 0..3 {
+        rows.push(outer(&format!("new-a-{i}"), "hotspots", 100, Some("aaa")));
+    }
+    for i in 0..2 {
+        rows.push(outer(&format!("new-b-{i}"), "hotspots", 200, Some("bbb")));
+    }
+    insert_timing_batch(&mut conn, &rows).unwrap();
+    assert_eq!(prune_timings(&conn, 90, false).unwrap(), 10);
+    assert_eq!(count_timings(&conn).unwrap(), 5);
+    let summaries = summarize_outer(&conn, Some(30), Some(20)).unwrap();
+    assert_eq!(summaries.len(), 1);
+    assert!(!summaries[0].comparable, "{summaries:?}");
+    assert_eq!(
+        summaries[0].incomparable_reason.as_deref(),
+        Some("mixedWorkloads")
+    );
+    assert_eq!(summaries[0].runs, 5);
+}
+
+#[test]
 fn repo_size_bytes_default_null() {
     let mut conn = migrated_conn();
     let row = outer("rs", "config_view", 3, None);
