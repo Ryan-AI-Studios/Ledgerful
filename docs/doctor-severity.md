@@ -440,6 +440,19 @@ configuration after a config-load failure; rerun `ledgerful doctor --json`.
 When the project config is malformed, `legacy-config` reports
 `Failed to load project config in the Ledgerful state directory (read|parse|validation|other)`.
 
+`timings-0` is the enumerate index 0 string from `doctor_timing_warnings` when
+the size arm fires first (`COUNT(*)` over 10 000). `severity` is **warn**,
+`category` is **other**, and it does **not** block `readyForPublish`. The
+message names `ledgerful timings --prune --older-than 90d`. There is no
+`remediation` key. The warning is absent when `COUNT(*)` is 10 000 or less.
+That prune deletes old **outer** rows (`span_name IS NULL`); inner rows need
+`--inner`. `sessionPriority` `now` and `acknowledged` appear on CLI
+`doctor --json` only; the sidecar omits them (warn/`other` is not 0295
+hygiene). While present it increments `dashboard_failures` (−20 health) and
+can occupy a sidecar `topFindings` slot (cap 5). `doctor --fix` has no prune
+action. Do not prune the operator database from a test or from this track.
+While the size arm is quiet, `timings-0` is the cardinality warning instead.
+
 Write-bearing `doctor --fix` plans (pin, `bumpMinSig`, ack) require an existing
 regular project config. Otherwise `--fix --yes` exits 1 with a fixed refusal before
 any config write, and the dry-run preview carries `fix.blocked: true` plus
