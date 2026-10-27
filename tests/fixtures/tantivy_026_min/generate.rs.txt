@@ -1,0 +1,32 @@
+//! One-shot fixture writer. Not part of the product. Deleted after the
+//! pre-bump index is saved; the source is kept as generate.rs.txt.
+fn main() {
+    let out = std::path::PathBuf::from(std::env::args().nth(1).expect("output directory"));
+    let engine = ledgerful::search::TantivySearchEngine::open_or_create(&out).expect("open");
+    let schema = engine.schema();
+    let path_field = schema.get_field("path").expect("path");
+    let content_field = schema.get_field("content").expect("content");
+    let line_count_field = schema.get_field("line_count").expect("line_count");
+    let language_field = schema.get_field("language").expect("language");
+    let trigrams_field = schema.get_field("trigrams").expect("trigrams");
+
+    let content = "fn alpha() {}";
+    let trigrams = content
+        .chars()
+        .collect::<Vec<_>>()
+        .windows(3)
+        .map(|w| w.iter().collect::<String>())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let mut writer = engine.get_writer(15_000_000).expect("writer");
+    let mut doc = tantivy::TantivyDocument::default();
+    doc.add_text(path_field, "src/alpha.rs");
+    doc.add_text(content_field, content);
+    doc.add_u64(line_count_field, 1);
+    doc.add_text(language_field, "rust");
+    doc.add_text(trigrams_field, &trigrams);
+    writer.add_document(doc).expect("add");
+    writer.commit().expect("commit");
+    ledgerful::search::write_stamp(&out).expect("stamp");
+}
