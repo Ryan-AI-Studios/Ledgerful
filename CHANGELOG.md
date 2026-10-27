@@ -6,6 +6,23 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Release-note completeness follow-up
+
+The following entries document work already on main since v0.2.17; this section does not introduce additional implementation changes.
+
+- **Graph export recovery (0474):** restores the stranded fold-in fix for dangling graph edges in `bridge export`.
+- **Embedded-material verification (0549):** completes the embedded-material verify safety follow-up, including nested-only refusal handling.
+- **Manual commit / hook evidence (0557):** documents the distinct CLI and hook rows when a manual ledger commit is followed by a Git commit with nothing PENDING; the CLI row keeps SQL-null `verification_status`, while the hook row is promoted `unverified`.
+- **Hybrid search definition witnesses (0558, 0580, 0589):** bounded candidate selection seats a definition witness for identifier-like searches, excludes type fields and comments, and recognizes additional declaration prefixes in the keyword walk.
+- **Windows install qualification (0563):** tightens qualification of the published v0.2.17 ZIP and records the Visual C++ Redistributable requirement; this is not evidence of a clean-image or VC-free install.
+- **Fast verification dependency attribution (0570, 0572):** refuses non-Rust embedded reads detected by the bounded lexical scan, and attributes supported literal helper paths; runtime-built paths remain unattributed.
+- **CI classification safety (0576):** docs-only classification considers rename paths, and advisory reachability rejects contradictory failure/cancelled states.
+- **Hotspot storage terminology (0591):** trend and budget output distinguish `hotspot_history` samples from the `hotspot_trends` series.
+- **Tantivy upgrade (0593, #665):** upgrades search from Tantivy 0.26.2 to 0.27.0, resolving zstd 0.14.3 / zstd-safe 8.2.0 / zstd-sys 2.1.2 without changing `deny.toml`. A regression fixture verifies that an index written by 0.26.2 opens without losing its stored source path or replacing its segment files; this is not a guarantee for every possible index.
+- **ZIP dependency security (#595):** upgrades zip to 9.0.4 for RUSTSEC-2026-0367, -0368 and -0369 and adapts ZIP member-name error handling.
+- **TLS dependency security and residual risk (#634):** updates the patched rustls-webpki and 1.x webpki roots paths. The existing documented RUSTSEC-2026-0381 ignore still covers the unpatched webpki-roots 0.26 dependency from ureq 2; this release does not claim that residual risk is fixed.
+
+
 ### Changed
 
 - **Verification evidence readout (0556):** a manual `git --version` recording is a cheap command. Human verify prints `Cheap command recorded: git --version. Not a project-suite pass.` instead of a line equal to `Verification passed`, and executed JSON adds limitation code `cheap-command` while `ok` stays true and `schemaVersion` stays 1. Ledger detail adds `bound_runs` and `bound_snapshot` and does not write `verification_status` or `verification_basis`. `GET /api/verify/health` stays `HEALTHY` | `DEGRADED` | `FAILING`; a fresh passing cheap run sets `message` to that recorded sentence, and a stale cheap run keeps the stale sentence. `tests_run` still counts command rows. SOC2 mapping version stays `"1"`. Package stays `0.2.17`.
