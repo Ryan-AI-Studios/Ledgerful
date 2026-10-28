@@ -440,18 +440,7 @@ configuration after a config-load failure; rerun `ledgerful doctor --json`.
 When the project config is malformed, `legacy-config` reports
 `Failed to load project config in the Ledgerful state directory (read|parse|validation|other)`.
 
-`timings-0` is the enumerate index 0 string from `doctor_timing_warnings` when
-the size arm fires first (`COUNT(*)` over 10 000). `severity` is **warn**,
-`category` is **other**, and it does **not** block `readyForPublish`. The
-message names `ledgerful timings --prune --older-than 90d`. There is no
-`remediation` key. The warning is absent when `COUNT(*)` is 10 000 or less.
-That prune deletes old **outer** rows (`span_name IS NULL`); inner rows need
-`--inner`. `sessionPriority` `now` and `acknowledged` appear on CLI
-`doctor --json` only; the sidecar omits them (warn/`other` is not 0295
-hygiene). While present it increments `dashboard_failures` (−20 health) and
-can occupy a sidecar `topFindings` slot (cap 5). `doctor --fix` has no prune
-action. Do not prune the operator database from a test or from this track.
-While the size arm is quiet, `timings-0` is the cardinality warning instead.
+`timings-0` is the enumerate index 0 string from `doctor_timing_warnings` when the size arm fires first. It is `severity: warn`, `category: other`, carries CLI JSON `sessionPriority: now`, does not block `readyForPublish`, and has no `remediation` key; CLI JSON includes `acknowledged` only when set, while the sidecar omits both `sessionPriority` and `acknowledged`. The warning message names `ledgerful timings --prune --older-than 90d`. The **size warning** is absent when this repository's `command_timings` table is missing, when its count fails, or when a successful `COUNT(*)` is 10 000 or less; missing-table and count failures are silent and do not prove the table is under the threshold. If both warning arms are quiet there is no timing finding; if only the cardinality arm fires, `timings-0` is the cardinality warning. The documented 90-day prune deletes old **outer** rows (`span_name IS NULL`); old inner rows need `--inner`, and rows younger than 90 days remain and can dominate this repository's count. `--older-than` accepts any day count: `1d` is a shorter retention window, and `0d` deletes the outer tail whose `ts_utc` is before now. A recent-dominated table can remain over 10 000 after the documented 90-day prune; clearing it then requires deleting recent history and remains an owner retention decision. This track does not run a shorter prune or acknowledge `timings-0`. While present, the warning increments `dashboard_failures` (−20 health) and can occupy a sidecar `topFindings` slot (cap 5). Acknowledging it suppresses only the human body; the finding remains `warn` / `other`, retains the dashboard penalty, and can still occupy that slot. `doctor --fix` has no prune action. Do not prune the operator database just to silence this warning.
 
 Write-bearing `doctor --fix` plans (pin, `bumpMinSig`, ack) require an existing
 regular project config. Otherwise `--fix --yes` exits 1 with a fixed refusal before

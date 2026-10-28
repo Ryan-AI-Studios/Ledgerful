@@ -221,6 +221,20 @@ fn prune_outer_and_inner() {
 }
 
 #[test]
+fn documented_prune_argv_maps_to_outer_arm() {
+    // This locks clap parsing only; argument dispatch and execution mapping are
+    // established by separate source inspection, not an end-to-end prune run.
+    let cli = parse_cli(&["ledgerful", "timings", "--prune", "--older-than", "90d"]);
+    let ledgerful::cli::args::Commands::Timings(args) = cli.command else {
+        panic!("expected timings command");
+    };
+    assert!(args.prune);
+    assert_eq!(args.older_than.as_deref(), Some("90d"));
+    assert!(!args.inner);
+    assert!(!args.global);
+}
+
+#[test]
 #[allow(non_snake_case)]
 fn summarize_outer__after_prune_old_mixed__stays_incomparable() {
     let mut conn = migrated_conn();
@@ -514,6 +528,11 @@ fn doctor_cardinality_warning_fires() {
     }
     insert_timing_batch(&mut conn, &rows).unwrap();
     let warnings = ledgerful::commands::timings::doctor_timing_warnings(&conn);
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected only cardinality warning: {warnings:?}"
+    );
     assert!(
         warnings
             .iter()
