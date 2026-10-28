@@ -70,10 +70,16 @@ ledgerful timings --prune --inner --older-than 30d  # inner spans
 ```
 
 `doctor` warns if total rows exceed 10 000 or if distinct `span_name` values in
-30 days exceed 1 000 (cardinality guard). The size finding is timings-0. It
-clears when COUNT(*) is 10 000 or less. The printed command is the outer
-90-day prune. While the size arm is quiet, timings-0 belongs to the
-cardinality warning instead.
+30 days exceed 1 000 (cardinality guard). The size finding is timings-0. The
+size warning clears only when a successful `COUNT(*)` is 10 000 or less; a
+missing table or failed count is silent and does not establish that the table
+is under the threshold. The printed command prunes old outer rows only. Rows
+younger than 90 days remain and can dominate the count, so the 90-day prune
+may leave timings-0 in place; old inner spans require `--inner`. The
+`--older-than` option accepts any day count: `1d` shortens retention, and `0d`
+removes the outer tail older than now. A recent-dominated table can be reduced
+only by deleting recent history, an owner retention decision. While the size
+arm is quiet, timings-0 belongs to the cardinality warning instead.
 
 ## Relationship to `ledgerful bench`
 

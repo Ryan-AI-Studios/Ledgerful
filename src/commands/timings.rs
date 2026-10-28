@@ -479,8 +479,53 @@ mod tests {
     #[test]
     fn parse_days_spec_accepts_nd() {
         assert_eq!(parse_days_spec("90d").unwrap(), 90);
+        assert_eq!(parse_days_spec("1d").unwrap(), 1);
+        assert_eq!(parse_days_spec("0d").unwrap(), 0);
         assert_eq!(parse_days_spec("30").unwrap(), 30);
         assert_eq!(parse_days_spec("14days").unwrap(), 14);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn prune_timings__0d__recent_outer_gone_inner_stays() {
+        let mut conn = setup();
+        let one_hour_ago = (chrono::Utc::now() - chrono::Duration::hours(1))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let recent_outer = TimingRow {
+            run_id: "zero-day".into(),
+            ts_utc: one_hour_ago.clone(),
+            command: "doctor".into(),
+            duration_ms: 5,
+            exit_code: 0,
+            repo_size_bytes: None,
+            argv_hash: None,
+            ledger_tx_id: None,
+            parent_span_id: None,
+            span_name: None,
+            notes: None,
+        };
+        let recent_inner = TimingRow {
+            run_id: "zero-day".into(),
+            ts_utc: one_hour_ago,
+            command: "doctor".into(),
+            duration_ms: 2,
+            exit_code: 0,
+            repo_size_bytes: None,
+            argv_hash: None,
+            ledger_tx_id: None,
+            parent_span_id: None,
+            span_name: Some("probe".into()),
+            notes: None,
+        };
+        insert_timing_batch(&mut conn, &[recent_outer.clone(), recent_inner]).unwrap();
+
+        assert_eq!(prune_timings(&conn, 0, false).unwrap(), 1);
+        assert_eq!(count_timings(&conn).unwrap(), 1);
+        let left = query_timings(&conn, &TimingQuery::default()).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].run_id, recent_outer.run_id);
+        assert_eq!(left[0].span_name.as_deref(), Some("probe"));
+        assert_ne!(left[0].span_name, recent_outer.span_name);
     }
 
     #[test]
@@ -880,6 +925,11 @@ mod tests {
         }
         insert_timing_batch(&mut conn, &rows).unwrap();
         let warnings = doctor_timing_warnings(&conn);
+        assert_eq!(
+            warnings.len(),
+            1,
+            "expected only cardinality warning: {warnings:?}"
+        );
         assert!(
             warnings
                 .iter()
@@ -893,6 +943,25 @@ mod tests {
             .map(|i| TimingRow {
                 run_id: format!("old-{i}"),
                 ts_utc: "2019-01-01T00:00:00.000Z".into(),
+                command: command.into(),
+                duration_ms: 5,
+                exit_code: 0,
+                repo_size_bytes: None,
+                argv_hash: None,
+                ledger_tx_id: None,
+                parent_span_id: None,
+                span_name: None,
+                notes: None,
+            })
+            .collect()
+    }
+
+    fn recent_outer_rows(n: usize, command: &str) -> Vec<TimingRow> {
+        let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        (0..n)
+            .map(|i| TimingRow {
+                run_id: format!("recent-{i}"),
+                ts_utc: timestamp.clone(),
                 command: command.into(),
                 duration_ms: 5,
                 exit_code: 0,
@@ -929,6 +998,42 @@ mod tests {
         assert!(
             after.iter().all(|w| !w.contains(">10k")),
             "expected no size warning after prune, got: {after:?}"
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn doctor_timing_warnings__recent_outers__outer_prune_does_not_clear() {
+        let mut conn = setup();
+        insert_timing_batch(&mut conn, &recent_outer_rows(10_001, "verify")).unwrap();
+
+        let before = doctor_timing_warnings(&conn);
+        assert_eq!(count_timings(&conn).unwrap(), 10_001);
+        assert_eq!(
+            before.len(),
+            1,
+            "expected only the size warning: {before:?}"
+        );
+        assert!(
+            before[0].contains(">10k"),
+            "expected size warning: {before:?}"
+        );
+        assert!(
+            before[0].contains("ledgerful timings --prune --older-than 90d"),
+            "expected documented prune command: {before:?}"
+        );
+        assert!(
+            !before[0].contains("distinct span names"),
+            "recent size fixture must not trip cardinality: {before:?}"
+        );
+
+        assert_eq!(prune_timings(&conn, 90, false).unwrap(), 0);
+        assert_eq!(count_timings(&conn).unwrap(), 10_001);
+        let after = doctor_timing_warnings(&conn);
+        assert_eq!(after.len(), 1, "expected size warning to remain: {after:?}");
+        assert!(
+            after[0].contains(">10k"),
+            "expected size warning: {after:?}"
         );
     }
 
