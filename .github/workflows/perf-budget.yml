@@ -17,6 +17,7 @@ on:
     paths:
       - src/commands/bench.rs
       - src/commands/perf_budget.rs
+      - tests/integration/bench.rs
       - src/commands/helpers.rs
       - src/commands/mod.rs
       - src/commands/change_context/**
