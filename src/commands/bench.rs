@@ -415,8 +415,11 @@ impl MemorySampler {
                     })
                     .collect::<Vec<_>>();
                 let bytes = tree_rss(&rows, root_pid);
-                sample.ticks += 1;
+                // A tick that observed no descendant is not coverage: counting it
+                // would break the receipt's `rssTicks == 0 iff rssMeasuredSamples == 0`
+                // invariant when a child exits between spawn and the first tick.
                 if bytes > 0 {
+                    sample.ticks += 1;
                     sample.peak_bytes =
                         Some(sample.peak_bytes.map_or(bytes, |seen| seen.max(bytes)));
                 }
@@ -1727,17 +1730,47 @@ mod tests {
     }
 
     #[test]
-    fn memory_sampler_observes_own_tree_when_left_running() {
+    fn memory_sampler__childless_runner__no_coverage() {
         let sampler = MemorySampler::start(std::process::id());
         std::thread::sleep(SAMPLER_TICK * 3);
         let sample = sampler.stop_and_join();
-        // The test process itself is excluded, but the sampler process tree is
-        // non-empty on both lanes only when children exist; assert the counters
-        // moved without pinning a platform-specific byte count.
+        assert_eq!(
+            sample.ticks, 0,
+            "a tick with no live descendant is not RSS coverage"
+        );
+        assert_eq!(sample.peak_bytes, None);
+        assert!(sample.wall_ms <= SAMPLER_TICK.as_millis() as u64 * 30);
+    }
+
+    #[test]
+    fn memory_sampler__live_child__observes_its_working_set() {
+        let mut child = if cfg!(windows) {
+            Command::new("cmd")
+                .args(["/C", "ping", "-n", "3", "127.0.0.1"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn child")
+        } else {
+            Command::new("sleep")
+                .arg("1")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn child")
+        };
+        let sampler = MemorySampler::start(std::process::id());
+        std::thread::sleep(SAMPLER_TICK * 4);
+        let sample = sampler.stop_and_join();
+        // Let the child exit on its own so the test leaves nothing running.
+        let _ = child.wait();
         assert!(
             sample.ticks >= 1,
-            "a 300 ms window must observe at least one tick"
+            "a live child must be observed at least once"
         );
-        assert!(sample.wall_ms <= SAMPLER_TICK.as_millis() as u64 * 30);
+        assert!(
+            sample.peak_bytes.is_some_and(|bytes| bytes > 0),
+            "a live child must contribute a positive working set"
+        );
     }
 }
