@@ -44,6 +44,8 @@ pub mod ledger_stack;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 pub mod observability;
+/// Compiled performance budget table + `bench --check` (0564).
+pub mod perf_budget;
 #[cfg(any(feature = "viz-server", feature = "web"))]
 pub mod pid;
 /// CI policy gate (`ledgerful policy check`). Distinct from `crate::policy`

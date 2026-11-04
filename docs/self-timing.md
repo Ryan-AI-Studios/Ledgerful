@@ -85,9 +85,12 @@ arm is quiet, timings-0 belongs to the cardinality warning instead.
 
 `ledgerful bench` is a **live** CLI child-process harness, not history. The parent stays on the engine checkout and sha-gates `LEDGERFUL_GIT_SHA` against `git rev-parse --short=12 HEAD` via `get_layout_or_cwd_if_not_git()`. `--fixture PATH` is required and is only the child's `-C`. Default JSON lands under gitignored `/output/bench/`. `self_timing` excludes `bench` so harness wall times do not mix into `command_timings` (0330).
 
+Warm workloads (`status-warm`, `search-warm`, `context-warm`, `doctor-warm`, `hotspots-warm`, `impact-warm`, `review-warm`) run one untimed setup `index` and one untimed warmup child before the timed samples, and never wipe the fixture's `.ledgerful`. Every child runs with `LEDGERFUL_NO_NETWORK=1`, an isolated `LEDGERFUL_CONFIG_HOME` of `<engine>/output/bench/child-home/.ledgerful` whose `config.toml` holds `self_timing = false`, and the seven `LEDGERFUL_*_BUDGET_SECS` overrides removed — so a receipt describes offline default-config behavior and the fixture database gains no `command_timings` rows. `bench --check <receipt…>` compares receipts against the compiled budget table in `src/commands/perf_budget.rs`; neither the harness nor the checker reads or writes `command_timings`.
+
 ```powershell
 ledgerful bench --fixture <temp-copy> --json
 ledgerful bench --compare output/bench/<shaA>-index-cold.json output/bench/<shaB>-index-cold.json
+ledgerful bench --check output/bench/*-local-check.json --json
 ```
 
 Do not pass the engine checkout as `--fixture`.
