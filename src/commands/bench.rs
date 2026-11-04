@@ -29,6 +29,8 @@ const KIND_COMPARE: &str = "workloadBenchCompare";
 const SCHEMA_VERSION: u32 = 1;
 /// Process-tree memory sampling interval for the peak-RSS diagnostic.
 const SAMPLER_TICK: Duration = Duration::from_millis(100);
+/// Maximum descendant depth the process-tree walk traverses (root is depth 0).
+const MAX_TREE_DEPTH: usize = 32;
 /// Throwaway child config home, relative to the engine root.
 const CHILD_HOME_REL: &str = "output/bench/child-home";
 /// The seven live ambient budget overrides a measured child must not inherit.
@@ -111,7 +113,7 @@ fn execute_run(args: &BenchCliArgs, fixture: &Path) -> Result<()> {
     let mut peak_rss_bytes: Option<u64> = None;
     let mut rss_ticks: u64 = 0;
     let mut rss_measured_samples: u64 = 0;
-    let mut sampler_wall_ms: u64 = 0;
+    let mut sampler_wall_us: u64 = 0;
 
     for _ in 0..args.runs {
         if !args.workload.expects_setup() {
@@ -125,8 +127,7 @@ fn execute_run(args: &BenchCliArgs, fixture: &Path) -> Result<()> {
         let outcome = spawn_wait_grouped_captured(cmd, CHILD_TIMEOUT, CHILD_MAX_OUTPUT_BYTES);
         // Capture the sample clock the instant the child wait returns, before
         // the sampler is stopped/joined, so a join sleep cannot inflate it.
-        let ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
-        let sample = sampler.stop_and_join()?;
+        let (ms, sample) = finish_sample(started, sampler)?;
         match outcome {
             Ok(captured) => {
                 if captured.truncated {
@@ -154,7 +155,7 @@ fn execute_run(args: &BenchCliArgs, fixture: &Path) -> Result<()> {
                 samples_ms.push(ms);
                 observed_ms.push(ms);
                 rss_ticks += sample.ticks;
-                sampler_wall_ms += sample.wall_ms;
+                sampler_wall_us = sampler_wall_us.saturating_add(sample.wall_us);
                 if let Some(peak) = sample.peak_bytes {
                     rss_measured_samples += 1;
                     peak_rss_bytes = Some(peak_rss_bytes.map_or(peak, |seen: u64| seen.max(peak)));
@@ -184,6 +185,7 @@ fn execute_run(args: &BenchCliArgs, fixture: &Path) -> Result<()> {
     let os = os_name();
     let target_triple = env!("TARGET");
     let comparable = n >= 3;
+    let sampler_wall_ms = sampler_wall_us / 1_000;
     let report = WorkloadBenchReport {
         schema_version: SCHEMA_VERSION,
         kind: KIND_WORKLOAD_BENCH,
@@ -375,17 +377,27 @@ fn completeness_stop(completeness: Option<&serde_json::Value>) -> Option<&'stati
 struct MemorySampler {
     stop_tx: mpsc::Sender<()>,
     handle: Option<std::thread::JoinHandle<SamplerSample>>,
+    stop_delay: Duration,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
 struct SamplerSample {
     peak_bytes: Option<u64>,
     ticks: u64,
-    wall_ms: u64,
+    /// Wall time inside refreshes, in microseconds. Accumulated in micros so a
+    /// sub-millisecond refresh is not truncated to zero per tick.
+    wall_us: u64,
 }
 
 impl MemorySampler {
     fn start(root_pid: u32) -> Self {
+        Self::start_with_delay(root_pid, Duration::ZERO)
+    }
+
+    /// `stop_delay` is a test seam: production always passes zero. It simulates
+    /// a slow sampler stop so a test can prove the join wait is excluded from
+    /// the sample clock.
+    fn start_with_delay(root_pid: u32, stop_delay: Duration) -> Self {
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
         let handle = std::thread::spawn(move || {
             let mut system = System::new();
@@ -401,8 +413,9 @@ impl MemorySampler {
                     true,
                     ProcessRefreshKind::nothing().with_memory(),
                 );
-                sample.wall_ms +=
-                    u64::try_from(refresh_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                sample.wall_us = sample.wall_us.saturating_add(
+                    u64::try_from(refresh_started.elapsed().as_micros()).unwrap_or(u64::MAX),
+                );
                 let rows = system
                     .processes()
                     .iter()
@@ -429,10 +442,14 @@ impl MemorySampler {
         Self {
             stop_tx,
             handle: Some(handle),
+            stop_delay,
         }
     }
 
     fn stop_and_join(mut self) -> Result<SamplerSample> {
+        if !self.stop_delay.is_zero() {
+            std::thread::sleep(self.stop_delay);
+        }
         let _ = self.stop_tx.send(());
         match self.handle.take() {
             Some(handle) => handle.join().map_err(|_| {
@@ -441,6 +458,15 @@ impl MemorySampler {
             None => Ok(SamplerSample::default()),
         }
     }
+}
+
+/// Capture the sample clock before joining the sampler. The join wait must
+/// never enter the recorded sample duration; a delayed stop is covered by
+/// `sample_clock__delayed_sampler_stop__excludes_join_wait`.
+fn finish_sample(started: Instant, sampler: MemorySampler) -> Result<(i64, SamplerSample)> {
+    let ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+    let sample = sampler.stop_and_join()?;
+    Ok((ms, sample))
 }
 
 /// Sum working set for strict descendants of `root`; the runner itself is excluded.
@@ -453,9 +479,14 @@ fn tree_rss(rows: &[(u32, Option<u32>, u64)], root: u32) -> u64 {
     }
     let mut seen: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
     seen.insert(root);
-    let mut stack = vec![root];
+    let mut stack = vec![(root, 0_usize)];
     let mut total = 0_u64;
-    while let Some(pid) = stack.pop() {
+    while let Some((pid, depth)) = stack.pop() {
+        // Bound the walk: a synthetic or corrupted tree must not traverse
+        // without limit. Depth 1 is a direct child; depth 32 is still counted.
+        if depth >= MAX_TREE_DEPTH {
+            continue;
+        }
         if let Some(kids) = children.get(&pid) {
             for kid in kids {
                 // A cycle (impossible for real pids, possible for bad data) must
@@ -464,7 +495,7 @@ fn tree_rss(rows: &[(u32, Option<u32>, u64)], root: u32) -> u64 {
                     if let Some((_, _, memory)) = rows.iter().find(|(id, _, _)| id == kid) {
                         total = total.saturating_add(*memory);
                     }
-                    stack.push(*kid);
+                    stack.push((*kid, depth + 1));
                 }
             }
         }
@@ -1696,6 +1727,21 @@ mod tests {
     }
 
     #[test]
+    fn tree_rss__chain_deeper_than_32__stops_at_the_cap() {
+        // 0 <- 1 <- ... <- 40; every node has the same working set. Depth 1 is
+        // a direct child and depth 32 is still counted; depth 33+ is not walked.
+        let mut rows = vec![(0_u32, None, 1_000_u64)];
+        for pid in 1..=40_u32 {
+            rows.push((pid, Some(pid - 1), 1_000));
+        }
+        assert_eq!(
+            tree_rss(&rows, 0),
+            32_000,
+            "only depths 1..=32 contribute; the walk must terminate at the cap"
+        );
+    }
+
+    #[test]
     fn fixture_provenance__unborn_fixture__zero_commits_and_null_root() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let status = Command::new("git")
@@ -1877,7 +1923,33 @@ mod tests {
             "a tick with no live descendant is not RSS coverage"
         );
         assert_eq!(sample.peak_bytes, None);
-        assert!(sample.wall_ms <= SAMPLER_TICK.as_millis() as u64 * 30);
+        assert!(
+            sample.wall_us <= SAMPLER_TICK.as_micros() as u64 * 30,
+            "three ticks of refresh cost must stay well under 30 ticks"
+        );
+        assert!(
+            sample.wall_us > 0,
+            "sub-millisecond refreshes must accumulate in micros, not truncate to zero"
+        );
+    }
+
+    #[test]
+    fn sample_clock__delayed_sampler_stop__excludes_join_wait() {
+        // A deliberately slow stop: the sample clock is captured before the
+        // join, so the wait must not enter `observedMs`.
+        let sampler =
+            MemorySampler::start_with_delay(std::process::id(), Duration::from_millis(300));
+        let started = Instant::now();
+        let (ms, _sample) = finish_sample(started, sampler).expect("sampler thread");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(300),
+            "the stop must really have been delayed"
+        );
+        assert!(
+            ms < 100,
+            "the join wait must not enter the sample clock, got {ms} ms"
+        );
     }
 
     #[test]
