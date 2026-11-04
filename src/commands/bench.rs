@@ -28,7 +28,11 @@ const KIND_WORKLOAD_BENCH: &str = "workloadBench";
 const KIND_COMPARE: &str = "workloadBenchCompare";
 const SCHEMA_VERSION: u32 = 1;
 /// Process-tree memory sampling interval for the peak-RSS diagnostic.
-const SAMPLER_TICK: Duration = Duration::from_millis(100);
+/// Widened from 100 ms to 250 ms after the first local baseline: a full
+/// `ProcessesToUpdate::All` memory refresh costs ~6 ms on this host, so a
+/// 100 ms tick consumed 5-6 % of a long sample's wall time and failed the
+/// plan's per-sample refresh-cost acceptance (5 % of p50).
+const SAMPLER_TICK: Duration = Duration::from_millis(250);
 /// Maximum descendant depth the process-tree walk traverses (root is depth 0).
 const MAX_TREE_DEPTH: usize = 32;
 /// Throwaway child config home, relative to the engine root.
@@ -1904,7 +1908,7 @@ mod tests {
         let sample = sampler.stop_and_join().expect("sampler thread");
         assert!(
             started.elapsed() < SAMPLER_TICK,
-            "stop_and_join must not block out the 100 ms tick"
+            "stop_and_join must not block out the sampler tick"
         );
         assert_eq!(sample.ticks, 0, "an immediate stop observes no tick");
         assert_eq!(sample.peak_bytes, None);
