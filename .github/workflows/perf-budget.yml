@@ -94,6 +94,7 @@ jobs:
       - name: Collect receipts
         id: bench
         run: |
+          Add-Content -Path $env:GITHUB_ENV -Value ("BATTERY_STARTED=" + (Get-Date).ToUniversalTime().ToString("o"))
           $batteryStarted = Get-Date
           $fixture = Join-Path $env:RUNNER_TEMP ("perf-fixture-" + [guid]::NewGuid().ToString("N"))
           git clone --no-hardlinks . $fixture
@@ -103,8 +104,8 @@ jobs:
             .\target\release\ledgerful bench --fixture $fixture --workload $s --runs 20 --host-class ci-windows-latest --output "perf-out/$s.json" --json
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
-          $batterySeconds = [int]((Get-Date) - $batteryStarted).TotalSeconds
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "battery seconds: $batterySeconds (the 25-minute stop threshold applies to this number, not to total job wall time)"
+          $childSeconds = [int]((Get-Date) - $batteryStarted).TotalSeconds
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "child battery seconds: $childSeconds (clone and artifact upload are added by the final duration step)"
           if ($env:MODE -eq 'record') {
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "record only; no verdict"
             exit 0
@@ -146,6 +147,17 @@ jobs:
           name: perf-check
           path: perf-check.json
           if-no-files-found: warn
+
+      - name: Record battery duration
+        if: always()
+        run: |
+          if (-not $env:BATTERY_STARTED) {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "battery duration: unavailable (the collection step never started)"
+            exit 0
+          }
+          $started = [datetime]::Parse($env:BATTERY_STARTED, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)
+          $elapsed = [int]((Get-Date).ToUniversalTime() - $started).TotalSeconds
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "battery wall seconds (clone through artifact upload): $elapsed; the 25-minute stop threshold applies to this number, not to total job wall time"
 
       - name: Warn on a non-green advisory run
         if: steps.build.outcome == 'failure' || steps.bench.outcome == 'failure' || steps.gate.outcome == 'failure' || cancelled()

@@ -623,6 +623,37 @@ fn bench_index_cold__multi_root_fixture__null_root_but_commit_count() {
             .expect("git");
         assert!(status.success());
     }
+    // Merge the unrelated root into the first branch so HEAD history has two roots.
+    let first_branch = String::from_utf8_lossy(
+        &Command::new("git")
+            .args(["for-each-ref", "--format=%(refname:short)", "refs/heads"])
+            .current_dir(dir)
+            .output()
+            .expect("list branches")
+            .stdout,
+    )
+    .lines()
+    .map(str::trim)
+    .find(|name| *name != "second")
+    .expect("first branch")
+    .to_string();
+    let status = Command::new("git")
+        .args(["checkout", "--quiet", &first_branch])
+        .current_dir(dir)
+        .status()
+        .expect("git checkout first");
+    assert!(status.success());
+    let status = Command::new("git")
+        .args([
+            "merge",
+            "--allow-unrelated-histories",
+            "--no-edit",
+            "second",
+        ])
+        .current_dir(dir)
+        .status()
+        .expect("git merge");
+    assert!(status.success());
 
     let fixture = dir.to_string_lossy().into_owned();
     let out_json = dir.join("cold.json");
@@ -642,7 +673,10 @@ fn bench_index_cold__multi_root_fixture__null_root_but_commit_count() {
         "multi-root fixture must still run: stderr={stderr}"
     );
     let receipt = parse_receipt(&stdout);
-    assert_eq!(receipt["fixtureCommits"], 2);
+    assert_eq!(
+        receipt["fixtureCommits"], 3,
+        "two roots plus the merge commit"
+    );
     assert!(receipt["fixtureRootCommit"].is_null());
 }
 

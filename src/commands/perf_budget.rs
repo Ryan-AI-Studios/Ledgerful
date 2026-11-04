@@ -311,6 +311,16 @@ fn compare_to_row(stored: &StoredBench, row: &BudgetRow) -> (&'static str, Optio
             );
         }
     }
+    if let (Some(peak), Some(budget)) = (stored.peak_rss_bytes, row.peak_rss_budget_bytes)
+        && peak > budget
+    {
+        return (
+            STATUS_OVER_BUDGET,
+            Some(format!(
+                "peak RSS {peak} bytes exceeds the {budget} byte ceiling"
+            )),
+        );
+    }
     if stored.p50_ms > row.p50_budget_ms {
         return (
             STATUS_OVER_BUDGET,
@@ -747,6 +757,54 @@ mod tests {
         assert_eq!(derive_rss(32 * 1024 * 1024), 48 * 1024 * 1024);
         assert_eq!(derive_rss(16 * 1024 * 1024), 32 * 1024 * 1024);
         assert_eq!(ceil16mib(1), 16 * 1024 * 1024);
+    }
+
+    #[test]
+    fn check__peak_rss_over_ceiling__over_budget() {
+        let rows = vec![synthetic_row_with_rss(
+            "impact-warm",
+            "local-windows-2026-11",
+        )];
+        let mut receipt = receipt_for(
+            "impact-warm",
+            "local-windows-2026-11",
+            "a.json",
+            &ten_samples(700),
+        );
+        receipt.peak_rss_bytes = Some(1024);
+        receipt.rss_ticks = 10;
+        receipt.rss_measured_samples = 10;
+        assert_eq!(
+            check_with_budgets(&[receipt], EMBED, &rows).results[0].status,
+            STATUS_WITHIN_BUDGET
+        );
+
+        let mut regressed = receipt_for(
+            "impact-warm",
+            "local-windows-2026-11",
+            "b.json",
+            &ten_samples(700),
+        );
+        regressed.peak_rss_bytes = Some(derive_rss(400 * 1024 * 1024) + 1);
+        regressed.rss_ticks = 10;
+        regressed.rss_measured_samples = 10;
+        let packet = check_with_budgets(&[regressed], EMBED, &rows);
+        assert_eq!(packet.results[0].status, STATUS_OVER_BUDGET);
+        assert!(
+            packet.results[0]
+                .reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("peak RSS"),
+            "{:?}",
+            packet.results[0].reason
+        );
+    }
+
+    #[test]
+    fn validate_rows__live_table__clean() {
+        let violations = validate_rows(BUDGETS);
+        assert!(violations.is_empty(), "live BUDGETS table: {violations:?}");
     }
 
     #[test]

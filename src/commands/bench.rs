@@ -126,7 +126,7 @@ fn execute_run(args: &BenchCliArgs, fixture: &Path) -> Result<()> {
         // Capture the sample clock the instant the child wait returns, before
         // the sampler is stopped/joined, so a join sleep cannot inflate it.
         let ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
-        let sample = sampler.stop_and_join();
+        let sample = sampler.stop_and_join()?;
         match outcome {
             Ok(captured) => {
                 if captured.truncated {
@@ -432,11 +432,13 @@ impl MemorySampler {
         }
     }
 
-    fn stop_and_join(mut self) -> SamplerSample {
+    fn stop_and_join(mut self) -> Result<SamplerSample> {
         let _ = self.stop_tx.send(());
         match self.handle.take() {
-            Some(handle) => handle.join().unwrap_or_default(),
-            None => SamplerSample::default(),
+            Some(handle) => handle.join().map_err(|_| {
+                miette!("bench memory sampler thread panicked; no workloadBench JSON written")
+            }),
+            None => Ok(SamplerSample::default()),
         }
     }
 }
@@ -493,8 +495,10 @@ struct FixtureProvenance {
     root_commit: Option<String>,
 }
 
-/// Commits + single root commit; an unborn or multi-root fixture keeps working
-/// but records `None` (identity unavailable, so the receipt cannot qualify).
+/// Commits + single root commit over the fixture's `HEAD` history; an unborn
+/// fixture keeps working but records `None` (identity unavailable, so the
+/// receipt cannot qualify). Any other git failure is a hard error: a corrupt
+/// repository must not be recorded as "unborn".
 fn fixture_provenance(fixture: &Path) -> Result<FixtureProvenance> {
     let head = Command::new("git")
         .args(["rev-parse", "--verify", "HEAD"])
@@ -502,17 +506,51 @@ fn fixture_provenance(fixture: &Path) -> Result<FixtureProvenance> {
         .output()
         .into_diagnostic()?;
     if !head.status.success() {
+        let branch = Command::new("git")
+            .args(["symbolic-ref", "--quiet", "HEAD"])
+            .current_dir(fixture)
+            .output()
+            .into_diagnostic()?;
+        if !branch.status.success() {
+            return Err(miette!(
+                "fixture git HEAD neither names a branch nor resolves to a commit: {}",
+                fixture.display()
+            ));
+        }
+        let branch_ref = String::from_utf8_lossy(&branch.stdout).trim().to_string();
+        let resolved = Command::new("git")
+            .args(["rev-parse", "--verify", "--quiet", branch_ref.as_str()])
+            .current_dir(fixture)
+            .output()
+            .into_diagnostic()?;
+        let stderr = String::from_utf8_lossy(&resolved.stderr).trim().to_string();
+        if resolved.status.success() {
+            return Err(miette!(
+                "fixture git HEAD does not resolve to a commit although {branch_ref} exists: {}",
+                fixture.display()
+            ));
+        }
+        if !stderr.is_empty() {
+            // `--quiet` prints nothing for a genuinely unborn branch, so any
+            // diagnostic here means a broken ref or a corrupt object store.
+            return Err(miette!(
+                "fixture git HEAD could not be resolved ({stderr}): {}",
+                fixture.display()
+            ));
+        }
+        // An unborn branch has no commit object yet; that is the only case that
+        // records zero commits instead of failing.
         return Ok(FixtureProvenance {
             commits: 0,
             root_commit: None,
         });
     }
-    let commits_text = git_stdout(fixture, &["rev-list", "--count", "--all"])?;
+    let commits_text = git_stdout(fixture, &["rev-list", "--count", "HEAD"])?;
     let commits: u64 = commits_text
         .trim()
         .parse()
         .map_err(|e| miette!("fixture commit count is not a number ({e})"))?;
-    let roots_text = git_stdout(fixture, &["rev-list", "--max-parents=0", "--all"])?;
+    let roots_text = git_stdout(fixture, &["rev-list", "--max-parents=0", "HEAD"])?;
     let roots = roots_text
         .lines()
         .map(str::trim)
@@ -1696,6 +1734,16 @@ mod tests {
                 .expect("git");
             assert!(status.success());
         }
+        let first_branch = String::from_utf8_lossy(
+            &Command::new("git")
+                .args(["symbolic-ref", "--short", "HEAD"])
+                .current_dir(dir)
+                .output()
+                .expect("symbolic-ref")
+                .stdout,
+        )
+        .trim()
+        .to_string();
         let status = Command::new("git")
             .args(["checkout", "--orphan", "second"])
             .current_dir(dir)
@@ -1711,16 +1759,103 @@ mod tests {
                 .expect("git");
             assert!(status.success());
         }
+        // Merge the unrelated root into HEAD so HEAD history really has two roots.
+        let status = Command::new("git")
+            .args(["checkout", "--quiet", &first_branch])
+            .current_dir(dir)
+            .status()
+            .expect("git checkout first");
+        assert!(status.success());
+        let status = Command::new("git")
+            .args([
+                "merge",
+                "--allow-unrelated-histories",
+                "--no-edit",
+                "second",
+            ])
+            .current_dir(dir)
+            .status()
+            .expect("git merge");
+        assert!(status.success());
         let provenance = fixture_provenance(dir).expect("provenance");
-        assert_eq!(provenance.commits, 2);
+        assert_eq!(provenance.commits, 3, "two roots plus the merge commit");
         assert_eq!(provenance.root_commit, None);
+    }
+
+    #[test]
+    fn fixture_provenance__single_root__trimmed_full_sha() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        for args in [
+            vec!["init", "--quiet"],
+            vec!["config", "user.email", "bench@example.invalid"],
+            vec!["config", "user.name", "bench"],
+        ] {
+            let status = Command::new("git")
+                .args(&args)
+                .current_dir(dir)
+                .status()
+                .expect("git");
+            assert!(status.success());
+        }
+        fs::write(dir.join("a.txt"), "a\n").expect("write a");
+        for args in [vec!["add", "a.txt"], vec!["commit", "-m", "root"]] {
+            let status = Command::new("git")
+                .args(&args)
+                .current_dir(dir)
+                .status()
+                .expect("git");
+            assert!(status.success());
+        }
+        let provenance = fixture_provenance(dir).expect("provenance");
+        assert_eq!(provenance.commits, 1);
+        let root = provenance.root_commit.expect("single root");
+        assert!(
+            root.len() == 40 || root.len() == 64,
+            "a git sha is 40 (sha1) or 64 (sha256) hex characters, got {}",
+            root.len()
+        );
+        assert!(
+            root.chars().all(|c| c.is_ascii_hexdigit()) && !root.contains(['\r', '\n']),
+            "root must be a trimmed hex sha: {root:?}"
+        );
+    }
+
+    #[test]
+    fn ensure_warm_state_tree__fresh_fixture__creates_only_the_tree() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let fixture = tmp.path();
+        fs::create_dir_all(fixture.join(".git")).expect("git dir");
+        ensure_warm_state_tree(fixture).expect("state tree");
+        let mut entries = fs::read_dir(fixture.join(".ledgerful"))
+            .expect("read .ledgerful")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
+        entries.sort();
+        assert_eq!(
+            entries,
+            vec!["docs", "logs", "reports", "search_index", "state", "tmp"],
+            "only directories are pre-created; no file and no child run has happened"
+        );
+        for entry in &entries {
+            assert!(
+                fixture.join(".ledgerful").join(entry).is_dir(),
+                "{entry} must be a directory"
+            );
+        }
     }
 
     #[test]
     fn memory_sampler_stop_is_interruptible() {
         let sampler = MemorySampler::start(std::process::id());
         let started = Instant::now();
-        let sample = sampler.stop_and_join();
+        let sample = sampler.stop_and_join().expect("sampler thread");
         assert!(
             started.elapsed() < SAMPLER_TICK,
             "stop_and_join must not block out the 100 ms tick"
@@ -1730,10 +1865,13 @@ mod tests {
     }
 
     #[test]
-    fn memory_sampler__childless_runner__no_coverage() {
-        let sampler = MemorySampler::start(std::process::id());
+    fn memory_sampler__no_such_runner__no_coverage() {
+        // A pid that cannot have children: the shared test process may own
+        // children spawned by sibling tests, so "childless" is not a property of
+        // this process.
+        let sampler = MemorySampler::start(u32::MAX - 1);
         std::thread::sleep(SAMPLER_TICK * 3);
-        let sample = sampler.stop_and_join();
+        let sample = sampler.stop_and_join().expect("sampler thread");
         assert_eq!(
             sample.ticks, 0,
             "a tick with no live descendant is not RSS coverage"
@@ -1761,7 +1899,7 @@ mod tests {
         };
         let sampler = MemorySampler::start(std::process::id());
         std::thread::sleep(SAMPLER_TICK * 4);
-        let sample = sampler.stop_and_join();
+        let sample = sampler.stop_and_join().expect("sampler thread");
         // Let the child exit on its own so the test leaves nothing running.
         let _ = child.wait();
         assert!(
