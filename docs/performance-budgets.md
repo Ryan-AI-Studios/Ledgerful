@@ -137,19 +137,24 @@ final-check set was recorded `within-budget` 8/8 by that leg's review (its raw r
 later overwritten by the `d2df1b6` set, so the surviving attestation is the recorded verdict and
 review prose).
 
-At the deny-repair build `d2df1b6` the final-head local check is **red on `impact-warm`**:
+At the deny-repair build `d2df1b6` the local check is **red on `impact-warm`**:
 `p50 1690 ms` vs the `1390 ms` ceiling and `p95 1747 ms` vs `1490` (verdict and all eight
-receipts in `receipts/final-check-failed-d2df1b6/`). The failure reproduced in the final-check
-battery and in four further probe runs: `impact-probe.json` p50 1704 at the current fixture,
-`impact-refprobe-4ff40b0.json` p50 1705 at a fixture checked out where this row previously
-passed, `impact-refprobe-674d995.json` p50 1670, and `impact-refprobe-lock135.json` p50 1634
-with `pulldown-cmark 0.13.5` rebuilt. That is most consistent with host/environment variance in
-`impact-warm` rather than the dependency patch or a fixture-content change (host variance is
-inferred from the probes, not directly measured). Every other workload is `within-budget`, and
-the failing receipt's ten samples are tightly clustered (1653-1747 ms), so this is a median
-shift rather than one slow sample. No ceiling was raised and no row was re-baselined to make the
-check pass. Acceptance at the final head requires a quiet-host re-run, or a documented
-independent evidence review before any ceiling change (none is authorized).
+receipts in `receipts/final-check-failed-d2df1b6/`). A second full battery at the last
+code-bearing build `60edb36` reproduced it: `p50 1757 ms` / `p95 1789 ms`, with the other seven
+workloads `within-budget` (`receipts/final-check-failed-60edb36/`). Documentation-only commits
+after that measurement do not change the measured Rust source, but a fresh check at the eventual
+final head is still required.
+
+The failure also reproduced in four further probe runs: `impact-probe.json` p50 1704 at the
+current fixture, `impact-refprobe-4ff40b0.json` p50 1705 at a fixture checked out where this row
+previously passed, `impact-refprobe-674d995.json` p50 1670, and `impact-refprobe-lock135.json`
+p50 1634 with `pulldown-cmark 0.13.5` rebuilt. That is most consistent with host/environment
+variance in `impact-warm` rather than the dependency patch or a fixture-content change (host
+variance is inferred from the probes, not directly measured). Every other workload is
+`within-budget` in both batteries, and the failing receipts' ten samples are tightly clustered,
+so this is a median shift rather than one slow sample. No ceiling was raised and no row was
+re-baselined to make the check pass. Acceptance at the final head requires a quiet-host re-run,
+or a documented independent evidence review before any ceiling change (none is authorized).
 
 The earlier n=10 local check on build `ed24ee23d7bc` is **retained as historical evidence** of
 the same variance class: it reported 7/8 `within-budget`, with `impact-warm` `over-budget`
@@ -168,7 +173,8 @@ All paths are track-relative under `C:\dev\coordinated\conductor\0564-Representa
 - `receipts/independent-recovery-20261105/` - the independent eight-workload proof at `4ff40b0`.
 - `receipts/ci/` - the Run 1 CI receipts and verdict.
 - `receipts/epoch9-downloads/` - the Run 1 / Run 1-rerun / Run 1-rerun2 / Run 2 downloads.
-- `receipts/final-check-failed-d2df1b6/` - the `d2df1b6` final product-commit final-check set (red on `impact-warm`) and the four impact probes.
+- `receipts/final-check-failed-d2df1b6/` - the first post-repair final-check set (red on `impact-warm`) and the four impact probes.
+- `receipts/final-check-failed-60edb36/` - the last code-bearing build's final-check set (also red on `impact-warm`) and its log.
 - `receipts/gates-2604eb6/` - the fmt / clippy / nextest / deny gate logs from this leg.
 - `receipts/profile/` - the Phase 5 `impact`/`review` profile packets and timings.
 
