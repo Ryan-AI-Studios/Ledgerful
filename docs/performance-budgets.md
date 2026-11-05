@@ -1,8 +1,7 @@
 # Performance budgets
 
 This page records the regression ceilings enforced by `ledgerful bench --check`. They are
-**predefined** ceilings derived from recorded baselines on two declared host classes and one
-declared fixture band. They are not product targets, not a wall-clock promise for every
+**predefined** ceilings derived from a recorded baseline on the measured local host class (the CI class is declared, not yet measured) and one declared fixture band. They are not product targets, not a wall-clock promise for every
 repository, and not a population claim.
 
 The checker is documented in `docs/agent-output-contract.md` (`kind: "perfBudgetCheck"`).
@@ -27,6 +26,7 @@ workload (observed 2026-11-05: `commitsWalked: 0`, 0 ms inner spans).
 
 ```powershell
 $engine = 'C:\dev\ledgerful-wt-0564'
+cargo build --release --bin ledgerful   # run from $engine at the measured HEAD
 $root = Join-Path $env:TEMP ("perf-0564-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $root -Force | Out-Null
 $fixture = Join-Path $root "fixture"
@@ -213,5 +213,3 @@ Exit 0 only when every result is `within-budget`. `targetStatus` (`met` / `not-m
 is informational on p95 and never changes the exit code. A receipt from a different build is
 `foreign-build`; a receipt outside the fixture band or root is `fixture-out-of-band`; a receipt
 with no row on this host class is `unqualified-host`.
-
-
