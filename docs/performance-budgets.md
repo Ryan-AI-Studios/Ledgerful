@@ -26,13 +26,14 @@ crowded `%TEMP%` spends its 45 s history budget scanning unrelated directories i
 workload (observed 2026-11-05: `commitsWalked: 0`, 0 ms inner spans).
 
 ```powershell
+$engine = 'C:\dev\ledgerful-wt-0564'
 $root = Join-Path $env:TEMP ("perf-0564-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $root -Force | Out-Null
 $fixture = Join-Path $root "fixture"
-git clone --no-hardlinks C:\dev\ledgerful-wt-0564 $fixture
+git clone --no-hardlinks $engine $fixture
 # Precondition (blocking): doctor --json must exit 0 in the clone; a block finding
 # makes doctor exit 1 even under --json, so a doctor-warm sample cannot be produced.
-.\target\release\ledgerful.exe -C $fixture doctor --json | Out-Null
+& (Join-Path $engine 'target\release\ledgerful.exe') -C $fixture doctor --json | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "reference fixture refused: doctor --json exited $LASTEXITCODE" }
 ```
 
@@ -134,7 +135,7 @@ vs the `1390 ms` ceiling, `p95 1850` vs `1490`). A fresh n=20 settle+A/B on 2026
 at A p50 1809 / p95 1848 and B 1783 / 1887 (2.1 %), and the shift reproduces on a clean-parent
 clone and a pre-`ed24ee2` fixture, so it is a host/workload shift rather than a single slow
 sample; the other seven workloads are unchanged. Raising the row
-(`derive_p50(1809)=2260`, `derive_p95(1848)=2310`, `derive_rss(44 400 640)=66 584 576`) needs
+(`derive_p50(1809)=2270`, `derive_p95(1848)=2310`, `derive_rss(44 400 640)=67 108 864`) needs
 explicit owner concurrence (conductor track 0564, Phase 3 step 7). Until it is given, the ceiling
 stays and this table is not a green gate. Evidence:
 `conductor/0564-RepresentativePerformanceBudgets/receipts/check/` (failing verdict and the eight
@@ -212,3 +213,5 @@ Exit 0 only when every result is `within-budget`. `targetStatus` (`met` / `not-m
 is informational on p95 and never changes the exit code. A receipt from a different build is
 `foreign-build`; a receipt outside the fixture band or root is `fixture-out-of-band`; a receipt
 with no row on this host class is `unqualified-host`.
+
+
