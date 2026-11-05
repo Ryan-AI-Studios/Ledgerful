@@ -66,7 +66,293 @@ pub(crate) struct Baseline {
 }
 
 /// Filled by the Phase 3/4 measurement legs, one row per measured workload.
-pub(crate) const BUDGETS: &[BudgetRow] = &[];
+pub(crate) const BUDGETS: &[BudgetRow] = &[
+    BudgetRow {
+        workload: "index-cold",
+        host_class: "local-windows-2026-11",
+        os: "windows",
+        target_triple: "x86_64-pc-windows-msvc",
+        fixture_min_files: 1000,
+        fixture_max_files: 3000,
+        fixture_min_commits: 500,
+        fixture_max_commits: 5000,
+        n_min: 10,
+        p50_budget_ms: 70_930,
+        p95_budget_ms: 72_400,
+        peak_rss_budget_bytes: Some(419_430_400),
+        interactive_target_ms: None,
+        expected_child_args: &["index"],
+        expected_start_state: "cold",
+        expects_setup: false,
+        baseline: Baseline {
+            date: "2026-11-04",
+            build_sha: "822ddc1730a7",
+            n: 20,
+            p50_ms: 56_740,
+            p95_ms: 57_919,
+            sampler_wall_ms: 39_467,
+            peak_rss_bytes: Some(270_598_144),
+            rss_measured_samples: 20,
+            fixture_id: "1170:bcd56d231849",
+            fixture_files: 1_170,
+            fixture_commits: 678,
+            fixture_root_commit: "85ace228532eb523a4840c34d2ae59850b6cb6ae",
+            host_class: "local-windows-2026-11",
+        },
+    },
+    BudgetRow {
+        workload: "status-warm",
+        host_class: "local-windows-2026-11",
+        os: "windows",
+        target_triple: "x86_64-pc-windows-msvc",
+        fixture_min_files: 1000,
+        fixture_max_files: 3000,
+        fixture_min_commits: 500,
+        fixture_max_commits: 5000,
+        n_min: 10,
+        p50_budget_ms: 520,
+        p95_budget_ms: 570,
+        peak_rss_budget_bytes: None,
+        interactive_target_ms: Some(1000),
+        expected_child_args: &["ledger", "status", "--compact"],
+        expected_start_state: "warm",
+        expects_setup: true,
+        baseline: Baseline {
+            date: "2026-11-04",
+            build_sha: "822ddc1730a7",
+            n: 20,
+            p50_ms: 410,
+            p95_ms: 456,
+            sampler_wall_ms: 198,
+            peak_rss_bytes: Some(13_979_648),
+            rss_measured_samples: 20,
+            fixture_id: "1170:bcd56d231849",
+            fixture_files: 1_170,
+            fixture_commits: 678,
+            fixture_root_commit: "85ace228532eb523a4840c34d2ae59850b6cb6ae",
+            host_class: "local-windows-2026-11",
+        },
+    },
+    BudgetRow {
+        workload: "search-warm",
+        host_class: "local-windows-2026-11",
+        os: "windows",
+        target_triple: "x86_64-pc-windows-msvc",
+        fixture_min_files: 1000,
+        fixture_max_files: 3000,
+        fixture_min_commits: 500,
+        fixture_max_commits: 5000,
+        n_min: 10,
+        p50_budget_ms: 520,
+        p95_budget_ms: 600,
+        peak_rss_budget_bytes: None,
+        interactive_target_ms: Some(1000),
+        expected_child_args: &["search", "change-context", "--limit", "3", "--json"],
+        expected_start_state: "warm",
+        expects_setup: true,
+        baseline: Baseline {
+            date: "2026-11-04",
+            build_sha: "822ddc1730a7",
+            n: 20,
+            p50_ms: 415,
+            p95_ms: 473,
+            sampler_wall_ms: 199,
+            peak_rss_bytes: Some(13_971_456),
+            rss_measured_samples: 20,
+            fixture_id: "1170:bcd56d231849",
+            fixture_files: 1_170,
+            fixture_commits: 678,
+            fixture_root_commit: "85ace228532eb523a4840c34d2ae59850b6cb6ae",
+            host_class: "local-windows-2026-11",
+        },
+    },
+    BudgetRow {
+        workload: "context-warm",
+        host_class: "local-windows-2026-11",
+        os: "windows",
+        target_triple: "x86_64-pc-windows-msvc",
+        fixture_min_files: 1000,
+        fixture_max_files: 3000,
+        fixture_min_commits: 500,
+        fixture_max_commits: 5000,
+        n_min: 10,
+        p50_budget_ms: 2_170,
+        p95_budget_ms: 2_390,
+        peak_rss_budget_bytes: Some(83_886_080),
+        interactive_target_ms: Some(3000),
+        expected_child_args: &[
+            "change-context",
+            "--json",
+            "--paths",
+            "src/main.rs",
+            "--timeout",
+            "120",
+        ],
+        expected_start_state: "warm",
+        expects_setup: true,
+        baseline: Baseline {
+            date: "2026-11-04",
+            build_sha: "822ddc1730a7",
+            n: 20,
+            p50_ms: 1_733,
+            p95_ms: 1_905,
+            sampler_wall_ms: 1_073,
+            peak_rss_bytes: Some(46_272_512),
+            rss_measured_samples: 20,
+            fixture_id: "1170:bcd56d231849",
+            fixture_files: 1_170,
+            fixture_commits: 678,
+            fixture_root_commit: "85ace228532eb523a4840c34d2ae59850b6cb6ae",
+            host_class: "local-windows-2026-11",
+        },
+    },
+    BudgetRow {
+        workload: "doctor-warm",
+        host_class: "local-windows-2026-11",
+        os: "windows",
+        target_triple: "x86_64-pc-windows-msvc",
+        fixture_min_files: 1000,
+        fixture_max_files: 3000,
+        fixture_min_commits: 500,
+        fixture_max_commits: 5000,
+        n_min: 10,
+        p50_budget_ms: 1_050,
+        p95_budget_ms: 1_100,
+        peak_rss_budget_bytes: Some(83_886_080),
+        interactive_target_ms: Some(3000),
+        expected_child_args: &["doctor", "--json"],
+        expected_start_state: "warm",
+        expects_setup: true,
+        baseline: Baseline {
+            date: "2026-11-04",
+            build_sha: "822ddc1730a7",
+            n: 20,
+            p50_ms: 838,
+            p95_ms: 880,
+            sampler_wall_ms: 538,
+            peak_rss_bytes: Some(47_779_840),
+            rss_measured_samples: 20,
+            fixture_id: "1170:bcd56d231849",
+            fixture_files: 1_170,
+            fixture_commits: 678,
+            fixture_root_commit: "85ace228532eb523a4840c34d2ae59850b6cb6ae",
+            host_class: "local-windows-2026-11",
+        },
+    },
+    BudgetRow {
+        workload: "hotspots-warm",
+        host_class: "local-windows-2026-11",
+        os: "windows",
+        target_triple: "x86_64-pc-windows-msvc",
+        fixture_min_files: 1000,
+        fixture_max_files: 3000,
+        fixture_min_commits: 500,
+        fixture_max_commits: 5000,
+        n_min: 10,
+        p50_budget_ms: 1_270,
+        p95_budget_ms: 1_390,
+        peak_rss_budget_bytes: Some(50_331_648),
+        interactive_target_ms: Some(3000),
+        expected_child_args: &[
+            "hotspots",
+            "--timeout",
+            "120",
+            "explain",
+            "src/main.rs",
+            "--json",
+        ],
+        expected_start_state: "warm",
+        expects_setup: true,
+        baseline: Baseline {
+            date: "2026-11-04",
+            build_sha: "822ddc1730a7",
+            n: 20,
+            p50_ms: 1_012,
+            p95_ms: 1_108,
+            sampler_wall_ms: 621,
+            peak_rss_bytes: Some(29_507_584),
+            rss_measured_samples: 20,
+            fixture_id: "1170:bcd56d231849",
+            fixture_files: 1_170,
+            fixture_commits: 678,
+            fixture_root_commit: "85ace228532eb523a4840c34d2ae59850b6cb6ae",
+            host_class: "local-windows-2026-11",
+        },
+    },
+    BudgetRow {
+        workload: "impact-warm",
+        host_class: "local-windows-2026-11",
+        os: "windows",
+        target_triple: "x86_64-pc-windows-msvc",
+        fixture_min_files: 1000,
+        fixture_max_files: 3000,
+        fixture_min_commits: 500,
+        fixture_max_commits: 5000,
+        n_min: 10,
+        p50_budget_ms: 1_390,
+        p95_budget_ms: 1_490,
+        peak_rss_budget_bytes: Some(67_108_864),
+        interactive_target_ms: Some(10_000),
+        expected_child_args: &[
+            "impact",
+            "--paths",
+            "src/main.rs",
+            "--json",
+            "--timeout",
+            "120",
+        ],
+        expected_start_state: "warm",
+        expects_setup: true,
+        baseline: Baseline {
+            date: "2026-11-04",
+            build_sha: "822ddc1730a7",
+            n: 20,
+            p50_ms: 1_105,
+            p95_ms: 1_192,
+            sampler_wall_ms: 670,
+            peak_rss_bytes: Some(44_527_616),
+            rss_measured_samples: 20,
+            fixture_id: "1170:bcd56d231849",
+            fixture_files: 1_170,
+            fixture_commits: 678,
+            fixture_root_commit: "85ace228532eb523a4840c34d2ae59850b6cb6ae",
+            host_class: "local-windows-2026-11",
+        },
+    },
+    BudgetRow {
+        workload: "review-warm",
+        host_class: "local-windows-2026-11",
+        os: "windows",
+        target_triple: "x86_64-pc-windows-msvc",
+        fixture_min_files: 1000,
+        fixture_max_files: 3000,
+        fixture_min_commits: 500,
+        fixture_max_commits: 5000,
+        n_min: 10,
+        p50_budget_ms: 4_820,
+        p95_budget_ms: 4_960,
+        peak_rss_budget_bytes: Some(150_994_944),
+        interactive_target_ms: Some(10_000),
+        expected_child_args: &["review", "HEAD~5..HEAD", "--json", "--timeout", "120"],
+        expected_start_state: "warm",
+        expects_setup: true,
+        baseline: Baseline {
+            date: "2026-11-04",
+            build_sha: "822ddc1730a7",
+            n: 20,
+            p50_ms: 3_852,
+            p95_ms: 3_964,
+            sampler_wall_ms: 2_395,
+            peak_rss_bytes: Some(93_786_112),
+            rss_measured_samples: 20,
+            fixture_id: "1170:bcd56d231849",
+            fixture_files: 1_170,
+            fixture_commits: 678,
+            fixture_root_commit: "85ace228532eb523a4840c34d2ae59850b6cb6ae",
+            host_class: "local-windows-2026-11",
+        },
+    },
+];
 
 pub(crate) fn check(receipts: &[StoredBench], embed: &str) -> PerfBudgetCheck {
     check_with_budgets(receipts, embed, BUDGETS)
@@ -595,13 +881,14 @@ pub(crate) fn validate_rows(rows: &[BudgetRow]) -> Vec<String> {
             ));
         }
         let refresh_limit = std::cmp::max(50, (baseline.p50_ms.saturating_mul(5) / 100) as u64);
-        if baseline.sampler_wall_ms / baseline.n as u64 >= refresh_limit {
-            violations.push(format!(
-                "{}: sampler refresh cost {} ms/sample exceeds {} ms",
-                row.workload,
-                baseline.sampler_wall_ms / baseline.n as u64,
-                refresh_limit
-            ));
+        if baseline.n > 0 {
+            let per_sample_ms = baseline.sampler_wall_ms / baseline.n as u64;
+            if per_sample_ms >= refresh_limit {
+                violations.push(format!(
+                    "{}: sampler refresh cost {} ms/sample exceeds {} ms",
+                    row.workload, per_sample_ms, refresh_limit
+                ));
+            }
         }
         if row.expected_child_args.is_empty() {
             violations.push(format!("{}: expected argv is empty", row.workload));
@@ -650,6 +937,8 @@ pub(crate) struct BudgetResult {
 #[allow(non_snake_case)]
 mod tests {
     use super::*;
+    use crate::cli::BenchWorkload;
+    use clap::ValueEnum as _;
 
     const EMBED: &str = "abcdef123456";
 
@@ -805,6 +1094,63 @@ mod tests {
     fn validate_rows__live_table__clean() {
         let violations = validate_rows(BUDGETS);
         assert!(violations.is_empty(), "live BUDGETS table: {violations:?}");
+    }
+
+    #[test]
+    fn validate_rows__zero_baseline_n__reports_without_panicking() {
+        let mut row = synthetic_row("doctor-warm", "local-windows-2026-11");
+        row.baseline.n = 0;
+        row.n_min = 10;
+        let violations = validate_rows(&[row]);
+        assert!(
+            violations.iter().any(|v| v.contains("< 20")),
+            "{violations:?}"
+        );
+    }
+
+    #[test]
+    fn budget_rows__local_table__matches_locked_workload_definition() {
+        assert_eq!(
+            BUDGETS.len(),
+            8,
+            "Phase 3 commits exactly the eight local rows"
+        );
+        for row in BUDGETS {
+            assert_eq!(row.host_class, "local-windows-2026-11");
+            let workload = BenchWorkload::from_str(row.workload, false)
+                .unwrap_or_else(|_| panic!("unknown workload slug {}", row.workload));
+            assert_eq!(
+                row.expected_child_args,
+                workload.child_args(),
+                "{} expected argv",
+                row.workload
+            );
+            assert_eq!(
+                row.expected_start_state,
+                workload.start_state(),
+                "{} expected start state",
+                row.workload
+            );
+            assert_eq!(
+                row.expects_setup,
+                workload.expects_setup(),
+                "{} expects setup",
+                row.workload
+            );
+            let target = match workload {
+                BenchWorkload::IndexCold => None,
+                BenchWorkload::StatusWarm | BenchWorkload::SearchWarm => Some(1000),
+                BenchWorkload::ContextWarm
+                | BenchWorkload::DoctorWarm
+                | BenchWorkload::HotspotsWarm => Some(3000),
+                BenchWorkload::ImpactWarm | BenchWorkload::ReviewWarm => Some(10_000),
+            };
+            assert_eq!(
+                row.interactive_target_ms, target,
+                "{} B37 target",
+                row.workload
+            );
+        }
     }
 
     #[test]
