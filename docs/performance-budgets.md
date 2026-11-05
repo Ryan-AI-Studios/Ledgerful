@@ -130,29 +130,48 @@ default-clock partial is claimed.
 
 ### Current status (2026-11-05)
 
-All fifteen committed rows are **within their unchanged ceilings**; the table is not provisional
-and is a green gate at the `buildSha` of its receipt set. The bounded recovery kept every original
-ceiling (no recalibration): an independent eight-workload n=10 local proof at `4ff40b0`
-(`receipts/independent-recovery-20261105/`) re-proved all eight local rows within budget, and the
-current-build final-check set (`output/bench/final-check-verdict.json`, copied to
-`receipts/final-check/`) re-proves them again at its own `buildSha` (all eight `within-budget`,
-0 violations / 0 unqualified).
+The committed ceilings are **unchanged** (no recalibration). The pre-repair evidence stands: the
+independent eight-workload n=10 local proof at `4ff40b0`
+(`receipts/independent-recovery-20261105/`) is `within-budget` for all eight, and the `674d995`
+final-check set was `within-budget` 8/8.
 
-The earlier n=10 local check on build `ed24ee23d7bc` is **retained as historical evidence, not a
-live provisional status**: it reported 7/8 `within-budget`, with `impact-warm` `over-budget`
+At the deny-repair build `d2df1b6` the final-head local check is **red on `impact-warm`**:
+`p50 1690 ms` vs the `1390 ms` ceiling and `p95 1747 ms` vs `1490` (verdict and all eight
+receipts in `receipts/final-check-failed-d2df1b6/`). The failure reproduced on three fresh
+clones - including a fixture checked out at `4ff40b0`, where this row previously passed, and a
+rebuild with `pulldown-cmark 0.13.5` restored (`impact-refprobe-4ff40b0.json` p50 1705,
+`impact-refprobe-674d995.json` p50 1670, `impact-refprobe-lock135.json` p50 1634) - so it is
+host/environment variance in `impact-warm`, not the dependency patch and not a fixture-content
+change. Every other workload is `within-budget`, and the failing receipt's ten samples are
+tightly clustered (1653-1747 ms), so this is a median shift rather than one slow sample. No
+ceiling was raised and no row was re-baselined to make the check pass. Acceptance at the final
+head requires a quiet-host re-run, or a documented independent evidence review before any
+ceiling change (none is authorized).
+
+The earlier n=10 local check on build `ed24ee23d7bc` is **retained as historical evidence** of
+the same variance class: it reported 7/8 `within-budget`, with `impact-warm` `over-budget`
 (`p50 1763 ms` vs the `1390 ms` ceiling, `p95 1850` vs `1490`) after a host/workload shift that
-reproduced across clones. No ceiling was raised and no row was re-baselined to make that check
-pass; the preserved failure is evidence of what the checker caught, not a regression introduced by
-the recovery. Evidence:
+reproduced across clones. No ceiling was raised then either. Evidence:
 `conductor/0564-RepresentativePerformanceBudgets/receipts/check/` (failing verdict and the eight
 n=10 receipts) and `receipts/rebaseline-2026-11-05/`; the conductor receipts are authoritative.
+
+### Evidence directories
+
+- `receipts/check/` - the historical n=10 set at `ed24ee2`, including the failing `impact-warm` receipt.
+- `receipts/rebaseline-2026-11-05/` - the n=20 rebaseline receipts from the same episode.
+- `receipts/snapshots/` - the S1→S2→S3 fixture-mutation snapshots.
+- `receipts/independent-recovery-20261105/` - the independent eight-workload proof at `4ff40b0`.
+- `receipts/ci/` - the Run 1 CI receipts and verdict.
+- `receipts/epoch9-downloads/` - the Run 1 / Run 1-rerun / Run 1-rerun2 / Run 2 downloads.
+- `receipts/final-check-failed-d2df1b6/` - the current-head final-check set (red on `impact-warm`) and the three impact probes.
+- `receipts/profile/` - the Phase 5 `impact`/`review` profile packets and timings.
 
 ## CI table (`ci-windows-latest`)
 
 Baseline: `2026-11-05`, `buildSha` `85ada8cafb25` (the Run 1 PR merge commit), n=20 per row, on
 `windows-2025-vs2026` (image version `20261030.294.1`; recorded from
 [Run 1](https://github.com/Ryan-AI-Studios/Ledgerful/actions/runs/42080144098), job
-`127430743893`). The fixture band is 1171 files / 685 commits at root
+`127430743893`). The measured Run 1 fixture is 1171 files / 685 commits at root
 `85ace228532eb523a4840c34d2ae59850b6cb6ae`.
 
 | Workload | n | p50 | p95 | p50 budget | p95 budget | peak RSS | RSS budget | B37 target | Target status |
@@ -168,24 +187,25 @@ Baseline: `2026-11-05`, `buildSha` `85ada8cafb25` (the Run 1 PR merge commit), n
 `status-warm` and `search-warm` carry no peak-RSS ceiling for the same reason as their local
 counterparts (p95 below 500 ms).
 
-Three workflow runs produced the evidence. [Run 1](https://github.com/Ryan-AI-Studios/Ledgerful/actions/runs/42080144098)
+Four workflow runs produced the evidence. [Run 1](https://github.com/Ryan-AI-Studios/Ledgerful/actions/runs/42080144098)
 measured the baseline before the CI rows existed, so its check reported `unqualified-host` while
 still uploading receipts. [Run 1-rerun](https://github.com/Ryan-AI-Studios/Ledgerful/actions/runs/42085455909)
 and [Run 1-rerun2](https://github.com/Ryan-AI-Studios/Ledgerful/actions/runs/42089475433) were
 measured from empty trigger commits on the PR branch (identical merge tree, new immutable run
 ids). Every workload's p95 agreed with Run 1 within ±25 % in at least one rerun; `search-warm`
-(−30.5 % on Run 1-rerun) and `doctor-warm` (+165 % on Run 1-rerun2, a single slow sample in the
-n=20 set) were the two outliers, each settled by the other run. Rows derive from Run 1 only and
-are never averaged. [Run 2](https://github.com/Ryan-AI-Studios/Ledgerful/actions/runs/42095089818)
-(head `674d995`) re-checked the committed rows against its own build: all seven `within-budget`,
-0 violations / 0 unqualified; its p95s were 73 / 76 / 1 018 / 720 / 470 / 891 / 5 942 ms for
-status / search / context / doctor / hotspots / impact / review. Because the job is
-`continue-on-error`, the saved `perf-check.json` (not the job badge) is the verdict evidence.
+(−30.5 % on Run 1-rerun) and `doctor-warm` (+165 % on Run 1-rerun2, two slow samples, 1944 and
+1988 ms, in the n=20 set) were the two outliers, each settled by the other run. Rows derive from
+Run 1 only and are never averaged. [Run 2](https://github.com/Ryan-AI-Studios/Ledgerful/actions/runs/42095089818)
+(head `674d995`, measured merge build `e7cbbf5a0f37`) re-checked the committed rows against its
+own build: all seven `within-budget`, 0 violations / 0 unqualified; its p95s were
+73 / 76 / 1 018 / 720 / 470 / 891 / 5 942 ms for status / search / context / doctor / hotspots /
+impact / review. Because the job is `continue-on-error`, the saved `perf-check.json` (not the job
+badge) is the verdict evidence.
 
 Measured refresh cost for the CI rows (`samplerWallMs / n`): `status-warm` 0 ms, `search-warm`
 0 ms, `context-warm` 18 ms, `doctor-warm` 9 ms, `hotspots-warm` 8 ms, `impact-warm` 15 ms,
-`review-warm` 101 ms. All are below `max(50 ms, 5 % of p50)` (56, 50, 50, 52 and 341 ms for the
-last four).
+`review-warm` 101 ms. All are below `max(50 ms, 5 % of p50)` (56, 50, 50, 52 and 341 ms for
+context, doctor, hotspots, impact and review).
 
 The CI check is a sanity band, not a fine regression detector: a 25 % ceiling means a
 run-to-run move inside that band passes by construction, and p50/peak RSS have no cross-run
