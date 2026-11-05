@@ -19,11 +19,21 @@ the hardware. The hardware above is what makes the local claim auditable.
 
 ## Fixture band
 
-The measured fixture is a clone of the engine repository:
+The measured fixture is a clone of the engine repository. Put it under a **unique clean parent
+directory** so the fixture's parent holds no unrelated repositories: `impact`/`review` run
+federated sibling discovery over the repo root's parent, and a fixture cloned directly under a
+crowded `%TEMP%` spends its 45 s history budget scanning unrelated directories instead of the
+workload (observed 2026-11-05: `commitsWalked: 0`, 0 ms inner spans).
 
 ```powershell
-$fixture = Join-Path $env:TEMP ("perf-fixture-0564-" + [guid]::NewGuid().ToString("N"))
+$root = Join-Path $env:TEMP ("perf-0564-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $root -Force | Out-Null
+$fixture = Join-Path $root "fixture"
 git clone --no-hardlinks C:\dev\ledgerful-wt-0564 $fixture
+# Precondition (blocking): doctor --json must exit 0 in the clone; a block finding
+# makes doctor exit 1 even under --json, so a doctor-warm sample cannot be produced.
+.\target\release\ledgerful.exe -C $fixture doctor --json | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "reference fixture refused: doctor --json exited $LASTEXITCODE" }
 ```
 
 A row accepts any fixture with **1000-3000 files** and **500-5000 commits** whose **root commit**
@@ -103,12 +113,41 @@ All run-B p95s agreed with run A within ±15 %. Every row's per-sample refresh c
 is above the shipped 25 s default, but `index` is not a budgeted analysis command and no
 default-clock partial is claimed.
 
+### Refresh cost per row (`samplerWallMs / n`)
+
+| Workload | refresh/n | limit `max(50 ms, 5 % of p50)` |
+|---|---|---|
+| `index-cold` | 1 973 ms | 2 837 ms |
+| `status-warm` | 9 ms | 50 ms |
+| `search-warm` | 9 ms | 50 ms |
+| `context-warm` | 53 ms | 86 ms |
+| `doctor-warm` | 26 ms | 50 ms |
+| `hotspots-warm` | 31 ms | 50 ms |
+| `impact-warm` | 33 ms | 55 ms |
+| `review-warm` | 119 ms | 192 ms |
+
+### Current status (2026-11-05)
+
+The committed table is **provisional for `impact-warm`**. The n=10 local check on build
+`ed24ee23d7bc` is **7/8 `within-budget`**; `impact-warm` reports `over-budget` (`p50 1763 ms`
+vs the `1390 ms` ceiling, `p95 1850` vs `1490`). A fresh n=20 settle+A/B on 2026-11-05 is stable
+at A p50 1809 / p95 1848 and B 1783 / 1887 (2.1 %), and the shift reproduces on a clean-parent
+clone and a pre-`ed24ee2` fixture, so it is a host/workload shift rather than a single slow
+sample; the other seven workloads are unchanged. Raising the row
+(`derive_p50(1809)=2260`, `derive_p95(1848)=2310`, `derive_rss(44 400 640)=66 584 576`) needs
+explicit owner concurrence (conductor track 0564, Phase 3 step 7). Until it is given, the ceiling
+stays and this table is not a green gate. Evidence:
+`conductor/0564-RepresentativePerformanceBudgets/receipts/check/` (failing verdict and the eight
+n=10 receipts) and `receipts/rebaseline-2026-11-05/`; the conductor receipts are authoritative,
+and `output/bench` was overwritten by the re-baseline.
+
 ## CI table (`ci-windows-latest`)
 
-The seven warm CI rows are measured by the advisory `perf-budget.yml` workflow on a PR (Run 1),
-agreed against a second run (Run 1-rerun) within ±25 %, and verified by Run 2 after the rows are
-committed. **The CI rows are not yet committed**; they land with the Phase 4 CI measurement leg.
-No CI numbers are claimed here.
+The seven warm CI rows **will be** measured by the advisory `perf-budget.yml` workflow on a PR
+(Run 1), must agree against a second run (Run 1-rerun) within ±25 %, and Run 2 must verify them
+after the rows are committed. **The CI rows are not yet committed**; they land with the Phase 4
+CI measurement leg. No CI numbers are claimed here, and the concrete `windows-latest`
+image/build is recorded with Run 1.
 
 The CI check is a sanity band, not a fine regression detector: a 25 % ceiling means a
 run-to-run move inside that band passes by construction, and p50/peak RSS have no cross-run
@@ -133,7 +172,8 @@ bounded monitoring cost is inside the budget. The measured per-sample refresh co
 
 ## Limits
 
-- One OS/arch/language profile, one fixture band, one declared host class per row.
+- One OS/arch/language profile, one fixture band, one declared host class per row. There is no
+  baseline arm and no comparison to an unmeasured "expected" machine.
 - No p99. At n=10 the p95 is the maximum observed, so one slow sample can false-alarm against the
   1.25x latency ceiling (a deliberate conservative trade).
 - Headroom factors are stated separately: 25 % for p50/p95, 50 % for peak RSS
@@ -142,6 +182,13 @@ bounded monitoring cost is inside the budget. The measured per-sample refresh co
   `Process::memory()` is the working set, so a shared DLL or mapped page counts once per process;
   it is comparable run to run, not private dirty bytes. 250 ms polling can miss a short-lived
   grandchild.
+- The child wall cap equals the locked `--timeout 120` measurement clock (`CHILD_TIMEOUT`); the
+  two values must move together, so a run at that boundary is a timeout hard error rather than a
+  bounded partial.
+- Largest measured child stdout against the 1 MiB `CHILD_MAX_OUTPUT_BYTES` capture cap:
+  `impact-warm` 105 609 bytes and `review-warm` 1 865 bytes (self-timed profile packets, same
+  argv). Both are far below the cap; a capture that hits it is a hard error, never a shortened
+  sample.
 - No content manifest; `fixtureRootCommit` proves shared root ancestry only.
 - Each CI receipt measures the PR merge ref's own tree, so successive CI receipts can be
   different in-band trees; the 25 % headroom and advisory status are the mitigation.
