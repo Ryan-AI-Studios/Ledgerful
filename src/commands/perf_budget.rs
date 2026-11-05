@@ -804,12 +804,14 @@ pub(crate) fn validate_rows(rows: &[BudgetRow]) -> Vec<String> {
                 }
             }
             None => {
+                // `derive_rss` rounds up to 16 MiB, so `derive_rss(bytes) == 0` can never
+                // hold for a positive baseline; test the measurement itself instead.
                 if let Some(bytes) = baseline.peak_rss_bytes
+                    && bytes == 0
                     && baseline.p95_ms >= 500
                     && baseline.rss_measured_samples == baseline.n as u64
-                    && derive_rss(bytes) == 0
                 {
-                    violations.push(format!("{}: zero RSS ceiling", row.workload));
+                    violations.push(format!("{}: zero measured peak RSS", row.workload));
                 }
             }
         }
@@ -1200,6 +1202,27 @@ mod tests {
             violations
                 .iter()
                 .any(|v| v.contains("without full coverage")),
+            "{violations:?}"
+        );
+    }
+
+    #[test]
+    fn validate_rows__zero_measured_peak_rss__flagged() {
+        // No ceiling declared, but an eligible row's measured peak is zero: that is a
+        // sampler defect, not an omitted ceiling, and must be reported.
+        let mut row = synthetic_row("impact-warm", "local-windows-2026-11");
+        row.baseline.p50_ms = 600;
+        row.baseline.p95_ms = 900;
+        row.p50_budget_ms = derive_p50(row.baseline.p50_ms);
+        row.p95_budget_ms = derive_p95(row.baseline.p95_ms);
+        row.baseline.peak_rss_bytes = Some(0);
+        row.baseline.rss_measured_samples = row.baseline.n as u64;
+        row.peak_rss_budget_bytes = None;
+        let violations = validate_rows(&[row]);
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.contains("zero measured peak RSS")),
             "{violations:?}"
         );
     }
