@@ -352,6 +352,260 @@ pub(crate) const BUDGETS: &[BudgetRow] = &[
             host_class: "local-windows-2026-11",
         },
     },
+    // Phase 4: `ci-windows-latest`, derived from Run 1 of the advisory
+    // `perf-budget` workflow (merge commit 85ada8cafb25, 2026-11-05).
+    BudgetRow {
+        workload: "status-warm",
+        host_class: "ci-windows-latest",
+        os: "windows",
+        target_triple: "x86_64-pc-windows-msvc",
+        fixture_min_files: 1000,
+        fixture_max_files: 3000,
+        fixture_min_commits: 500,
+        fixture_max_commits: 5000,
+        n_min: 10,
+        p50_budget_ms: 100,
+        p95_budget_ms: 100,
+        peak_rss_budget_bytes: None,
+        interactive_target_ms: Some(1000),
+        expected_child_args: &["ledger", "status", "--compact"],
+        expected_start_state: "warm",
+        expects_setup: true,
+        baseline: Baseline {
+            date: "2026-11-05",
+            build_sha: "85ada8cafb25",
+            n: 20,
+            p50_ms: 74,
+            p95_ms: 78,
+            sampler_wall_ms: 0,
+            peak_rss_bytes: None,
+            rss_measured_samples: 0,
+            fixture_id: "1171:9ff9f973dcc4",
+            fixture_files: 1_171,
+            fixture_commits: 685,
+            fixture_root_commit: "85ace228532eb523a4840c34d2ae59850b6cb6ae",
+            host_class: "ci-windows-latest",
+        },
+    },
+    BudgetRow {
+        workload: "search-warm",
+        host_class: "ci-windows-latest",
+        os: "windows",
+        target_triple: "x86_64-pc-windows-msvc",
+        fixture_min_files: 1000,
+        fixture_max_files: 3000,
+        fixture_min_commits: 500,
+        fixture_max_commits: 5000,
+        n_min: 10,
+        p50_budget_ms: 120,
+        p95_budget_ms: 120,
+        peak_rss_budget_bytes: None,
+        interactive_target_ms: Some(1000),
+        expected_child_args: &["search", "change-context", "--limit", "3", "--json"],
+        expected_start_state: "warm",
+        expects_setup: true,
+        baseline: Baseline {
+            date: "2026-11-05",
+            build_sha: "85ada8cafb25",
+            n: 20,
+            p50_ms: 89,
+            p95_ms: 95,
+            sampler_wall_ms: 0,
+            peak_rss_bytes: None,
+            rss_measured_samples: 0,
+            fixture_id: "1171:9ff9f973dcc4",
+            fixture_files: 1_171,
+            fixture_commits: 685,
+            fixture_root_commit: "85ace228532eb523a4840c34d2ae59850b6cb6ae",
+            host_class: "ci-windows-latest",
+        },
+    },
+    BudgetRow {
+        workload: "context-warm",
+        host_class: "ci-windows-latest",
+        os: "windows",
+        target_triple: "x86_64-pc-windows-msvc",
+        fixture_min_files: 1000,
+        fixture_max_files: 3000,
+        fixture_min_commits: 500,
+        fixture_max_commits: 5000,
+        n_min: 10,
+        p50_budget_ms: 1_400,
+        p95_budget_ms: 1_420,
+        peak_rss_budget_bytes: Some(67_108_864),
+        interactive_target_ms: Some(3000),
+        expected_child_args: &[
+            "change-context",
+            "--json",
+            "--paths",
+            "src/main.rs",
+            "--timeout",
+            "120",
+        ],
+        expected_start_state: "warm",
+        expects_setup: true,
+        baseline: Baseline {
+            date: "2026-11-05",
+            build_sha: "85ada8cafb25",
+            n: 20,
+            p50_ms: 1_120,
+            p95_ms: 1_134,
+            sampler_wall_ms: 365,
+            peak_rss_bytes: Some(38_465_536),
+            rss_measured_samples: 20,
+            fixture_id: "1171:9ff9f973dcc4",
+            fixture_files: 1_171,
+            fixture_commits: 685,
+            fixture_root_commit: "85ace228532eb523a4840c34d2ae59850b6cb6ae",
+            host_class: "ci-windows-latest",
+        },
+    },
+    BudgetRow {
+        workload: "doctor-warm",
+        host_class: "ci-windows-latest",
+        os: "windows",
+        target_triple: "x86_64-pc-windows-msvc",
+        fixture_min_files: 1000,
+        fixture_max_files: 3000,
+        fixture_min_commits: 500,
+        fixture_max_commits: 5000,
+        n_min: 10,
+        p50_budget_ms: 840,
+        p95_budget_ms: 920,
+        peak_rss_budget_bytes: Some(385_875_968),
+        interactive_target_ms: Some(3000),
+        expected_child_args: &["doctor", "--json"],
+        expected_start_state: "warm",
+        expects_setup: true,
+        baseline: Baseline {
+            date: "2026-11-05",
+            build_sha: "85ada8cafb25",
+            n: 20,
+            p50_ms: 670,
+            p95_ms: 732,
+            sampler_wall_ms: 193,
+            peak_rss_bytes: Some(247_730_176),
+            rss_measured_samples: 20,
+            fixture_id: "1171:9ff9f973dcc4",
+            fixture_files: 1_171,
+            fixture_commits: 685,
+            fixture_root_commit: "85ace228532eb523a4840c34d2ae59850b6cb6ae",
+            host_class: "ci-windows-latest",
+        },
+    },
+    BudgetRow {
+        workload: "hotspots-warm",
+        host_class: "ci-windows-latest",
+        os: "windows",
+        target_triple: "x86_64-pc-windows-msvc",
+        fixture_min_files: 1000,
+        fixture_max_files: 3000,
+        fixture_min_commits: 500,
+        fixture_max_commits: 5000,
+        n_min: 10,
+        p50_budget_ms: 760,
+        p95_budget_ms: 780,
+        peak_rss_budget_bytes: Some(50_331_648),
+        interactive_target_ms: Some(3000),
+        expected_child_args: &[
+            "hotspots",
+            "--timeout",
+            "120",
+            "explain",
+            "src/main.rs",
+            "--json",
+        ],
+        expected_start_state: "warm",
+        expects_setup: true,
+        baseline: Baseline {
+            date: "2026-11-05",
+            build_sha: "85ada8cafb25",
+            n: 20,
+            p50_ms: 602,
+            p95_ms: 617,
+            sampler_wall_ms: 161,
+            peak_rss_bytes: Some(32_133_120),
+            rss_measured_samples: 20,
+            fixture_id: "1171:9ff9f973dcc4",
+            fixture_files: 1_171,
+            fixture_commits: 685,
+            fixture_root_commit: "85ace228532eb523a4840c34d2ae59850b6cb6ae",
+            host_class: "ci-windows-latest",
+        },
+    },
+    BudgetRow {
+        workload: "impact-warm",
+        host_class: "ci-windows-latest",
+        os: "windows",
+        target_triple: "x86_64-pc-windows-msvc",
+        fixture_min_files: 1000,
+        fixture_max_files: 3000,
+        fixture_min_commits: 500,
+        fixture_max_commits: 5000,
+        n_min: 10,
+        p50_budget_ms: 1_320,
+        p95_budget_ms: 1_360,
+        peak_rss_budget_bytes: Some(67_108_864),
+        interactive_target_ms: Some(10_000),
+        expected_child_args: &[
+            "impact",
+            "--paths",
+            "src/main.rs",
+            "--json",
+            "--timeout",
+            "120",
+        ],
+        expected_start_state: "warm",
+        expects_setup: true,
+        baseline: Baseline {
+            date: "2026-11-05",
+            build_sha: "85ada8cafb25",
+            n: 20,
+            p50_ms: 1_055,
+            p95_ms: 1_082,
+            sampler_wall_ms: 305,
+            peak_rss_bytes: Some(42_549_248),
+            rss_measured_samples: 20,
+            fixture_id: "1171:9ff9f973dcc4",
+            fixture_files: 1_171,
+            fixture_commits: 685,
+            fixture_root_commit: "85ace228532eb523a4840c34d2ae59850b6cb6ae",
+            host_class: "ci-windows-latest",
+        },
+    },
+    BudgetRow {
+        workload: "review-warm",
+        host_class: "ci-windows-latest",
+        os: "windows",
+        target_triple: "x86_64-pc-windows-msvc",
+        fixture_min_files: 1000,
+        fixture_max_files: 3000,
+        fixture_min_commits: 500,
+        fixture_max_commits: 5000,
+        n_min: 10,
+        p50_budget_ms: 8_550,
+        p95_budget_ms: 8_640,
+        peak_rss_budget_bytes: Some(218_103_808),
+        interactive_target_ms: Some(10_000),
+        expected_child_args: &["review", "HEAD~5..HEAD", "--json", "--timeout", "120"],
+        expected_start_state: "warm",
+        expects_setup: true,
+        baseline: Baseline {
+            date: "2026-11-05",
+            build_sha: "85ada8cafb25",
+            n: 20,
+            p50_ms: 6_835,
+            p95_ms: 6_907,
+            sampler_wall_ms: 2_034,
+            peak_rss_bytes: Some(141_189_120),
+            rss_measured_samples: 20,
+            fixture_id: "1171:9ff9f973dcc4",
+            fixture_files: 1_171,
+            fixture_commits: 685,
+            fixture_root_commit: "85ace228532eb523a4840c34d2ae59850b6cb6ae",
+            host_class: "ci-windows-latest",
+        },
+    },
 ];
 
 pub(crate) fn check(receipts: &[StoredBench], embed: &str) -> PerfBudgetCheck {
@@ -1111,14 +1365,16 @@ mod tests {
     }
 
     #[test]
-    fn budget_rows__local_table__matches_locked_workload_definition() {
-        assert_eq!(
-            BUDGETS.len(),
-            8,
-            "Phase 3 commits exactly the eight local rows"
-        );
+    fn budget_rows__table__matches_locked_workload_definition() {
+        assert_eq!(BUDGETS.len(), 15, "8 local + 7 CI rows");
+        let mut local = 0;
+        let mut ci = 0;
         for row in BUDGETS {
-            assert_eq!(row.host_class, "local-windows-2026-11");
+            match row.host_class {
+                "local-windows-2026-11" => local += 1,
+                "ci-windows-latest" => ci += 1,
+                other => panic!("unexpected host class {other}"),
+            }
             let workload = BenchWorkload::from_str(row.workload, false)
                 .unwrap_or_else(|_| panic!("unknown workload slug {}", row.workload));
             assert_eq!(
@@ -1152,6 +1408,25 @@ mod tests {
                 "{} B37 target",
                 row.workload
             );
+        }
+        assert_eq!(local, 8, "every slug on the local class");
+        assert_eq!(ci, 7, "every warm slug on the CI class");
+        // Every slug is covered on the local class; `index-cold` is local-only.
+        for workload in BenchWorkload::ALL {
+            assert!(
+                BUDGETS.iter().any(|row| row.workload == workload.as_str()
+                    && row.host_class == "local-windows-2026-11"),
+                "{} has no local row",
+                workload.as_str()
+            );
+            if workload != BenchWorkload::IndexCold {
+                assert!(
+                    BUDGETS.iter().any(|row| row.workload == workload.as_str()
+                        && row.host_class == "ci-windows-latest"),
+                    "{} has no CI row",
+                    workload.as_str()
+                );
+            }
         }
     }
 
