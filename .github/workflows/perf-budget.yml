@@ -161,7 +161,7 @@ jobs:
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "battery wall seconds (clone through artifact upload): $elapsed; the 25-minute stop threshold applies to this number, not to total job wall time"
 
       - name: Warn on a non-green advisory run
-        if: steps.build.outcome == 'failure' || steps.bench.outcome == 'failure' || steps.gate.outcome == 'failure' || cancelled()
+        if: failure() || cancelled()
         run: |
           $detail = "build=$($env:BUILD_OUTCOME) bench=$($env:BENCH_OUTCOME) gate=$($env:GATE_OUTCOME)"
           Write-Output "::warning::perf-budget did not complete; no performance result is claimed ($detail)"
