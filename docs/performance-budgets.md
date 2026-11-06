@@ -137,14 +137,13 @@ final-check set was recorded `within-budget` 8/8 by that leg's review (its raw r
 later overwritten by the `d2df1b6` set, so the surviving attestation is the recorded verdict and
 review prose).
 
-**Accepted current-head proof (2026-11-05T23:49Z).** A quiet-host re-run at the last code-bearing build `9b8ccd1` (`0.2.18 (9b8ccd13f6d5)`, binary SHA256 `eb9a7206602f907639f80d9ca0ac339c4c70fa0b03389ff94813c61a22a056a1`) produced a complete eight-workload n=10 set: `within-budget` for all eight, 0 violations / 0 unqualified, against the unchanged ceilings (impact p50 1108 / p95 1155 ms and peak RSS 38 477 824 B against 1390 / 1490 ms and 67 108 864 B). `run.json` records `complete=true`, eight native workloads exiting 0, `check_exit=0`, and equal start/end HEAD and binary hashes; the raw proof is `receipts/independent-recovery-20261105/parent-check-5807a735dc41479a9c8a630ab3aaf618/`. This satisfies the recorded current-head prerequisite for the unchanged Rust source. Documentation-only commits after `9b8ccd1` do not change the measured source, so their own receipts are `foreign-build` by design and this set remains the measurement of record until a later code-bearing change.
+**Accepted current-source proof (2026-11-05T23:49Z).** A dedicated parent-run re-run at the final head `9b8ccd1` (`0.2.18 (9b8ccd13f6d5)`, binary SHA256 `eb9a7206602f907639f80d9ca0ac339c4c70fa0b03389ff94813c61a22a056a1`, built from the last code-bearing tree; the last code-bearing commit is `3d7bf1d`) produced a complete eight-workload n=10 set: `within-budget` for all eight, 0 violations / 0 unqualified, against the unchanged ceilings (impact p50 1108 / p95 1155 ms and peak RSS 38 477 824 B against 1390 / 1490 ms and 67 108 864 B). `run.json` records `complete=true`, eight native workloads exiting 0, `check_exit=0`, and equal start/end HEAD and binary hashes; the raw proof is `receipts/independent-recovery-20261105/parent-check-5807a735dc41479a9c8a630ab3aaf618/`. This satisfies the recorded current-head prerequisite for the unchanged Rust source. Documentation-only commits after `9b8ccd1` do not change the measured source; those commits' receipts are not the measurement of record, and this set remains it until a later code-bearing change.
 
 **Retained red evidence (not erased).** At the deny-repair build `d2df1b6` a local check was red on `impact-warm`:
 `p50 1690 ms` vs the `1390 ms` ceiling and `p95 1747 ms` vs `1490` (verdict and all eight
-receipts in `receipts/final-check-failed-d2df1b6/`). A second full battery at the last
-code-bearing build `60edb36` reproduced it: `p50 1757 ms` / `p95 1789 ms`, with the other seven
+receipts in `receipts/final-check-failed-d2df1b6/`). A second full battery at `60edb36` reproduced it: `p50 1757 ms` / `p95 1789 ms`, with the other seven
 workloads `within-budget` (`receipts/final-check-failed-60edb36/`). Documentation-only commits
-after that measurement do not change the measured source; the quiet-host `9b8ccd1` re-run above
+after that measurement do not change the measured source; the dedicated `9b8ccd1` re-run above
 later cleared it.
 
 The failure also reproduced in four further probe runs: `impact-probe.json` p50 1704 at the
@@ -176,7 +175,7 @@ All paths are track-relative under `C:\dev\coordinated\conductor\0564-Representa
 - `receipts/ci/` - the Run 1 CI receipts and verdict.
 - `receipts/epoch9-downloads/` - the Run 1 / Run 1-rerun / Run 1-rerun2 / Run 2 downloads.
 - `receipts/final-check-failed-d2df1b6/` - the first post-repair final-check set (red on `impact-warm`) and the four impact probes.
-- `receipts/final-check-failed-60edb36/` - the last code-bearing build's final-check set (also red on `impact-warm`) and its log.
+- `receipts/final-check-failed-60edb36/` - the `60edb36` post-repair final-check set (also red on `impact-warm`) and its log.
 - `receipts/gates-2604eb6/` - the fmt / clippy / nextest / deny gate logs from this leg.
 - `receipts/profile/` - the Phase 5 `impact`/`review` profile packets and timings.
 
