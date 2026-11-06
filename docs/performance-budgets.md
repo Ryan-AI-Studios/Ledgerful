@@ -164,6 +164,21 @@ reproduced across clones. No ceiling was raised then either. Evidence:
 `conductor/0564-RepresentativePerformanceBudgets/receipts/check/` (failing verdict and the eight
 n=10 receipts) and `receipts/rebaseline-2026-11-05/`; the conductor receipts are authoritative.
 
+**Final gate verification (2026-11-06).** The closeout gates ran at `84ed90a`, a docs-only head
+over the last code-bearing tree (`3d7bf1d`), so they describe the same Rust source as the accepted
+`9b8ccd1` measurement. `cargo install --path .` installed `0.2.18 (84ed90adf23a)` and
+`ledgerful verify --scope full` exited 0 on 3/3 commands: `cargo fmt --all -- --check` 3.7 s,
+`cargo nextest run --workspace --all-features --profile slow` 895.0 s, and
+`cargo test --workspace --all-features --doc` 58.0 s ("Verification passed"; transcript
+`receipts/gates-84ed90a/verify-full.log`). `cargo deny check` was green (`advisories ok, bans ok,
+licenses ok, sources ok`; `receipts/gates-84ed90a/deny.log`). The WSL workspace lane ran 5 426
+tests: 5 421 passed, 5 failed, 11 skipped. The five failures are named known-environment issues,
+not this source: four `impact::enrichment::coupling` tests cannot discover the repository through
+the Windows worktree `.git` pointer from git-in-WSL, and `engine_scan_latency_guard` took 9 327 ms
+against its untouched 6 000 ms debug budget (the known load-flaky in-suite guard; the literal is
+byte-identical). `cargo clippy --all-targets --all-features -- -D warnings` is green at the last
+code-bearing commit, and no Rust file changed after it.
+
 ### Evidence directories
 
 All paths are track-relative under `C:\dev\coordinated\conductor\0564-RepresentativePerformanceBudgets\`.
@@ -177,6 +192,7 @@ All paths are track-relative under `C:\dev\coordinated\conductor\0564-Representa
 - `receipts/final-check-failed-d2df1b6/` - the first post-repair final-check set (red on `impact-warm`) and the four impact probes.
 - `receipts/final-check-failed-60edb36/` - the `60edb36` post-repair final-check set (also red on `impact-warm`) and its log.
 - `receipts/gates-2604eb6/` - the fmt / clippy / nextest / deny gate logs from this leg.
+- `receipts/gates-84ed90a/` - the `verify --scope full`, `cargo deny check` and WSL-lane transcripts from the closeout leg (`84ed90a`).
 - `receipts/profile/` - the Phase 5 `impact`/`review` profile packets and timings.
 
 ## CI table (`ci-windows-latest`)
