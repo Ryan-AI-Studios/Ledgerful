@@ -335,39 +335,111 @@ pub struct TimingsCliArgs {
 /// Default `--runs` for `ledgerful bench` (named const; clap `range(1..=30)`).
 pub const DEFAULT_BENCH_RUNS: u32 = 5;
 
-/// Locked CLI child workload for `ledgerful bench`.
+/// Locked CLI child workload for `ledgerful bench` (0564 §3.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
 pub enum BenchWorkload {
     /// Full `index` against `--fixture` (cold: wipe fixture `.ledgerful` between runs).
     #[default]
     IndexCold,
+    /// Warm `ledger status --compact`.
+    StatusWarm,
+    /// Warm `search change-context --limit 3 --json`.
+    SearchWarm,
+    /// Warm `change-context --json --paths src/main.rs --timeout 120`.
+    ContextWarm,
+    /// Warm `doctor --json`.
+    DoctorWarm,
+    /// Warm `hotspots --timeout 120 explain src/main.rs --json`.
+    HotspotsWarm,
+    /// Warm `impact --paths src/main.rs --json --timeout 120`.
+    ImpactWarm,
+    /// Warm `review HEAD~5..HEAD --json --timeout 120`.
+    ReviewWarm,
 }
 
 impl BenchWorkload {
+    /// Every locked workload, in §3.1 table order.
+    pub const ALL: [Self; 8] = [
+        Self::IndexCold,
+        Self::StatusWarm,
+        Self::SearchWarm,
+        Self::ContextWarm,
+        Self::DoctorWarm,
+        Self::HotspotsWarm,
+        Self::ImpactWarm,
+        Self::ReviewWarm,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::IndexCold => "index-cold",
+            Self::StatusWarm => "status-warm",
+            Self::SearchWarm => "search-warm",
+            Self::ContextWarm => "context-warm",
+            Self::DoctorWarm => "doctor-warm",
+            Self::HotspotsWarm => "hotspots-warm",
+            Self::ImpactWarm => "impact-warm",
+            Self::ReviewWarm => "review-warm",
         }
     }
 
     pub fn child_args(self) -> &'static [&'static str] {
         match self {
             Self::IndexCold => &["index"],
+            Self::StatusWarm => &["ledger", "status", "--compact"],
+            Self::SearchWarm => &["search", "change-context", "--limit", "3", "--json"],
+            Self::ContextWarm => &[
+                "change-context",
+                "--json",
+                "--paths",
+                "src/main.rs",
+                "--timeout",
+                "120",
+            ],
+            Self::DoctorWarm => &["doctor", "--json"],
+            Self::HotspotsWarm => &[
+                "hotspots",
+                "--timeout",
+                "120",
+                "explain",
+                "src/main.rs",
+                "--json",
+            ],
+            Self::ImpactWarm => &[
+                "impact",
+                "--paths",
+                "src/main.rs",
+                "--json",
+                "--timeout",
+                "120",
+            ],
+            Self::ReviewWarm => &["review", "HEAD~5..HEAD", "--json", "--timeout", "120"],
         }
     }
 
     pub fn start_state(self) -> &'static str {
         match self {
             Self::IndexCold => "cold",
+            _ => "warm",
         }
+    }
+
+    /// Warm workloads run one untimed setup `index` and one untimed warmup.
+    pub fn expects_setup(self) -> bool {
+        self.start_state() == "warm"
+    }
+
+    /// True when the child's stdout is a JSON packet (structural partial guard).
+    pub fn emits_json(self) -> bool {
+        self.child_args().contains(&"--json")
     }
 }
 
 /// Live CLI workload harness (not `timings` history).
 #[derive(Args, Debug)]
 pub struct BenchCliArgs {
-    /// Git fixture the child indexes. Required unless `--compare`. Parent stays on the engine.
-    #[arg(long, value_name = "PATH", required_unless_present = "compare")]
+    /// Git fixture the child indexes. Required unless `--compare` or `--check`.
+    #[arg(long, value_name = "PATH", required_unless_present_any = ["compare", "check"])]
     pub fixture: Option<PathBuf>,
     /// Locked workload name (ValueEnum).
     #[arg(long, value_enum, default_value_t = BenchWorkload::IndexCold)]
@@ -382,17 +454,28 @@ pub struct BenchCliArgs {
     /// JSON output path for a run (default `output/bench/<buildSha>-<workload>.json` under the engine).
     #[arg(long, value_name = "PATH")]
     pub output: Option<PathBuf>,
-    /// Emit `workloadBench` / `workloadBenchCompare` JSON on stdout.
+    /// Emit `workloadBench` / `workloadBenchCompare` / `perfBudgetCheck` JSON on stdout.
     #[arg(long)]
     pub json: bool,
+    /// Declared host class slug recorded on the receipt (`unspecified` cannot be checked).
+    #[arg(long, value_name = "SLUG", default_value = "unspecified")]
+    pub host_class: String,
     /// Compare two `workloadBench` JSON files (`delta = b - a`).
     #[arg(
         long,
         num_args = 2,
         value_names = ["PATH_A", "PATH_B"],
-        conflicts_with_all = ["fixture", "workload", "runs", "output"]
+        conflicts_with_all = ["fixture", "workload", "runs", "output", "host_class", "check"]
     )]
     pub compare: Vec<PathBuf>,
+    /// Check `workloadBench` receipts against the compiled budget table.
+    #[arg(
+        long,
+        num_args = 1..,
+        value_name = "RECEIPT",
+        conflicts_with_all = ["fixture", "workload", "runs", "output", "compare", "host_class"]
+    )]
+    pub check: Vec<PathBuf>,
 }
 
 /// Generate a disposable demonstration repo.

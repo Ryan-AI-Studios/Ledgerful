@@ -414,7 +414,9 @@ impl Commands {
                 runs,
                 output,
                 json,
+                host_class,
                 compare,
+                check,
             }) => {
                 if fixture.is_some() {
                     f.push("fixture");
@@ -431,8 +433,14 @@ impl Commands {
                 if *json {
                     f.push("json");
                 }
+                if host_class != "unspecified" {
+                    f.push("host_class");
+                }
                 if !compare.is_empty() {
                     f.push("compare");
+                }
+                if !check.is_empty() {
+                    f.push("check");
                 }
             }
             Commands::Search(SearchCliArgs {

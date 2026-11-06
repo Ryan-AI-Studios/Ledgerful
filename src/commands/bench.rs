@@ -4,7 +4,8 @@
 //! the child is `current_exe()` plus `-C <fixture>`. Not `timings`, not
 //! `criterion`. Child rows never enter `command_timings`.
 
-use crate::cli::args::BenchCliArgs;
+use crate::cli::args::{BenchCliArgs, BenchWorkload};
+use crate::commands::perf_budget;
 use crate::exec::grouped::{GroupedProcessError, spawn_wait_grouped_captured};
 use crate::state::layout::{LEDGERFUL_STATE_DIR_ENV, Layout};
 use crate::state::storage::timings::percentile_sorted;
@@ -16,7 +17,9 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 
 /// Child wall budget per sample (spec §5.3).
 const CHILD_TIMEOUT: Duration = Duration::from_secs(120);
@@ -24,15 +27,38 @@ const CHILD_MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 const KIND_WORKLOAD_BENCH: &str = "workloadBench";
 const KIND_COMPARE: &str = "workloadBenchCompare";
 const SCHEMA_VERSION: u32 = 1;
+/// Process-tree memory sampling interval for the peak-RSS diagnostic.
+/// Widened from 100 ms to 250 ms after the first local baseline: a full
+/// `ProcessesToUpdate::All` memory refresh costs ~6 ms on this host, so a
+/// 100 ms tick consumed 5-6 % of a long sample's wall time and failed the
+/// plan's per-sample refresh-cost acceptance (5 % of p50).
+const SAMPLER_TICK: Duration = Duration::from_millis(250);
+/// Maximum descendant depth the process-tree walk traverses (root is depth 0).
+const MAX_TREE_DEPTH: usize = 32;
+/// Throwaway child config home, relative to the engine root.
+const CHILD_HOME_REL: &str = "output/bench/child-home";
+/// The seven live ambient budget overrides a measured child must not inherit.
+const CHILD_ENV_BUDGET_OVERRIDES: [&str; 7] = [
+    "LEDGERFUL_HISTORY_BUDGET_SECS",
+    "LEDGERFUL_PROSPECTIVE_BUDGET_SECS",
+    "LEDGERFUL_REVIEW_BUDGET_SECS",
+    "LEDGERFUL_HOTSPOTS_OVERALL_BUDGET_SECS",
+    "LEDGERFUL_AUDIT_OVERALL_BUDGET_SECS",
+    "LEDGERFUL_DEPLOY_OVERALL_BUDGET_SECS",
+    "LEDGERFUL_BRIDGE_EXPORT_OVERALL_BUDGET_SECS",
+];
 
 pub fn execute_bench(args: BenchCliArgs) -> Result<()> {
     if !args.compare.is_empty() {
         return execute_compare(&args);
     }
+    if !args.check.is_empty() {
+        return execute_check(&args);
+    }
     let fixture = args
         .fixture
         .as_ref()
-        .ok_or_else(|| miette!("--fixture PATH is required unless --compare"))?;
+        .ok_or_else(|| miette!("--fixture PATH is required unless --compare or --check"))?;
     execute_run(&args, fixture)
 }
 
@@ -63,19 +89,57 @@ fn execute_run(args: &BenchCliArgs, fixture: &Path) -> Result<()> {
     // Legitimate: re-exec this sha-gated binary as the fixture child.
     // nosemgrep: rust.lang.security.current-exe.current-exe
     let exe = std::env::current_exe().into_diagnostic()?;
-    let fixture_id = fixture_id_for(&fixture_canon)?;
+    let (fixture_id, fixture_files) = fixture_id_and_files(&fixture_canon)?;
+    let provenance = fixture_provenance(&fixture_canon)?;
+    let config_home = prepare_child_config_home(&engine_canon)?;
+
+    // Warm runs separate setup, first process and steady state.
+    let mut setup_ms: Option<i64> = None;
+    let mut warmup_ms: Option<i64> = None;
+    if args.workload.expects_setup() {
+        ensure_warm_state_tree(&fixture_canon)?;
+        setup_ms = Some(run_untimed_child(
+            &exe,
+            &fixture_canon,
+            &config_home,
+            BenchWorkload::IndexCold,
+        )?);
+        warmup_ms = Some(run_untimed_child(
+            &exe,
+            &fixture_canon,
+            &config_home,
+            args.workload,
+        )?);
+    }
+
     let mut samples_ms: Vec<i64> = Vec::with_capacity(args.runs as usize);
+    let mut observed_ms: Vec<i64> = Vec::with_capacity(args.runs as usize);
+    let mut peak_rss_bytes: Option<u64> = None;
+    let mut rss_ticks: u64 = 0;
+    let mut rss_measured_samples: u64 = 0;
+    let mut sampler_wall_us: u64 = 0;
+
     for _ in 0..args.runs {
-        prepare_cold_fixture(&fixture_canon, &engine_canon)?;
-        let mut cmd = Command::new(&exe);
-        cmd.arg("-C")
-            .arg(&fixture_canon)
-            .args(args.workload.child_args())
-            .stdin(Stdio::null())
-            .env_remove(LEDGERFUL_STATE_DIR_ENV);
+        if !args.workload.expects_setup() {
+            prepare_cold_fixture(&fixture_canon, &engine_canon)?;
+        }
+        let cmd = child_command(&exe, &fixture_canon, &config_home, args.workload);
+        // Sampled only for timed samples: an untimed setup index would become a
+        // fast command's peak.
+        let sampler = MemorySampler::start(std::process::id());
         let started = Instant::now();
-        match spawn_wait_grouped_captured(cmd, CHILD_TIMEOUT, CHILD_MAX_OUTPUT_BYTES) {
+        let outcome = spawn_wait_grouped_captured(cmd, CHILD_TIMEOUT, CHILD_MAX_OUTPUT_BYTES);
+        // Capture the sample clock the instant the child wait returns, before
+        // the sampler is stopped/joined, so a join sleep cannot inflate it.
+        let (ms, sample) = finish_sample(started, sampler)?;
+        match outcome {
             Ok(captured) => {
+                if captured.truncated {
+                    return Err(miette!(
+                        "bench child output exceeded the {CHILD_MAX_OUTPUT_BYTES}-byte capture cap; \
+                         no workloadBench JSON written"
+                    ));
+                }
                 if !captured.status.success() {
                     eprint!("{}", captured.stderr);
                     let _ = io::stderr().flush();
@@ -83,8 +147,23 @@ fn execute_run(args: &BenchCliArgs, fixture: &Path) -> Result<()> {
                         "bench child exited non-zero; no workloadBench JSON written"
                     ));
                 }
-                let ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+                if let Some(marker) =
+                    partial_marker(args.workload, &captured.stdout, &captured.stderr)?
+                {
+                    eprint!("{}", captured.stderr);
+                    let _ = io::stderr().flush();
+                    return Err(miette!(
+                        "bench child emitted a bounded partial ({marker}); no workloadBench JSON written"
+                    ));
+                }
                 samples_ms.push(ms);
+                observed_ms.push(ms);
+                rss_ticks += sample.ticks;
+                sampler_wall_us = sampler_wall_us.saturating_add(sample.wall_us);
+                if let Some(peak) = sample.peak_bytes {
+                    rss_measured_samples += 1;
+                    peak_rss_bytes = Some(peak_rss_bytes.map_or(peak, |seen: u64| seen.max(peak)));
+                }
             }
             Err(GroupedProcessError::Timeout {
                 timeout,
@@ -110,6 +189,7 @@ fn execute_run(args: &BenchCliArgs, fixture: &Path) -> Result<()> {
     let os = os_name();
     let target_triple = env!("TARGET");
     let comparable = n >= 3;
+    let sampler_wall_ms = sampler_wall_us / 1_000;
     let report = WorkloadBenchReport {
         schema_version: SCHEMA_VERSION,
         kind: KIND_WORKLOAD_BENCH,
@@ -118,10 +198,22 @@ fn execute_run(args: &BenchCliArgs, fixture: &Path) -> Result<()> {
         git_head: git_head.as_str(),
         n,
         samples_ms: &samples_ms,
+        observed_ms: &observed_ms,
         p50_ms: p50,
         p95_ms: p95,
         start_state: args.workload.start_state(),
         fixture_id: fixture_id.as_str(),
+        fixture_files,
+        fixture_commits: provenance.commits,
+        fixture_root_commit: provenance.root_commit.as_deref(),
+        child_args: args.workload.child_args(),
+        host_class: args.host_class.as_str(),
+        peak_rss_bytes,
+        rss_ticks,
+        rss_measured_samples,
+        sampler_wall_ms,
+        setup_ms,
+        warmup_ms,
         os,
         target_triple,
         comparable,
@@ -145,6 +237,461 @@ fn execute_run(args: &BenchCliArgs, fixture: &Path) -> Result<()> {
         print_human_run(&report, &output_path);
     }
     Ok(())
+}
+
+/// Build the isolated child command: no ambient state dir, no operator config,
+/// offline, and none of the seven inherited budget overrides.
+fn child_command(
+    exe: &Path,
+    fixture_canon: &Path,
+    config_home: &Path,
+    workload: BenchWorkload,
+) -> Command {
+    let mut cmd = Command::new(exe);
+    cmd.arg("-C")
+        .arg(fixture_canon)
+        .args(workload.child_args())
+        .stdin(Stdio::null())
+        .env_remove(LEDGERFUL_STATE_DIR_ENV)
+        .env("LEDGERFUL_NO_NETWORK", "1")
+        .env("LEDGERFUL_CONFIG_HOME", config_home);
+    for name in CHILD_ENV_BUDGET_OVERRIDES {
+        cmd.env_remove(name);
+    }
+    cmd
+}
+
+/// Throwaway config home shared by every child of this engine.
+///
+/// The path shape is load-bearing: `is_self_timing_enabled()` reads
+/// `<CONFIG_HOME>/config.toml` while `load_user_config()` reads
+/// `<CONFIG_HOME>.parent()/.ledgerful/config.toml`; only a `.../.ledgerful`
+/// value makes both readers resolve the same file.
+fn prepare_child_config_home(engine_root: &Path) -> Result<PathBuf> {
+    let config_home = engine_root.join(CHILD_HOME_REL).join(".ledgerful");
+    fs::create_dir_all(&config_home).into_diagnostic()?;
+    fs::write(config_home.join("config.toml"), "self_timing = false\n").into_diagnostic()?;
+    Ok(config_home)
+}
+
+/// Create only the empty state tree on a fresh clone (never wipe warm state).
+fn ensure_warm_state_tree(fixture_canon: &Path) -> Result<()> {
+    if fixture_canon.join(".ledgerful").join("state").is_dir() {
+        return Ok(());
+    }
+    let root = Utf8Path::from_path(fixture_canon)
+        .ok_or_else(|| miette!("fixture path is not UTF-8: {}", fixture_canon.display()))?;
+    Layout::new(root).ensure_state_tree()
+}
+
+/// Run one untimed child (setup `index` or the workload warmup); returns ms.
+fn run_untimed_child(
+    exe: &Path,
+    fixture_canon: &Path,
+    config_home: &Path,
+    workload: BenchWorkload,
+) -> Result<i64> {
+    let cmd = child_command(exe, fixture_canon, config_home, workload);
+    let started = Instant::now();
+    let captured = spawn_wait_grouped_captured(cmd, CHILD_TIMEOUT, CHILD_MAX_OUTPUT_BYTES)
+        .map_err(|err| {
+            miette!(
+                "bench setup/warmup child failed for {}: {err}",
+                workload.as_str()
+            )
+        })?;
+    let ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+    if captured.truncated {
+        return Err(miette!(
+            "bench setup/warmup child output exceeded the {CHILD_MAX_OUTPUT_BYTES}-byte capture cap"
+        ));
+    }
+    if !captured.status.success() {
+        eprint!("{}", captured.stderr);
+        let _ = io::stderr().flush();
+        return Err(miette!(
+            "bench setup/warmup child exited non-zero for {}; no workloadBench JSON written",
+            workload.as_str()
+        ));
+    }
+    Ok(ms)
+}
+
+/// A bounded partial must never be timed as complete work.
+fn partial_marker(
+    workload: BenchWorkload,
+    stdout: &str,
+    stderr: &str,
+) -> Result<Option<&'static str>> {
+    if stderr.contains("stopped: overall budget") {
+        return Ok(Some("stderr: stopped: overall budget"));
+    }
+    if stderr.contains("history walk stopped (budget)") {
+        return Ok(Some("stderr: history walk stopped (budget)"));
+    }
+    if stderr.contains("history walk stopped (cancelled)") {
+        return Ok(Some("stderr: history walk stopped (cancelled)"));
+    }
+    if stderr.contains("history walk truncated") {
+        return Ok(Some("stderr: history walk truncated"));
+    }
+    if !workload.emits_json() {
+        return Ok(None);
+    }
+    let trimmed = stdout.trim();
+    let value: serde_json::Value = serde_json::from_str(trimmed).map_err(|err| {
+        miette!(
+            "bench child stdout is not a JSON packet for --json workload {}: {err}",
+            workload.as_str()
+        )
+    })?;
+    // Top-level `status` is inspected only for `change-context`, which renders a
+    // bounded partial as `not_ready`. `review` nests `status` under `blast`/`tests`
+    // and those must never be read as a packet status.
+    if workload == BenchWorkload::ContextWarm
+        && value.get("status").and_then(serde_json::Value::as_str) == Some("not_ready")
+    {
+        return Ok(Some("status: not_ready"));
+    }
+    if let Some(stop) = completeness_stop(value.get("completeness")) {
+        return Ok(Some(stop));
+    }
+    for key in ["blast", "tests"] {
+        if let Some(stop) = value
+            .get(key)
+            .and_then(|nested| nested.get("completeness"))
+            .and_then(|c| completeness_stop(Some(c)))
+        {
+            return Ok(Some(stop));
+        }
+    }
+    Ok(None)
+}
+
+fn completeness_stop(completeness: Option<&serde_json::Value>) -> Option<&'static str> {
+    match completeness?.get("stop")?.as_str()? {
+        "budget" => Some("completeness.stop: budget"),
+        "cancelled" => Some("completeness.stop: cancelled"),
+        "error" => Some("completeness.stop: error"),
+        _ => None,
+    }
+}
+
+/// Per-timed-sample process-tree working-set sampler (100 ms ticks, mem only).
+struct MemorySampler {
+    stop_tx: mpsc::Sender<()>,
+    handle: Option<std::thread::JoinHandle<SamplerSample>>,
+    stop_delay: Duration,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct SamplerSample {
+    peak_bytes: Option<u64>,
+    ticks: u64,
+    /// Wall time inside refreshes, in microseconds. Accumulated in micros so a
+    /// sub-millisecond refresh is not truncated to zero per tick.
+    wall_us: u64,
+}
+
+impl MemorySampler {
+    fn start(root_pid: u32) -> Self {
+        Self::start_with_delay(root_pid, Duration::ZERO)
+    }
+
+    /// `stop_delay` is a test seam: production always passes zero. It simulates
+    /// a slow sampler stop so a test can prove the join wait is excluded from
+    /// the sample clock.
+    fn start_with_delay(root_pid: u32, stop_delay: Duration) -> Self {
+        let (stop_tx, stop_rx) = mpsc::channel::<()>();
+        let handle = std::thread::spawn(move || {
+            let mut system = System::new();
+            let mut sample = SamplerSample::default();
+            loop {
+                match stop_rx.recv_timeout(SAMPLER_TICK) {
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                }
+                let refresh_started = Instant::now();
+                system.refresh_processes_specifics(
+                    ProcessesToUpdate::All,
+                    true,
+                    ProcessRefreshKind::nothing().with_memory(),
+                );
+                sample.wall_us = sample.wall_us.saturating_add(
+                    u64::try_from(refresh_started.elapsed().as_micros()).unwrap_or(u64::MAX),
+                );
+                let rows = system
+                    .processes()
+                    .iter()
+                    .map(|(pid, process)| {
+                        (
+                            pid.as_u32(),
+                            process.parent().map(|parent| parent.as_u32()),
+                            process.memory(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let bytes = tree_rss(&rows, root_pid);
+                // A tick that observed no descendant is not coverage: counting it
+                // would break the receipt's `rssTicks == 0 iff rssMeasuredSamples == 0`
+                // invariant when a child exits between spawn and the first tick.
+                if bytes > 0 {
+                    sample.ticks += 1;
+                    sample.peak_bytes =
+                        Some(sample.peak_bytes.map_or(bytes, |seen| seen.max(bytes)));
+                }
+            }
+            sample
+        });
+        Self {
+            stop_tx,
+            handle: Some(handle),
+            stop_delay,
+        }
+    }
+
+    fn stop_and_join(mut self) -> Result<SamplerSample> {
+        if !self.stop_delay.is_zero() {
+            std::thread::sleep(self.stop_delay);
+        }
+        let _ = self.stop_tx.send(());
+        match self.handle.take() {
+            Some(handle) => handle.join().map_err(|_| {
+                miette!("bench memory sampler thread panicked; no workloadBench JSON written")
+            }),
+            None => Ok(SamplerSample::default()),
+        }
+    }
+}
+
+/// Capture the sample clock before joining the sampler. The join wait must
+/// never enter the recorded sample duration; a delayed stop is covered by
+/// `sample_clock__delayed_sampler_stop__excludes_join_wait`.
+fn finish_sample(started: Instant, sampler: MemorySampler) -> Result<(i64, SamplerSample)> {
+    let ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+    let sample = sampler.stop_and_join()?;
+    Ok((ms, sample))
+}
+
+/// Sum working set for strict descendants of `root`; the runner itself is excluded.
+fn tree_rss(rows: &[(u32, Option<u32>, u64)], root: u32) -> u64 {
+    let mut children: std::collections::BTreeMap<u32, Vec<u32>> = std::collections::BTreeMap::new();
+    for (pid, parent, _) in rows {
+        if let Some(parent) = parent {
+            children.entry(*parent).or_default().push(*pid);
+        }
+    }
+    let mut seen: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    seen.insert(root);
+    let mut stack = vec![(root, 0_usize)];
+    let mut total = 0_u64;
+    while let Some((pid, depth)) = stack.pop() {
+        // Bound the walk: a synthetic or corrupted tree must not traverse
+        // without limit. Depth 1 is a direct child; depth 32 is still counted.
+        if depth >= MAX_TREE_DEPTH {
+            continue;
+        }
+        if let Some(kids) = children.get(&pid) {
+            for kid in kids {
+                // A cycle (impossible for real pids, possible for bad data) must
+                // not loop forever.
+                if seen.insert(*kid) {
+                    if let Some((_, _, memory)) = rows.iter().find(|(id, _, _)| id == kid) {
+                        total = total.saturating_add(*memory);
+                    }
+                    stack.push((*kid, depth + 1));
+                }
+            }
+        }
+    }
+    total
+}
+
+/// Fixture identity: file count is part of the id (`"<count>:<hash>"`).
+fn fixture_id_and_files(fixture: &Path) -> Result<(String, u64)> {
+    let mut paths = Vec::new();
+    collect_relative_paths(fixture, fixture, &mut paths)?;
+    paths.sort();
+    let mut hasher = Sha256::new();
+    for p in &paths {
+        hasher.update(p.as_bytes());
+        hasher.update(b"\n");
+    }
+    let digest = hasher.finalize();
+    let hex = hex::encode(digest);
+    let short = hex.get(..12).unwrap_or(hex.as_str());
+    let files = u64::try_from(paths.len()).unwrap_or(u64::MAX);
+    Ok((format!("{}:{}", paths.len(), short), files))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FixtureProvenance {
+    commits: u64,
+    root_commit: Option<String>,
+}
+
+/// Commits + single root commit over the fixture's `HEAD` history; an unborn
+/// fixture keeps working but records `None` (identity unavailable, so the
+/// receipt cannot qualify). Any other git failure is a hard error: a corrupt
+/// repository must not be recorded as "unborn".
+fn fixture_provenance(fixture: &Path) -> Result<FixtureProvenance> {
+    let head = Command::new("git")
+        .args(["rev-parse", "--verify", "HEAD"])
+        .current_dir(fixture)
+        .output()
+        .into_diagnostic()?;
+    if !head.status.success() {
+        let branch = Command::new("git")
+            .args(["symbolic-ref", "--quiet", "HEAD"])
+            .current_dir(fixture)
+            .output()
+            .into_diagnostic()?;
+        if !branch.status.success() {
+            return Err(miette!(
+                "fixture git HEAD neither names a branch nor resolves to a commit: {}",
+                fixture.display()
+            ));
+        }
+        let branch_ref = String::from_utf8_lossy(&branch.stdout).trim().to_string();
+        let resolved = Command::new("git")
+            .args(["rev-parse", "--verify", "--quiet", branch_ref.as_str()])
+            .current_dir(fixture)
+            .output()
+            .into_diagnostic()?;
+        let stderr = String::from_utf8_lossy(&resolved.stderr).trim().to_string();
+        if resolved.status.success() {
+            return Err(miette!(
+                "fixture git HEAD does not resolve to a commit although {branch_ref} exists: {}",
+                fixture.display()
+            ));
+        }
+        if !stderr.is_empty() {
+            // `--quiet` prints nothing for a genuinely unborn branch, so any
+            // diagnostic here means a broken ref or a corrupt object store.
+            return Err(miette!(
+                "fixture git HEAD could not be resolved ({stderr}): {}",
+                fixture.display()
+            ));
+        }
+        // An unborn branch has no commit object yet; that is the only case that
+        // records zero commits instead of failing.
+        return Ok(FixtureProvenance {
+            commits: 0,
+            root_commit: None,
+        });
+    }
+    let commits_text = git_stdout(fixture, &["rev-list", "--count", "HEAD"])?;
+    let commits: u64 = commits_text
+        .trim()
+        .parse()
+        .map_err(|e| miette!("fixture commit count is not a number ({e})"))?;
+    let roots_text = git_stdout(fixture, &["rev-list", "--max-parents=0", "HEAD"])?;
+    let roots = roots_text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    let root_commit = if roots.len() == 1 {
+        Some(roots[0].to_string())
+    } else {
+        None
+    };
+    Ok(FixtureProvenance {
+        commits,
+        root_commit,
+    })
+}
+
+fn git_stdout(fixture: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(fixture)
+        .output()
+        .into_diagnostic()?;
+    if !output.status.success() {
+        return Err(miette!(
+            "git {} failed in {}: {}",
+            args.join(" "),
+            fixture.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn execute_check(args: &BenchCliArgs) -> Result<()> {
+    let embed = env!("LEDGERFUL_GIT_SHA");
+    if embed == "unknown" {
+        return Err(miette!(
+            "build sha unknown; no perfBudgetCheck verdict can be issued"
+        ));
+    }
+    let mut receipts = Vec::with_capacity(args.check.len());
+    for path in &args.check {
+        let text = fs::read_to_string(path).into_diagnostic()?;
+        let mut stored: StoredBench = serde_json::from_str(&text)
+            .map_err(|e| miette!("failed to parse {}: {e}", path.display()))?;
+        if stored.kind != KIND_WORKLOAD_BENCH {
+            return Err(miette!(
+                "{} is not a workloadBench receipt (kind: {})",
+                path.display(),
+                stored.kind
+            ));
+        }
+        if stored.schema_version != SCHEMA_VERSION {
+            return Err(miette!(
+                "{} has unsupported schemaVersion {} (expected {SCHEMA_VERSION})",
+                path.display(),
+                stored.schema_version
+            ));
+        }
+        stored.receipt_path = path.display().to_string();
+        receipts.push(stored);
+    }
+
+    let packet = perf_budget::check(&receipts, embed);
+    let json = serde_json::to_string_pretty(&packet).into_diagnostic()?;
+    if args.json {
+        println!("{json}");
+    } else {
+        print_human_check(&packet);
+    }
+    if packet.status == perf_budget::STATUS_WITHIN_BUDGET {
+        return Ok(());
+    }
+    for result in &packet.results {
+        if result.status != perf_budget::STATUS_WITHIN_BUDGET {
+            eprintln!(
+                "{:>22}  {}  {}",
+                result.status,
+                result.workload,
+                result.reason.clone().unwrap_or_default()
+            );
+        }
+    }
+    Err(miette!(
+        "perf budget check failed: {} over budget, {} unqualified",
+        packet.violations,
+        packet.unqualified
+    ))
+}
+
+fn print_human_check(packet: &perf_budget::PerfBudgetCheck) {
+    println!("kind            {}", packet.kind);
+    println!("status          {}", packet.status);
+    println!("violations      {}", packet.violations);
+    println!("unqualified     {}", packet.unqualified);
+    for result in &packet.results {
+        println!(
+            "result          {} {} p50={} p95={} target={} status={}",
+            result.workload,
+            result.host_class,
+            result.p50_ms,
+            result.p95_ms,
+            result.target_status,
+            result.status
+        );
+    }
 }
 
 fn execute_compare(args: &BenchCliArgs) -> Result<()> {
@@ -234,19 +781,9 @@ fn prepare_cold_fixture(fixture_canon: &Path, engine_canon: &Path) -> Result<()>
     Ok(())
 }
 
+#[cfg(test)]
 fn fixture_id_for(fixture: &Path) -> Result<String> {
-    let mut paths = Vec::new();
-    collect_relative_paths(fixture, fixture, &mut paths)?;
-    paths.sort();
-    let mut hasher = Sha256::new();
-    for p in &paths {
-        hasher.update(p.as_bytes());
-        hasher.update(b"\n");
-    }
-    let digest = hasher.finalize();
-    let hex = hex::encode(digest);
-    let short = hex.get(..12).unwrap_or(hex.as_str());
-    Ok(format!("{}:{}", paths.len(), short))
+    fixture_id_and_files(fixture).map(|(id, _)| id)
 }
 
 fn is_fixture_leaf(meta: &fs::Metadata) -> bool {
@@ -348,7 +885,7 @@ fn resolve_output_path(
     }
 }
 
-fn os_name() -> &'static str {
+pub(crate) fn os_name() -> &'static str {
     if cfg!(windows) {
         "windows"
     } else if cfg!(target_os = "macos") {
@@ -368,6 +905,35 @@ fn print_human_run(report: &WorkloadBenchReport<'_>, output_path: &Path) {
     println!("p95Ms           {}", report.p95_ms);
     println!("startState      {}", report.start_state);
     println!("fixtureId       {}", report.fixture_id);
+    println!("fixtureFiles    {}", report.fixture_files);
+    println!("fixtureCommits  {}", report.fixture_commits);
+    println!(
+        "fixtureRoot     {}",
+        report.fixture_root_commit.unwrap_or("null")
+    );
+    println!("hostClass       {}", report.host_class);
+    println!("childArgs       {}", report.child_args.join(" "));
+    println!(
+        "setupMs         {}",
+        report
+            .setup_ms
+            .map_or_else(|| "null".to_string(), |v| v.to_string())
+    );
+    println!(
+        "warmupMs        {}",
+        report
+            .warmup_ms
+            .map_or_else(|| "null".to_string(), |v| v.to_string())
+    );
+    println!(
+        "peakRssBytes    {}",
+        report
+            .peak_rss_bytes
+            .map_or_else(|| "null".to_string(), |v| v.to_string())
+    );
+    println!("rssTicks        {}", report.rss_ticks);
+    println!("rssMeasured     {}", report.rss_measured_samples);
+    println!("samplerWallMs   {}", report.sampler_wall_ms);
     println!("os              {}", report.os);
     println!("targetTriple    {}", report.target_triple);
     println!("comparable      {}", report.comparable);
@@ -375,6 +941,15 @@ fn print_human_run(report: &WorkloadBenchReport<'_>, output_path: &Path) {
         "samplesMs       {}",
         report
             .samples_ms
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    println!(
+        "observedMs      {}",
+        report
+            .observed_ms
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
@@ -420,10 +995,22 @@ struct WorkloadBenchReport<'a> {
     git_head: &'a str,
     n: usize,
     samples_ms: &'a [i64],
+    observed_ms: &'a [i64],
     p50_ms: i64,
     p95_ms: i64,
     start_state: &'a str,
     fixture_id: &'a str,
+    fixture_files: u64,
+    fixture_commits: u64,
+    fixture_root_commit: Option<&'a str>,
+    child_args: &'a [&'a str],
+    host_class: &'a str,
+    peak_rss_bytes: Option<u64>,
+    rss_ticks: u64,
+    rss_measured_samples: u64,
+    sampler_wall_ms: u64,
+    setup_ms: Option<i64>,
+    warmup_ms: Option<i64>,
     os: &'a str,
     target_triple: &'a str,
     comparable: bool,
@@ -443,21 +1030,59 @@ struct WorkloadBenchCompare {
     comparable: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// Parsed `workloadBench` receipt. The nine original fields stay required (an
+/// older receipt missing `os`/`targetTriple` must fail to parse); the fifteen
+/// additive fields are field-level `#[serde(default)]` so pre-0564 receipts
+/// still parse and then report `invalid-receipt` / `insufficient-samples`.
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StoredBench {
-    schema_version: u32,
-    kind: String,
-    workload: String,
-    build_sha: String,
-    p50_ms: i64,
-    p95_ms: i64,
-    fixture_id: String,
-    os: String,
-    target_triple: String,
+    pub(crate) schema_version: u32,
+    pub(crate) kind: String,
+    pub(crate) workload: String,
+    pub(crate) build_sha: String,
+    pub(crate) p50_ms: i64,
+    pub(crate) p95_ms: i64,
+    pub(crate) fixture_id: String,
+    pub(crate) os: String,
+    pub(crate) target_triple: String,
+    #[serde(default)]
+    pub(crate) n: usize,
+    #[serde(default)]
+    pub(crate) samples_ms: Vec<i64>,
+    #[serde(default)]
+    pub(crate) observed_ms: Vec<i64>,
+    #[serde(default)]
+    #[allow(dead_code)] // recorded on every receipt for the measurement/docs leg
+    pub(crate) sampler_wall_ms: u64,
+    #[serde(default)]
+    pub(crate) fixture_root_commit: Option<String>,
+    #[serde(default)]
+    pub(crate) child_args: Vec<String>,
+    #[serde(default)]
+    pub(crate) start_state: String,
+    #[serde(default)]
+    pub(crate) setup_ms: Option<i64>,
+    #[serde(default)]
+    pub(crate) warmup_ms: Option<i64>,
+    #[serde(default)]
+    pub(crate) host_class: String,
+    #[serde(default)]
+    pub(crate) fixture_files: u64,
+    #[serde(default)]
+    pub(crate) fixture_commits: u64,
+    #[serde(default)]
+    pub(crate) peak_rss_bytes: Option<u64>,
+    #[serde(default)]
+    pub(crate) rss_ticks: u64,
+    #[serde(default)]
+    pub(crate) rss_measured_samples: u64,
+    #[serde(skip)]
+    pub(crate) receipt_path: String,
 }
 
 #[cfg(test)]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
 mod tests {
     use super::*;
     use crate::cli::args::{BenchWorkload, DEFAULT_BENCH_RUNS};
@@ -497,6 +1122,7 @@ mod tests {
             fixture_id: "1:abc".into(),
             os: "windows".into(),
             target_triple: "x86_64-pc-windows-msvc".into(),
+            ..Default::default()
         };
         let mut b = a.clone();
         b.build_sha = "bbb".into();
@@ -952,5 +1578,413 @@ mod tests {
         assert_eq!(BenchWorkload::IndexCold.as_str(), "index-cold");
         assert_eq!(BenchWorkload::IndexCold.child_args(), &["index"]);
         assert_eq!(BenchWorkload::IndexCold.start_state(), "cold");
+    }
+
+    #[test]
+    fn workload_table_matches_locked_argv_and_start_state() {
+        let expected: [(&str, &[&str], &str); 8] = [
+            ("index-cold", &["index"], "cold"),
+            ("status-warm", &["ledger", "status", "--compact"], "warm"),
+            (
+                "search-warm",
+                &["search", "change-context", "--limit", "3", "--json"],
+                "warm",
+            ),
+            (
+                "context-warm",
+                &[
+                    "change-context",
+                    "--json",
+                    "--paths",
+                    "src/main.rs",
+                    "--timeout",
+                    "120",
+                ],
+                "warm",
+            ),
+            ("doctor-warm", &["doctor", "--json"], "warm"),
+            (
+                "hotspots-warm",
+                &[
+                    "hotspots",
+                    "--timeout",
+                    "120",
+                    "explain",
+                    "src/main.rs",
+                    "--json",
+                ],
+                "warm",
+            ),
+            (
+                "impact-warm",
+                &[
+                    "impact",
+                    "--paths",
+                    "src/main.rs",
+                    "--json",
+                    "--timeout",
+                    "120",
+                ],
+                "warm",
+            ),
+            (
+                "review-warm",
+                &["review", "HEAD~5..HEAD", "--json", "--timeout", "120"],
+                "warm",
+            ),
+        ];
+        assert_eq!(BenchWorkload::ALL.len(), expected.len());
+        for (workload, (slug, argv, state)) in BenchWorkload::ALL.iter().zip(expected) {
+            assert_eq!(workload.as_str(), slug);
+            assert_eq!(workload.child_args(), argv);
+            assert_eq!(workload.start_state(), state);
+            assert_eq!(workload.expects_setup(), state == "warm");
+        }
+        assert!(BenchWorkload::StatusWarm.expects_setup());
+        assert!(!BenchWorkload::IndexCold.expects_setup());
+        assert!(BenchWorkload::ImpactWarm.emits_json());
+        assert!(!BenchWorkload::StatusWarm.emits_json());
+    }
+
+    #[test]
+    fn partial_marker__top_level_completeness_stop__rejected() {
+        let stdout = r#"{"status":"ready","completeness":{"stop":"budget"}}"#;
+        let marker = partial_marker(BenchWorkload::ImpactWarm, stdout, "").expect("parse");
+        assert_eq!(marker, Some("completeness.stop: budget"));
+    }
+
+    #[test]
+    fn partial_marker__nested_blast_completeness_stop__rejected() {
+        let stdout = r#"{"status":"ready","blast":{"completeness":{"stop":"cancelled"}}}"#;
+        let marker = partial_marker(BenchWorkload::ReviewWarm, stdout, "").expect("parse");
+        assert_eq!(marker, Some("completeness.stop: cancelled"));
+    }
+
+    #[test]
+    fn partial_marker__nested_blast_status__not_read_as_packet_status() {
+        // A nested `blast.status` is not the packet status and must never reject.
+        let stdout = r#"{"status":"ready","blast":{"status":"not_ready"},"tests":{"status":"ok"}}"#;
+        let marker = partial_marker(BenchWorkload::ReviewWarm, stdout, "").expect("parse");
+        assert_eq!(marker, None);
+    }
+
+    #[rstest::rstest]
+    #[case(r#"{"status":"not_ready"}"#, Some("status: not_ready"))]
+    #[case(r#"{ "status" : "ready" }"#, None)]
+    #[case(r#"{"status":"empty"}"#, None)]
+    fn partial_marker__context_status__only_not_ready_rejects(
+        #[case] stdout: &str,
+        #[case] expected: Option<&'static str>,
+    ) {
+        let marker = partial_marker(BenchWorkload::ContextWarm, stdout, "").expect("parse");
+        assert_eq!(marker, expected);
+    }
+
+    #[rstest::rstest]
+    #[case("prospective analysis stopped: overall budget")]
+    #[case("review stopped: overall budget")]
+    #[case("hotspots stopped: overall budget")]
+    #[case("history walk stopped (budget)")]
+    #[case("history walk stopped (cancelled)")]
+    #[case("history walk truncated")]
+    fn partial_marker__stderr_tokens__rejected(#[case] stderr: &str) {
+        let marker = partial_marker(BenchWorkload::StatusWarm, "", stderr).expect("parse");
+        assert!(marker.is_some(), "stderr token must reject: {stderr}");
+    }
+
+    #[test]
+    fn partial_marker__json_workload_with_plain_stdout__hard_error_rejects() {
+        let err = partial_marker(BenchWorkload::DoctorWarm, "not json at all", "");
+        assert!(
+            err.is_err(),
+            "a --json workload with unparseable stdout must fail closed"
+        );
+    }
+
+    #[test]
+    fn partial_marker__text_workload_ignores_stdout() {
+        let marker = partial_marker(BenchWorkload::StatusWarm, "not json at all", "")
+            .expect("text workload does not parse stdout");
+        assert_eq!(marker, None);
+    }
+
+    #[test]
+    fn tree_rss__excludes_root_and_survives_cycle__sums_descendants() {
+        // root 10 -> 11 -> 12; 20 is unrelated; 12 -> 10 closes a cycle.
+        let rows = [
+            (10_u32, None, 1_000_u64),
+            (11, Some(10), 2_000),
+            (12, Some(11), 4_000),
+            (20, None, 8_000),
+        ];
+        assert_eq!(tree_rss(&rows, 10), 6_000);
+        let cyclic = [
+            (10_u32, Some(12), 1_000_u64),
+            (11, Some(10), 2_000),
+            (12, Some(11), 4_000),
+        ];
+        assert_eq!(
+            tree_rss(&cyclic, 10),
+            6_000,
+            "a cycle must not double-count or hang"
+        );
+    }
+
+    #[test]
+    fn tree_rss__chain_deeper_than_32__stops_at_the_cap() {
+        // 0 <- 1 <- ... <- 40; every node has the same working set. Depth 1 is
+        // a direct child and depth 32 is still counted; depth 33+ is not walked.
+        let mut rows = vec![(0_u32, None, 1_000_u64)];
+        for pid in 1..=40_u32 {
+            rows.push((pid, Some(pid - 1), 1_000));
+        }
+        assert_eq!(
+            tree_rss(&rows, 0),
+            32_000,
+            "only depths 1..=32 contribute; the walk must terminate at the cap"
+        );
+    }
+
+    #[test]
+    fn fixture_provenance__unborn_fixture__zero_commits_and_null_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let status = Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(tmp.path())
+            .status()
+            .expect("git init");
+        assert!(status.success());
+        let provenance = fixture_provenance(tmp.path()).expect("provenance");
+        assert_eq!(provenance.commits, 0);
+        assert_eq!(provenance.root_commit, None);
+    }
+
+    #[test]
+    fn fixture_provenance__two_roots__null_root_but_commit_count() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        for args in [
+            vec!["init", "--quiet"],
+            vec!["config", "user.email", "bench@example.invalid"],
+            vec!["config", "user.name", "bench"],
+        ] {
+            let status = Command::new("git")
+                .args(&args)
+                .current_dir(dir)
+                .status()
+                .expect("git");
+            assert!(status.success());
+        }
+        fs::write(dir.join("a.txt"), "a\n").expect("write a");
+        for args in [vec!["add", "a.txt"], vec!["commit", "-m", "root a"]] {
+            let status = Command::new("git")
+                .args(&args)
+                .current_dir(dir)
+                .status()
+                .expect("git");
+            assert!(status.success());
+        }
+        let first_branch = String::from_utf8_lossy(
+            &Command::new("git")
+                .args(["symbolic-ref", "--short", "HEAD"])
+                .current_dir(dir)
+                .output()
+                .expect("symbolic-ref")
+                .stdout,
+        )
+        .trim()
+        .to_string();
+        let status = Command::new("git")
+            .args(["checkout", "--orphan", "second"])
+            .current_dir(dir)
+            .status()
+            .expect("git checkout");
+        assert!(status.success());
+        fs::write(dir.join("b.txt"), "b\n").expect("write b");
+        for args in [vec!["add", "b.txt"], vec!["commit", "-m", "root b"]] {
+            let status = Command::new("git")
+                .args(&args)
+                .current_dir(dir)
+                .status()
+                .expect("git");
+            assert!(status.success());
+        }
+        // Merge the unrelated root into HEAD so HEAD history really has two roots.
+        let status = Command::new("git")
+            .args(["checkout", "--quiet", &first_branch])
+            .current_dir(dir)
+            .status()
+            .expect("git checkout first");
+        assert!(status.success());
+        let status = Command::new("git")
+            .args([
+                "merge",
+                "--allow-unrelated-histories",
+                "--no-edit",
+                "second",
+            ])
+            .current_dir(dir)
+            .status()
+            .expect("git merge");
+        assert!(status.success());
+        let provenance = fixture_provenance(dir).expect("provenance");
+        assert_eq!(provenance.commits, 3, "two roots plus the merge commit");
+        assert_eq!(provenance.root_commit, None);
+    }
+
+    #[test]
+    fn fixture_provenance__single_root__trimmed_full_sha() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        for args in [
+            vec!["init", "--quiet"],
+            vec!["config", "user.email", "bench@example.invalid"],
+            vec!["config", "user.name", "bench"],
+        ] {
+            let status = Command::new("git")
+                .args(&args)
+                .current_dir(dir)
+                .status()
+                .expect("git");
+            assert!(status.success());
+        }
+        fs::write(dir.join("a.txt"), "a\n").expect("write a");
+        for args in [vec!["add", "a.txt"], vec!["commit", "-m", "root"]] {
+            let status = Command::new("git")
+                .args(&args)
+                .current_dir(dir)
+                .status()
+                .expect("git");
+            assert!(status.success());
+        }
+        let provenance = fixture_provenance(dir).expect("provenance");
+        assert_eq!(provenance.commits, 1);
+        let root = provenance.root_commit.expect("single root");
+        assert!(
+            root.len() == 40 || root.len() == 64,
+            "a git sha is 40 (sha1) or 64 (sha256) hex characters, got {}",
+            root.len()
+        );
+        assert!(
+            root.chars().all(|c| c.is_ascii_hexdigit()) && !root.contains(['\r', '\n']),
+            "root must be a trimmed hex sha: {root:?}"
+        );
+    }
+
+    #[test]
+    fn ensure_warm_state_tree__fresh_fixture__creates_only_the_tree() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let fixture = tmp.path();
+        fs::create_dir_all(fixture.join(".git")).expect("git dir");
+        ensure_warm_state_tree(fixture).expect("state tree");
+        let mut entries = fs::read_dir(fixture.join(".ledgerful"))
+            .expect("read .ledgerful")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
+        entries.sort();
+        assert_eq!(
+            entries,
+            vec!["docs", "logs", "reports", "search_index", "state", "tmp"],
+            "only directories are pre-created; no file and no child run has happened"
+        );
+        for entry in &entries {
+            assert!(
+                fixture.join(".ledgerful").join(entry).is_dir(),
+                "{entry} must be a directory"
+            );
+        }
+    }
+
+    #[test]
+    fn memory_sampler_stop_is_interruptible() {
+        let sampler = MemorySampler::start(std::process::id());
+        let started = Instant::now();
+        let sample = sampler.stop_and_join().expect("sampler thread");
+        assert!(
+            started.elapsed() < SAMPLER_TICK,
+            "stop_and_join must not block out the sampler tick"
+        );
+        assert_eq!(sample.ticks, 0, "an immediate stop observes no tick");
+        assert_eq!(sample.peak_bytes, None);
+    }
+
+    #[test]
+    fn memory_sampler__no_such_runner__no_coverage() {
+        // A pid that cannot have children: the shared test process may own
+        // children spawned by sibling tests, so "childless" is not a property of
+        // this process.
+        let sampler = MemorySampler::start(u32::MAX - 1);
+        std::thread::sleep(SAMPLER_TICK * 3);
+        let sample = sampler.stop_and_join().expect("sampler thread");
+        assert_eq!(
+            sample.ticks, 0,
+            "a tick with no live descendant is not RSS coverage"
+        );
+        assert_eq!(sample.peak_bytes, None);
+        assert!(
+            sample.wall_us <= SAMPLER_TICK.as_micros() as u64 * 30,
+            "three ticks of refresh cost must stay well under 30 ticks"
+        );
+        assert!(
+            sample.wall_us > 0,
+            "sub-millisecond refreshes must accumulate in micros, not truncate to zero"
+        );
+    }
+
+    #[test]
+    fn sample_clock__delayed_sampler_stop__excludes_join_wait() {
+        // A deliberately slow stop: the sample clock is captured before the
+        // join, so the wait must not enter `observedMs`.
+        let sampler =
+            MemorySampler::start_with_delay(std::process::id(), Duration::from_millis(300));
+        let started = Instant::now();
+        let (ms, _sample) = finish_sample(started, sampler).expect("sampler thread");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(300),
+            "the stop must really have been delayed"
+        );
+        assert!(
+            ms < 100,
+            "the join wait must not enter the sample clock, got {ms} ms"
+        );
+    }
+
+    #[test]
+    fn memory_sampler__live_child__observes_its_working_set() {
+        let mut child = if cfg!(windows) {
+            Command::new("cmd")
+                .args(["/C", "ping", "-n", "3", "127.0.0.1"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn child")
+        } else {
+            Command::new("sleep")
+                .arg("1")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn child")
+        };
+        let sampler = MemorySampler::start(std::process::id());
+        std::thread::sleep(SAMPLER_TICK * 4);
+        let sample = sampler.stop_and_join().expect("sampler thread");
+        // Let the child exit on its own so the test leaves nothing running.
+        let _ = child.wait();
+        assert!(
+            sample.ticks >= 1,
+            "a live child must be observed at least once"
+        );
+        assert!(
+            sample.peak_bytes.is_some_and(|bytes| bytes > 0),
+            "a live child must contribute a positive working set"
+        );
     }
 }

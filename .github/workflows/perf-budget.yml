@@ -1,0 +1,171 @@
+name: perf-budget
+
+# Advisory performance budget battery (0564).
+#
+# NOT a required check, and it must never be added to branch protection: it is
+# path-filtered, so a required check would stay pending on unrelated PRs and
+# block them. 0577 showed why wall-clock work does not belong in the required
+# PR suite. `continue-on-error: true` keeps a noisy runner out of the gate; the
+# evidence is the uploaded receipts plus the saved `perfBudgetCheck` verdict.
+#
+# `pull_request` is the only pre-merge path (GitHub docs: `workflow_dispatch`
+# needs the workflow on the default branch). The weekly `schedule` is the
+# backstop for dependency changes that the path filter does not list.
+
+on:
+  pull_request:
+    paths:
+      - src/commands/bench.rs
+      - src/commands/perf_budget.rs
+      - tests/integration/bench.rs
+      - src/commands/helpers.rs
+      - src/commands/mod.rs
+      - src/commands/change_context/**
+      - src/commands/doctor/**
+      - src/commands/hotspots/**
+      - src/commands/ledger.rs
+      - src/commands/ledger*.rs
+      - src/commands/ledger/**
+      - src/commands/index/**
+      - src/commands/search/**
+      - src/commands/review.rs
+      - src/commands/impact.rs
+      - crates/ledgerful-ledger/**
+      - src/impact/**
+      - src/search/**
+      - src/index/**
+      - src/state/**
+      - src/exec/**
+      - src/git/**
+      - src/config/**
+      - src/doctor/**
+      - src/ledger/**
+      - src/output/**
+      - src/cli/**
+      - src/main.rs
+      - src/lib.rs
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/perf-budget.yml
+      - docs/performance-budgets.md
+  schedule:
+    - cron: '0 5 * * 0'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'check (verdict) or record (receipts only)'
+        required: false
+        default: check
+        type: choice
+        options:
+          - check
+          - record
+
+permissions:
+  contents: read
+
+jobs:
+  perf-budget:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    continue-on-error: true
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      MODE: ${{ inputs.mode || 'check' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust 1.98.1
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+        with:
+          toolchain: 1.98.1
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Build release
+        id: build
+        run: cargo build --release --bin ledgerful
+
+      - name: Collect receipts
+        id: bench
+        run: |
+          Add-Content -Path $env:GITHUB_ENV -Value ("BATTERY_STARTED=" + (Get-Date).ToUniversalTime().ToString("o"))
+          $batteryStarted = Get-Date
+          $fixture = Join-Path $env:RUNNER_TEMP ("perf-fixture-" + [guid]::NewGuid().ToString("N"))
+          git clone --no-hardlinks . $fixture
+          if ($LASTEXITCODE -ne 0) { throw "fixture clone failed" }
+          New-Item -ItemType Directory -Force perf-out | Out-Null
+          foreach ($s in 'status-warm','search-warm','context-warm','doctor-warm','hotspots-warm','impact-warm','review-warm') {
+            .\target\release\ledgerful bench --fixture $fixture --workload $s --runs 20 --host-class ci-windows-latest --output "perf-out/$s.json" --json
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          $childSeconds = [int]((Get-Date) - $batteryStarted).TotalSeconds
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "child battery seconds: $childSeconds (clone and artifact upload are added by the final duration step)"
+          if ($env:MODE -eq 'record') {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "record only; no verdict"
+            exit 0
+          }
+
+      - name: Check budgets
+        id: gate
+        if: env.MODE != 'record'
+        run: |
+          $receipts = @(if (Test-Path "perf-out") { Get-ChildItem "perf-out\*.json" | ForEach-Object { $_.FullName } })
+          if ($receipts.Count -ne 7) { throw "expected 7 receipts, found $($receipts.Count)" }
+          .\target\release\ledgerful bench --json --check $receipts | Tee-Object perf-check.json
+          $checkExit = $LASTEXITCODE
+          if ((Test-Path perf-check.json) -and (Get-Item perf-check.json).Length -gt 0) {
+            $checkJson = Get-Content perf-check.json -Raw | ConvertFrom-Json
+            if ($checkJson -and $checkJson.results) {
+              $results = @($checkJson.results)
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| workload | status | p50 ms | p95 ms | budget p95 ms | target |"
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "|---|---|---|---|---|---|"
+              foreach ($r in $results) {
+                Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "| $($r.workload) | $($r.status) | $($r.p50Ms) | $($r.p95Ms) | $($r.p95BudgetMs) | $($r.targetStatus) |"
+              }
+            }
+          }
+          exit $checkExit
+
+      - name: Upload receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: perf-out
+          path: perf-out/
+          if-no-files-found: warn
+
+      - name: Upload verdict
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: perf-check
+          path: perf-check.json
+          if-no-files-found: warn
+
+      - name: Record battery duration
+        if: always()
+        run: |
+          if (-not $env:BATTERY_STARTED) {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "battery duration: unavailable (the collection step never started)"
+            exit 0
+          }
+          $started = [datetime]::Parse($env:BATTERY_STARTED, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)
+          $elapsed = [int]((Get-Date).ToUniversalTime() - $started).TotalSeconds
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "battery wall seconds (clone through artifact upload): $elapsed; the 25-minute stop threshold applies to this number, not to total job wall time"
+
+      - name: Warn on a non-green advisory run
+        if: failure() || cancelled()
+        run: |
+          $detail = "build=$($env:BUILD_OUTCOME) bench=$($env:BENCH_OUTCOME) gate=$($env:GATE_OUTCOME)"
+          Write-Output "::warning::perf-budget did not complete; no performance result is claimed ($detail)"
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          BENCH_OUTCOME: ${{ steps.bench.outcome }}
+          GATE_OUTCOME: ${{ steps.gate.outcome }}

@@ -331,6 +331,103 @@ fn bench_compare_conflicts_with_fixture() {
 }
 
 #[test]
+fn bench_check_parses_without_fixture() {
+    let cmd = parse(&["bench", "--json", "--check", "receipt.json"]);
+    assert!(cmd.is_machine_output());
+    assert!(
+        cmd.argv_shape().contains("check"),
+        "argv_shape must record check: {}",
+        cmd.argv_shape()
+    );
+}
+
+#[test]
+fn bench_without_fixture_compare_or_check_rejected() {
+    let err = Cli::try_parse_from(["ledgerful", "bench", "--json"]);
+    assert!(
+        err.is_err(),
+        "bench needs --fixture, --compare or --check: {err:?}"
+    );
+}
+
+#[test]
+fn bench_host_class_is_recorded_in_argv_shape() {
+    let cmd = parse(&[
+        "bench",
+        "--fixture",
+        ".",
+        "--host-class",
+        "local-windows-2026-11",
+    ]);
+    assert!(
+        cmd.argv_shape().contains("host_class"),
+        "argv_shape must record host_class: {}",
+        cmd.argv_shape()
+    );
+    let default = parse(&["bench", "--fixture", "."]);
+    assert!(
+        !default.argv_shape().contains("host_class"),
+        "the unspecified default must not be recorded: {}",
+        default.argv_shape()
+    );
+}
+
+#[rstest::rstest]
+#[case("--fixture")]
+#[case("--workload")]
+#[case("--runs")]
+#[case("--output")]
+#[case("--host-class")]
+fn bench_check_conflicts_with_run_flags(#[case] flag: &str) {
+    let mut argv = vec!["ledgerful", "bench", "--check", "receipt.json", flag];
+    match flag {
+        "--fixture" | "--output" | "--host-class" => argv.push("x"),
+        "--workload" => argv.push("index-cold"),
+        "--runs" => argv.push("3"),
+        other => panic!("unhandled flag {other}"),
+    }
+    let err = Cli::try_parse_from(argv);
+    assert!(
+        err.is_err(),
+        "expected --check / {flag} conflict, got {err:?}"
+    );
+}
+
+#[test]
+fn bench_compare_conflicts_with_check() {
+    let err = Cli::try_parse_from([
+        "ledgerful",
+        "bench",
+        "--compare",
+        "a.json",
+        "b.json",
+        "--check",
+        "c.json",
+    ]);
+    assert!(
+        err.is_err(),
+        "expected --compare / --check conflict, got {err:?}"
+    );
+}
+
+#[test]
+fn bench_compare_conflicts_with_host_class() {
+    let err = Cli::try_parse_from([
+        "ledgerful",
+        "bench",
+        "--compare",
+        "a.json",
+        "b.json",
+        "--host-class",
+        "local-windows-2026-11",
+    ]);
+    assert!(
+        err.is_err(),
+        "expected --compare / --host-class conflict, got {err:?}"
+    );
+}
+
+#[test]
 fn graph_compact_json_refused() {
     let err = Cli::try_parse_from(["ledgerful", "ledger", "graph", "abc", "--compact", "--json"]);
     assert!(

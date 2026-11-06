@@ -1,3 +1,4 @@
+#![allow(non_snake_case)] // project test naming: feature__condition__expected
 //! Smoke tests for `ledgerful bench` (0477).
 //!
 //! Parent cwd is the engine (`CARGO_MANIFEST_DIR`). `--fixture` is a temp git
@@ -317,4 +318,430 @@ fn bench_compare_refuses_missing_required_field(#[case] omit: &str) {
         stderr.contains("failed to parse"),
         "stderr must name the parse failure for {omit}: {stderr}"
     );
+}
+
+fn run_bench_parent_with_env(args: &[&str], env: &[(&str, &str)]) -> (String, String, i32) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_ledgerful"));
+    command
+        .args(args)
+        .current_dir(engine_dir())
+        .env_remove("LEDGERFUL_STATE_DIR");
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    let output = command.output().expect("failed to run ledgerful bench");
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+        output.status.code().unwrap_or(-1),
+    )
+}
+
+fn parse_receipt(stdout: &str) -> Value {
+    serde_json::from_str(stdout.trim()).expect("workloadBench JSON")
+}
+
+#[test]
+fn bench_warm_receipt__fresh_clone__separates_setup_and_records_identity() {
+    if env!("LEDGERFUL_GIT_SHA") == "unknown" {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    tiny_fixture(tmp.path());
+    let fixture = tmp.path().to_string_lossy().into_owned();
+    let out_json = tmp.path().join("warm.json");
+    let output = out_json.to_string_lossy().into_owned();
+
+    let (stdout, stderr, code) = run_bench_parent(&[
+        "bench",
+        "--fixture",
+        &fixture,
+        "--workload",
+        "status-warm",
+        "--runs",
+        "3",
+        "--host-class",
+        "local-windows-2026-11",
+        "--json",
+        "--output",
+        &output,
+    ]);
+    assert_eq!(code, 0, "warm run failed: stderr={stderr}\nstdout={stdout}");
+
+    let receipt = parse_receipt(&stdout);
+    assert_eq!(receipt["kind"], "workloadBench");
+    assert_eq!(receipt["workload"], "status-warm");
+    assert_eq!(receipt["startState"], "warm");
+    assert_eq!(receipt["n"], 3);
+    assert_eq!(receipt["hostClass"], "local-windows-2026-11");
+    assert_eq!(receipt["childArgs"][0], "ledger");
+    assert_eq!(receipt["childArgs"][1], "status");
+    assert!(
+        receipt["setupMs"].as_i64().is_some_and(|ms| ms >= 0),
+        "setupMs must be recorded: {receipt}"
+    );
+    assert!(
+        receipt["warmupMs"].as_i64().is_some_and(|ms| ms >= 0),
+        "warmupMs must be recorded: {receipt}"
+    );
+    assert_eq!(receipt["fixtureCommits"], 1);
+    assert!(
+        receipt["fixtureRootCommit"]
+            .as_str()
+            .is_some_and(|root| root.len() >= 7),
+        "single-root fixture must record its root: {receipt}"
+    );
+    let fixture_id = receipt["fixtureId"].as_str().expect("fixtureId");
+    let count = fixture_id.split_once(':').expect("count:hash").0;
+    assert_eq!(receipt["fixtureFiles"].to_string(), count);
+
+    let observed = receipt["observedMs"].as_array().expect("observedMs").len();
+    assert_eq!(observed, 3);
+    let samples = receipt["samplesMs"].as_array().expect("samplesMs");
+    let mut sorted = samples
+        .iter()
+        .map(|v| v.as_i64().expect("i64"))
+        .collect::<Vec<_>>();
+    let observed_values = receipt["observedMs"]
+        .as_array()
+        .expect("observedMs")
+        .iter()
+        .map(|v| v.as_i64().expect("i64"))
+        .collect::<Vec<_>>();
+    let mut observed_sorted = observed_values;
+    observed_sorted.sort_unstable();
+    sorted.sort_unstable();
+    assert_eq!(
+        sorted, observed_sorted,
+        "observedMs must be a permutation of samplesMs"
+    );
+    assert!(
+        receipt["rssMeasuredSamples"].as_u64().unwrap_or(0) <= 3,
+        "rss coverage cannot exceed n: {receipt}"
+    );
+}
+
+#[test]
+fn bench_warm_samples__keep_fixture_state__sentinel_survives() {
+    if env!("LEDGERFUL_GIT_SHA") == "unknown" {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    tiny_fixture(tmp.path());
+    let fixture = tmp.path().to_string_lossy().into_owned();
+    let out_json = tmp.path().join("warm.json");
+    let output = out_json.to_string_lossy().into_owned();
+
+    let (_, stderr, code) = run_bench_parent(&[
+        "bench",
+        "--fixture",
+        &fixture,
+        "--workload",
+        "status-warm",
+        "--runs",
+        "2",
+        "--json",
+        "--output",
+        &output,
+    ]);
+    assert_eq!(code, 0, "warm run failed: stderr={stderr}");
+    let sentinel = tmp.path().join(".ledgerful").join("SENTINEL");
+    fs::write(&sentinel, "keep").expect("write sentinel");
+    let (_, stderr, code) = run_bench_parent(&[
+        "bench",
+        "--fixture",
+        &fixture,
+        "--workload",
+        "status-warm",
+        "--runs",
+        "1",
+        "--json",
+        "--output",
+        &output,
+    ]);
+    assert_eq!(code, 0, "second warm run failed: stderr={stderr}");
+    assert_eq!(
+        fs::read_to_string(&sentinel).expect("sentinel survives"),
+        "keep",
+        "warm samples must not wipe the fixture .ledgerful"
+    );
+}
+
+#[test]
+fn bench_warm_run__adds_no_command_timings_rows() {
+    if env!("LEDGERFUL_GIT_SHA") == "unknown" {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    tiny_fixture(tmp.path());
+    let fixture = tmp.path().to_string_lossy().into_owned();
+    let out_json = tmp.path().join("warm.json");
+    let output = out_json.to_string_lossy().into_owned();
+    let (_, stderr, code) = run_bench_parent(&[
+        "bench",
+        "--fixture",
+        &fixture,
+        "--workload",
+        "status-warm",
+        "--runs",
+        "2",
+        "--json",
+        "--output",
+        &output,
+    ]);
+    assert_eq!(code, 0, "warm run failed: stderr={stderr}");
+
+    let (stdout, stderr, code) = run_bench_parent(&["-C", &fixture, "timings", "--days", "1"]);
+    assert_eq!(code, 0, "timings read failed: stderr={stderr}");
+    assert!(
+        stdout.contains("No command timing rows"),
+        "children must not write self-timing rows: {stdout}"
+    );
+}
+
+#[test]
+fn bench_warm_run__ambient_budget_overrides_do_not_change_the_run() {
+    if env!("LEDGERFUL_GIT_SHA") == "unknown" {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    tiny_fixture(tmp.path());
+    let fixture = tmp.path().to_string_lossy().into_owned();
+    let out_json = tmp.path().join("warm.json");
+    let output = out_json.to_string_lossy().into_owned();
+    let (stdout, stderr, code) = run_bench_parent_with_env(
+        &[
+            "bench",
+            "--fixture",
+            &fixture,
+            "--workload",
+            "status-warm",
+            "--runs",
+            "2",
+            "--json",
+            "--output",
+            &output,
+        ],
+        &[
+            ("LEDGERFUL_HISTORY_BUDGET_SECS", "1"),
+            ("LEDGERFUL_PROSPECTIVE_BUDGET_SECS", "1"),
+            ("LEDGERFUL_REVIEW_BUDGET_SECS", "1"),
+            ("LEDGERFUL_HOTSPOTS_OVERALL_BUDGET_SECS", "1"),
+            ("LEDGERFUL_AUDIT_OVERALL_BUDGET_SECS", "1"),
+            ("LEDGERFUL_DEPLOY_OVERALL_BUDGET_SECS", "1"),
+            ("LEDGERFUL_BRIDGE_EXPORT_OVERALL_BUDGET_SECS", "1"),
+        ],
+    );
+    assert_eq!(
+        code, 0,
+        "ambient budget overrides must not leak into the child: stderr={stderr}\nstdout={stdout}"
+    );
+    let receipt = parse_receipt(&stdout);
+    assert_eq!(receipt["n"], 2);
+}
+
+#[test]
+fn bench_index_cold__unborn_fixture__zero_commits_and_null_root() {
+    if env!("LEDGERFUL_GIT_SHA") == "unknown" {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let status = Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(tmp.path())
+        .status()
+        .expect("git init");
+    assert!(status.success());
+    fs::write(tmp.path().join("lib.rs"), "pub fn born() {}\n").expect("write source");
+    let fixture = tmp.path().to_string_lossy().into_owned();
+    let out_json = tmp.path().join("cold.json");
+    let output = out_json.to_string_lossy().into_owned();
+
+    let (stdout, stderr, code) = run_bench_parent(&[
+        "bench",
+        "--fixture",
+        &fixture,
+        "--runs",
+        "1",
+        "--json",
+        "--output",
+        &output,
+    ]);
+    assert_eq!(
+        code, 0,
+        "an unborn fixture must still run a cold sample: stderr={stderr}\nstdout={stdout}"
+    );
+    let receipt = parse_receipt(&stdout);
+    assert_eq!(receipt["workload"], "index-cold");
+    assert_eq!(receipt["startState"], "cold");
+    assert_eq!(receipt["fixtureCommits"], 0);
+    assert!(receipt["fixtureRootCommit"].is_null());
+    assert!(receipt["setupMs"].is_null());
+    assert!(receipt["warmupMs"].is_null());
+}
+
+#[test]
+fn bench_index_cold__multi_root_fixture__null_root_but_commit_count() {
+    if env!("LEDGERFUL_GIT_SHA") == "unknown" {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dir = tmp.path();
+    for args in [
+        vec!["init", "--quiet"],
+        vec!["config", "user.email", "bench@example.invalid"],
+        vec!["config", "user.name", "bench"],
+    ] {
+        let status = Command::new("git")
+            .args(&args)
+            .current_dir(dir)
+            .status()
+            .expect("git");
+        assert!(status.success());
+    }
+    fs::write(dir.join("a.rs"), "pub fn a() {}\n").expect("write a");
+    for args in [vec!["add", "a.rs"], vec!["commit", "-m", "root a"]] {
+        let status = Command::new("git")
+            .args(&args)
+            .current_dir(dir)
+            .status()
+            .expect("git");
+        assert!(status.success());
+    }
+    let status = Command::new("git")
+        .args(["checkout", "--orphan", "second"])
+        .current_dir(dir)
+        .status()
+        .expect("git checkout");
+    assert!(status.success());
+    fs::write(dir.join("b.rs"), "pub fn b() {}\n").expect("write b");
+    for args in [vec!["add", "b.rs"], vec!["commit", "-m", "root b"]] {
+        let status = Command::new("git")
+            .args(&args)
+            .current_dir(dir)
+            .status()
+            .expect("git");
+        assert!(status.success());
+    }
+    // Merge the unrelated root into the first branch so HEAD history has two roots.
+    let first_branch = String::from_utf8_lossy(
+        &Command::new("git")
+            .args(["for-each-ref", "--format=%(refname:short)", "refs/heads"])
+            .current_dir(dir)
+            .output()
+            .expect("list branches")
+            .stdout,
+    )
+    .lines()
+    .map(str::trim)
+    .find(|name| *name != "second")
+    .expect("first branch")
+    .to_string();
+    let status = Command::new("git")
+        .args(["checkout", "--quiet", &first_branch])
+        .current_dir(dir)
+        .status()
+        .expect("git checkout first");
+    assert!(status.success());
+    let status = Command::new("git")
+        .args([
+            "merge",
+            "--allow-unrelated-histories",
+            "--no-edit",
+            "second",
+        ])
+        .current_dir(dir)
+        .status()
+        .expect("git merge");
+    assert!(status.success());
+
+    let fixture = dir.to_string_lossy().into_owned();
+    let out_json = dir.join("cold.json");
+    let output = out_json.to_string_lossy().into_owned();
+    let (stdout, stderr, code) = run_bench_parent(&[
+        "bench",
+        "--fixture",
+        &fixture,
+        "--runs",
+        "1",
+        "--json",
+        "--output",
+        &output,
+    ]);
+    assert_eq!(
+        code, 0,
+        "multi-root fixture must still run: stderr={stderr}"
+    );
+    let receipt = parse_receipt(&stdout);
+    assert_eq!(
+        receipt["fixtureCommits"], 3,
+        "two roots plus the merge commit"
+    );
+    assert!(receipt["fixtureRootCommit"].is_null());
+}
+
+fn write_unbudgeted_receipt(path: &Path, build_sha: &str) {
+    let os = if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    };
+    let body = format!(
+        r#"{{"schemaVersion":1,"kind":"workloadBench","workload":"dummy-workload","buildSha":"{build_sha}","n":3,"samplesMs":[10,20,30],"observedMs":[10,20,30],"p50Ms":20,"p95Ms":30,"startState":"warm","fixtureId":"1:aaaaaaaaaaaa","fixtureFiles":1,"fixtureCommits":1,"fixtureRootCommit":"root","childArgs":["dummy"],"hostClass":"local-windows-2026-11","peakRssBytes":null,"rssTicks":0,"rssMeasuredSamples":0,"samplerWallMs":0,"setupMs":5,"warmupMs":5,"os":"{os}","targetTriple":"{}"}}"#,
+        env!("TARGET")
+    );
+    fs::write(path, format!("{body}\n")).expect("write receipt");
+}
+
+#[test]
+fn bench_check__unbudgeted_workload__exits_one_with_envelope() {
+    let embed = env!("LEDGERFUL_GIT_SHA");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let receipt = tmp.path().join("receipt.json");
+    write_unbudgeted_receipt(&receipt, if embed == "unknown" { "unknown" } else { embed });
+    let receipt_arg = receipt.to_string_lossy().into_owned();
+    let (stdout, stderr, code) = run_bench_parent(&["bench", "--json", "--check", &receipt_arg]);
+
+    assert_eq!(
+        code, 1,
+        "a non-clean check must exit 1: stderr={stderr}\nstdout={stdout}"
+    );
+    if embed == "unknown" {
+        assert!(
+            stderr.contains("build sha unknown"),
+            "unknown embed must refuse with a named reason: {stderr}"
+        );
+        assert!(
+            stdout.trim().is_empty(),
+            "a refusal writes no JSON: {stdout}"
+        );
+        return;
+    }
+    let packet: Value = serde_json::from_str(stdout.trim()).expect("perfBudgetCheck JSON");
+    assert_eq!(packet["kind"], "perfBudgetCheck");
+    assert_eq!(packet["schemaVersion"], 1);
+    assert_eq!(packet["status"], "not-within-budget");
+    assert_eq!(packet["results"][0]["status"], "unqualified-workload");
+    assert!(
+        stderr.contains("perf budget check failed"),
+        "stderr must carry the roll-up reason: {stderr}"
+    );
+}
+
+#[test]
+fn bench_check__foreign_build__refuses_the_verdict() {
+    let embed = env!("LEDGERFUL_GIT_SHA");
+    if embed == "unknown" {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let receipt = tmp.path().join("receipt.json");
+    write_unbudgeted_receipt(&receipt, "ffffffffffff");
+    let receipt_arg = receipt.to_string_lossy().into_owned();
+    let (stdout, stderr, code) = run_bench_parent(&["bench", "--json", "--check", &receipt_arg]);
+    assert_eq!(code, 1, "a foreign build must not pass: stderr={stderr}");
+    let packet: Value = serde_json::from_str(stdout.trim()).expect("perfBudgetCheck JSON");
+    assert_eq!(packet["results"][0]["status"], "foreign-build");
 }
