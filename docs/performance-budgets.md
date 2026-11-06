@@ -176,8 +176,8 @@ tests: 5 421 passed, 5 failed, 11 skipped. The five failures are named known-env
 not this source: four `impact::enrichment::coupling` tests cannot discover the repository through
 the Windows worktree `.git` pointer from git-in-WSL, and `engine_scan_latency_guard` took 9 327 ms
 against its untouched 6 000 ms debug budget (the known load-flaky in-suite guard; the literal is
-byte-identical). `cargo clippy --all-targets --all-features -- -D warnings` is green at the last
-code-bearing commit, and no Rust file changed after it.
+byte-identical). `cargo clippy --all-targets --all-features -- -D warnings` was green in the
+`2604eb6` closeout leg over this same source, and no Rust file changed after `3d7bf1d`.
 
 ### Evidence directories
 
