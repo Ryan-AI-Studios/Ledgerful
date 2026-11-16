@@ -571,6 +571,90 @@ mod tests {
     }
 
     #[test]
+    fn stale_reason_from_freshness_matches_warn_if_impact_stale() {
+        // Part one: pure table over every ImpactFreshness value.
+        assert_eq!(
+            stale_reason_from_freshness(&ImpactFreshness::Stale {
+                reason: "r".to_string()
+            }),
+            Some(StaleImpactReason::Stale("r".to_string()))
+        );
+        assert_eq!(
+            stale_reason_from_freshness(&ImpactFreshness::Corrupt {
+                reason: "c".to_string()
+            }),
+            Some(StaleImpactReason::Corrupt("c".to_string()))
+        );
+        for quiet in [
+            ImpactFreshness::Missing,
+            ImpactFreshness::CurrentClean,
+            ImpactFreshness::CurrentDirty,
+        ] {
+            assert_eq!(stale_reason_from_freshness(&quiet), None, "{quiet:?}");
+        }
+
+        // Part two: real fixtures; the shared helper and the original entry
+        // point must agree for every fixture state.
+        let config = crate::config::model::Config::default();
+        let agree = |layout: &Layout| {
+            let via_warn = warn_if_impact_stale(layout, &config);
+            let via_helper = check_live_impact_freshness(layout, &config.watch.ignore_patterns)
+                .and_then(|f| stale_reason_from_freshness(&f));
+            assert_eq!(via_warn, via_helper);
+            via_warn
+        };
+
+        // Missing: no report written.
+        let tmp = tempdir().unwrap();
+        init_test_repo(tmp.path());
+        let layout = Layout::new(Utf8Path::from_path(tmp.path()).unwrap());
+        assert_eq!(agree(&layout), None);
+
+        // Stale: tombstone pinned to an all-zero HEAD.
+        let tmp = tempdir().unwrap();
+        init_test_repo(tmp.path());
+        let layout = Layout::new(Utf8Path::from_path(tmp.path()).unwrap());
+        let stale_packet = ImpactPacket {
+            head_hash: Some("0000000000000000000000000000000000000000".to_string()),
+            tree_clean: true,
+            changes: Vec::new(),
+            ..ImpactPacket::default()
+        };
+        write_impact_report(&layout, &stale_packet).unwrap();
+        assert!(matches!(agree(&layout), Some(StaleImpactReason::Stale(_))));
+
+        // Corrupt: garbage at the latest-impact.json path.
+        let tmp = tempdir().unwrap();
+        init_test_repo(tmp.path());
+        let layout = Layout::new(Utf8Path::from_path(tmp.path()).unwrap());
+        fs::create_dir_all(layout.reports_dir()).unwrap();
+        fs::write(
+            layout.reports_dir().join(LATEST_IMPACT_REPORT),
+            "{ not json",
+        )
+        .unwrap();
+        assert!(matches!(
+            agree(&layout),
+            Some(StaleImpactReason::Corrupt(_))
+        ));
+
+        // CurrentClean: tombstone at the live HEAD.
+        let tmp = tempdir().unwrap();
+        init_test_repo(tmp.path());
+        let layout = Layout::new(Utf8Path::from_path(tmp.path()).unwrap());
+        let repo = crate::git::repo::open_repo(tmp.path()).unwrap();
+        let (head_hash, _branch) = crate::git::repo::get_head_info(&repo).unwrap();
+        let current_packet = ImpactPacket {
+            head_hash,
+            tree_clean: true,
+            changes: Vec::new(),
+            ..ImpactPacket::default()
+        };
+        write_impact_report(&layout, &current_packet).unwrap();
+        assert_eq!(agree(&layout), None);
+    }
+
+    #[test]
     fn test_write_clean_tree_tombstone_creates_valid_tombstone() {
         let tmp = tempdir().unwrap();
         let root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -1006,9 +1090,17 @@ pub fn warn_if_impact_stale(
     config: &crate::config::model::Config,
 ) -> Option<StaleImpactReason> {
     let snapshot = build_repo_snapshot(layout, &config.watch.ignore_patterns)?;
-    match check_impact_freshness(layout, &snapshot) {
-        ImpactFreshness::Stale { reason } => Some(StaleImpactReason::Stale(reason)),
-        ImpactFreshness::Corrupt { reason } => Some(StaleImpactReason::Corrupt(reason)),
+    stale_reason_from_freshness(&check_impact_freshness(layout, &snapshot))
+}
+
+/// Maps a typed freshness to the warning reason `warn_if_impact_stale`
+/// returns: `Some` only for `Stale` and `Corrupt`. Shared (0600) so `verify`
+/// can read freshness once and derive both its warning and its
+/// `selectionEvidence` row from the same value.
+pub fn stale_reason_from_freshness(freshness: &ImpactFreshness) -> Option<StaleImpactReason> {
+    match freshness {
+        ImpactFreshness::Stale { reason } => Some(StaleImpactReason::Stale(reason.clone())),
+        ImpactFreshness::Corrupt { reason } => Some(StaleImpactReason::Corrupt(reason.clone())),
         ImpactFreshness::Missing
         | ImpactFreshness::CurrentClean
         | ImpactFreshness::CurrentDirty => None,
