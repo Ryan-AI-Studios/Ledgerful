@@ -1,6 +1,7 @@
 use crate::verify::assurance::ExecutionAssuranceJson;
 use crate::verify::plan::VerifyScope;
 use crate::verify::results::{VerificationReport, VerificationResult};
+use crate::verify::selection_evidence::SelectionEvidenceJson;
 use miette::{IntoDiagnostic, Result};
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +34,10 @@ pub struct VerifyCliJson {
     /// never a fabricated pass. schemaVersion stays 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_assurance: Option<ExecutionAssuranceJson>,
+    /// How the run was assembled and what could not be proven (0600). Not
+    /// `executionAssurance`. Absent on legacy payloads. schemaVersion stays 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_evidence: Option<SelectionEvidenceJson>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -111,7 +116,15 @@ impl VerifyCliJson {
             tx_id: report.tx_id.clone(),
             matched_steps,
             execution_assurance: Some(execution_assurance),
+            selection_evidence: None,
         }
+    }
+
+    /// Attach the 0600 selection evidence packet. `from_report` keeps its
+    /// signature; this is the only way the field is populated.
+    pub fn with_selection_evidence(mut self, evidence: SelectionEvidenceJson) -> Self {
+        self.selection_evidence = Some(evidence);
+        self
     }
 
     /// Serialize deterministically for agent consumers (pretty JSON).
@@ -480,5 +493,110 @@ mod verify_cli_json_tests {
         assert!(wire.contains("\"testCasesRun\":null") || wire.contains("\"testCasesRun\": null"));
         let again: VerifyCliJson = serde_json::from_str(&wire).unwrap();
         assert!(again.execution_assurance.unwrap().test_cases_run.is_none());
+    }
+
+    fn sample_selection_evidence() -> crate::verify::selection_evidence::SelectionEvidenceJson {
+        use crate::verify::plan::VerificationStep;
+        use crate::verify::selection_evidence::{
+            PredictionState, SelectionEvidenceInputs, build_selection_evidence,
+        };
+        let step = |command: &str| VerificationStep {
+            command: command.to_string(),
+            timeout_secs: 60,
+            description: "step".into(),
+            shell: false,
+            budget_source: None,
+        };
+        let scoped = "cargo nextest run --workspace --all-features -E 'test(cli_scan)'";
+        let steps = vec![step("cargo fmt --all -- --check"), step(scoped)];
+        let results = vec![
+            sample_result("cargo fmt --all -- --check", 0),
+            sample_result(scoped, 1),
+        ];
+        build_selection_evidence(SelectionEvidenceInputs {
+            planned_steps: &steps,
+            results: &results,
+            plan_source: Some(PlanSource::AutoPolicy),
+            manual_requested: false,
+            preview: false,
+            refused: false,
+            scope_requested: VerifyScope::Fast,
+            fallback_reason: None,
+            prediction_state: PredictionState::Ran,
+            warning_count: 1,
+            impact_freshness: None,
+        })
+    }
+
+    #[test]
+    fn selection_evidence_additive_schema_v1_legacy_deserializes_none() {
+        let legacy = r#"{
+            "schemaVersion": 1,
+            "ok": true,
+            "scopeRequested": "fast",
+            "scopeExecuted": "fast",
+            "steps": [],
+            "timestamp": "2026-07-28T12:00:00+00:00"
+        }"#;
+        let parsed: VerifyCliJson = serde_json::from_str(legacy).unwrap();
+        assert!(parsed.selection_evidence.is_none());
+        let round = serde_json::to_string(&parsed).unwrap();
+        assert!(!round.contains("selectionEvidence"));
+
+        // from_report never sets it; the builder method does, and the root
+        // schemaVersion stays at the shipped value.
+        let report = sample_report(vec![sample_result("cargo fmt --all -- --check", 0)], None);
+        let bare = VerifyCliJson::from_report(
+            &report,
+            VerifyScope::Fast,
+            None,
+            fixture_assurance(&report),
+        );
+        assert!(bare.selection_evidence.is_none());
+        assert!(!bare.to_json_string().unwrap().contains("selectionEvidence"));
+        let with = bare.with_selection_evidence(sample_selection_evidence());
+        assert_eq!(with.schema_version, VERIFY_JSON_SCHEMA_VERSION);
+        assert_eq!(with.schema_version, 1);
+        let wire = with.to_json_string().unwrap();
+        let again: VerifyCliJson = serde_json::from_str(&wire).unwrap();
+        assert_eq!(again.selection_evidence, with.selection_evidence);
+        assert!(again.execution_assurance.is_some());
+    }
+
+    #[test]
+    fn selection_evidence_serialization_is_deterministic_and_camel_case() {
+        let report = sample_report(vec![sample_result("cargo fmt --all -- --check", 0)], None);
+        let build = || {
+            VerifyCliJson::from_report(&report, VerifyScope::Fast, None, fixture_assurance(&report))
+                .with_selection_evidence(sample_selection_evidence())
+                .to_json_string()
+                .unwrap()
+        };
+        let a = build();
+        assert_eq!(a, build(), "byte-identical across two builds");
+        let value: serde_json::Value = serde_json::from_str(&a).unwrap();
+        assert_eq!(value["schemaVersion"], 1);
+        let packet = &value["selectionEvidence"];
+        assert_eq!(packet["schemaVersion"], 1);
+        assert_eq!(packet["basis"], "scoped-selection");
+        assert_eq!(packet["prediction"]["state"], "ran");
+        assert_eq!(packet["prediction"]["warningCount"], 1);
+        assert!(packet["prediction"].get("impactFreshness").is_none());
+        assert_eq!(packet["steps"][0]["state"], "passed");
+        assert_eq!(packet["steps"][0]["kind"], "non-test");
+        assert_eq!(packet["steps"][1]["kind"], "test-run");
+        assert_eq!(packet["steps"][1]["state"], "failed");
+        assert_eq!(packet["steps"][1]["exitCode"], 1);
+        assert!(packet["steps"][0].get("exitCode").is_none());
+        assert!(
+            packet["limitationCodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c == "selection-soundness-not-established")
+        );
+        assert!(packet["omissions"].is_array());
+        // The existing sibling packet is untouched and distinct.
+        assert!(value.get("executionAssurance").is_some());
     }
 }

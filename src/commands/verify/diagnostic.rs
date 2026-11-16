@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::dto::VERIFY_JSON_SCHEMA_VERSION;
 use crate::verify::assurance::ExecutionAssuranceJson;
+use crate::verify::selection_evidence::SelectionEvidenceJson;
 
 const BREAK_CAP: usize = 20;
 const INVALID_SAMPLE_CAP: usize = 20;
@@ -53,6 +54,9 @@ pub struct VerifyDryRunJson {
     /// Planned assurance. Absent on legacy dry-run payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_assurance: Option<ExecutionAssuranceJson>,
+    /// Planned selection evidence (0600). Absent on legacy dry-run payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_evidence: Option<SelectionEvidenceJson>,
 }
 
 impl VerifyDryRunJson {
@@ -473,6 +477,7 @@ mod diagnostic_dto_tests {
                 budget_source: None,
             }],
             execution_assurance: None,
+            selection_evidence: None,
         };
         let json = payload.to_json_string().unwrap();
         assert!(json.contains("\"kind\": \"verifyDryRun\""));
@@ -512,6 +517,7 @@ mod diagnostic_dto_tests {
             dataset_keys: None,
             steps: vec![],
             execution_assurance: None,
+            selection_evidence: None,
         };
         let json = payload.to_json_string().unwrap();
         assert!(json.contains("\"gitAvailable\": false"));
@@ -520,6 +526,66 @@ mod diagnostic_dto_tests {
             "omit cleanTree when git unavailable: {json}"
         );
         assert!(json.contains("\"predictionSkipped\": false"));
+    }
+
+    #[test]
+    fn selection_evidence_dry_run_json_additive() {
+        use crate::verify::plan::{PlanSource, VerificationStep, VerifyScope};
+        use crate::verify::selection_evidence::{
+            PredictionState, SelectionEvidenceInputs, build_selection_evidence,
+        };
+        let steps = vec![VerificationStep {
+            command: "cargo fmt --all -- --check".into(),
+            timeout_secs: 60,
+            description: "fmt".into(),
+            shell: false,
+            budget_source: None,
+        }];
+        let evidence = build_selection_evidence(SelectionEvidenceInputs {
+            planned_steps: &steps,
+            results: &[],
+            plan_source: Some(PlanSource::AutoPolicy),
+            manual_requested: false,
+            preview: true,
+            refused: false,
+            scope_requested: VerifyScope::Fast,
+            fallback_reason: None,
+            prediction_state: PredictionState::Skipped,
+            warning_count: 0,
+            impact_freshness: None,
+        });
+        let mut payload = VerifyDryRunJson {
+            schema_version: diagnostic_schema_version(),
+            kind: verify_dry_run_kind(),
+            scope_requested: "fast".into(),
+            scope_executed: "fast".into(),
+            fallback_reason: None,
+            refused: false,
+            executed: false,
+            git_available: true,
+            clean_tree: Some(true),
+            prediction_skipped: true,
+            prediction_skip_reason: Some("cleanTree".into()),
+            matched_steps: None,
+            dataset_keys: None,
+            steps: vec![],
+            execution_assurance: None,
+            selection_evidence: None,
+        };
+        let absent = payload.to_json_string().unwrap();
+        assert!(!absent.contains("selectionEvidence"), "{absent}");
+        let legacy: VerifyDryRunJson = serde_json::from_str(&absent).unwrap();
+        assert!(legacy.selection_evidence.is_none());
+
+        payload.selection_evidence = Some(evidence);
+        let present = payload.to_json_string().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&present).unwrap();
+        assert_eq!(value["kind"], "verifyDryRun");
+        assert!(value.get("ok").is_none(), "dry-run has no ok: {present}");
+        assert_eq!(value["selectionEvidence"]["schemaVersion"], 1);
+        assert_eq!(value["selectionEvidence"]["steps"][0]["state"], "planned");
+        assert_eq!(value["selectionEvidence"]["prediction"]["state"], "skipped");
+        assert_eq!(present, payload.to_json_string().unwrap());
     }
 
     #[test]

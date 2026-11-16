@@ -1291,6 +1291,7 @@ fn emit_verify_dry_run_json(
         dataset_keys,
         steps: planned,
         execution_assurance: Some(assurance.clone()),
+        selection_evidence: None,
     };
     println!("{}", payload.to_json_string()?);
     Ok(())
