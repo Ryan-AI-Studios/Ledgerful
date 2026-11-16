@@ -499,7 +499,6 @@ fn cli_verify_assurance_docs_contract() {
     let contract = include_str!("../../docs/agent-output-contract.md");
     let readme = include_str!("../../README.md");
     let mcp_readme = include_str!("../../mcp-server/README.md");
-    let features = include_str!("../../docs/Features.md");
     assert!(
         !performance.contains(
             "It always runs the complete suite (fmt, clippy, tests, doctests, slow tier)"
@@ -561,10 +560,10 @@ fn cli_verify_assurance_docs_contract() {
         performance.contains("selectionEvidence"),
         "verify-performance must document selectionEvidence"
     );
-    assert!(
-        features.contains("selectionEvidence"),
-        "Features must list selectionEvidence"
-    );
+    // docs/Features.md is deliberately not read here: any test reference to a
+    // cheap docs path needs an INCLUDE_STR_MATERIAL entry under
+    // src/verify/plan/, which 0600 does not edit (DoD-8). The Features bullet is
+    // checked with `rg selectionEvidence docs/Features.md` in the phase gate.
     assert!(readme.contains("Verification passed"));
     assert!(readme.contains("Assurance:"));
     assert!(
