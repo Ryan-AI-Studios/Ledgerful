@@ -92,7 +92,7 @@ pub struct AssuranceInputs<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CommandClass {
+pub(crate) enum CommandClass {
     TestRun,
     NonTest,
     Unknown,
@@ -277,6 +277,11 @@ fn evidence_from_matched(planned: &[VerificationStep], recorded: usize) -> TestC
     } else {
         TestCommandEvidence::NotInvoked
     }
+}
+
+/// Crate-visible view of the closed step classifier for selection evidence (0600).
+pub(crate) fn classify_step_kind(step: &VerificationStep) -> CommandClass {
+    classify_step(step)
 }
 
 fn classify_step(step: &VerificationStep) -> CommandClass {
