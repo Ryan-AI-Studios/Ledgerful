@@ -122,30 +122,221 @@ pub struct SelectionEvidenceInputs<'a> {
     pub impact_freshness: Option<&'a ImpactFreshness>,
 }
 
-/// RED STUB (0600 phase 1): replaced by the real derivation in the green commit.
+/// First match wins: not-applicable (manual or config plan), disabled
+/// (`--no-predict`), skipped (0288 clean-tree dry-run skip), else ran.
 pub fn prediction_state_for(
-    _manual_requested: bool,
-    _config_plan_used: bool,
-    _no_predict: bool,
-    _clean_tree_skip: bool,
+    manual_requested: bool,
+    config_plan_used: bool,
+    no_predict: bool,
+    clean_tree_skip: bool,
 ) -> PredictionState {
-    PredictionState::Ran
+    if manual_requested || config_plan_used {
+        PredictionState::NotApplicable
+    } else if no_predict {
+        PredictionState::Disabled
+    } else if clean_tree_skip {
+        PredictionState::Skipped
+    } else {
+        PredictionState::Ran
+    }
 }
 
-/// RED STUB (0600 phase 1): replaced by the real builder in the green commit.
 pub fn build_selection_evidence(input: SelectionEvidenceInputs<'_>) -> SelectionEvidenceJson {
+    let kinds: Vec<StepKindJson> = input
+        .planned_steps
+        .iter()
+        .map(|step| match classify_step_kind(step) {
+            CommandClass::TestRun => StepKindJson::TestRun,
+            CommandClass::NonTest => StepKindJson::NonTest,
+            CommandClass::Unknown => StepKindJson::Unknown,
+        })
+        .collect();
+
+    let basis = derive_basis(&input, &kinds);
+    let (steps, correspondence_unknown, not_run) = build_steps(&input, &kinds);
+
+    let mut omissions = Vec::new();
+    if input.refused {
+        omissions.push(OmissionJson {
+            code: "refused-no-commands-run".to_string(),
+            detail: input.fallback_reason.map(str::to_string),
+        });
+    } else if input.fallback_reason.is_some() {
+        omissions.push(OmissionJson {
+            code: "fallback-to-full".to_string(),
+            detail: input.fallback_reason.map(str::to_string),
+        });
+    }
+    if !input.refused && !kinds.contains(&StepKindJson::TestRun) {
+        omissions.push(OmissionJson {
+            code: "no-test-command-planned".to_string(),
+            detail: None,
+        });
+    }
+    if not_run > 0 {
+        let mut detail = format!(
+            "{not_run} of {} planned steps have no recorded result",
+            input.planned_steps.len()
+        );
+        if input
+            .results
+            .last()
+            .is_some_and(|last| last.exit_code == VERIFY_STEP_TIMEOUT_EXIT_CODE)
+        {
+            detail.push_str(&format!(
+                "; last recorded exit code was {VERIFY_STEP_TIMEOUT_EXIT_CODE}"
+            ));
+        }
+        omissions.push(OmissionJson {
+            code: "steps-not-run".to_string(),
+            detail: Some(detail),
+        });
+    }
+    if correspondence_unknown {
+        omissions.push(OmissionJson {
+            code: "result-correspondence-unknown".to_string(),
+            detail: None,
+        });
+    }
+
+    let mut limitation_codes = vec![SELECTION_SOUNDNESS_LIMITATION.to_string()];
+    match input.impact_freshness {
+        Some(ImpactFreshness::Stale { .. }) => limitation_codes.push("impact-stale".to_string()),
+        Some(ImpactFreshness::Corrupt { .. }) => {
+            limitation_codes.push("impact-corrupt".to_string())
+        }
+        Some(ImpactFreshness::Missing) => limitation_codes.push("impact-missing".to_string()),
+        Some(ImpactFreshness::CurrentClean | ImpactFreshness::CurrentDirty) => {}
+        None => limitation_codes.push("impact-freshness-not-evaluated".to_string()),
+    }
+    if input.prediction_state != PredictionState::Ran {
+        limitation_codes.push("prediction-not-run".to_string());
+    }
+    if input.warning_count > 0 {
+        limitation_codes.push("prediction-warnings-present".to_string());
+    }
+    limitation_codes.sort();
+    limitation_codes.dedup();
+
     SelectionEvidenceJson {
         schema_version: SELECTION_EVIDENCE_SCHEMA_VERSION,
-        basis: SelectionBasis::Unknown,
+        basis,
         prediction: PredictionEvidenceJson {
             state: input.prediction_state,
-            warning_count: 0,
-            impact_freshness: None,
+            warning_count: len_u64(input.warning_count),
+            impact_freshness: input
+                .impact_freshness
+                .map(|freshness| impact_freshness_row(freshness, false)),
         },
-        steps: Vec::new(),
-        omissions: Vec::new(),
-        limitation_codes: Vec::new(),
+        steps,
+        omissions,
+        limitation_codes,
     }
+}
+
+/// Spec 3b precedence. Reads no free text: `fallback_reason` is only tested
+/// with `.is_some()` and step descriptions are never consulted.
+fn derive_basis(input: &SelectionEvidenceInputs<'_>, kinds: &[StepKindJson]) -> SelectionBasis {
+    if input.refused {
+        return SelectionBasis::Refused;
+    }
+    if input.manual_requested {
+        return SelectionBasis::ManualCommand;
+    }
+    if input.plan_source == Some(PlanSource::ExplicitConfig) {
+        return SelectionBasis::ExplicitSteps;
+    }
+    if input.fallback_reason.is_some() {
+        return SelectionBasis::FallbackFull;
+    }
+    if input.scope_requested == VerifyScope::Full {
+        return SelectionBasis::FullRequested;
+    }
+    let has_test_step = kinds.contains(&StepKindJson::TestRun);
+    let has_filterset = input
+        .planned_steps
+        .iter()
+        .zip(kinds)
+        .any(|(step, kind)| *kind == StepKindJson::TestRun && has_filterset_token(step));
+    if has_filterset {
+        SelectionBasis::ScopedSelection
+    } else if !has_test_step {
+        SelectionBasis::FastNoTestStep
+    } else {
+        SelectionBasis::Unknown
+    }
+}
+
+/// Exact argv token `-E` from the shared tokenizer (D6).
+fn has_filterset_token(step: &VerificationStep) -> bool {
+    split_command_string(&step.command).is_some_and(|argv| argv.iter().any(|token| token == "-E"))
+}
+
+/// Returns `(steps, correspondence_unknown, not_run_count)`.
+fn build_steps(
+    input: &SelectionEvidenceInputs<'_>,
+    kinds: &[StepKindJson],
+) -> (Vec<SelectionStepJson>, bool, usize) {
+    let planned = input.planned_steps;
+    let results = input.results;
+
+    let make = |states: Vec<(StepState, Option<i32>)>| -> Vec<SelectionStepJson> {
+        planned
+            .iter()
+            .zip(kinds)
+            .zip(states)
+            .enumerate()
+            .map(
+                |(index, ((step, kind), (state, exit_code)))| SelectionStepJson {
+                    index: len_u64(index),
+                    command: step.command.clone(),
+                    kind: *kind,
+                    state,
+                    exit_code,
+                },
+            )
+            .collect()
+    };
+    let all = |state: StepState| make(planned.iter().map(|_| (state, None)).collect());
+
+    if input.refused {
+        // A refused plan has no steps; results with a refusal are invalid.
+        return (Vec::new(), !results.is_empty(), 0);
+    }
+    if input.preview {
+        if results.is_empty() {
+            return (all(StepState::Planned), false, 0);
+        }
+        return (all(StepState::Unknown), true, 0);
+    }
+    if results.is_empty() {
+        if planned.is_empty() {
+            return (Vec::new(), false, 0);
+        }
+        return (all(StepState::Unknown), true, 0);
+    }
+    let prefix_matches = results.len() <= planned.len()
+        && planned
+            .iter()
+            .zip(results)
+            .all(|(step, result)| step.command == result.command);
+    if !prefix_matches {
+        return (all(StepState::Unknown), true, 0);
+    }
+    let states = planned
+        .iter()
+        .enumerate()
+        .map(|(index, _)| match results.get(index) {
+            Some(result) if result.exit_code == 0 => (StepState::Passed, None),
+            Some(result) => (StepState::Failed, Some(result.exit_code)),
+            None => (StepState::NotRun, None),
+        })
+        .collect();
+    (make(states), false, planned.len() - results.len())
+}
+
+fn len_u64(len: usize) -> u64 {
+    u64::try_from(len).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
@@ -275,7 +466,10 @@ mod tests {
         let steps = vec![described];
         let mut input = inputs(&steps, &[]);
         input.preview = true;
-        assert_eq!(build_selection_evidence(input).basis, SelectionBasis::Unknown);
+        assert_eq!(
+            build_selection_evidence(input).basis,
+            SelectionBasis::Unknown
+        );
     }
 
     #[test]
@@ -323,7 +517,12 @@ mod tests {
         let steps = steps_of(&[FMT, CLIPPY]);
         let results = results_of(&[(FMT, 0), (CLIPPY, 0)]);
         let evidence = build_selection_evidence(inputs(&steps, &results));
-        assert!(evidence.steps.iter().all(|s| s.kind == StepKindJson::NonTest));
+        assert!(
+            evidence
+                .steps
+                .iter()
+                .all(|s| s.kind == StepKindJson::NonTest)
+        );
         assert!(evidence.steps.iter().all(|s| s.state == StepState::Passed));
         assert!(omission_codes(&evidence).contains(&"no-test-command-planned"));
         assert!(
@@ -555,7 +754,11 @@ mod tests {
             input.impact_freshness = freshness;
             let evidence = build_selection_evidence(input);
             assert_eq!(
-                evidence.prediction.impact_freshness.as_ref().map(|r| r.status),
+                evidence
+                    .prediction
+                    .impact_freshness
+                    .as_ref()
+                    .map(|r| r.status),
                 status,
                 "{freshness:?}"
             );
