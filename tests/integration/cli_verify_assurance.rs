@@ -943,3 +943,354 @@ fn read_ledger_proof_columns(db: &rusqlite::Connection, tx_id: &str) -> LedgerPr
     )
     .expect("read ledger proof columns")
 }
+
+// ---------------------------------------------------------------------------
+// 0600 - per-run selection evidence (`selectionEvidence`), additive, v1.
+// ---------------------------------------------------------------------------
+
+fn selection_omission_codes(value: &serde_json::Value) -> Vec<String> {
+    value["selectionEvidence"]["omissions"]
+        .as_array()
+        .expect("omissions array")
+        .iter()
+        .map(|o| o["code"].as_str().expect("omission code").to_string())
+        .collect()
+}
+
+fn selection_limitation_codes(value: &serde_json::Value) -> Vec<String> {
+    value["selectionEvidence"]["limitationCodes"]
+        .as_array()
+        .expect("limitationCodes array")
+        .iter()
+        .map(|c| c.as_str().expect("limitation code").to_string())
+        .collect()
+}
+
+#[test]
+fn cli_verify_selection_evidence_allow_full_fallback_names_fallback() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    dirty_unindexed_rust(root);
+    let shim = tempdir().unwrap();
+    let log = shim.path().join("cargo-invocations.log");
+    write_cargo_shims(shim.path(), &log);
+
+    let out = spawn_verify(
+        root,
+        &[
+            "verify",
+            "--scope",
+            "fast",
+            "--allow-full-fallback",
+            "--json",
+        ],
+        Some(shim.path()),
+    );
+    let value = parse_json(&out);
+    let evidence = &value["selectionEvidence"];
+    assert_eq!(evidence["schemaVersion"], 1);
+    assert_eq!(evidence["basis"], "fallback-full", "{value}");
+    assert_eq!(value["scopeExecuted"], "full");
+
+    let fallback_reason = value["fallbackReason"].as_str().expect("fallbackReason");
+    let omission = evidence["omissions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["code"] == "fallback-to-full")
+        .unwrap_or_else(|| panic!("fallback-to-full omission missing: {value}"));
+    assert_eq!(omission["detail"].as_str(), Some(fallback_reason));
+
+    let root_steps = value["steps"].as_array().expect("steps");
+    let evidence_steps = evidence["steps"].as_array().expect("evidence steps");
+    assert_eq!(root_steps.len(), evidence_steps.len(), "{value}");
+    assert!(
+        !evidence_steps.is_empty(),
+        "fallback plan has steps: {value}"
+    );
+    let mut saw_failed_test = false;
+    for (i, root_step) in root_steps.iter().enumerate() {
+        let step = &evidence_steps[i];
+        assert_eq!(step["index"], i as u64);
+        assert_eq!(step["command"], root_step["command"]);
+        let passed = root_step["exitCode"] == 0;
+        assert_eq!(
+            step["state"] == "passed",
+            passed,
+            "step {i} state must agree with exit code: {value}"
+        );
+        if !passed {
+            assert_eq!(step["state"], "failed");
+            assert_eq!(step["exitCode"], root_step["exitCode"]);
+        }
+        if step["kind"] == "test-run" && !passed {
+            saw_failed_test = true;
+        }
+    }
+    assert!(
+        saw_failed_test,
+        "the shim fails every test command with exit 1: {value}"
+    );
+    assert!(
+        selection_limitation_codes(&value).contains(&"selection-soundness-not-established".into())
+    );
+}
+
+#[test]
+fn cli_verify_selection_evidence_refusal_has_no_planned_steps_and_no_spawn() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    dirty_unindexed_rust(root);
+    let shim = tempdir().unwrap();
+    let log = shim.path().join("cargo-invocations.log");
+    write_cargo_shims(shim.path(), &log);
+
+    let out = spawn_verify(
+        root,
+        &["verify", "--scope", "fast", "--json"],
+        Some(shim.path()),
+    );
+    let value = parse_json(&out);
+    assert!(!out.status.success(), "refusal is non-zero: {value}");
+    assert_eq!(value["ok"], false);
+    let evidence = &value["selectionEvidence"];
+    assert_eq!(evidence["basis"], "refused", "{value}");
+    assert!(evidence["steps"].as_array().unwrap().is_empty());
+    let codes = selection_omission_codes(&value);
+    assert!(
+        codes.contains(&"refused-no-commands-run".to_string()),
+        "{codes:?}"
+    );
+    assert!(
+        !codes.contains(&"no-test-command-planned".to_string()),
+        "{codes:?}"
+    );
+    assert!(
+        log_text(&log).is_empty(),
+        "refusal must not invoke the shim: {}",
+        log_text(&log)
+    );
+}
+
+#[test]
+fn cli_verify_selection_evidence_refused_dry_run_json() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    dirty_unindexed_rust(root);
+    let shim = tempdir().unwrap();
+    let log = shim.path().join("cargo-invocations.log");
+    write_cargo_shims(shim.path(), &log);
+
+    let out = spawn_verify(
+        root,
+        &["verify", "--scope", "fast", "--dry-run", "--json"],
+        Some(shim.path()),
+    );
+    let value = parse_json(&out);
+    assert!(
+        !out.status.success(),
+        "refused dry-run is non-zero: {value}"
+    );
+    assert_eq!(value["kind"], "verifyDryRun");
+    assert_eq!(value["refused"], true);
+    assert!(value.get("ok").is_none(), "dry-run has no ok: {value}");
+    let evidence = &value["selectionEvidence"];
+    assert_eq!(evidence["basis"], "refused", "{value}");
+    assert!(evidence["steps"].as_array().unwrap().is_empty());
+    assert!(selection_omission_codes(&value).contains(&"refused-no-commands-run".to_string()));
+    assert!(log_text(&log).is_empty(), "dry-run never spawns cargo");
+}
+
+#[test]
+fn cli_verify_selection_evidence_fast_cheap_has_no_test_step() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    init_rust_repo(root);
+    fs::write(root.join("CHANGELOG.md"), "## Unreleased\n").unwrap();
+    fs::create_dir_all(root.join("docs")).unwrap();
+    fs::write(root.join("docs").join("architecture.md"), "architecture\n").unwrap();
+    let shim = tempdir().unwrap();
+    let log = shim.path().join("cargo-invocations.log");
+    write_cargo_shims(shim.path(), &log);
+
+    let out = spawn_verify(
+        root,
+        &["verify", "--scope", "fast", "--json"],
+        Some(shim.path()),
+    );
+    let value = parse_json(&out);
+    assert!(out.status.success(), "cheap plan passes: {value}");
+    assert_eq!(value["ok"], true);
+    let evidence = &value["selectionEvidence"];
+    assert_eq!(evidence["basis"], "fast-no-test-step", "{value}");
+    assert_eq!(
+        value["executionAssurance"]["testCommandEvidence"],
+        "not-invoked"
+    );
+    assert!(selection_omission_codes(&value).contains(&"no-test-command-planned".to_string()));
+
+    let steps = evidence["steps"].as_array().unwrap();
+    assert!(!steps.is_empty());
+    assert!(steps.iter().all(|s| s["state"] == "passed"), "{value}");
+    let any_test_step = steps.iter().any(|s| s["kind"] == "test-run");
+    assert_eq!(
+        any_test_step,
+        value["executionAssurance"]["testCommandEvidence"] == "attempted",
+        "per-step kind and run-level evidence must agree: {value}"
+    );
+    assert!(!any_test_step);
+}
+
+#[test]
+fn cli_verify_selection_evidence_manual_command_dry_run_json() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let out = spawn_verify(
+        root,
+        &["verify", "git --version", "--dry-run", "--json"],
+        None,
+    );
+    assert!(out.status.success(), "stderr={}", stderr_text(&out));
+    let value = parse_json(&out);
+    assert_eq!(value["schemaVersion"], 1);
+    assert_eq!(value["kind"], "verifyDryRun");
+    let evidence = &value["selectionEvidence"];
+    assert_eq!(evidence["basis"], "manual-command", "{value}");
+    assert_eq!(evidence["prediction"]["state"], "not-applicable");
+    assert!(evidence["prediction"].get("impactFreshness").is_none());
+    let steps = evidence["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 1);
+    assert!(steps.iter().all(|s| s["state"] == "planned"), "{value}");
+    assert_eq!(value["executionAssurance"]["planSource"], "manual");
+    assert_eq!(value["executionAssurance"]["execution"], "planned");
+    assert!(selection_limitation_codes(&value).contains(&"impact-freshness-not-evaluated".into()));
+}
+
+/// The `cli_verify.rs` stale-cache fixture: one commit, `init`, a dirty edit
+/// recorded by `scan --impact`, then HEAD advanced past the cached report.
+fn stale_cached_impact_repo(root: &Path, config_edit: Option<&dyn Fn(&Path)>) {
+    use crate::common::git_add_and_commit_no_verify;
+
+    setup_git_repo(root);
+    fs::write(root.join("a.txt"), "v1").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let bin = env!("CARGO_BIN_EXE_ledgerful");
+    let init = Command::new(bin)
+        .arg("init")
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .expect("init");
+    assert!(init.status.success(), "init: {}", stderr_text(&init));
+    if let Some(edit) = config_edit {
+        edit(root);
+    }
+
+    fs::write(root.join("a.txt"), "v2").unwrap();
+    let scan = Command::new(bin)
+        .args(["scan", "--impact"])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .expect("scan --impact");
+    assert!(
+        scan.status.success(),
+        "scan --impact: {}",
+        stderr_text(&scan)
+    );
+    git_add_and_commit_no_verify(root, "advance head past the cached packet");
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn cli_verify_selection_evidence_stale_impact_is_labelled__slow() {
+    use crate::common::nested_repo_root;
+
+    let tmp = tempdir().unwrap();
+    let root_owned = nested_repo_root(tmp.path());
+    let root = root_owned.as_path();
+    stale_cached_impact_repo(root, None);
+
+    let out = spawn_verify(
+        root,
+        &["verify", "--dry-run", "--scope", "full", "--json"],
+        None,
+    );
+    assert!(out.status.success(), "stderr={}", stderr_text(&out));
+    let value = parse_json(&out);
+    assert_eq!(value["kind"], "verifyDryRun");
+    let freshness = &value["selectionEvidence"]["prediction"]["impactFreshness"];
+    assert_eq!(freshness["status"], "stale", "{value}");
+    assert_eq!(freshness["source"], "impactCache", "{value}");
+    let reason = freshness["reason"].as_str().expect("reason");
+    assert!(
+        reason.contains("latest-impact.json") || reason.contains("HEAD has changed"),
+        "{reason}"
+    );
+    let limits = selection_limitation_codes(&value);
+    assert!(limits.contains(&"impact-stale".to_string()), "{limits:?}");
+    assert!(
+        limits.contains(&"selection-soundness-not-established".to_string()),
+        "{limits:?}"
+    );
+    assert!(
+        !limits.contains(&"impact-freshness-not-evaluated".to_string()),
+        "{limits:?}"
+    );
+    assert_eq!(value["selectionEvidence"]["basis"], "full-requested");
+    // The existing stale warning is still derived from the same value and
+    // counted, but its text stays on stderr.
+    assert!(
+        value["selectionEvidence"]["prediction"]["warningCount"]
+            .as_u64()
+            .is_some_and(|n| n >= 1)
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn cli_verify_selection_evidence_config_plan_freshness_not_evaluated__slow() {
+    use crate::common::nested_repo_root;
+
+    let tmp = tempdir().unwrap();
+    let root_owned = nested_repo_root(tmp.path());
+    let root = root_owned.as_path();
+    let edit = |root: &Path| {
+        let config_path = root.join(".ledgerful").join("config.toml");
+        let contents = fs::read_to_string(&config_path).unwrap();
+        let mut doc = contents.parse::<toml_edit::DocumentMut>().unwrap();
+        if doc.get("verify").is_none() {
+            doc["verify"] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+        doc["verify"]["mode"] = toml_edit::value("explicit");
+        doc["verify"]["steps"] = toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new());
+        let steps = doc["verify"]["steps"].as_array_of_tables_mut().unwrap();
+        let mut step = toml_edit::Table::new();
+        step["description"] = toml_edit::value("fast no-op");
+        step["command"] = toml_edit::value("git --version");
+        steps.push(step);
+        fs::write(&config_path, doc.to_string()).unwrap();
+    };
+    stale_cached_impact_repo(root, Some(&edit));
+
+    let out = spawn_verify(root, &["verify", "--dry-run", "--json"], None);
+    assert!(out.status.success(), "stderr={}", stderr_text(&out));
+    let value = parse_json(&out);
+    let evidence = &value["selectionEvidence"];
+    assert_eq!(evidence["prediction"]["state"], "not-applicable", "{value}");
+    assert_eq!(evidence["basis"], "explicit-steps", "{value}");
+    assert!(
+        evidence["prediction"].get("impactFreshness").is_none(),
+        "no freshness row when the gate is not met: {value}"
+    );
+    let limits = selection_limitation_codes(&value);
+    assert!(
+        limits.contains(&"impact-freshness-not-evaluated".to_string()),
+        "{limits:?}"
+    );
+    assert!(!limits.contains(&"impact-stale".to_string()), "{limits:?}");
+    // scopeExecuted reads the requested scope even though nothing was scoped.
+    assert_eq!(value["scopeExecuted"], "fast");
+}
