@@ -499,6 +499,7 @@ fn cli_verify_assurance_docs_contract() {
     let contract = include_str!("../../docs/agent-output-contract.md");
     let readme = include_str!("../../README.md");
     let mcp_readme = include_str!("../../mcp-server/README.md");
+    let features = include_str!("../../docs/Features.md");
     assert!(
         !performance.contains(
             "It always runs the complete suite (fmt, clippy, tests, doctests, slow tier)"
@@ -539,6 +540,31 @@ fn cli_verify_assurance_docs_contract() {
     ] {
         assert!(contract.contains(token), "agent contract missing {token}");
     }
+    // 0600: selectionEvidence is documented, and never as a soundness claim.
+    for token in [
+        "selectionEvidence",
+        "scoped-selection",
+        "fast-no-test-step",
+        "explicit-steps",
+        "selection-soundness-not-established",
+        "GET /api/verify/health",
+    ] {
+        assert!(contract.contains(token), "agent contract missing {token}");
+    }
+    assert!(
+        contract.contains(
+            "`passed` means the recorded command exited 0; it does not mean any test case ran"
+        ),
+        "agent contract must say passed is exit 0, not case execution"
+    );
+    assert!(
+        performance.contains("selectionEvidence"),
+        "verify-performance must document selectionEvidence"
+    );
+    assert!(
+        features.contains("selectionEvidence"),
+        "Features must list selectionEvidence"
+    );
     assert!(readme.contains("Verification passed"));
     assert!(readme.contains("Assurance:"));
     assert!(

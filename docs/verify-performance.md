@@ -221,3 +221,9 @@ Human line, one ASCII line:
 `Assurance: {R}/{N} command results ({S}); test commands {T}; test-case count unavailable; affected-test completeness not established; exclusions not inventoried{U}.`
 
 `{S}` is `results recorded`, `preview; no verification commands executed`, `refused; no verification commands executed`, `no verification steps planned; nothing executed`, `partial`, or `result correspondence unknown`. `{T}` is `not invoked`, `attempted (case execution unproven)`, or `unknown`. `{U}` is `; runner reported no tests` only when that code is present.
+
+### Selection evidence
+
+`selectionEvidence` is a second nested packet on executed verify JSON and dry-run JSON (0600). It is not `executionAssurance` and not `verifySignatures.assurance`. It is not a field of `GET /api/verify/health`. Root `schemaVersion` stays 1 and the nested `schemaVersion` is 1. Consumers must ignore unknown keys.
+
+It records how the run was assembled (`basis`), whether prediction ran, per-step `kind` and `state`, why no test command ran when none did, and limitation codes. `passed` means the recorded command exited 0; it does not mean any test case ran. `scoped-selection` describes how the run was assembled and is not a claim that the selected tests are sufficient. `scopeExecuted: fast` with `basis: explicit-steps` means the run was not scoped. `steps[].index` is the zero-based plan position. `impactFreshness` describes `latest-impact.json`, not the SQLite snapshot packet prediction loads. The constant limitation `selection-soundness-not-established` is present in every packet. Bases: `scoped-selection`, `fast-no-test-step`, `full-requested`, `fallback-full`, `refused`, `explicit-steps`, `manual-command`, `unknown`. The full field list is in `docs/agent-output-contract.md`.
