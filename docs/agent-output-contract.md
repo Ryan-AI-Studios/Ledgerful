@@ -326,6 +326,8 @@ They do **not** write `latest-verify.json`.
 | `verify --json --health` | `verifyHealth` (`ok` = tools only) |
 | `verify --json --signatures` / `--chain` / `--against-export` | `verifySignatures` |
 
+`verifyDryRun` also carries the optional `selectionEvidence` packet (0600), the same shape as on executed `verify --json`; see the `selectionEvidence` section under `verify --json` schema (v1) below. Every step in it reads `planned`.
+
 `verifyDryRun.steps[].timeoutSecs` (number, always) is the planned seconds
 after the CLI `--timeout` cap. schemaVersion stays 1. Still no `ok`, no
 `durationMs`, no `exitCode`. Optional `budgetSource` (`suite` | `format` |
@@ -509,6 +511,60 @@ Primary example — **MappingRefuse** (default when fast cannot scope; empty
 `executionAssurance` is additive on new producers. Root `schemaVersion` stays 1. A missing outer key deserializes as absent. `testCasesRun` is JSON `null` and the key is present; a missing inner field is not zero. `passedSteps` and `failedSteps` count command exits, not test cases. `results-recorded` means the recorded commands match the plan. `results recorded` is not pass wording. `runner-reported-no-tests` is a direct `cargo nextest run` exit 4. The human line says `runner reported no tests`. That phrase is not an exclusion detection. `npm run test:ci` / `yarn run test:ci` / `pnpm run test:ci` / `deno task test:ci` stay `testCommandEvidence: unknown` (`unknown-command-semantics`). Fatal verify exits stay fatal: no partial JSON and no assurance line. This object is not `verifySignatures.assurance`.
 
 Quiet success prints the assurance line immediately before `Verification passed` only when the recording is not all `git --version`. An all-`git --version` recording prints `Cheap command recorded: git --version. Not a project-suite pass.` instead and adds `cheap-command`. `scopeExecuted` `full` on that recording is the default scope token when `--scope` is omitted. Verbose success still prints the per-step line `Verification passed for: git --version`, then the assurance line once, then the recorded sentence, and does not add a line equal to `Verification passed`. Failure of an all-`git --version` recording prints the assurance line, stderr `Verification failed`, and exactly once `Cheap command failed: git --version. Not a project-suite result.` Any other failure prints the assurance line after Suggested Actions, then miette `Verification failed` on stderr, and does not say `Verification passed`. Dry-run prints the assurance line immediately before the existing footer and does not add `cheap-command`. JSON mode prints no human assurance line and no cheap sentence. MCP `verify_plan` flattens the plan and adds `executionAssurance` with `execution: planned` (or `refused` when the plan is refused), `recordedSteps: 0`, and `selectionCompleteness: not-established`. The description says this is a prediction, no verification commands are executed, and completeness is not established.
+
+### `selectionEvidence` (0600)
+
+```json
+{
+  "selectionEvidence": {
+    "schemaVersion": 1,
+    "basis": "scoped-selection",
+    "prediction": {
+      "state": "ran",
+      "warningCount": 0,
+      "impactFreshness": {
+        "id": "impact",
+        "status": "stale",
+        "source": "impactCache",
+        "reason": "HEAD has changed since impact scan",
+        "refresh": "ledgerful scan --impact"
+      }
+    },
+    "steps": [
+      { "index": 0, "command": "cargo fmt --all -- --check", "kind": "non-test", "state": "passed" },
+      { "index": 1, "command": "cargo nextest run --workspace --all-features -E 'test(cli_scan)'", "kind": "test-run", "state": "failed", "exitCode": 1 }
+    ],
+    "omissions": [],
+    "limitationCodes": [
+      "impact-stale",
+      "selection-soundness-not-established"
+    ]
+  }
+}
+```
+
+`selectionEvidence` is an additive optional object on executed `verify --json` and on `verify --json --dry-run`. Root `schemaVersion` stays 1 and the nested `schemaVersion` is 1. `selectionEvidence` is not `executionAssurance` and not `verifySignatures.assurance`. `selectionEvidence` is not a field of `GET /api/verify/health`. It is not on the MCP `verify_plan` preview and it is not written to `latest-verify.json`. Consumers must ignore unknown keys.
+
+`passed` means the recorded command exited 0; it does not mean any test case ran. A `passed` step whose `kind` is `non-test` or `unknown` is never test evidence. A step with no recorded result reads `not-run`, never `passed`. A step whose recorded result cannot be matched to the plan reads `unknown`, never `passed` or `failed`. `steps[].index` is the zero-based plan position. A timeout is recorded as `failed` with `exitCode` 124; there is no `timed-out` state because a child command can also exit 124.
+
+`basis` says how the run was assembled. It is not a claim that the selection is sufficient. `scoped-selection` describes how the run was assembled and is not a claim that the selected tests are sufficient. `scopeExecuted: fast` with `basis: explicit-steps` means the run was not scoped. First match wins:
+
+| `basis` | When |
+|---|---|
+| `refused` | the plan was refused; no command ran |
+| `manual-command` | a command was passed to `verify` |
+| `explicit-steps` | the plan came from `[[verify.steps]]` or a non-auto verify mode, so nothing was scoped |
+| `fallback-full` | the plan carries a fallback reason (fast scope fell back to the full suite) |
+| `full-requested` | scope was `full` |
+| `scoped-selection` | scope was `fast` and a test step carries a nextest `-E` filterset token |
+| `fast-no-test-step` | scope was `fast` and no step is a test command |
+| `unknown` | anything else, including an absent plan source |
+
+`steps[].kind` comes from the same closed classifier as `executionAssurance`: `test-run`, `non-test`, or `unknown`. `steps[].state` is `planned` (dry-run), `passed`, `failed` (with `exitCode`), `not-run`, or `unknown`. `prediction.state` is `ran`, `skipped` (clean-tree dry-run), `disabled` (`--no-predict`), or `not-applicable` (manual command or config plan). `ran` means prediction was invoked, not that it found anything. `prediction.warningCount` counts prediction warnings; the text stays on stderr and in `latest-verify.json`.
+
+`impactFreshness` describes `latest-impact.json`, not the SQLite snapshot packet prediction loads. It is absent when freshness was not evaluated (manual command, config plan, no stored packet, or git unreadable).
+
+`omissions[].code` is one of `refused-no-commands-run`, `fallback-to-full` (both carry the existing `fallbackReason` as `detail`), `no-test-command-planned`, `steps-not-run` (detail names how many planned steps have no result and notes a last recorded exit of 124), or `result-correspondence-unknown`. `limitationCodes` is sorted and deduplicated: always `selection-soundness-not-established`, plus `impact-stale`, `impact-corrupt`, `impact-missing`, `impact-freshness-not-evaluated`, `prediction-not-run`, and `prediction-warnings-present` as they apply. Nothing in this packet states test-case counts, selection completeness, or exclusions; those stay `testCasesRun: null`, `selectionCompleteness: not-established`, and `exclusionsStatus: not-inventoried` in `executionAssurance`.
 
 Optional — **full fallback** only for SharedInfra (always) or when the operator
 passed `--allow-full-fallback` (restores pre-0135 surprise-full for mapping miss):

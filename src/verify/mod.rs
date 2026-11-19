@@ -11,6 +11,7 @@ pub mod predictor;
 pub mod probability;
 pub mod results;
 pub mod runner;
+pub mod selection_evidence;
 pub mod semantic_predictor;
 pub mod signatures;
 pub mod suggestions;

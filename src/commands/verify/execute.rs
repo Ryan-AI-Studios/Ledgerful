@@ -5,15 +5,22 @@ use crate::output::verification::{
     VerificationReporter, dry_run_scope_line, format_assurance_line, print_dry_run_human,
     should_print_suggested_actions,
 };
+use crate::state::reports::ImpactFreshness;
 use crate::state::storage::StorageManager;
 use crate::verify::assurance::{
     AssuranceInputs, CHEAP_COMMAND_FAILED_SENTENCE, CHEAP_COMMAND_RECORDED_SENTENCE,
     build_execution_assurance, recorded_commands_are_only_git_version,
 };
 use crate::verify::engine::{VerificationContext, VerifyEngine};
-use crate::verify::plan::{VerificationStep, VerifyScope, build_plan_from_config};
+use crate::verify::plan::{
+    VerificationPlan, VerificationStep, VerifyScope, build_plan_from_config,
+};
 use crate::verify::predictor::OutcomePredictor;
-use crate::verify::results::VerificationReport;
+use crate::verify::results::{VerificationReport, VerificationResult};
+use crate::verify::selection_evidence::{
+    PredictionState, SelectionEvidenceInputs, SelectionEvidenceJson, build_selection_evidence,
+    prediction_state_for,
+};
 use crate::verify::suggestions::{generate_suggestions, query_ledger_status};
 use crate::verify::timeouts::{cap_auto_step_timeout, manual_timeout, manual_timeout_from_cli};
 use miette::Result;
@@ -128,6 +135,8 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
     // reuse this same value in the plan-building match below instead of
     // calling `build_plan_from_config` a second time.
     let config_plan = build_plan_from_config(&config.verify);
+    // 0600: captured before `config_plan` is moved into the plan match below.
+    let config_plan_used = config_plan.is_some();
 
     // CG-F35 (requirement #1, #6): the packet just loaded above feeds
     // `OutcomePredictor` and the plan-reordering heuristics below. If it's
@@ -144,10 +153,21 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
     // (`config_plan` is `Some`) build their plan without consulting
     // `ctx.packet` at all, so warning about stale predictions in either of
     // those paths would be inaccurate, since no prediction happens there.
-    if command_str.is_none()
+    //
+    // 0600: freshness is read once under that same gate. The stale warning and
+    // the `selectionEvidence` impact row are both derived from this one value
+    // (one `git status`, one file read, as before).
+    let impact_freshness: Option<ImpactFreshness> = if command_str.is_none()
         && config_plan.is_none()
         && ctx.packet.is_some()
-        && let Some(reason) = crate::state::reports::warn_if_impact_stale(&layout, &config)
+    {
+        crate::state::reports::check_live_impact_freshness(&layout, &config.watch.ignore_patterns)
+    } else {
+        None
+    };
+    if let Some(reason) = impact_freshness
+        .as_ref()
+        .and_then(crate::state::reports::stale_reason_from_freshness)
     {
         ctx.add_warning(format!(
             "Verification predictions are based on data where the {reason} — plan ordering may not reflect the current working tree."
@@ -175,6 +195,9 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
     let (working_material, rust_crates, non_rust_present) =
         classify_working_tree_material(layout.root.as_std_path(), detect_rust);
 
+    // 0600: true only for the 0288 clean-tree dry-run skip below.
+    let mut prediction_clean_tree_skipped = false;
+
     // 3. Build Plan
     let (plan, steps) = match command_str {
         Some(ref cmd) => (
@@ -199,6 +222,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                 // Manual --command and [[verify.steps]] never reach here.
                 let prediction = if dry_run && !working_tree_has_material_changes(working_material)
                 {
+                    prediction_clean_tree_skipped = true;
                     crate::verify::predict::PredictionResult::default()
                 } else {
                     OutcomePredictor::predict(&mut ctx)?
@@ -354,6 +378,13 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
         }
     };
 
+    let prediction_state = prediction_state_for(
+        manual_requested,
+        config_plan_used,
+        no_predict,
+        prediction_clean_tree_skipped,
+    );
+
     // Entity-scoped explanation: show tests mapped to the entity and relevant steps.
     // Skipped under --json (machine payload has steps; explain is human-only).
     if !json && explain && entity.is_some() {
@@ -469,6 +500,18 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                         working_material,
                         WorkingTreeMaterial::Clean | WorkingTreeMaterial::Unavailable
                     );
+                let selection_evidence = selection_evidence_for(
+                    &steps,
+                    &[],
+                    plan.as_ref(),
+                    manual_requested,
+                    true,
+                    true,
+                    scope,
+                    prediction_state,
+                    ctx.warnings.len(),
+                    impact_freshness.as_ref(),
+                );
                 emit_verify_dry_run_json(
                     &[],
                     scope,
@@ -479,6 +522,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                     working_material,
                     prediction_skipped,
                     &assurance,
+                    &selection_evidence,
                 )?;
                 return Err(miette::miette!("{reason}"));
             }
@@ -513,8 +557,21 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
             true,
         );
         if json {
+            let selection_evidence = selection_evidence_for(
+                &steps,
+                &report.results,
+                report.plan.as_ref(),
+                manual_requested,
+                false,
+                true,
+                scope,
+                prediction_state,
+                ctx.warnings.len(),
+                impact_freshness.as_ref(),
+            );
             let payload =
-                VerifyCliJson::from_report(&report, scope, bayesian_matched_steps, assurance);
+                VerifyCliJson::from_report(&report, scope, bayesian_matched_steps, assurance)
+                    .with_selection_evidence(selection_evidence);
             println!("{}", payload.to_json_string()?);
         } else {
             println!("{}", format_assurance_line(&assurance));
@@ -539,6 +596,18 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                     working_material,
                     WorkingTreeMaterial::Clean | WorkingTreeMaterial::Unavailable
                 );
+            let selection_evidence = selection_evidence_for(
+                &steps,
+                &[],
+                plan.as_ref(),
+                manual_requested,
+                true,
+                false,
+                scope,
+                prediction_state,
+                ctx.warnings.len(),
+                impact_freshness.as_ref(),
+            );
             return emit_verify_dry_run_json(
                 &steps,
                 scope,
@@ -549,6 +618,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                 working_material,
                 prediction_skipped,
                 &assurance,
+                &selection_evidence,
             );
         }
         // Manual --command: keep simple Verification Plan + single step + footer.
@@ -851,7 +921,22 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
     // Emit versioned CLI payload before any error return (DoD-15 boundary):
     // JSON present + non-zero = validation rejection; no JSON + non-zero = fatal.
     if json {
-        let payload = VerifyCliJson::from_report(&report, scope, bayesian_matched_steps, assurance);
+        // The engine copies `ctx.warnings` into the report, so the report's own
+        // count is the post-run value (0600).
+        let selection_evidence = selection_evidence_for(
+            &steps,
+            &report.results,
+            report.plan.as_ref(),
+            manual_requested,
+            false,
+            report.plan.as_ref().is_some_and(|p| p.refused),
+            scope,
+            prediction_state,
+            report.prediction_warnings.len(),
+            impact_freshness.as_ref(),
+        );
+        let payload = VerifyCliJson::from_report(&report, scope, bayesian_matched_steps, assurance)
+            .with_selection_evidence(selection_evidence);
         println!("{}", payload.to_json_string()?);
     }
 
@@ -1227,6 +1312,34 @@ fn execution_assurance_for(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn selection_evidence_for(
+    steps: &[VerificationStep],
+    results: &[VerificationResult],
+    plan: Option<&VerificationPlan>,
+    manual_requested: bool,
+    preview: bool,
+    refused: bool,
+    scope: VerifyScope,
+    prediction_state: PredictionState,
+    warning_count: usize,
+    impact_freshness: Option<&ImpactFreshness>,
+) -> SelectionEvidenceJson {
+    build_selection_evidence(SelectionEvidenceInputs {
+        planned_steps: steps,
+        results,
+        plan_source: plan.and_then(|p| p.source.clone()),
+        manual_requested,
+        preview,
+        refused,
+        scope_requested: scope,
+        fallback_reason: plan.and_then(|p| p.fallback_reason.as_deref()),
+        prediction_state,
+        warning_count,
+        impact_freshness,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn emit_verify_dry_run_json(
     steps: &[crate::verify::plan::VerificationStep],
     scope: crate::verify::plan::VerifyScope,
@@ -1237,6 +1350,7 @@ fn emit_verify_dry_run_json(
     material: WorkingTreeMaterial,
     prediction_gate: bool,
     assurance: &crate::verify::assurance::ExecutionAssuranceJson,
+    selection_evidence: &SelectionEvidenceJson,
 ) -> Result<()> {
     let git_available = !matches!(material, WorkingTreeMaterial::Unavailable);
     let clean_tree = match material {
@@ -1291,6 +1405,7 @@ fn emit_verify_dry_run_json(
         dataset_keys,
         steps: planned,
         execution_assurance: Some(assurance.clone()),
+        selection_evidence: Some(selection_evidence.clone()),
     };
     println!("{}", payload.to_json_string()?);
     Ok(())
