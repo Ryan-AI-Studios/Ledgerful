@@ -127,7 +127,7 @@ jobs:
         working-directory: ledgerful-frontend
       - run: npm run build
         working-directory: ledgerful-frontend
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ledgerful-web-spa
           path: ledgerful-frontend/out
@@ -365,7 +365,7 @@ jobs:
         run: |
           echo "::warning::search-perf was cancelled before it finished (non-blocking). A cancelled run produces no perf result, so no regression is claimed."
           echo "search-perf was cancelled before it finished (non-blocking). A cancelled run produces no perf result, so no regression is claimed." >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         timeout-minutes: 5
         with:
@@ -432,7 +432,7 @@ jobs:
             exit 1
           fi
           echo "PASS: no network dependencies in self-timing modules" >> no-network-result.txt
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: no-network-grep
           path: no-network-result.txt
@@ -451,7 +451,7 @@ jobs:
         with:
           tool: cargo-llvm-cov,nextest
       - run: cargo llvm-cov nextest --workspace --all-features --html --output-dir coverage/
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-report
           path: coverage/
@@ -496,7 +496,7 @@ jobs:
         run: |
           echo "::warning::mutation was cancelled before it finished (non-blocking). A cancelled run produces no mutation result."
           echo "mutation was cancelled before it finished (non-blocking). A cancelled run produces no mutation result." >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         timeout-minutes: 5
         with:
