@@ -27,4 +27,22 @@ ignore = [
     # every later webpki-roots version that matches.
     # Remove this id when ureq no longer depends on webpki-roots 0.26.x (the ureq 3 migration).
     "RUSTSEC-2026-0381",
+    # chrono 0.4.45 unmaintained (RUSTSEC-2026-0543). The advisory covers all
+    # versions, so no patched release exists. chrono is a direct dependency
+    # (Cargo.toml, crates/ledgerful-ledger/Cargo.toml) and is also pulled in
+    # by cedar-policy-core and cozo 0.8.1. Migrating off chrono is out of
+    # scope for dependency patching.
+    # Remove when chrono is replaced (e.g. by jiff) or the advisory names a
+    # maintained successor release.
+    "RUSTSEC-2026-0543",
+    # chrono-tz 0.9.0 unmaintained (RUSTSEC-2026-0555). Reached only via
+    # cozo 0.8.1; no safe upgrade without replacing Cozo, same as the Cozo
+    # entries above.
+    # Remove when cozo no longer depends on chrono-tz.
+    "RUSTSEC-2026-0555",
+    # chrono-tz-build 0.3.0 unmaintained (RUSTSEC-2026-0559). Build-dependency
+    # of chrono-tz 0.9.0, reached only via cozo 0.8.1; no safe upgrade without
+    # replacing Cozo.
+    # Remove when cozo no longer depends on chrono-tz.
+    "RUSTSEC-2026-0559",
 ]
