@@ -1,3 +1,4 @@
+pub mod baselines;
 pub mod connection;
 pub mod hotspot_trends;
 pub mod ledger;

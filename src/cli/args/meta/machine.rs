@@ -189,6 +189,12 @@ impl Commands {
                 WebCommands::Start(_) | WebCommands::Stop => false,
             },
             Commands::Internal { .. } => false,
+            Commands::Baseline { command } => match command {
+                BaselineCommands::Create { json, .. }
+                | BaselineCommands::List { json }
+                | BaselineCommands::Show { json, .. }
+                | BaselineCommands::Compare { json, .. } => *json,
+            },
             Commands::Demo(DemoArgs { .. }) => false,
             #[cfg(feature = "usage-metrics")]
             Commands::Usage { .. } => false,

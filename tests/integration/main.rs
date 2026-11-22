@@ -19,6 +19,7 @@ mod cedar_orphan_pruning;
 mod ci_prediction;
 mod cli_ask;
 mod cli_audit;
+mod cli_baseline;
 mod cli_binary;
 mod cli_change_context;
 mod cli_ci;

@@ -349,6 +349,59 @@ Tips:
     #[cfg(any(feature = "openapi", feature = "web"))]
     Openapi,
 
+    /// Create, inspect and compare durable analysis baselines (file-dependency edge sets)
+    #[command(
+        after_help = "Baselines are refuse-overwrite by name and guarded by SQLite\n\
+        triggers against direct UPDATE/DELETE. They are not signed, not tamper-evident\n\
+        and not ledger-chain bound, and `ledgerful reset --include-ledger` deletes them.\n\
+        Exit 0 without --fail-on-regression is not a pass."
+    )]
+    Baseline {
+        #[command(subcommand)]
+        command: BaselineCommands,
+    },
+
     /// Generate a disposable demonstration repo with signed ledger entries, cryptographic VALID proof, and a DEMO evidence export (see docs/golden-path.md)
     Demo(DemoArgs),
+}
+
+/// Subcommands for `ledgerful baseline`.
+#[derive(Subcommand, Debug)]
+pub enum BaselineCommands {
+    /// Create an immutable named baseline from the current index
+    Create {
+        /// Baseline name: 1-64 chars, lowercase a-z 0-9 . _ -
+        name: String,
+        /// Machine-readable JSON output
+        #[arg(long)]
+        json: bool,
+    },
+    /// List stored baselines
+    List {
+        /// Machine-readable JSON output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one stored baseline
+    Show {
+        /// Baseline name
+        name: String,
+        /// Machine-readable JSON output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Compare a stored baseline with the live index
+    Compare {
+        /// Baseline name
+        name: String,
+        /// Machine-readable JSON output
+        #[arg(long)]
+        json: bool,
+        /// Include unchanged edges in items
+        #[arg(long)]
+        all: bool,
+        /// Exit 1 when the verdict is present or unknown
+        #[arg(long = "fail-on-regression")]
+        fail_on_regression: bool,
+    },
 }

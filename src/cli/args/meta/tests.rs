@@ -1063,3 +1063,91 @@ fn graph_export_help__names_knowledge_graph() {
         "graph help must say this is not ledger graph, got {graph_help}"
     );
 }
+
+#[test]
+fn baseline_json_is_machine_output() {
+    for argv in [
+        vec!["baseline", "create", "base1", "--json"],
+        vec!["baseline", "list", "--json"],
+        vec!["baseline", "show", "base1", "--json"],
+        vec!["baseline", "compare", "base1", "--json"],
+    ] {
+        assert!(
+            parse(&argv).is_machine_output(),
+            "expected machine output for {argv:?}"
+        );
+        let mut human = argv.clone();
+        human.retain(|a| *a != "--json");
+        assert!(
+            !parse(&human).is_machine_output(),
+            "expected human output for {human:?}"
+        );
+    }
+}
+
+#[test]
+fn baseline_command_names() {
+    assert_eq!(
+        parse(&["baseline", "create", "x"]).command_name(),
+        "baseline_create"
+    );
+    assert_eq!(parse(&["baseline", "list"]).command_name(), "baseline_list");
+    assert_eq!(
+        parse(&["baseline", "show", "x"]).command_name(),
+        "baseline_show"
+    );
+    assert_eq!(
+        parse(&["baseline", "compare", "x"]).command_name(),
+        "baseline_compare"
+    );
+}
+
+#[test]
+fn baseline_argv_shapes() {
+    let compare = parse(&[
+        "baseline",
+        "compare",
+        "x",
+        "--json",
+        "--all",
+        "--fail-on-regression",
+    ]);
+    let shape = compare.argv_shape();
+    for expected in ["json", "all", "fail_on_regression"] {
+        assert!(
+            shape.contains(expected),
+            "shape missing {expected}: {shape}"
+        );
+    }
+    let list = parse(&["baseline", "list", "--json"]);
+    assert_eq!(list.argv_shape().trim(), "baseline_list|json");
+    let create = parse(&["baseline", "create", "x"]);
+    assert_eq!(create.argv_shape().trim(), "baseline_create");
+}
+
+#[test]
+fn baseline_requires_subcommand() {
+    assert!(Cli::try_parse_from(["ledgerful", "baseline"]).is_err());
+}
+
+#[test]
+fn baseline_help_states_immutability_limits_and_exit_contract() {
+    use clap::CommandFactory;
+    let mut cmd = Cli::command();
+    let help = cmd
+        .find_subcommand_mut("baseline")
+        .expect("baseline subcommand")
+        .render_long_help()
+        .to_string();
+    for needle in [
+        "refuse-overwrite",
+        "not tamper-evident",
+        "--include-ledger",
+        "not a pass",
+    ] {
+        assert!(
+            help.contains(needle),
+            "baseline --help must state `{needle}`: {help}"
+        );
+    }
+}

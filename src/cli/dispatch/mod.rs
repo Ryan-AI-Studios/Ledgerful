@@ -411,6 +411,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
         #[cfg(feature = "mcp")]
         Commands::Mcp { command } => dispatch_mcp(command),
         Commands::Schedule { subcommand } => dispatch_schedule(subcommand),
+        Commands::Baseline { command } => crate::commands::baseline::execute_baseline(command),
         Commands::Demo(DemoArgs {
             keep,
             output,
