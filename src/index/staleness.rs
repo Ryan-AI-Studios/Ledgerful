@@ -102,7 +102,7 @@ const DRIFT_SAMPLE_LIMIT: usize = 5;
 /// Whether a stored `project_files` path is a code source subject to discovery.
 /// Enrichment rows (README, CI YAML, `.env.example`, …) are excluded so delete
 /// drift does not false-positive against non-code index material.
-fn is_supported_code_path(relative_path: &str) -> bool {
+pub(crate) fn is_supported_code_path(relative_path: &str) -> bool {
     use crate::index::orchestrator::{BINARY_EXTENSIONS, SUPPORTED_EXTENSIONS};
     let ext = std::path::Path::new(relative_path)
         .extension()
@@ -425,8 +425,6 @@ pub fn count_content_hash_drift_with_budget(
 ) -> Result<ContentHashDrift> {
     use crate::index::orchestrator::{BINARY_EXTENSIONS, SUPPORTED_EXTENSIONS};
     use crate::index::walker::RepoWalker;
-    use rayon::prelude::*;
-    use std::collections::HashMap;
 
     let discovered = RepoWalker::new(
         repo_root.to_path_buf(),
@@ -434,6 +432,24 @@ pub fn count_content_hash_drift_with_budget(
         BINARY_EXTENSIONS,
     )
     .discover_files()?;
+
+    content_hash_drift_for_discovered(storage, repo_root, &discovered, budget)
+}
+
+/// Drift comparison over an already-discovered file list.
+///
+/// Split out of [`count_content_hash_drift_with_budget`] so a caller that must
+/// use a different discovery pass (analysis baselines use the strict walk,
+/// Track 0601) does not have to walk or hash the tree twice. The comparison
+/// itself is unchanged.
+pub(crate) fn content_hash_drift_for_discovered(
+    storage: &StorageManager,
+    repo_root: &Utf8Path,
+    discovered: &[camino::Utf8PathBuf],
+    budget: HashBudget,
+) -> Result<ContentHashDrift> {
+    use rayon::prelude::*;
+    use std::collections::HashMap;
 
     let conn = storage.get_connection();
     let mut stmt = conn
@@ -899,6 +915,7 @@ pub fn try_auto_index(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::index::{BINARY_EXTENSIONS, SUPPORTED_EXTENSIONS, walker::RepoWalker};
     use crate::state::migrations::get_migrations;
     use camino::Utf8PathBuf;
     use rusqlite::Connection;
@@ -934,6 +951,35 @@ mod tests {
             rusqlite::params![path, "OK", indexed_at, hash],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn staleness_drift_for_discovered_matches_existing_count() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8Path::from_path(temp.path()).unwrap();
+        let storage = in_memory_storage();
+        write_utf8(root.join("same.rs").as_std_path(), "fn same() {}");
+        write_utf8(root.join("new.rs").as_std_path(), "fn added() {}");
+        insert_file_with_hash(&storage, "same.rs", "fn same() {}", "2026-11-21T00:00:00Z");
+        insert_file_with_hash(
+            &storage,
+            "deleted.rs",
+            "fn deleted() {}",
+            "2026-11-21T00:00:00Z",
+        );
+        let discovered =
+            RepoWalker::new(root.to_path_buf(), SUPPORTED_EXTENSIONS, BINARY_EXTENSIONS)
+                .discover_files()
+                .unwrap();
+        let split =
+            content_hash_drift_for_discovered(&storage, root, &discovered, HashBudget::Full)
+                .unwrap();
+        let original = count_content_hash_drift(&storage, root).unwrap();
+        assert_eq!(split.changed_or_unindexed, original.changed_or_unindexed);
+        assert_eq!(split.unindexed, original.unindexed);
+        assert_eq!(split.hashed, original.hashed);
+        assert_eq!(split.sample_paths, original.sample_paths);
+        assert_eq!(split.sample_paths, ["deleted.rs", "new.rs"]);
     }
 
     /// Explicit mtime in unix seconds (≥1s deltas in fixtures — FAT/exFAT safe).

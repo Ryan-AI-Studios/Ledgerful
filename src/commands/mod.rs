@@ -1,5 +1,6 @@
 pub mod ask;
 pub mod ask_routing;
+pub mod baseline;
 pub mod bench;
 pub mod bridge;
 pub mod change_context;
@@ -92,4 +93,63 @@ pub enum CommandError {
 
     #[error("Verification failed: {0}")]
     Verify(String),
+}
+
+#[cfg(test)]
+mod baseline_consumer_contract {
+    use super::baseline::{
+        BaselineError, BaselineIdentity, BaselineScope, Comparability, CompletenessState,
+        DeltaClass, EdgeCoverage, EdgeSetDelta, FileEdge, FileEdgeSet, InputCompleteness,
+        compare_edge_sets, extract_file_edge_set, load_baseline,
+    };
+    use crate::config::model::Config;
+    use crate::state::{migrations::get_migrations, storage::StorageManager};
+
+    #[test]
+    fn baseline_consumer_seam_verifies_digest_and_exports_fields() {
+        let _: fn(&StorageManager, &Config) -> miette::Result<FileEdgeSet> = extract_file_edge_set;
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        let storage = StorageManager::init_from_conn(conn);
+        let original = FileEdgeSet {
+            identity: BaselineIdentity {
+                baseline_schema: 1,
+                payload_kind: "fileDependencyEdges".into(),
+                scope: BaselineScope::repo(),
+                parser_version: "1".into(),
+                edge_sources: vec!["native".into()],
+                ledgerful_version: "build".into(),
+                index_head_hash: None,
+                input_digest: "input".into(),
+                input_completeness: InputCompleteness {
+                    state: CompletenessState::Complete,
+                    reasons: vec![],
+                },
+            },
+            coverage: EdgeCoverage {
+                edges_resolved_cross_file: 1,
+                ..EdgeCoverage::default()
+            },
+            edges: vec![FileEdge {
+                src_path: "a.rs".into(),
+                dst_path: "b.rs".into(),
+                weight: 1,
+            }],
+        };
+        super::baseline::create_baseline(&storage, "consumer", &original).unwrap();
+        let loaded = load_baseline(&storage, "consumer").unwrap();
+        assert_eq!(loaded, original);
+        let mut changed = loaded.clone();
+        changed.edges[0].weight += 1;
+        let delta: EdgeSetDelta = compare_edge_sets(&loaded, &changed);
+        assert!(matches!(delta.status, Comparability::Comparable));
+        assert_eq!(delta.items.unwrap()[0].class, DeltaClass::Worsened);
+        storage.get_connection().execute_batch(
+            "DROP TRIGGER analysis_baselines_no_update;
+             UPDATE analysis_baselines SET payload_digest = 'blake3:invalid' WHERE name = 'consumer';"
+        ).unwrap();
+        let error = load_baseline(&storage, "consumer").unwrap_err();
+        assert!(matches!(error.downcast_ref::<BaselineError>(),
+            Some(BaselineError::DigestMismatch { name }) if name == "consumer"));
+    }
 }

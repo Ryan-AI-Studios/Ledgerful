@@ -28,6 +28,7 @@ pub mod m53_ledger_sig_version;
 pub mod m54_file_bindings;
 pub mod m55_ci_gate_qualifiers;
 pub mod m56_ledger_recovery_manifest;
+pub mod m57_analysis_baselines;
 
 use rusqlite_migration::Migrations;
 
@@ -155,6 +156,11 @@ pub fn get_migrations() -> Migrations<'static> {
     // (Track 0417). Registered unconditionally so a database that has run m56
     // fails preflight on an older binary instead of opening with a missing table.
     all_m.extend(m56_ledger_recovery_manifest::m56_ledger_recovery_manifest());
+    // m57 adds `analysis_baselines` (Track 0601): durable, name-keyed
+    // file-dependency baselines with direct UPDATE/DELETE abort triggers.
+    // Registered unconditionally so a database that has run m57 fails
+    // preflight on an older binary instead of opening with a missing table.
+    all_m.extend(m57_analysis_baselines::m57_analysis_baselines());
 
     Migrations::new(all_m)
 }
@@ -203,6 +209,7 @@ pub fn get_migrations_count() -> usize {
     count += m54_file_bindings::m54_file_bindings().len();
     count += m55_ci_gate_qualifiers::m55_ci_gate_qualifiers().len();
     count += m56_ledger_recovery_manifest::m56_ledger_recovery_manifest().len();
+    count += m57_analysis_baselines::m57_analysis_baselines().len();
 
     count
 }
@@ -272,6 +279,7 @@ mod tests {
                 "chain_head",
                 "command_timings",
                 "file_bindings",
+                "analysis_baselines",
             ];
 
             // `sync_state` and `tx_tombstones` are registered
@@ -375,5 +383,165 @@ mod tests {
 
         // Should still be valid
         migrations.validate().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod baseline_m57_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn migrated() -> Connection {
+        let mut conn = Connection::open_in_memory().unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn baseline_m57_creates_table_and_both_triggers() {
+        let conn = migrated();
+        let table: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'analysis_baselines'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(table, 1, "analysis_baselines table must exist");
+        for trigger in [
+            "analysis_baselines_no_update",
+            "analysis_baselines_no_delete",
+        ] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
+                    [trigger],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "trigger {trigger} must exist");
+        }
+    }
+
+    #[test]
+    fn baseline_m57_user_version_matches_migration_count() {
+        let conn = migrated();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            usize::try_from(version).unwrap(),
+            get_migrations_count(),
+            "user_version must track the registered migration count"
+        );
+    }
+
+    #[test]
+    fn baseline_m57_migrating_past_m56_preserves_existing_rows() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        let enabled: bool = conn
+            .pragma_query_value(None, "foreign_keys", |r| r.get(0))
+            .unwrap();
+        assert!(enabled);
+        let before_m57 = get_migrations_count() - 1;
+        get_migrations().to_version(&mut conn, before_m57).unwrap();
+
+        let has_baselines: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'analysis_baselines'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_baselines, 0, "m57 table must not exist before m57");
+
+        conn.execute(
+            "INSERT INTO transactions
+                (tx_id, status, category, entity, entity_normalized, session_id, started_at)
+             VALUES ('tx1', 'OPEN', 'FEATURE', 'e', 'e', 's', '2026-11-21T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ledger_entries
+                (tx_id, category, entity, entity_normalized, change_type, summary, reason, committed_at)
+             VALUES ('tx1', 'FEATURE', 'e', 'e', 'ADD', 's', 'r', '2026-11-21T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ledger_recovery_manifest
+                (manifest_digest, manifest_json, repo_identity, stored_head, adopted_count, created_at)
+             VALUES ('d', '{}', 'repo', NULL, 0, '2026-11-21T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO snapshots (id, timestamp, is_clean, packet_json) VALUES (1, '2026-11-21T00:00:00Z', 1, '{}')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO hotspot_history
+                (snapshot_id, file_path, score, display_score, complexity, frequency, centrality, timestamp)
+             VALUES (1, 'src/a.rs', 1.0, 1.0, 1, 1.0, NULL, '2026-11-21T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO hotspot_trends (file_path, score, recorded_at)
+             VALUES ('src/a.rs', 1.0, '2026-11-21T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        let count = |conn: &Connection, table: &str| -> i64 {
+            conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap()
+        };
+        let capture = |conn: &Connection| {
+            let value = |sql| -> String { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+            [
+                value("SELECT summary || ':' || reason FROM ledger_entries WHERE tx_id = 'tx1'"),
+                value(
+                    "SELECT manifest_digest || ':' || manifest_json FROM ledger_recovery_manifest",
+                ),
+                value(
+                    "SELECT file_path || ':' || score || ':' || snapshot_id FROM hotspot_history",
+                ),
+                value("SELECT file_path || ':' || score || ':' || recorded_at FROM hotspot_trends"),
+            ]
+        };
+        let before = capture(&conn);
+        get_migrations().to_latest(&mut conn).unwrap();
+        assert_eq!(capture(&conn), before, "m57 must preserve existing rows");
+        let mut statement = conn.prepare("PRAGMA foreign_key_check").unwrap();
+        let mut violations = statement.query([]).unwrap();
+        assert!(violations.next().unwrap().is_none());
+        drop(violations);
+        drop(statement);
+        assert_eq!(count(&conn, "analysis_baselines"), 0);
+    }
+
+    #[test]
+    fn baseline_m57_reapply_is_idempotent() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        let migrations = get_migrations();
+        migrations.to_latest(&mut conn).unwrap();
+        let database_version = |conn: &rusqlite::Connection| -> i64 {
+            conn.pragma_query_value(None, "user_version", |r| r.get(0))
+                .unwrap()
+        };
+        let version = database_version(&conn);
+        migrations.to_latest(&mut conn).unwrap();
+        assert_eq!(database_version(&conn), version);
+        let objects: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema WHERE name LIKE 'analysis_baselines%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(objects, 3);
     }
 }

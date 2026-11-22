@@ -1640,6 +1640,34 @@ impl Commands {
                 }
                 crate::commands::schedule::ScheduleSubcommands::RunNightly => {}
             },
+            Commands::Baseline { command } => match command {
+                BaselineCommands::Create { json, .. } | BaselineCommands::List { json } => {
+                    if *json {
+                        f.push("json");
+                    }
+                }
+                BaselineCommands::Show { json, .. } => {
+                    if *json {
+                        f.push("json");
+                    }
+                }
+                BaselineCommands::Compare {
+                    json,
+                    all,
+                    fail_on_regression,
+                    ..
+                } => {
+                    if *json {
+                        f.push("json");
+                    }
+                    if *all {
+                        f.push("all");
+                    }
+                    if *fail_on_regression {
+                        f.push("fail_on_regression");
+                    }
+                }
+            },
             Commands::Demo(DemoArgs {
                 keep,
                 output,

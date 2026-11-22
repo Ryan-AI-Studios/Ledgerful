@@ -96,6 +96,10 @@ contract and follows `LEDGERFUL_TABLE_STYLE`. Purity inventory unchanged
 | `sync log --json` | yes (0327; 0365; `feature = "sync"`) | yes* | schemaVersion 1; `logState` `neverInitialized`\|`noLog`\|`unreadable`\|`ok`\|`partial`; `lineCount`/`skippedLines` are whole-file; `lines` is the displayed tail (default 20). Additive omit-empty `events[]` (`ts`/`event`/`ok` + omit-empty `bundle`/`detail`) is the parsed subset of **displayed** lines. `--failed` filters parsed `ok==false` **then** tails; omit-false `failed: true` when the flag is set. Missing file exit 0; unreadable writes JSON then exit **1**. |
 | `sync verify --json` | yes (0365; 0401; `feature = "sync"`) | yes* | schemaVersion 1; **no** `kind`. Always `ok` (bool) + `verdict` (`ok`\|`missingFile`\|`missingSecret`\|`decryptFailed`\|`unknownDevice`\|`signatureFailed`\|`integrityFailed`\|`schemaInvalid`). **`ok` and process exit must agree** (`ok` → 0; every non-`ok` → 1 with JSON then `request_exit(1)`). Success always `version`/`deviceId`/`bundleHlc`/`entryCount`. Failure omit-empty `message` (`unknownDevice` names the id; `missingSecret` names `LEDGERFUL_SYNC_SECRET`). JSON `message` is the raw string (not `{verdict}:`-prefixed). Human failures print `{verdict}: {message}` on **stderr**, empty stdout, exit 1. `--json` stderr may also name the token. |
 | `web status --json` | yes (0328) | yes | schemaVersion 1 object; **no** `kind`. Compact single line + newline. `state` `running`\|`stalePid`\|`reusedPid`\|`noPidFile`; always `pidFile` + `next` (`ledgerful web stop` when running, else `ledgerful web start`); omit-empty `pid`. Invalid PID file: empty stdout, non-zero, file kept. Status does not remove the PID file. Windows `is_alive` permission-denied may report `stalePid` instead of `reusedPid`. Bare `web` still requires a subcommand. |
+| `baseline create --json` | yes | yes on current schema | CLI-only (no MCP). schemaVersion 1 `kind: "analysisBaselineCreate"`: `name`/`payloadKind`/`payloadDigest`/`identity`/`coverage`/`edgeCount`/`createdAt`. Refuses (exit 1) unless the index is COMPLETE; refuses without creating a database when no `ledger.db` exists. Immutable by name (`BASELINE_EXISTS`). |
+| `baseline list --json` | yes | yes | schemaVersion 1 `kind: "analysisBaselineList"`: `baselines[]` with `name`/`createdAt`/`payloadKind`/`baselineSchema`/`payloadDigest`/`edgeCount`/`inputCompleteness.state`. Ordered by `createdAt`, then `name`. |
+| `baseline show --json` | yes | yes | schemaVersion 1 `kind: "analysisBaselineShow"`: `name`/`identity`/`coverage`/`payloadDigest`/`digestVerified`/`edges[]` (`srcPath`/`dstPath`/`weight`, JSON only). Unknown name exits 1 with `BASELINE_NOT_FOUND`. |
+| `baseline compare --json` | yes | yes | schemaVersion 1 `kind: "analysisBaselineCompare"`: `baseline`/`status`/`incomparableReasons`/`baselineIdentity`/`currentIdentity`/`currentCompleteness`/`regression` (`none`\|`present`\|`unknown`)/`regressionReasons`/`notes`, plus `counts`/`items` **only** when comparable. Exit 0 without `--fail-on-regression` is **not** a pass. See schema below. |
 | `timings --json` | yes (0043; 0330; 0346; 0364) | yes | schemaVersion 1 envelope `{schemaVersion, data}` — **no** `kind`. `data[]` keeps `command` / `runs` / `p50_ms` / `p95_ms` / `p99_ms` / `total_ms`. Additive always: `comparable` (bool, never omitted), `workload_count`, `nonzero_exit_runs`, `window_days`. Additive omit-empty: `duration_spread` (`single`\|`mixed`), `incomparable_reason` (`unhashedArgv` when the sole success bucket is `"<unhashed>"`), `sample_note`, `workloads[]`. `runs` is success (`exit_code==0`) count. `--explain --json` `data` is an object with always `explain` / `command` / `runs` / `comparable` plus omit-empty `p50_ms` / `prior_p50_ms` / `incomparable_reason`. No success prior baseline (empty **or** all-failed) omits `prior_p50_ms` (never dummy `0`). Global explain keeps camelCase repo counts around that `data` object. `--inner --json` `data[]` is `{command, span_name, samples, total_ms, max_ms}`; omit-empty `coverage[]` `{command, outer_ms, inner_ms, uninstrumented_ms}` (present whenever outer rows exist; wall-clock, all exits; `--top` truncates `data[]` only). `--flame --json` `data` is `{collapsed}` plus omit-empty `unique_stacks` / `total_weight_ms` / `weight_unit` (`exclusive_ms`) / `window_days` (number, same `--days` window; snake_case). Empty collapsed omits those four keys (`{"collapsed":""}`). Human nonempty `--flame` eprints a units legend on stderr (not stdout; `--export` file stays pure Gregg stacks). Global `--flame --json` nested `data` uses the same omit-empty keys; camelCase envelope unchanged. Capture filter and inner `notes.span_id` do not retro-clean historical tokio rows. |
 
 \* Non-essential progress INFO suppressed under machine mode; hard failures still
@@ -863,6 +867,96 @@ Invalid `--threshold` is clap usage (exit **2**), not a status.
 ledgerful hotspots budget --json
 ledgerful hotspots budget --threshold 0.5 --json
 ledgerful hotspots budget --fail --threshold 0.5 --json
+```
+
+---
+
+## `baseline --json` schema (v1)
+
+Track **0601**. `ledgerful baseline create|list|show|compare` snapshots the
+file-to-file resolved call-dependency edge set from `structural_edges` and
+compares a stored snapshot with the live index. Every envelope is
+`schemaVersion: 1`, camelCase, stdout-only, and emits no human chrome on the
+happy path.
+
+**Envelopes**
+
+| Kind | Keys |
+|---|---|
+| `analysisBaselineCreate` | `name`, `payloadKind` (`fileDependencyEdges`), `payloadDigest`, `identity`, `coverage`, `edgeCount`, `createdAt` |
+| `analysisBaselineList` | `baselines[]` with `name`, `createdAt`, `payloadKind`, `baselineSchema`, `payloadDigest`, `edgeCount`, `inputCompleteness.state` |
+| `analysisBaselineShow` | `name`, `identity`, `coverage`, `payloadDigest`, `digestVerified`, `edges[]` (`srcPath`, `dstPath`, `weight`; JSON only) |
+| `analysisBaselineCompare` | `baseline` (`name`, `payloadDigest`), `status` (`comparable`\|`incomparable`), `incomparableReasons[]`, `baselineIdentity`, `currentIdentity`, `currentCompleteness`, `regression`, `regressionReasons[]`, `notes[]`, and - **only when comparable** - `counts` and `items` |
+
+`regression` is three-valued: `present` iff a file pair appeared or its
+count of stored resolved edges grew; `unknown` when incomparable or when the
+unresolved/ambiguous coverage counters grew; else `none`. The two coverage
+counters are compared **separately** (`UNRESOLVED_GREW`, `AMBIGUOUS_GREW`), so
+growth in one is never masked by shrinkage in the other. It measures resolved
+call-edge multiplicity only - not architecture quality, boundary violations or
+cycles (that is 0602). A comparable comparison with `removed > 0` and no
+coverage relief adds the `RESOLVED_EDGES_REMOVED` note, and a differing
+`ledgerfulVersion` adds `analyzerBuildDiffers`; `"none"` therefore never means
+"nothing changed".
+
+Each edge's `weight` counts stored `RESOLVED` rows for that ordered cross-file pair.
+Coverage counts rows with an active caller. A resolved row with a NULL, missing,
+or deleted callee contributes to `edgesUnresolved`. Deleted callers fall outside
+those coverage counters. The completeness check detects capped rows across the
+full index. In a comparable result, `counts.unchanged` includes every unchanged
+pair. Use `--all` to include those rows in `items`.
+
+When `status` is `incomparable`, `counts` and `items` are **absent** (not
+null, not empty) and `regression` is `unknown`. Incomparable reasons:
+`BASELINE_DIGEST_MISMATCH`, `BASELINE_INCOMPLETE`, `CURRENT_INCOMPLETE`,
+`EDGE_SOURCES_MISMATCH`, `PARSER_VERSION_MISMATCH`, `SCHEMA_MISMATCH`,
+`SCOPE_MISMATCH`. A parseable stored identity is always emitted (even with a
+different `baselineSchema`/`payloadKind`); `baselineIdentity` is `null` only
+when the stored identity cannot be parsed at all.
+
+**"COMPLETE" means** a fresh index, no content-hash drift, no parse failures,
+no capped edges, a `parser_version` row present, and a discovery walk that
+reported no error. `SCAN_INCOMPLETE` covers traversal failures and errors
+reported while processing a directory's ignore files. It is not a
+model of runtime dependencies, and it is a **point-in-time** check: the
+database reads for one side share one SQLite snapshot, but the filesystem is
+not snapshotted, so a file edited after its hash was read can be missed. A
+`create` refusal carrying `INDEX_INDETERMINATE` may mean either an
+indeterminate freshness state or a missing `parser_version` row - the token is
+shared and does not distinguish them. `create` and `compare` never auto-index.
+
+**"Immutable" means** refuse-overwrite by name plus SQLite triggers that abort
+direct `UPDATE`/`DELETE`; `INSERT OR REPLACE` is never issued, but anyone with
+database access can still drop the triggers. Baseline rows are deleted by
+`ledgerful reset --include-ledger`. They are not signed, not ledger-chain
+bound and not tamper-evident. Names match `^[a-z0-9][a-z0-9._-]{0,63}$`;
+re-creating a name exits 1 with `BASELINE_EXISTS`, and an unknown name exits 1
+with `BASELINE_NOT_FOUND` (an error, not an incomparable result).
+
+A database migrated before `m57` makes the read commands fail with the existing
+schema error. On an older database, the first `baseline create --json` migrates
+it and writes the standard `[INFO] ... auto-migrated` notice to stderr while
+stdout carries the JSON envelope on success. The four commands reject a
+newer database with `BASELINE_SCHEMA_TOO_NEW` and the found and supported
+versions. Malformed fields in stored list/show rows yield `BASELINE_CORRUPT`
+with the row name.
+
+`MAX_FILES` is declared (`src/index/orchestrator.rs:7`) and re-exported
+(`src/index/mod.rs:51`) but is not enforced by discovery or indexing at this
+version; a future cap that leaves no persisted marker would let a truncated
+index read as `COMPLETE`. The walker honors `.gitignore`, the global gitignore
+and `.git/info/exclude`, so `git_global(true)` makes the file set (and the
+informational `inputDigest`) machine-dependent.
+
+Exit 0 without `--fail-on-regression` means the comparison completed. Read
+`regression` for the verdict. With the flag, `present` and `unknown` exit 1
+after emitting the JSON envelope.
+
+```powershell
+ledgerful baseline create base1 --json
+ledgerful baseline list --json
+ledgerful baseline show base1 --json
+ledgerful baseline compare base1 --json --all --fail-on-regression
 ```
 
 ---
@@ -1918,6 +2012,17 @@ on stdout.
 | `1` | `status` is `unavailable` or `failed` (`ok: false`; JSON still on stdout when `--json`) |
 
 `--json` success (exit 0) has empty stderr. Human `disabled` still prints the enable hint on stderr (0065 keep-green).
+
+### `baseline compare`
+
+| Code | Meaning |
+|---|---|
+| `0` | completed comparison without `--fail-on-regression` (including `incomparable` and `unknown`) |
+| `1` | any refusal or error (`BASELINE_EXISTS`, `BASELINE_NOT_FOUND`, incomplete index, bad name, schema mismatch) |
+| `1` | with `--fail-on-regression` when `regression` is `present` or `unknown` (JSON still on stdout) |
+
+`create` exits `1` whenever the index is not `COMPLETE`; it writes no row and
+does not create a database.
 
 ### `ledger status --exit-code`
 

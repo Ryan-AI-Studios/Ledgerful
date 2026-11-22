@@ -187,6 +187,12 @@ impl Commands {
                 InternalCommands::HookCommitMsg { .. } => "internal_hook_commit_msg",
                 InternalCommands::HookPostCommit => "internal_hook_post_commit",
             },
+            Commands::Baseline { command } => match command {
+                BaselineCommands::Create { .. } => "baseline_create",
+                BaselineCommands::List { .. } => "baseline_list",
+                BaselineCommands::Show { .. } => "baseline_show",
+                BaselineCommands::Compare { .. } => "baseline_compare",
+            },
             Commands::Demo(DemoArgs { .. }) => "demo",
             #[cfg(feature = "usage-metrics")]
             Commands::Usage { command } => match command {
