@@ -438,25 +438,59 @@ pub fn parse_days_spec(spec: &str) -> Result<u32> {
 
 /// Doctor warnings for timing table size / span cardinality.
 pub fn doctor_timing_warnings(conn: &rusqlite::Connection) -> Vec<String> {
-    let mut warnings = Vec::new();
-    if !table_exists(conn).unwrap_or(false) {
-        return warnings;
+    inspect_doctor_timings(conn).warnings
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TimingsInspectionFailure {
+    TableExistence,
+    TotalCount,
+}
+
+#[derive(Default)]
+pub(crate) struct TimingsInspection {
+    pub(crate) warnings: Vec<String>,
+    pub(crate) failure: Option<TimingsInspectionFailure>,
+}
+
+pub(crate) fn inspect_doctor_timings(conn: &rusqlite::Connection) -> TimingsInspection {
+    inspect_doctor_timings_with(
+        || table_exists(conn),
+        || count_timings(conn),
+        || crate::state::storage::timings::count_distinct_span_names(conn, 30),
+    )
+}
+
+fn inspect_doctor_timings_with(
+    table_exists: impl FnOnce() -> Result<bool>,
+    count_timings: impl FnOnce() -> Result<i64>,
+    count_distinct_span_names: impl FnOnce() -> Result<i64>,
+) -> TimingsInspection {
+    let mut inspection = TimingsInspection::default();
+    match table_exists() {
+        Ok(true) => {}
+        Ok(false) => return inspection,
+        Err(_) => {
+            inspection.failure = Some(TimingsInspectionFailure::TableExistence);
+            return inspection;
+        }
     }
-    if let Ok(count) = count_timings(conn)
-        && count > 10_000
-    {
-        warnings.push(format!(
+
+    match count_timings() {
+        Ok(count) if count > 10_000 => inspection.warnings.push(format!(
             "command_timings has {count} rows (>10k) — consider `ledgerful timings --prune --older-than 90d`"
-        ));
+        )),
+        Ok(_) => {}
+        Err(_) => inspection.failure = Some(TimingsInspectionFailure::TotalCount),
     }
-    if let Ok(distinct) = crate::state::storage::timings::count_distinct_span_names(conn, 30)
+    if let Ok(distinct) = count_distinct_span_names()
         && distinct > 1000
     {
-        warnings.push(format!(
+        inspection.warnings.push(format!(
             "command_timings has {distinct} distinct span names in 30d (>1000) — check for high-cardinality span names"
         ));
     }
-    warnings
+    inspection
 }
 
 // Re-export for tests that inject rows without going through capture.
@@ -474,6 +508,104 @@ mod tests {
         let mut conn = Connection::open_in_memory().unwrap();
         get_migrations().to_latest(&mut conn).unwrap();
         conn
+    }
+
+    #[test]
+    fn timings_inspection_absence_and_existence_failure_skip_counts() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert!(inspect_doctor_timings(&conn).warnings.is_empty());
+        assert_eq!(inspect_doctor_timings(&conn).failure, None);
+
+        for (table_result, expected_failure) in [
+            (Ok(false), None),
+            (
+                Err(miette::miette!("fixture existence failure")),
+                Some(TimingsInspectionFailure::TableExistence),
+            ),
+        ] {
+            let inspection = inspect_doctor_timings_with(
+                || table_result,
+                || panic!("total count must be skipped"),
+                || panic!("cardinality count must be skipped"),
+            );
+            assert!(inspection.warnings.is_empty());
+            assert_eq!(inspection.failure, expected_failure);
+        }
+    }
+
+    #[test]
+    fn timings_inspection_total_count_failure_still_checks_cardinality() {
+        let inspection = inspect_doctor_timings_with(
+            || Ok(true),
+            || Err(miette::miette!("fixture total count failure")),
+            || Ok(1001),
+        );
+        assert_eq!(
+            inspection.failure,
+            Some(TimingsInspectionFailure::TotalCount)
+        );
+        assert_eq!(
+            inspection.warnings,
+            [
+                "command_timings has 1001 distinct span names in 30d (>1000) — check for high-cardinality span names"
+            ]
+        );
+    }
+
+    #[test]
+    fn timings_inspection_real_counts_keep_thresholds_and_warning_order() {
+        let conn = setup();
+        conn.execute_batch(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 9999)
+             INSERT INTO command_timings (run_id, ts_utc, command, duration_ms, exit_code, span_name)
+             SELECT 'fixture', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'test', 1, 0,
+                    CASE WHEN i <= 1000 THEN 'span-' || i END FROM n;",
+        )
+        .unwrap();
+        let inspection = inspect_doctor_timings(&conn);
+        assert_eq!(inspection.failure, None);
+        assert!(inspection.warnings.is_empty());
+
+        conn.execute_batch(
+            "INSERT INTO command_timings (run_id, ts_utc, command, duration_ms, exit_code)
+             VALUES ('fixture', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'test', 1, 0);",
+        )
+        .unwrap();
+        let inspection = inspect_doctor_timings(&conn);
+        assert_eq!(inspection.failure, None);
+        assert!(inspection.warnings.is_empty());
+
+        conn.execute_batch(
+            "INSERT INTO command_timings (run_id, ts_utc, command, duration_ms, exit_code, span_name)
+             VALUES ('fixture', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'test', 1, 0, 'span-1001');",
+        )
+        .unwrap();
+        let inspection = inspect_doctor_timings(&conn);
+        assert_eq!(inspection.failure, None);
+        assert_eq!(
+            inspection.warnings,
+            [
+                "command_timings has 10001 rows (>10k) — consider `ledgerful timings --prune --older-than 90d`",
+                "command_timings has 1001 distinct span names in 30d (>1000) — check for high-cardinality span names",
+            ]
+        );
+        assert_eq!(doctor_timing_warnings(&conn), inspection.warnings);
+    }
+
+    #[test]
+    fn timings_inspection_cardinality_error_keeps_size_warning() {
+        let inspection = inspect_doctor_timings_with(
+            || Ok(true),
+            || Ok(10_001),
+            || Err(miette::miette!("fixture cardinality failure")),
+        );
+        assert_eq!(inspection.failure, None);
+        assert_eq!(
+            inspection.warnings,
+            [
+                "command_timings has 10001 rows (>10k) — consider `ledgerful timings --prune --older-than 90d`"
+            ]
+        );
     }
 
     #[test]

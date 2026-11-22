@@ -70,10 +70,12 @@ ledgerful timings --prune --inner --older-than 30d  # inner spans
 ```
 
 `doctor` warns if total rows exceed 10 000 or if distinct `span_name` values in
-30 days exceed 1 000 (cardinality guard). The size finding is timings-0. The
-size warning clears only when a successful `COUNT(*)` is 10 000 or less; a
-missing table or failed count is silent and does not establish that the table
-is under the threshold. The printed command prunes old outer rows only. Rows
+30 days exceed 1 000 (cardinality guard). The size finding is `timings-0`.
+An absent table is quiet. If Doctor cannot check for the table or count its
+rows, it emits `timings-inspection-incomplete` and reports the size as unknown.
+An existence-check failure skips both counts. A total-count failure still
+allows the cardinality check to run. The prune command in the size warning
+prunes old outer rows only. Rows
 younger than 90 days remain and can dominate the count, so the 90-day prune
 may leave timings-0 in place; old inner spans require `--inner`. The
 `--older-than` option accepts any day count: `1d` shortens retention, and `0d`

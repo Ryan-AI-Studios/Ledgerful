@@ -6,6 +6,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Doctor now reports when it cannot check for the timing table or count its rows. The warning marks the table size as unknown.
+
 ## [0.2.18] - 2026-10-27
 
 ### Release-note completeness follow-up
