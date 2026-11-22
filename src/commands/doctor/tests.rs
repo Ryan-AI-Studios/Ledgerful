@@ -1895,6 +1895,148 @@ fn stale_ack_without_finding_is_inert() {
 }
 
 #[test]
+fn timings_inspection_failures_use_normal_doctor_output_policies() {
+    use crate::commands::timings::{TimingsInspection, TimingsInspectionFailure};
+    use crate::output::human::{DoctorHumanProfile, DoctorSummaryCounts, print_doctor_report_to};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let layout = Layout::new(Utf8Path::from_path(tmp.path()).expect("utf8 path"));
+    layout.ensure_state_dir().expect("ensure_state_dir");
+    let tools = Vec::new();
+    let report = sample_report(&tools);
+    let code = "timings-inspection-incomplete";
+
+    for (failure, message) in [
+        (
+            TimingsInspectionFailure::TableExistence,
+            "Could not check whether the command timings table exists. Timing table size is unknown.",
+        ),
+        (
+            TimingsInspectionFailure::TotalCount,
+            "Could not count rows in the command timings table. Timing table size is unknown.",
+        ),
+    ] {
+        let mut config = crate::config::model::Config::default();
+        let mut findings = checks::optional::timing_findings(TimingsInspection {
+            warnings: Vec::new(),
+            failure: Some(failure),
+        });
+        assign_session_priorities(&mut findings, &config);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            serde_json::to_value(&findings[0]).expect("finding JSON"),
+            json!({
+                "code": code,
+                "message": message,
+                "severity": "warn",
+                "category": "other",
+                "sessionPriority": "now",
+            })
+        );
+        assert!(ready_for_publish(&findings));
+        assert_eq!(dashboard_failures(&findings), 1);
+        assert!(
+            plan_doctor_fix(&findings, None, None, true)
+                .actions
+                .is_empty()
+        );
+
+        let summary = DoctorSummaryCounts {
+            block: 0,
+            warn: 1,
+            info: 0,
+        };
+        let render = |findings: &[DoctorFinding]| {
+            let mut buf = Vec::new();
+            print_doctor_report_to(
+                &mut buf,
+                &report,
+                &summary,
+                findings,
+                DoctorHumanProfile::default(),
+            )
+            .expect("write human report");
+            String::from_utf8(buf).expect("utf8")
+        };
+
+        config.doctor.acknowledged_codes = vec!["timings-0".into()];
+        apply_acknowledgements(&mut findings, &config);
+        assert!(!findings[0].acknowledged);
+        assert!(render(&findings).contains(message));
+
+        config.doctor.acknowledged_codes = vec![code.into()];
+        apply_acknowledgements(&mut findings, &config);
+        assert!(findings[0].acknowledged);
+        assert!(!render(&findings).contains(message));
+        assert_eq!(findings[0].severity, DoctorSeverity::Warn);
+        assert_eq!(findings[0].category, DoctorCategory::Other);
+        assert_eq!(findings[0].session_priority, SessionPriority::Now);
+        assert_eq!(
+            serde_json::to_value(&findings[0]).expect("acknowledged finding JSON")["acknowledged"],
+            true
+        );
+
+        write_doctor_results(&layout, &findings).expect("write sidecar");
+        let sidecar: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(layout.state_subdir().join("doctor-results.json"))
+                .expect("read sidecar"),
+        )
+        .expect("parse sidecar");
+        assert_eq!(sidecar["readyForPublish"], true);
+        assert_eq!(sidecar["failures"], 1);
+        assert_eq!(
+            sidecar["findings"],
+            json!([{ "code": code, "severity": "warn", "message": message }])
+        );
+    }
+}
+
+#[test]
+fn timings_inspection_keeps_positional_codes_and_independent_acknowledgements() {
+    use crate::commands::timings::{TimingsInspection, TimingsInspectionFailure};
+    let size = "command_timings has 10001 rows (>10k) — consider `ledgerful timings --prune --older-than 90d`";
+    let cardinality = "command_timings has 1001 distinct span names in 30d (>1000) — check for high-cardinality span names";
+    let config = crate::config::model::Config {
+        doctor: crate::config::model::DoctorConfig {
+            acknowledged_codes: vec!["timings-inspection-incomplete".into()],
+        },
+        ..Default::default()
+    };
+
+    for (warnings, failure, expected_codes) in [
+        (vec![size], None, vec!["timings-0"]),
+        (
+            vec![size, cardinality],
+            None,
+            vec!["timings-0", "timings-1"],
+        ),
+        (vec![cardinality], None, vec!["timings-0"]),
+        (
+            vec![cardinality],
+            Some(TimingsInspectionFailure::TotalCount),
+            vec!["timings-0", "timings-inspection-incomplete"],
+        ),
+    ] {
+        let mut findings = checks::optional::timing_findings(TimingsInspection {
+            warnings: warnings.iter().map(ToString::to_string).collect(),
+            failure,
+        });
+        apply_acknowledgements(&mut findings, &config);
+        assert_eq!(
+            findings.iter().map(|f| f.code.as_str()).collect::<Vec<_>>(),
+            expected_codes
+        );
+        for (finding, warning) in findings.iter().zip(warnings) {
+            assert_eq!(finding.message, warning);
+            assert!(!finding.acknowledged);
+        }
+        if expected_codes.contains(&"timings-inspection-incomplete") {
+            assert!(findings.last().unwrap().acknowledged);
+        }
+    }
+}
+
+#[test]
 fn print_doctor_report_warn_ready_includes_scope_line() {
     use crate::output::human::{DoctorHumanProfile, DoctorSummaryCounts, print_doctor_report_to};
 

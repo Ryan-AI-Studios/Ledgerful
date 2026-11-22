@@ -110,24 +110,46 @@ fn sync_doctor_findings(
     findings
 }
 
+pub(crate) fn timing_findings(
+    inspection: crate::commands::timings::TimingsInspection,
+) -> Vec<DoctorFinding> {
+    use crate::commands::timings::TimingsInspectionFailure;
+
+    let mut findings: Vec<_> = inspection
+        .warnings
+        .into_iter()
+        .enumerate()
+        .map(|(i, warning)| {
+            DoctorFinding::warn(format!("timings-{i}"), DoctorCategory::Other, warning)
+        })
+        .collect();
+    if let Some(failure) = inspection.failure {
+        let message = match failure {
+            TimingsInspectionFailure::TableExistence => {
+                "Could not check whether the command timings table exists. Timing table size is unknown."
+            }
+            TimingsInspectionFailure::TotalCount => {
+                "Could not count rows in the command timings table. Timing table size is unknown."
+            }
+        };
+        findings.push(DoctorFinding::warn(
+            "timings-inspection-incomplete",
+            DoctorCategory::Other,
+            message,
+        ));
+    }
+    findings
+}
+
 /// Timings, SCIP, sccache, chain-checkpoint, sync, surfaces (after spawn).
 pub(crate) fn collect_optional_findings(
     config: &crate::config::model::Config,
     layout: &Layout,
     storage: &StorageManager,
 ) -> Vec<DoctorFinding> {
-    let mut findings = Vec::new();
-    // Track 0043: warn on oversized / high-cardinality timing tables.
-    for (i, w) in crate::commands::timings::doctor_timing_warnings(storage.get_connection())
-        .into_iter()
-        .enumerate()
-    {
-        findings.push(DoctorFinding::warn(
-            format!("timings-{i}"),
-            DoctorCategory::Other,
-            w,
-        ));
-    }
+    let mut findings = timing_findings(crate::commands::timings::inspect_doctor_timings(
+        storage.get_connection(),
+    ));
     // SCIP + sccache → info / optional
     findings.extend(crate::scip::presence::collect_scip_findings(
         config,
