@@ -297,6 +297,26 @@ pub(crate) fn print_human_output(output: &IndexOutputStats) {
 /// Pure SCIP human lines for `print_human_output` (DoD-5 unit-testable).
 pub(crate) fn format_scip_human_lines(scip: &crate::scip::ScipIndexJson) -> Vec<String> {
     let mut lines = vec!["SCIP augment:".to_string()];
+    if let Some(selection) = &scip.selection {
+        use crate::scip::orchestrator::SelectionMode;
+        let mode = match selection.mode {
+            SelectionMode::Imported => "imported",
+            SelectionMode::Automatic => "automatic (root-marker attempt)",
+        };
+        lines.push(format!("  Selection:      {mode}"));
+        lines.push(format!(
+            "  Selected:       {}",
+            selection.selected_toolchain.unwrap_or("none")
+        ));
+        for row in &selection.rows {
+            lines.push(format!(
+                "  {}: {} [{}]",
+                row.toolchain,
+                row.status.as_str(),
+                row.root_markers.join(", ")
+            ));
+        }
+    }
     match scip.status {
         crate::scip::ScipRunStatus::DidNotRun => {
             lines.push("  Status:         did not run".to_string());

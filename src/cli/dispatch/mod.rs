@@ -35,6 +35,13 @@ use verify::dispatch_verify;
 
 pub fn run_with(cli: Cli) -> Result<()> {
     apply_cli_directory(cli.directory.as_deref())?;
+    // This explicitly passive path must bypass startup config migration and
+    // optional telemetry/state writers, as well as the regular index dispatch.
+    if let Commands::Index(args) = &cli.command
+        && args.is_dependency_evidence_only()
+    {
+        return index::dispatch_dependency_evidence(args);
+    }
     let current_dir = env::current_dir().into_diagnostic()?;
 
     // Global commands must not mutate the current repository before dispatch.

@@ -171,15 +171,8 @@ impl StorageManager {
             db_path,
             include_cozo
         );
-        // True OS-level RO flags (same pattern as open_read_only_from_path).
-        // Plain Connection::open + PRAGMA journal_mode=WAL fails pure RO mounts.
-        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
-            | OpenFlags::SQLITE_OPEN_URI
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-        let conn = Connection::open_with_flags(db_path.as_std_path(), flags).into_diagnostic()?;
-
-        // No journal_mode=WAL on RO path (would require write access).
-        conn.execute_batch("PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;")
+        let conn = Self::open_sqlite_read_only(db_path.as_std_path(), 5000).into_diagnostic()?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
             .into_diagnostic()?;
 
         #[cfg(not(test))]
@@ -221,6 +214,20 @@ impl StorageManager {
         }
     }
 
+    /// Open SQLite without side stores or migrations. The caller can attest
+    /// schema compatibility inside its own read transaction.
+    pub(crate) fn open_sqlite_read_only(
+        db_path: &Path,
+        busy_timeout_ms: u64,
+    ) -> rusqlite::Result<Connection> {
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let conn = Connection::open_with_flags(db_path, flags)?;
+        conn.busy_timeout(std::time::Duration::from_millis(busy_timeout_ms))?;
+        Ok(conn)
+    }
+
     /// Open an arbitrary `ledger.db` path read-only, without running migrations
     /// or verifying that the schema is current. Used by the cross-repo rollup
     /// to read foreign repo DBs: a schema mismatch there is a warn-and-skip
@@ -230,13 +237,7 @@ impl StorageManager {
     /// `db_path.parent().parent().parent()` (state/ → .ledgerful/ → root).
     /// If the path shape is unexpected, the root falls back to `.`.
     pub fn open_read_only_from_path(db_path: &Path) -> Result<Self> {
-        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
-            | OpenFlags::SQLITE_OPEN_URI
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-        let conn = Connection::open_with_flags(db_path, flags).into_diagnostic()?;
-
-        conn.execute_batch("PRAGMA busy_timeout = 2000;")
-            .into_diagnostic()?;
+        let conn = Self::open_sqlite_read_only(db_path, 2000).into_diagnostic()?;
 
         let root_path = db_path
             .parent() // state/

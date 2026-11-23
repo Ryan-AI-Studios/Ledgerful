@@ -205,6 +205,8 @@ impl Commands {
                 auto_scip,
                 export_docs,
                 doc_type,
+                dependency_evidence,
+                dependency_scip_file,
                 check,
                 json,
                 strict,
@@ -244,6 +246,12 @@ impl Commands {
                 }
                 if doc_type.is_some() {
                     f.push("doc_type");
+                }
+                if *dependency_evidence {
+                    f.push("dependency_evidence");
+                }
+                if dependency_scip_file.is_some() {
+                    f.push("dependency_scip_file");
                 }
                 if *check {
                     f.push("check");

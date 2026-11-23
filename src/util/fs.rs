@@ -33,7 +33,7 @@ pub fn read_with_encoding_if_exists(path: &Path) -> io::Result<Option<String>> {
     }
 }
 
-fn decode_bytes_with_encoding(bytes: &[u8]) -> io::Result<String> {
+pub(crate) fn decode_bytes_with_encoding(bytes: &[u8]) -> io::Result<String> {
     // UTF-16 LE BOM: FF FE
     if bytes.starts_with(&[0xFF, 0xFE]) {
         return Ok(decode_utf16_le(&bytes[2..]));

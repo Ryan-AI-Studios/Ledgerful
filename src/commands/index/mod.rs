@@ -1,5 +1,6 @@
 pub use crate::commands::index::modes::execute_index;
 
+pub(crate) mod dependency_evidence;
 pub(crate) mod graph;
 pub(crate) mod modes;
 pub(crate) mod output;

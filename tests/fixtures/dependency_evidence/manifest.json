@@ -1,0 +1,18 @@
+{
+  "sources": {
+    "bridge.ts": "68c65fddf9248e4e85937c14edb905c79a3b073a9a6bcd2a65a870f6efc7da2f",
+    "main.py": "9f3c322a0e217dbdbee97c25449c4aef86bdb337a8f2d5c58935a7d2b00ca317",
+    "main.rs": "cc49153e6ea5820625d42f6273bd6356321ffa68a694bf9241df355b283a22a3",
+    "main.ts": "6689def341ec75c74cc22cd01eb12695ab110ac6df113328de5cf33587939647",
+    "python_defs.py": "b6c4cb2b732e1b1853f7201141e6a4b872d5fa9381791416e3bef8ee7544c8b9",
+    "rust_defs.rs": "7135abf9ce22a3dfa41e4822628a0cc93183a0404a36c3565c1bb5d04010e0a1",
+    "ts_defs.ts": "1d25cfc98c3617124c4fe6296fe778afed5ea74fe73820783179405af09b7ed5",
+    "ts_re_export.ts": "094fb3a5a4b3e5aa819b6f57cd946a0ccd5a188d9a0e733acfcdc43e5e566593",
+    "unsupported.zz_fixture": "e80b71cd14d3cbd65f4173abcbfcf01a545dbca32a72d575108b553a648cc96f",
+    "unwired.go": "c9f09e0a76fbbf83847013f7d79aa09c1566778489cc499e76e3e5d72b1c8db6"
+  },
+  "artifacts": {
+    "fixture.scip": "d8c5be15b1190012a62845d4ae7b9a80e6ff9c8b74df86e95a8701b5d7551b3d",
+    "malformed.scip": "34025c07191933b4b9fd7cd6896d3fde1be8dbea22680d64bc6a316be398e072"
+  }
+}

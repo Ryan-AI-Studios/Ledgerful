@@ -118,6 +118,12 @@ Compiler-grade search and conceptual discovery.
     drift/bootstrap path). `scan --impact` has **no** `--auto-index`. `ledgerful daemon` is an
     LSP **reader**, not an indexer. No idle SCIP / silent always-on reindex. See
     **`docs/index-freshness-policy.md`**.
+*   **Dependency evidence (offline)**: `index --check --dependency-evidence [--json]` reports
+    bounded native input freshness, recognized languages and stored relationship provenance without
+    changing project state. Add `--dependency-scip-file FILE` to compare one canonical local artifact
+    against its exact registered digest. Toolchain candidates report root markers and setup hints
+    without running executables. Stored SCIP references have no individual artifact attribution.
+    See the [packet contract](agent-output-contract.md#index---check---dependency-evidence---json-schema).
 *   **SCIP augment (optional)**: `index --auto-scip` / `index --scip <path>` run **after** the native
     call graph and add precise cross-file **reference edges** onto native `project_symbols` ids
     (`structural_edges` with `evidence=scip:ref`). SCIP does **not** write symbols, does not replace

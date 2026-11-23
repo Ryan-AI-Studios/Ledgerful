@@ -36,6 +36,12 @@ pub struct IndexArgs {
     /// Check index freshness
     #[arg(long)]
     pub check: bool,
+    /// Inspect stored dependency evidence without updating project state
+    #[arg(long, requires = "check", conflicts_with_all = ["incremental", "full", "analyze_graph", "docs", "contracts", "semantic", "scip", "auto_scip", "export_docs", "doc_type", "strict", "concurrency", "semantic_dry_run", "fast", "repair_metadata", "dry_run", "yes"])]
+    pub dependency_evidence: bool,
+    /// Compare an explicit canonical SCIP artifact against its registered hash
+    #[arg(long, requires = "dependency_evidence", value_name = "FILE")]
+    pub dependency_scip_file: Option<std::path::PathBuf>,
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
@@ -60,6 +66,13 @@ pub struct IndexArgs {
     /// Automatically confirm repair operations (non-interactive)
     #[arg(long)]
     pub yes: bool,
+}
+
+impl IndexArgs {
+    /// This mode skips all startup and index writers.
+    pub fn is_dependency_evidence_only(&self) -> bool {
+        self.dependency_evidence
+    }
 }
 
 /// Watch repository for changes and run incremental graph sync.
