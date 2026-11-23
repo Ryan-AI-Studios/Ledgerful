@@ -146,8 +146,14 @@ fn auto_scip_on_fresh_state_still_builds_native_floor() {
     // Fresh state: no prior .ledgerful/state index rows.
     std::fs::create_dir_all(tmp.path().join(".ledgerful/state")).expect("state dir");
 
+    let fake_path = tmp.path().join(".fake-tools");
+    std::fs::create_dir(&fake_path).unwrap();
     let output = Command::new(binary_path)
         .args(["index", "--auto-scip", "--json"])
+        .env_remove("LEDGERFUL_STATE_DIR")
+        .env("LEDGERFUL_CONFIG_HOME", &fake_path)
+        .env("LEDGERFUL_DEFAULT_CONFIG", fake_path.join("absent.toml"))
+        .env("PATH", &fake_path)
         .current_dir(tmp.path())
         .output()
         .expect("Failed to execute ledgerful index --auto-scip");
@@ -170,19 +176,8 @@ fn auto_scip_on_fresh_state_still_builds_native_floor() {
         .pointer("/scip/status")
         .and_then(|s| s.as_str())
         .unwrap_or("");
-    // D7 (0165): empty capability probe reports `unavailable` (not `failed`).
-    assert!(
-        matches!(
-            scip_status,
-            "success" | "failed" | "unavailable" | "did_not_run" | "skipped_stale"
-        ),
-        "unexpected scip status: {scip_status}"
-    );
-    // With --auto-scip requested, status must not be did_not_run.
-    assert_ne!(
-        scip_status, "did_not_run",
-        "auto-scip requested must not report did_not_run: {stdout}"
-    );
+    assert_eq!(scip_status, "unavailable");
+    assert_eq!(v["scip"]["selection"]["rows"][0]["status"], "policy_denied");
 
     // SQLite should have native symbols after the run.
     let db_path = tmp.path().join(".ledgerful/state/ledger.db");

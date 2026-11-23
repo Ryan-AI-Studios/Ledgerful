@@ -42,6 +42,173 @@ pub enum ScipToolchain {
     ScipPython,
 }
 
+pub(crate) const SCIP_TOOLCHAINS: [ScipToolchain; 3] = [
+    ScipToolchain::RustAnalyzer,
+    ScipToolchain::ScipTypescript,
+    ScipToolchain::ScipPython,
+];
+
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectionMode {
+    Imported,
+    Automatic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectionStatus {
+    MissingRootMarker,
+    PolicyDenied,
+    Unavailable,
+    Selected,
+    NotProbedAfterSelection,
+}
+
+impl SelectionStatus {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingRootMarker => "missing_root_marker",
+            Self::PolicyDenied => "policy_denied",
+            Self::Unavailable => "unavailable",
+            Self::Selected => "selected",
+            Self::NotProbedAfterSelection => "not_probed_after_selection",
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SelectionRow {
+    pub toolchain: &'static str,
+    pub root_markers: Vec<&'static str>,
+    pub status: SelectionStatus,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ScipSelection {
+    pub mode: SelectionMode,
+    pub selected_toolchain: Option<&'static str>,
+    pub rows: Vec<SelectionRow>,
+}
+
+impl ScipSelection {
+    pub(crate) fn imported() -> Self {
+        Self {
+            mode: SelectionMode::Imported,
+            selected_toolchain: None,
+            rows: Vec::new(),
+        }
+    }
+}
+
+pub(crate) fn select_auto(
+    root: &Path,
+    policy: &ProcessPolicy,
+) -> (ScipSelection, Option<(ScipToolchain, PathBuf)>) {
+    select_auto_with(root, |tool| resolve_for_selection(tool, policy))
+}
+
+fn select_auto_with(
+    root: &Path,
+    mut probe: impl FnMut(ScipToolchain) -> Result<PathBuf, SelectionStatus>,
+) -> (ScipSelection, Option<(ScipToolchain, PathBuf)>) {
+    let mut selected = None;
+    let rows = SCIP_TOOLCHAINS
+        .into_iter()
+        .map(|tool| {
+            let (root_markers, marker_error) = tool.root_markers(root);
+            let status = if root_markers.is_empty() {
+                if marker_error {
+                    SelectionStatus::Unavailable
+                } else {
+                    SelectionStatus::MissingRootMarker
+                }
+            } else if selected.is_some() {
+                SelectionStatus::NotProbedAfterSelection
+            } else {
+                match probe(tool) {
+                    Ok(path) => {
+                        selected = Some((tool, path));
+                        SelectionStatus::Selected
+                    }
+                    Err(status) => status,
+                }
+            };
+            SelectionRow {
+                toolchain: tool.exe_name(),
+                root_markers,
+                status,
+            }
+        })
+        .collect();
+    let selection = ScipSelection {
+        mode: SelectionMode::Automatic,
+        selected_toolchain: selected.as_ref().map(|(tool, _)| tool.exe_name()),
+        rows,
+    };
+    (selection, selected)
+}
+
+fn resolve_for_selection(
+    tool: ScipToolchain,
+    policy: &ProcessPolicy,
+) -> Result<PathBuf, SelectionStatus> {
+    resolve_for_selection_with(
+        tool,
+        policy,
+        crate::util::which::which,
+        probe_version_at,
+        rustup_which_at,
+    )
+}
+
+fn resolve_for_selection_with(
+    tool: ScipToolchain,
+    policy: &ProcessPolicy,
+    mut which: impl FnMut(&str) -> Option<PathBuf>,
+    mut probe: impl FnMut(&Path) -> bool,
+    mut rustup: impl FnMut(&Path, &str) -> Option<PathBuf>,
+) -> Result<PathBuf, SelectionStatus> {
+    let denied = |_| SelectionStatus::PolicyDenied;
+    let logical = tool.exe_name();
+    check_policy(logical, policy).map_err(denied)?;
+    if let Some(path) = which(logical) {
+        check_selected_executable(logical, &path, policy).map_err(denied)?;
+        if probe(&path) {
+            return Ok(path);
+        }
+    }
+    if tool != ScipToolchain::RustAnalyzer {
+        return Err(SelectionStatus::Unavailable);
+    }
+    check_policy("rustup", policy).map_err(denied)?;
+    let rustup_path = which("rustup").ok_or(SelectionStatus::Unavailable)?;
+    check_selected_executable("rustup", &rustup_path, policy).map_err(denied)?;
+    let path = rustup(&rustup_path, logical)
+        .filter(|path| path.is_absolute())
+        .ok_or(SelectionStatus::Unavailable)?;
+    check_selected_executable(logical, &path, policy).map_err(denied)?;
+    if probe(&path) {
+        Ok(path)
+    } else {
+        Err(SelectionStatus::Unavailable)
+    }
+}
+
+fn check_selected_executable(
+    logical: &str,
+    path: &Path,
+    policy: &ProcessPolicy,
+) -> Result<(), crate::platform::process_policy::ProcessPolicyError> {
+    use crate::platform::process_policy::ProcessPolicyError;
+    check_policy(logical, policy)?;
+    let spelling = path
+        .to_str()
+        .filter(|_| path.is_absolute())
+        .ok_or_else(|| ProcessPolicyError::denied(logical, "unverifiable resolved executable"))?;
+    check_policy(spelling, policy)
+}
+
 impl ScipToolchain {
     pub fn language_label(self) -> &'static str {
         match self {
@@ -59,6 +226,28 @@ impl ScipToolchain {
         }
     }
 
+    pub(crate) fn marker_names(self) -> &'static [&'static str] {
+        match self {
+            Self::RustAnalyzer => &["Cargo.toml"],
+            Self::ScipTypescript => &["package.json", "tsconfig.json"],
+            Self::ScipPython => &["pyproject.toml", "requirements.txt"],
+        }
+    }
+
+    pub(crate) fn root_markers(self, root: &Path) -> (Vec<&'static str>, bool) {
+        let mut found = Vec::new();
+        let mut error = false;
+        for &name in self.marker_names() {
+            match std::fs::symlink_metadata(root.join(name)) {
+                Ok(meta) if meta.is_file() => found.push(name),
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => error = true,
+            }
+        }
+        (found, error)
+    }
+
     pub fn install_hint(self) -> &'static str {
         match self {
             Self::RustAnalyzer => "rustup component add rust-analyzer",
@@ -73,22 +262,15 @@ impl ScipToolchain {
     /// `--auto-scip` generation still runs only the first entry (same priority);
     /// multi-language generation in one run is out of scope for 0095.
     pub fn detect_all(repo_root: &Path) -> Vec<Self> {
-        let mut out = Vec::new();
-        if repo_root.join("Cargo.toml").exists() && is_capable(Self::RustAnalyzer.exe_name()) {
-            out.push(Self::RustAnalyzer);
-        }
-        if (repo_root.join("tsconfig.json").exists() || repo_root.join("package.json").exists())
-            && is_capable(Self::ScipTypescript.exe_name())
-        {
-            out.push(Self::ScipTypescript);
-        }
-        if (repo_root.join("requirements.txt").exists()
-            || repo_root.join("pyproject.toml").exists())
-            && is_capable(Self::ScipPython.exe_name())
-        {
-            out.push(Self::ScipPython);
-        }
-        out
+        SCIP_TOOLCHAINS
+            .into_iter()
+            .filter(|tool| {
+                tool.marker_names()
+                    .iter()
+                    .any(|marker| repo_root.join(marker).exists())
+                    && is_capable(tool.exe_name())
+            })
+            .collect()
     }
 
     /// First available toolchain by language priority (for `--auto-scip` generate).
@@ -99,8 +281,7 @@ impl ScipToolchain {
     /// Probe every known SCIP base executable (regardless of repo markers).
     /// Used by `doctor` for per-language availability lines.
     pub fn probe_all_languages() -> Vec<(Self, bool)> {
-        let tools = [Self::RustAnalyzer, Self::ScipTypescript, Self::ScipPython];
-        tools
+        SCIP_TOOLCHAINS
             .into_iter()
             .map(|t| (t, is_capable(t.exe_name())))
             .collect()
@@ -108,45 +289,48 @@ impl ScipToolchain {
 
     /// Generate a SCIP index. Uses the **configured** process policy (DoD-12).
     pub fn generate(&self, repo_root: &Path, policy: &ProcessPolicy) -> Result<PathBuf> {
+        let exe = self.exe_name();
+        check_policy(exe, policy).into_diagnostic()?;
+        let resolved = resolve_for_selection(*self, policy).map_err(|status| {
+            miette!(
+                "SCIP indexer '{}': {}. Setup help: `{}`.",
+                exe,
+                status.as_str(),
+                self.install_hint()
+            )
+        })?;
+        self.generate_at(repo_root, policy, &resolved)
+    }
+
+    pub(crate) fn generate_at(
+        &self,
+        repo_root: &Path,
+        policy: &ProcessPolicy,
+        resolved: &Path,
+    ) -> Result<PathBuf> {
+        check_selected_executable(self.exe_name(), resolved, policy).into_diagnostic()?;
         let temp_filename = "ledgerful.temp.scip";
         let output_path = repo_root.join(temp_filename);
-        let (exe, exe_args) = match self {
-            Self::RustAnalyzer => (
-                "rust-analyzer",
-                vec!["scip", ".", "--output", temp_filename],
-            ),
-            Self::ScipTypescript => ("scip-typescript", vec!["index", "--output", temp_filename]),
+        let exe_args = match self {
+            Self::RustAnalyzer => vec!["scip", ".", "--output", temp_filename],
+            Self::ScipTypescript => vec!["index", "--output", temp_filename],
             Self::ScipPython => {
                 let project_name = repo_root
                     .file_name()
                     .and_then(|s| s.to_str())
                     .unwrap_or("ledgerful-project");
-                (
-                    "scip-python",
-                    vec![
-                        "index",
-                        ".",
-                        "--project-name",
-                        project_name,
-                        "--output",
-                        temp_filename,
-                    ],
-                )
+                vec![
+                    "index",
+                    ".",
+                    "--project-name",
+                    project_name,
+                    "--output",
+                    temp_filename,
+                ]
             }
         };
 
-        check_policy(exe, policy).into_diagnostic()?;
-
-        let resolved = resolve_scip_binary(exe).ok_or_else(|| {
-            miette!(
-                "SCIP indexer '{}' not found on PATH{}. Install with `{}`.",
-                exe,
-                rustup_which_hint(exe),
-                self.install_hint()
-            )
-        })?;
-
-        let mut cmd = Command::new(&resolved);
+        let mut cmd = Command::new(resolved);
         cmd.args(exe_args);
         cmd.current_dir(repo_root);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -298,18 +482,6 @@ fn resolve_scip_binary_uncached(binary: &str) -> Option<PathBuf> {
     None
 }
 
-fn rustup_which_hint(binary: &str) -> &'static str {
-    let base = binary
-        .strip_suffix(".exe")
-        .or_else(|| binary.strip_suffix(".EXE"))
-        .unwrap_or(binary);
-    if base.eq_ignore_ascii_case("rust-analyzer") {
-        " (not on PATH; `rustup which rust-analyzer` may still find the component)"
-    } else {
-        ""
-    }
-}
-
 /// Parse `rustup which <component>` stdout (first non-empty trimmed line).
 pub(crate) fn parse_rustup_which_stdout(stdout: &str) -> Option<PathBuf> {
     let line = stdout.lines().map(str::trim).find(|l| !l.is_empty())?;
@@ -321,7 +493,11 @@ fn rustup_which(component: &str) -> Option<PathBuf> {
     {
         RUSTUP_WHICH_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
-    let mut cmd = Command::new("rustup");
+    rustup_which_at(Path::new("rustup"), component)
+}
+
+fn rustup_which_at(executable: &Path, component: &str) -> Option<PathBuf> {
+    let mut cmd = Command::new(executable);
     cmd.args(["which", component]);
     cmd.stdout(Stdio::piped()).stderr(Stdio::null());
 
@@ -552,5 +728,139 @@ mod tests {
             !hint.contains("pip"),
             "scip-python is not on PyPI; install_hint must not say pip: {hint}"
         );
+    }
+    #[test]
+    fn scip_selection_stops_probing_after_first_permitted_candidate() {
+        let tmp = tempfile::tempdir().unwrap();
+        for marker in ["Cargo.toml", "tsconfig.json", "requirements.txt"] {
+            std::fs::write(tmp.path().join(marker), "").unwrap();
+        }
+        let typescript = tmp.path().join(if cfg!(windows) {
+            "scip-typescript.exe"
+        } else {
+            "scip-typescript"
+        });
+        let mut attempts = Vec::new();
+        let (report, selected) = select_auto_with(tmp.path(), |tool| {
+            attempts.push(tool);
+            match tool {
+                ScipToolchain::RustAnalyzer => Err(SelectionStatus::PolicyDenied),
+                ScipToolchain::ScipTypescript => Ok(typescript.clone()),
+                ScipToolchain::ScipPython => panic!("later candidate must not be probed"),
+            }
+        });
+        assert_eq!(
+            attempts,
+            [ScipToolchain::RustAnalyzer, ScipToolchain::ScipTypescript]
+        );
+        assert_eq!(selected, Some((ScipToolchain::ScipTypescript, typescript)));
+        assert_eq!(
+            serde_json::to_value(report).unwrap(),
+            serde_json::json!({
+                "mode":"automatic","selected_toolchain":"scip-typescript",
+                "rows":[
+                    {"toolchain":"rust-analyzer","root_markers":["Cargo.toml"],"status":"policy_denied"},
+                    {"toolchain":"scip-typescript","root_markers":["tsconfig.json"],"status":"selected"},
+                    {"toolchain":"scip-python","root_markers":["requirements.txt"],"status":"not_probed_after_selection"}
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn scip_selection_missing_marker_precedes_unprobed() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        let (report, _) = select_auto_with(tmp.path(), |tool| {
+            assert_eq!(tool, ScipToolchain::RustAnalyzer);
+            Ok(tmp.path().join(tool.exe_name()))
+        });
+        assert_eq!(report.rows[1].status, SelectionStatus::MissingRootMarker);
+        assert_eq!(report.rows[2].status, SelectionStatus::MissingRootMarker);
+    }
+
+    #[rstest::rstest]
+    #[case(false, false, false, 1, 0, SelectionStatus::PolicyDenied)]
+    #[case(false, true, false, 0, 0, SelectionStatus::PolicyDenied)]
+    #[case(true, false, true, 2, 1, SelectionStatus::Selected)]
+    #[case(true, false, false, 2, 1, SelectionStatus::Unavailable)]
+    fn scip_selection_checks_fallback_and_primary_before_spawn(
+        #[case] allow_rustup: bool,
+        #[case] deny_primary: bool,
+        #[case] fallback_works: bool,
+        #[case] expected_probes: usize,
+        #[case] expected_rustup: usize,
+        #[case] expected_status: SelectionStatus,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let primary = root.join("rust-analyzer");
+        let fallback = root.join("component").join("rust-analyzer");
+        let launcher = root.join("rustup");
+        let mut policy = ProcessPolicy::default();
+        if allow_rustup {
+            policy.allowed_commands.push("rustup".into());
+        }
+        if deny_primary {
+            policy.denied_commands.push("rust-analyzer".into());
+        }
+        let mut probes = Vec::new();
+        let mut launches = 0;
+        let result = resolve_for_selection_with(
+            ScipToolchain::RustAnalyzer,
+            &policy,
+            |name| Some(root.join(name)),
+            |path| {
+                probes.push(path.to_owned());
+                path == fallback && fallback_works
+            },
+            |path, logical| {
+                assert_eq!(path, launcher);
+                assert_eq!(logical, "rust-analyzer");
+                launches += 1;
+                Some(fallback.clone())
+            },
+        );
+        match result {
+            Ok(path) => {
+                assert_eq!(expected_status, SelectionStatus::Selected);
+                assert_eq!(path, fallback);
+            }
+            Err(status) => assert_eq!(status, expected_status),
+        }
+        assert_eq!(launches, expected_rustup);
+        assert_eq!(probes.len(), expected_probes);
+        if expected_probes > 0 {
+            assert_eq!(probes[0], primary);
+        }
+        if expected_probes > 1 {
+            assert_eq!(probes[1], fallback);
+        }
+    }
+    #[test]
+    fn scip_selection_refuses_denied_fallback_executable_before_probe() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let launcher = root.join("rustup");
+        let mut policy = ProcessPolicy::default();
+        policy.allowed_commands.push("rustup".into());
+        policy.denied_commands.push("blocked-rust-analyzer".into());
+        let mut probes = Vec::new();
+        let result = resolve_for_selection_with(
+            ScipToolchain::RustAnalyzer,
+            &policy,
+            |name| Some(root.join(name)),
+            |path| {
+                probes.push(path.to_owned());
+                false
+            },
+            |path, logical| {
+                assert_eq!(path, launcher);
+                assert_eq!(logical, "rust-analyzer");
+                Some(root.join("blocked-rust-analyzer"))
+            },
+        );
+        assert_eq!(result, Err(SelectionStatus::PolicyDenied));
+        assert_eq!(probes, [root.join("rust-analyzer")]);
     }
 }

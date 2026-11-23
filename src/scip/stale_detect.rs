@@ -41,6 +41,48 @@ pub fn is_scip_stale(conn: &Connection, index_path: &Path, current_hash: &str) -
     }
 }
 
+pub(crate) enum ArtifactRegistration {
+    Exact(String),
+    ExactKeyNotFound,
+    RelativeKeyExists,
+}
+
+/// Audit-only exact spelling lookup. Never opens a stored path or inspects edges.
+pub(crate) fn read_artifact_registration(
+    conn: &Connection,
+    raw: &str,
+) -> rusqlite::Result<ArtifactRegistration> {
+    use rusqlite::OptionalExtension;
+    let hash: Option<String> = conn
+        .query_row(
+            "SELECT CASE WHEN length(CAST(blake3_hash AS BLOB)) = 64 THEN blake3_hash ELSE '' END
+             FROM scip_indices WHERE index_path COLLATE BINARY = ?1 LIMIT 1",
+            [raw],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(hash) = hash {
+        return Ok(ArtifactRegistration::Exact(hash));
+    }
+    // Follow this host's Path grammar. An exact-key miss remains ambiguous
+    // when a relative spelling or a key beyond the audit limit may exist.
+    const KEY_LIMIT: i64 = 50_000;
+    let mut statement = conn.prepare(
+        "SELECT CASE WHEN length(CAST(index_path AS BLOB)) BETWEEN 1 AND 4096
+                     THEN index_path END FROM scip_indices LIMIT ?1",
+    )?;
+    let mut keys = statement.query([KEY_LIMIT + 1])?;
+    let mut count = 0;
+    while let Some(row) = keys.next()? {
+        count += 1;
+        let key: Option<String> = row.get(0)?;
+        if count > KEY_LIMIT || !key.is_some_and(|key| Path::new(&key).is_absolute()) {
+            return Ok(ArtifactRegistration::RelativeKeyExists);
+        }
+    }
+    Ok(ArtifactRegistration::ExactKeyNotFound)
+}
+
 /// Upserts a SCIP index record in the database.
 pub fn register_scip_index(conn: &Connection, index_path: &Path, hash: &str) -> Result<()> {
     let index_path_str = index_path.to_string_lossy();
@@ -79,5 +121,27 @@ mod tests {
         let path = std::path::Path::new("/tmp/test.scip");
         register_scip_index(&conn, path, "abc").unwrap();
         assert!(is_scip_stale(&conn, path, "xyz").unwrap());
+    }
+    #[test]
+    fn dependency_evidence_relative_receipt_uses_host_path_grammar() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        #[cfg(windows)]
+        let (relative, distinct) = ("/legacy.scip", r"C:\new.scip");
+        #[cfg(not(windows))]
+        let (relative, distinct) = (r"C:\legacy.scip", "/new.scip");
+        assert!(!Path::new(relative).is_absolute());
+        assert!(Path::new(distinct).is_absolute());
+        let hash = "a".repeat(64);
+        register_scip_index(&conn, Path::new(relative), &hash).unwrap();
+        assert!(
+            matches!(read_artifact_registration(&conn, relative).unwrap(),
+                ArtifactRegistration::Exact(stored) if stored == hash
+            )
+        );
+        assert!(matches!(
+            read_artifact_registration(&conn, distinct).unwrap(),
+            ArtifactRegistration::RelativeKeyExists
+        ));
     }
 }

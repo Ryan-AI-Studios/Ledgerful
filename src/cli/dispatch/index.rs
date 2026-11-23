@@ -24,3 +24,10 @@ pub(super) fn dispatch_index(args: IndexArgs) -> Result<()> {
         yes: args.yes,
     })
 }
+
+pub(super) fn dispatch_dependency_evidence(args: &IndexArgs) -> Result<()> {
+    crate::commands::index::dependency_evidence::execute(
+        args.json,
+        args.dependency_scip_file.as_deref(),
+    )
+}

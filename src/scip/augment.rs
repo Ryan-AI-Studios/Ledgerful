@@ -5,6 +5,7 @@
 
 use crate::index::rows::get_file_id_by_path;
 use crate::scip::edges::{ScipEdgeStats, augment_edges_from_scip};
+use crate::scip::orchestrator::{ScipSelection, select_auto};
 use crate::scip::{ScipIndex, normalize_scip_path, register_scip_index};
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
@@ -33,6 +34,8 @@ pub enum ScipRunStatus {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ScipIndexJson {
     pub status: ScipRunStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection: Option<ScipSelection>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edges_added: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -67,6 +70,7 @@ impl ScipIndexJson {
     fn empty_stats_fields() -> Self {
         Self {
             status: ScipRunStatus::DidNotRun,
+            selection: None,
             edges_added: None,
             edges_updated: None,
             definitions_mapped: None,
@@ -113,6 +117,7 @@ impl ScipIndexJson {
         // Always Some on Success for the locked skip set (simpler agent code).
         Self {
             status: ScipRunStatus::Success,
+            selection: None,
             edges_added: Some(stats.edges_added),
             edges_updated: Some(stats.edges_updated),
             definitions_mapped: Some(stats.definitions_mapped),
@@ -164,30 +169,25 @@ pub fn maybe_run_scip_augment(
     let policy = config.verify.effective_process_policy();
     let repo_root = layout.root.as_std_path();
 
-    let (path, cleanup_temp) = if let Some(p) = scip_path {
-        (p, false)
+    let (path, cleanup_temp, selection) = if let Some(path) = scip_path {
+        (path, false, ScipSelection::imported())
     } else {
-        match crate::scip::orchestrator::ScipToolchain::detect(repo_root) {
-            Some(toolchain) => match toolchain.generate(repo_root, &policy) {
-                Ok(p) => {
-                    info!("Automatically generated SCIP index at {:?}", p);
-                    let is_temp = p
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n == "ledgerful.temp.scip");
-                    (p, is_temp)
-                }
-                Err(e) => {
-                    warn!("SCIP generation failed: {e}. Continuing with native index only.");
-                    return ScipIndexJson::failed(format!("generation failed: {e}"));
-                }
-            },
-            None => {
-                // D7: empty probe is Unavailable (not Failed) — non-alarming honesty.
-                warn!(
-                    "No capable SCIP indexer found (capability probe). Continuing with native index only."
-                );
-                return ScipIndexJson::unavailable("no capable SCIP indexer".to_string());
+        let (selection, selected) = select_auto(repo_root, &policy);
+        let Some((toolchain, executable)) = selected else {
+            warn!("No capable, permitted SCIP indexer found. Continuing with native index only.");
+            return ScipIndexJson {
+                selection: Some(selection),
+                ..ScipIndexJson::unavailable("no capable SCIP indexer")
+            };
+        };
+        match toolchain.generate_at(repo_root, &policy, &executable) {
+            Ok(path) => (path, true, selection),
+            Err(error) => {
+                warn!("SCIP generation failed: {error}. Continuing with native index only.");
+                return ScipIndexJson {
+                    selection: Some(selection),
+                    ..ScipIndexJson::failed(format!("generation failed: {error}"))
+                };
             }
         }
     };
@@ -198,13 +198,15 @@ pub fn maybe_run_scip_augment(
         let _ = std::fs::remove_file(&path);
     }
 
-    match result {
+    let mut json = match result {
         Ok(json) => json,
-        Err(e) => {
-            warn!("SCIP ingestion failed: {e}. Continuing with native index only.");
-            ScipIndexJson::failed(format!("ingestion failed: {e}"))
+        Err(error) => {
+            warn!("SCIP ingestion failed: {error}. Continuing with native index only.");
+            ScipIndexJson::failed(format!("ingestion failed: {error}"))
         }
-    }
+    };
+    json.selection = Some(selection);
+    json
 }
 
 /// Ingest a SCIP index as structural_edges on native symbol ids only.

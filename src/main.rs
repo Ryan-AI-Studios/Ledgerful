@@ -178,7 +178,12 @@ fn run() -> Result<()> {
 
     // H4: Sweep for stale shadow-copy binaries left over from a prior update
     // attempt (e.g. `ledgerful.old.exe` next to the current executable).
-    sweep_stale_old_binaries();
+    if !matches!(
+        &cli_args.command,
+        ledgerful::cli::args::Commands::Index(args) if args.is_dependency_evidence_only()
+    ) {
+        sweep_stale_old_binaries();
+    }
 
     cli::run_with(cli_args)?;
 
