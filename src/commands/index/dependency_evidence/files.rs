@@ -842,6 +842,32 @@ mod tests {
         )));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn dependency_evidence_windows_requires_canonical_artifact_spelling() {
+        let repo = tempfile::tempdir().unwrap();
+        let directory = repo.path().join("MiXeD");
+        std::fs::create_dir(&directory).unwrap();
+        let artifact = directory.join("fixture.scip");
+        std::fs::write(&artifact, b"fixture").unwrap();
+        let artifact = artifact.canonicalize().unwrap();
+        let alias = artifact
+            .parent()
+            .unwrap()
+            .with_file_name("mixed")
+            .join("fixture.scip");
+        assert_eq!(alias.canonicalize().unwrap(), artifact);
+        let (result, read) =
+            read_stable(&alias, 1024, true, |input| io::copy(input, &mut io::sink()));
+        assert_eq!(read, 0);
+        assert!(matches!(result, Err(ReadFailure::Spelling)));
+        let (result, read) = read_stable(&artifact, 1024, true, |input| {
+            io::copy(input, &mut io::sink())
+        });
+        assert_eq!(read, 7);
+        assert!(matches!(result, Ok(7)));
+    }
+
     #[rstest::rstest]
     #[case(100 * 1024 * 1024, false)]
     #[case(100 * 1024 * 1024 + 1, true)]
@@ -849,6 +875,7 @@ mod tests {
         let repo = tempfile::tempdir().unwrap();
         let path = repo.path().join("fixture.scip");
         File::create(&path).unwrap().set_len(bytes).unwrap();
+        let path = path.canonicalize().unwrap();
         let (result, read) = read_stable(&path, 100 * 1024 * 1024, true, |input| {
             io::copy(input, &mut io::sink())
         });
@@ -887,7 +914,7 @@ mod tests {
             .unwrap()
             .set_len(8 * 1024 * 1024 + 1)
             .unwrap();
-        let (result, read) = read_stable(&path, 8 * 1024 * 1024, false, |input| {
+        let (result, read) = read_stamped(&path, 8 * 1024 * 1024, false, |input| {
             io::copy(input, &mut io::sink())
         });
         assert_eq!(read, 0);
