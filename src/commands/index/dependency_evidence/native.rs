@@ -175,7 +175,9 @@ fn assess_with_content_budget(
                                 "contentLimit"
                             });
                         }
-                        Err(ReadFailure::Missing | ReadFailure::Unreadable) => {
+                        Err(
+                            ReadFailure::Missing | ReadFailure::Unreadable | ReadFailure::Spelling,
+                        ) => {
                             reasons.insert("unreadableSource");
                         }
                         Err(ReadFailure::Unstable) => {

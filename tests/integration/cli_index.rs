@@ -1268,7 +1268,8 @@ mod dependency_evidence {
             report["native"]["assessedHead"]
         );
         assert_eq!(report["native"]["reasons"], json!(["changedSource"]));
-        repo.checkpoint("changed HEAD");
+        // The restored stat tuple can make the edited source look clean to Git.
+        repo.git(&["commit", "--allow-empty", "-qm", "changed HEAD"]);
         assert_eq!(
             repo.report()["native"]["reasons"],
             json!(["changedSource", "headMismatch"])

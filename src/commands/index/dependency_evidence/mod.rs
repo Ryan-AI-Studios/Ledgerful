@@ -200,6 +200,7 @@ fn assess_artifact(
                     ReadFailure::Unstable => "artifactUnstable",
                     ReadFailure::Missing | ReadFailure::Unreadable => "artifactUnreadable",
                     ReadFailure::Capped => "artifactLimit",
+                    ReadFailure::Spelling => "artifactSpellingUnverified",
                 }),
             );
         }

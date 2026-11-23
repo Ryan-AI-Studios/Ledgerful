@@ -3,7 +3,6 @@ use crate::index::languages::Language;
 use crate::index::orchestrator::{BINARY_EXTENSIONS, SUPPORTED_EXTENSIONS};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::DirEntry;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
@@ -312,11 +311,7 @@ impl Walk<'_> {
                     return None;
                 }
                 self.entries_left -= 1;
-                match child.and_then(|entry| {
-                    let kind = entry.file_type()?;
-                    let (hidden, reparse) = entry_flags(&entry)?;
-                    Ok((entry.file_name(), kind, hidden, reparse))
-                }) {
+                match child {
                     Ok(entry) => entries.push(entry),
                     Err(_) => {
                         self.result.reasons.insert("walkError");
@@ -339,7 +334,7 @@ impl Walk<'_> {
         if depth > 0
             && entries
                 .iter()
-                .any(|(name, _, _, _)| name == ".git" || name == ".jj")
+                .any(|entry| entry.name == ".git" || entry.name == ".jj")
         {
             self.result.reasons.insert("ignoreInputError");
             return true;
@@ -355,21 +350,21 @@ impl Walk<'_> {
         };
         self.local_rules.push((ignore, gitignore));
 
-        entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
-        for (name, kind, hidden, reparse) in entries {
-            let child = path.join(&name);
-            if reparse || !self.visible(&child, hidden, kind.is_dir()) {
+        entries.sort_unstable_by(|left, right| left.name.cmp(&right.name));
+        for entry in entries {
+            let child = path.join(&entry.name);
+            if entry.reparse || !self.visible(&child, entry.hidden, entry.directory) {
                 continue;
             }
-            if name == ".git" {
+            if entry.name == ".git" {
                 self.result.reasons.insert("ignoreInputError");
                 continue;
             }
-            if kind.is_dir() {
+            if entry.directory {
                 if !self.visit(&child, depth + 1) {
                     return false;
                 }
-            } else if kind.is_file() {
+            } else if entry.regular {
                 self.observe_file(&child);
             }
         }
@@ -409,24 +404,6 @@ impl Walk<'_> {
             self.result.other = true;
         }
     }
-}
-
-fn entry_flags(entry: &DirEntry) -> std::io::Result<(bool, bool)> {
-    let dotted = entry.file_name().as_encoded_bytes().starts_with(b".");
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_REPARSE_POINT,
-        };
-        let flags = entry.metadata()?.file_attributes();
-        Ok((
-            dotted || flags & FILE_ATTRIBUTE_HIDDEN != 0,
-            flags & FILE_ATTRIBUTE_REPARSE_POINT != 0,
-        ))
-    }
-    #[cfg(not(windows))]
-    Ok((dotted, false))
 }
 
 #[cfg(all(test, any(target_os = "linux", windows)))]
