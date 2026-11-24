@@ -5,17 +5,18 @@ use crate::commands::web::error::WebError;
 use crate::commands::web::git_meta::{
     GitMetaCacheEntry, build_git_metadata_map, git_meta_cache_needs_refresh,
 };
-use crate::commands::web::server::git::{current_user, fetch_changes};
+use crate::commands::web::server::git::{current_user, fetch_changes, fetch_changes_with_pairs};
 use crate::commands::web::server::health::{compute_health_score, project_status_from_score};
 use crate::commands::web::server::middleware::{origin_is_loopback, record_rate_limit};
 use crate::commands::web::server::startup::open_ledger_connection;
 use crate::commands::web::state::{AppState, RATE_LIMIT_MAX_KEYS, evaluate_handoff_exchange};
 use crate::commands::web::types::{
-    BoundSnapshot, BoundVerificationCommand, BoundVerificationRun, ChangeResponse,
-    ChangedFileResponse, ChangesQuery, ConfigResponse, HotspotResponse, HotspotsQueryParams,
-    LedgerDetailResponse, LedgerEntryResponse, LedgerListQuery, LedgerSearchQuery, ProjectResponse,
-    SessionExchangeRequest, SessionExchangeResponse, SnapshotResponse, StatusResponse,
-    SyncStatusResponse, UserSession, map_hotspots_to_responses,
+    BoundSnapshot, BoundVerificationCommand, BoundVerificationRun, ChangeEvidenceCapability,
+    ChangeResponse, ChangedFileResponse, ChangesListResponse, ChangesQuery, ConfigResponse,
+    EvidenceKey, HotspotResponse, HotspotsQueryParams, LedgerDetailResponse, LedgerEntryResponse,
+    LedgerListQuery, LedgerSearchQuery, ProjectResponse, SessionExchangeRequest,
+    SessionExchangeResponse, SnapshotResponse, StatusResponse, SyncStatusResponse, UserSession,
+    map_hotspots_to_responses,
 };
 use crate::config::model::Config;
 use crate::git::repo::open_repo;
@@ -352,6 +353,170 @@ fn drift_status(layout: &Layout) -> Result<(usize, usize)> {
         .map_err(|e| miette!("Failed to query drift status: {}", e))
 }
 
+pub(super) fn safe_discovery_label(label: Option<&str>) -> String {
+    label
+        .filter(|s| {
+            !s.is_empty()
+                && s.len() <= 64
+                && s.trim() == *s
+                && !s.bytes().all(|b| b == b'.')
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b' ' | b'.' | b'-' | b'_'))
+        })
+        .unwrap_or("Local repository")
+        .to_owned()
+}
+
+// All evidence probes share the daemon's two-worker gate. Legacy handlers remain
+// available when this optional lane is saturated or reaches its deadline.
+async fn discovery(
+    state: &AppState,
+    pairs: Vec<Option<(gix::ObjectId, gix::ObjectId)>>,
+) -> (ChangeEvidenceCapability, Vec<Option<EvidenceKey>>) {
+    fn unavailable(status: &str, reason: Option<&str>) -> ChangeEvidenceCapability {
+        ChangeEvidenceCapability {
+            schema_version: 1,
+            status: status.into(),
+            reason_code: reason.map(str::to_owned),
+            repo_scope: None,
+            display_name: None,
+        }
+    }
+    if state.change_evidence_disabled {
+        return (unavailable("disabled", None), Vec::new());
+    }
+    let Some(origin) = state.change_evidence_origin else {
+        return (
+            unavailable("incompatible", Some("scope-unavailable")),
+            Vec::new(),
+        );
+    };
+    let layout = state.layout.clone();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(3500);
+    let worker = state
+        .change_evidence_workers
+        .try_start(deadline, move |worker| {
+            use crate::change_evidence::{
+                buffer::MemoryBudget,
+                http_worker::{DetachedResponse, WorkerError},
+                pack_store::{Observation, passive_db::PassiveReadError},
+            };
+            let memory = MemoryBudget::new(32 * 1024 * 1024);
+            let read_bytes = std::sync::atomic::AtomicUsize::new(64 * 1024 * 1024);
+            let mut observation = match Observation::open_scoped_passive(
+                &layout,
+                origin,
+                worker.deadline(),
+                worker.interrupted(),
+                &read_bytes,
+                2_000_000,
+                &memory,
+            ) {
+                Ok(o) => o,
+                Err(_) => {
+                    return DetachedResponse::new(
+                        serde_json::to_vec(&(
+                            unavailable("incompatible", Some("scope-unavailable")),
+                            Vec::<Option<EvidenceKey>>::new(),
+                        ))
+                        .map_err(|_| WorkerError::Storage)?,
+                    );
+                }
+            };
+            let result = observation
+                .observe_local_git_config()
+                .map(|_| ())
+                .map_err(|_| PassiveReadError::ScopeUnavailable)
+                .and_then(|()| observation.read_passive_evidence(&layout, origin, &worker, None));
+            let (capability, keys) = match result {
+                Ok(read) => {
+                    let canonical = std::fs::canonicalize(layout.root.as_std_path()).ok();
+                    let label = safe_discovery_label(
+                        canonical
+                            .as_deref()
+                            .and_then(|p| p.file_name())
+                            .and_then(|n| n.to_str()),
+                    );
+                    let scope = read.scope.to_string();
+                    let keys: Vec<Option<EvidenceKey>> = pairs
+                        .into_iter()
+                        .map(|pair| {
+                            pair.and_then(|(head, base)| {
+                                observation.observe_commit_pair(head, base).ok().map(|_| {
+                                    EvidenceKey {
+                                        repo_scope: scope.clone(),
+                                        head: head.to_string(),
+                                        base: base.to_string(),
+                                    }
+                                })
+                            })
+                        })
+                        .collect();
+                    if observation.confirm_pack_inventory().is_err()
+                        || observation.confirm_local_git_config().is_err()
+                        || observation
+                            .read_passive_evidence(&layout, origin, &worker, None)
+                            .map(|r| r.scope.to_string())
+                            .ok()
+                            .as_deref()
+                            != Some(scope.as_str())
+                    {
+                        return DetachedResponse::new(
+                            serde_json::to_vec(&(
+                                unavailable("incompatible", Some("scope-unavailable")),
+                                Vec::<Option<EvidenceKey>>::new(),
+                            ))
+                            .map_err(|_| WorkerError::Storage)?,
+                        );
+                    }
+                    (
+                        ChangeEvidenceCapability {
+                            schema_version: 1,
+                            status: "ready".into(),
+                            reason_code: None,
+                            repo_scope: Some(scope),
+                            display_name: Some(label),
+                        },
+                        keys,
+                    )
+                }
+                Err(error) => {
+                    let (status, reason) = match error {
+                        PassiveReadError::Uninitialized => ("uninitialized", Some("uninitialized")),
+                        PassiveReadError::SchemaIncompatible => {
+                            ("incompatible", Some("schema-incompatible"))
+                        }
+                        PassiveReadError::StorageBusy => ("incompatible", Some("storage-busy")),
+                        PassiveReadError::RequestBudget => ("incompatible", Some("request-budget")),
+                        _ => ("incompatible", Some("scope-unavailable")),
+                    };
+                    (unavailable(status, reason), Vec::new())
+                }
+            };
+            DetachedResponse::new(
+                serde_json::to_vec(&(capability, keys)).map_err(|_| WorkerError::Storage)?,
+            )
+        });
+    match worker {
+        Ok(worker) => match worker
+            .wait()
+            .await
+            .ok()
+            .and_then(|r| serde_json::from_slice(&r.into_bytes()).ok())
+        {
+            Some(result) => result,
+            None => (
+                unavailable("incompatible", Some("request-budget")),
+                Vec::new(),
+            ),
+        },
+        Err(_) => (
+            unavailable("incompatible", Some("worker-saturated")),
+            Vec::new(),
+        ),
+    }
+}
+
 /// `GET /api/projects` — project list (local + discovered siblings).
 #[utoipa::path(
     get,
@@ -365,6 +530,7 @@ fn drift_status(layout: &Layout) -> Result<(usize, usize)> {
 pub(crate) async fn projects_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, WebError> {
+    let (capability, _) = discovery(&state, Vec::new()).await;
     let layout = state.layout.clone();
     let projects = tokio::task::spawn_blocking(move || {
         let (health_score, last_scan_at) = compute_health_score(&layout);
@@ -382,6 +548,7 @@ pub(crate) async fn projects_handler(
             last_scan_at,
             health_score,
             validation_warnings: Vec::new(),
+            change_evidence: Some(capability),
         });
 
         // Optionally discover sibling projects via federation. The scan is bounded
@@ -407,6 +574,7 @@ pub(crate) async fn projects_handler(
                     last_scan_at: None,
                     health_score: 0,
                     validation_warnings,
+                    change_evidence: None,
                 });
             }
         }
@@ -991,7 +1159,7 @@ fn search_ledger_entries(
     tag = "changes",
     params(ChangesQuery),
     responses(
-        (status = 200, description = "Recent changes", body = [ChangeResponse])
+        (status = 200, description = "Recent changes", body = [ChangesListResponse])
     )
 )]
 pub(crate) async fn changes_handler(
@@ -1001,11 +1169,22 @@ pub(crate) async fn changes_handler(
     let layout = state.layout.clone();
     let days = params.days.unwrap_or(7);
     let include_working_tree = params.working_tree.unwrap_or(true);
-    let changes =
-        tokio::task::spawn_blocking(move || fetch_changes(&layout, days, include_working_tree))
-            .await
-            .map_err(|e| WebError::Internal(format!("Background task failed: {}", e)))?
-            .map_err(|e| WebError::Internal(format!("Failed to fetch changes: {}", e)))?;
+    let changes = tokio::task::spawn_blocking(move || {
+        fetch_changes_with_pairs(&layout, days, include_working_tree)
+    })
+    .await
+    .map_err(|e| WebError::Internal(format!("Background task failed: {}", e)))?
+    .map_err(|e| WebError::Internal(format!("Failed to fetch changes: {}", e)))?;
+    let pairs = changes.iter().map(|(_, pair)| *pair).collect();
+    let (_, keys) = discovery(&state, pairs).await;
+    let mut keys = keys.into_iter();
+    let changes: Vec<ChangesListResponse> = changes
+        .into_iter()
+        .map(|(change, _)| ChangesListResponse {
+            change,
+            evidence_key: keys.next().flatten(),
+        })
+        .collect();
     Ok(Json(changes))
 }
 
@@ -1493,5 +1672,55 @@ mod tests {
         let err = WebError::NotImplemented("test".to_string());
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    }
+}
+
+#[cfg(test)]
+mod discovery_contract_tests {
+    use super::*;
+    #[test]
+    fn safe_display_names_and_additive_wire_shape() {
+        assert_eq!(safe_discovery_label(Some("Repo 1._-")), "Repo 1._-");
+        for name in [
+            "",
+            "...",
+            " leading",
+            "trailing ",
+            "caf\u{e9}",
+            "a/b",
+            &"a".repeat(65),
+        ] {
+            assert_eq!(safe_discovery_label(Some(name)), "Local repository");
+        }
+        let capability = ChangeEvidenceCapability {
+            schema_version: 1,
+            status: "disabled".into(),
+            reason_code: None,
+            repo_scope: None,
+            display_name: None,
+        };
+        assert_eq!(
+            serde_json::to_value(capability).unwrap(),
+            serde_json::json!({"schemaVersion": 1, "status": "disabled"})
+        );
+        let change = ChangeResponse {
+            id: "working-tree".into(),
+            path: "x".into(),
+            status: "Uncommitted".into(),
+            summary: "x".into(),
+            author: "x".into(),
+            time_ago: "now".into(),
+            file_count: 1,
+            additions: 0,
+            deletions: 0,
+            risk: "LOW".into(),
+        };
+        let legacy = serde_json::to_value(&change).unwrap();
+        let list = serde_json::to_value(ChangesListResponse {
+            change,
+            evidence_key: None,
+        })
+        .unwrap();
+        assert_eq!(legacy, list);
     }
 }

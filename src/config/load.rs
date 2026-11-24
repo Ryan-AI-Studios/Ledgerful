@@ -60,9 +60,16 @@ pub fn load_config_with_unknown_keys(layout: &Layout) -> Result<(Config, Vec<Str
         );
     };
 
+    let (config, unknown) = parse_project_toml(&content)?;
+    finalize_loaded(config, unknown)
+}
+
+/// Decode project-local TOML bytes after the caller has admitted and decoded them.
+/// The caller selects which finalization is appropriate for that source.
+pub(crate) fn parse_project_toml(content: &str) -> Result<(Config, Vec<String>)> {
     let mut unknown: Vec<String> = Vec::new();
     let deserializer =
-        toml::Deserializer::parse(&content).map_err(|e| ConfigError::ParseFailed { source: e })?;
+        toml::Deserializer::parse(content).map_err(|e| ConfigError::ParseFailed { source: e })?;
     let config: Config = serde_ignored::deserialize(deserializer, |path| {
         unknown.push(path.to_string());
     })
@@ -71,7 +78,7 @@ pub fn load_config_with_unknown_keys(layout: &Layout) -> Result<(Config, Vec<Str
     unknown.sort();
     unknown.dedup();
 
-    finalize_loaded(config, unknown)
+    Ok((config, unknown))
 }
 
 fn finalize_config(content: String, unknown: Vec<String>) -> Result<(Config, Vec<String>)> {
@@ -84,23 +91,26 @@ fn finalize_loaded(mut config: Config, unknown: Vec<String>) -> Result<(Config, 
     // Apply environment variable overrides and resolve model settings
     config.local_model = crate::config::model::resolve_local_model_config(&config.local_model);
     config.bridge = crate::config::model::resolve_bridge_config(&config.bridge);
+    validate_local_config(&mut config, true)?;
+    Ok((config, unknown))
+}
+
+/// Apply shared configuration rules without resolving paths, dotenv or environment.
+pub(crate) fn validate_local_config(config: &mut Config, warn_verify_steps: bool) -> Result<()> {
     config.doctor.normalize();
 
     // Sanitize verify steps: warn and filter invalid ones rather than failing hard
-    sanitize_verify_steps(&mut config);
+    sanitize_verify_steps(config, warn_verify_steps);
 
     // 0562: every config source (project, override, USERPROFILE, HOME,
     // built-in) converges here. The floor is additive and in-memory; it runs
     // before validation so user-supplied invalid globs still fail as today.
-    crate::config::floor::apply_internal_state_ignore_floor(&mut config);
-
-    validate_config(&config)?;
-
-    Ok((config, unknown))
+    crate::config::floor::apply_internal_state_ignore_floor(config);
+    validate_config(config)
 }
 
-/// Removes invalid verify steps with warnings rather than failing the entire config load.
-fn sanitize_verify_steps(config: &mut Config) {
+/// Removes invalid verify steps and gives the ordinary loader its existing warnings.
+fn sanitize_verify_steps(config: &mut Config, warn_verify_steps: bool) {
     let original_len = config.verify.steps.len();
     if original_len == 0 {
         return;
@@ -108,16 +118,20 @@ fn sanitize_verify_steps(config: &mut Config) {
 
     config.verify.steps.retain(|step| {
         if step.command.trim().is_empty() {
-            warn!(
-                "Skipping verify step with empty command: '{}'",
-                step.description
-            );
+            if warn_verify_steps {
+                warn!(
+                    "Skipping verify step with empty command: '{}'",
+                    step.description
+                );
+            }
             false
         } else if step.timeout_secs == Some(0) {
-            warn!(
-                "Skipping verify step '{}' with zero timeout (use default_timeout_secs or set > 0)",
-                step.description
-            );
+            if warn_verify_steps {
+                warn!(
+                    "Skipping verify step '{}' with zero timeout (use default_timeout_secs or set > 0)",
+                    step.description
+                );
+            }
             false
         } else {
             true
@@ -125,7 +139,7 @@ fn sanitize_verify_steps(config: &mut Config) {
     });
 
     let removed = original_len - config.verify.steps.len();
-    if removed > 0 {
+    if warn_verify_steps && removed > 0 {
         warn!("Removed {} invalid verify step(s) from config", removed);
     }
 }
@@ -225,7 +239,7 @@ mod tests {
             shell: false,
         });
 
-        sanitize_verify_steps(&mut config);
+        sanitize_verify_steps(&mut config, true);
 
         assert_eq!(config.verify.steps.len(), 1);
         assert_eq!(config.verify.steps[0].description, "Valid step");
@@ -247,7 +261,7 @@ mod tests {
             shell: false,
         });
 
-        sanitize_verify_steps(&mut config);
+        sanitize_verify_steps(&mut config, true);
 
         assert_eq!(config.verify.steps.len(), 1);
         assert_eq!(config.verify.steps[0].description, "Good step");
@@ -269,7 +283,7 @@ mod tests {
             shell: false,
         });
 
-        sanitize_verify_steps(&mut config);
+        sanitize_verify_steps(&mut config, true);
 
         assert_eq!(config.verify.steps.len(), 2);
     }

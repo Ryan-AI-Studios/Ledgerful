@@ -3,12 +3,13 @@
 //! No I/O. Incomparable results carry no counts and no items; `"none"` is only
 //! reachable from the comparable, both-sides-complete, no-growth path.
 
-use super::identity::{BASELINE_SCHEMA, BaselineIdentity, FileEdgeSet, PAYLOAD_KIND};
+use super::identity::{BASELINE_SCHEMA, BaselineIdentity, EdgeCoverage, FileEdgeSet, PAYLOAD_KIND};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Per-edge classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum DeltaClass {
     Added,
@@ -20,6 +21,7 @@ pub(crate) enum DeltaClass {
 
 /// Why a comparison is not comparable. Emitted sorted by token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(utoipa::ToSchema))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub(crate) enum IncomparableReason {
     BaselineDigestMismatch,
@@ -47,6 +49,7 @@ impl IncomparableReason {
 
 /// Three-valued regression verdict. Never a boolean.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Regression {
     None,
@@ -95,6 +98,7 @@ impl Comparability {
 
 /// Stable per-item identity: the normalized path pair.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EdgeKey {
     pub src_path: String,
@@ -103,6 +107,7 @@ pub(crate) struct EdgeKey {
 
 /// One changed (or, with `--all`, unchanged) edge.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DeltaItem {
     pub edge_key: EdgeKey,
@@ -113,6 +118,7 @@ pub(crate) struct DeltaItem {
 
 /// Per-class counts. Sums to the size of the union.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DeltaCounts {
     pub added: u64,
@@ -230,28 +236,8 @@ pub(crate) fn compare_edge_sets_with(
         "every edge in the union must be classified exactly once"
     );
 
-    let mut regression_reasons = Vec::new();
-    let regression = if counts.added + counts.worsened > 0 {
-        Regression::Present
-    } else {
-        // Compare the counters separately; a net-zero sum can hide ambiguity
-        // growth behind unresolved shrinkage.
-        if current.coverage.edges_unresolved > baseline.coverage.edges_unresolved {
-            regression_reasons.push("UNRESOLVED_GREW".to_string());
-        }
-        if current.coverage.edges_ambiguous > baseline.coverage.edges_ambiguous {
-            regression_reasons.push("AMBIGUOUS_GREW".to_string());
-        }
-        regression_reasons.sort();
-        if regression_reasons.is_empty() {
-            Regression::None
-        } else {
-            Regression::Unknown
-        }
-    };
-    if regression == Regression::Present {
-        regression_reasons.clear();
-    }
+    let (regression, regression_reasons) =
+        regression_for(&counts, &baseline.coverage, &current.coverage);
 
     let mut notes = analyzer_notes(baseline, current);
     if counts.removed > 0 {
@@ -274,6 +260,31 @@ pub(crate) fn compare_edge_sets_with(
         counts: Some(counts),
         items: Some(items),
     }
+}
+
+/// Apply the authoritative coverage and class-count regression rule.
+pub(crate) fn regression_for(
+    counts: &DeltaCounts,
+    baseline: &EdgeCoverage,
+    current: &EdgeCoverage,
+) -> (Regression, Vec<String>) {
+    if counts.added > 0 || counts.worsened > 0 {
+        return (Regression::Present, Vec::new());
+    }
+    let mut reasons = Vec::new();
+    // Compare the counters separately; a net-zero sum can hide ambiguity growth.
+    if current.edges_ambiguous > baseline.edges_ambiguous {
+        reasons.push("AMBIGUOUS_GREW".to_string());
+    }
+    if current.edges_unresolved > baseline.edges_unresolved {
+        reasons.push("UNRESOLVED_GREW".to_string());
+    }
+    let regression = if reasons.is_empty() {
+        Regression::None
+    } else {
+        Regression::Unknown
+    };
+    (regression, reasons)
 }
 
 fn analyzer_notes(baseline: &FileEdgeSet, current: &FileEdgeSet) -> Vec<String> {

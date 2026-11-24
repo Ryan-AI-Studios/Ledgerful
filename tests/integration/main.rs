@@ -22,6 +22,7 @@ mod cli_audit;
 mod cli_baseline;
 mod cli_binary;
 mod cli_change_context;
+mod cli_change_evidence;
 mod cli_ci;
 mod cli_config;
 mod cli_config_set;
@@ -221,6 +222,8 @@ mod cross_surface_contract;
 mod openapi_contract;
 #[cfg(feature = "web")]
 mod web_api;
+#[cfg(feature = "web")]
+mod web_change_evidence;
 #[cfg(feature = "web")]
 mod web_security;
 #[cfg(feature = "web")]

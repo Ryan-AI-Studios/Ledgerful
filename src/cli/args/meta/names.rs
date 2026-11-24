@@ -187,6 +187,12 @@ impl Commands {
                 InternalCommands::HookCommitMsg { .. } => "internal_hook_commit_msg",
                 InternalCommands::HookPostCommit => "internal_hook_post_commit",
             },
+            Commands::ChangeEvidence {
+                command: ChangeEvidenceCommands::AttestBaseline { .. },
+            } => "change_evidence_attest_baseline",
+            Commands::ChangeEvidence {
+                command: ChangeEvidenceCommands::Prepare { .. },
+            } => "change_evidence_prepare",
             Commands::Baseline { command } => match command {
                 BaselineCommands::Create { .. } => "baseline_create",
                 BaselineCommands::List { .. } => "baseline_list",

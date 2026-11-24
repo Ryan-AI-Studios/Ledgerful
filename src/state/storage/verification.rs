@@ -2,6 +2,17 @@ use crate::state::storage::connection::StorageManager;
 use miette::{IntoDiagnostic, Result};
 use std::collections::HashMap;
 
+#[path = "verification_capture.rs"]
+mod verification_capture;
+#[path = "verification_capture_write.rs"]
+mod verification_capture_write;
+#[cfg(target_os = "linux")]
+pub(crate) use verification_capture::TransactionStage;
+pub(crate) use verification_capture::{CaptureUnavailable, VerificationCaptureCommit};
+pub(crate) use verification_capture_write::{
+    AttemptIdentity, PlanningAttemptKind, PlanningCaptureCommit, PreparedExecutedAttempt,
+};
+
 /// One row of the per-date verification trend (`/api/verify/history`).
 #[derive(Debug, Clone)]
 pub struct VerificationTrendRow {

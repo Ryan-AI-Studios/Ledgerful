@@ -54,6 +54,56 @@ pub(crate) fn decode_bytes_with_encoding(bytes: &[u8]) -> io::Result<String> {
     Ok(String::from_utf8_lossy(bytes).into_owned())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StrictDecodeError {
+    RawByteLimit,
+    DecodedByteLimit,
+    InvalidEncoding,
+}
+
+/// Decode already acquired bytes with the indexer's BOM policy after proving
+/// that neither its lossy fallback nor UTF-16 remainder dropping is needed.
+pub(crate) fn decode_bytes_for_capture(
+    bytes: &[u8],
+    raw_limit: usize,
+    decoded_limit: usize,
+) -> Result<String, StrictDecodeError> {
+    use StrictDecodeError::{DecodedByteLimit, InvalidEncoding, RawByteLimit};
+
+    if bytes.len() > raw_limit {
+        return Err(RawByteLimit);
+    }
+    let decoded_size = match bytes {
+        [0xFF, 0xFE, body @ ..] => utf16_decoded_size(body, u16::from_le_bytes)?,
+        [0xFE, 0xFF, body @ ..] => utf16_decoded_size(body, u16::from_be_bytes)?,
+        _ => {
+            let body = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+            std::str::from_utf8(body)
+                .map_err(|_| InvalidEncoding)?
+                .len()
+        }
+    };
+    if decoded_size > decoded_limit {
+        return Err(DecodedByteLimit);
+    }
+    decode_bytes_with_encoding(bytes).map_err(|_| InvalidEncoding)
+}
+
+fn utf16_decoded_size(
+    bytes: &[u8],
+    read_unit: fn([u8; 2]) -> u16,
+) -> Result<usize, StrictDecodeError> {
+    let (words, remainder) = bytes.as_chunks::<2>();
+    if !remainder.is_empty() {
+        return Err(StrictDecodeError::InvalidEncoding);
+    }
+    char::decode_utf16(words.iter().copied().map(read_unit)).try_fold(0usize, |size, ch| {
+        let ch = ch.map_err(|_| StrictDecodeError::InvalidEncoding)?;
+        size.checked_add(ch.len_utf8())
+            .ok_or(StrictDecodeError::DecodedByteLimit)
+    })
+}
+
 fn decode_utf16_le(bytes: &[u8]) -> String {
     let code_units: Vec<u16> = bytes
         .as_chunks::<2>()

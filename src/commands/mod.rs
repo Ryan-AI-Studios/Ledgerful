@@ -4,6 +4,7 @@ pub mod baseline;
 pub mod bench;
 pub mod bridge;
 pub mod change_context;
+pub(crate) mod change_evidence;
 pub mod config;
 pub mod config_verify;
 pub mod configure;

@@ -7,11 +7,11 @@ use utoipa::OpenApi;
 
 #[cfg(any(test, feature = "openapi", feature = "web"))]
 use crate::commands::web::server::{
-    __path_changes_handler, __path_config_handler, __path_events_handler, __path_health_handler,
-    __path_hotspots_handler, __path_ledger_handler, __path_ledger_search_handler,
-    __path_ledger_tx_handler, __path_projects_handler, __path_session_exchange_handler,
-    __path_session_handler, __path_snapshot_handler, __path_status_handler,
-    __path_sync_status_handler,
+    __path_changes_handler, __path_config_handler, __path_events_handler,
+    __path_get_change_evidence, __path_health_handler, __path_hotspots_handler,
+    __path_ledger_handler, __path_ledger_search_handler, __path_ledger_tx_handler,
+    __path_projects_handler, __path_session_exchange_handler, __path_session_handler,
+    __path_snapshot_handler, __path_status_handler, __path_sync_status_handler,
 };
 
 #[cfg(any(test, feature = "openapi", feature = "web"))]
@@ -27,13 +27,13 @@ use crate::commands::web::api::handlers::{
 // macro can resolve identifiers that live in `web::types`. They are declared
 // `pub(crate)` there, so we re-export them at crate visibility.
 pub(crate) use crate::commands::web::types::{
-    ChangeResponse, ChangedFileResponse, ChangesQuery, ComplianceSignatureEntry,
-    ComplianceSummaryResponse, ConfigResponse, DaemonEvent, HotspotResponse, HotspotTrendQuery,
-    HotspotTrendResponse, HotspotTrendSeries, HotspotsQueryParams, KgEdge, KgNode,
-    KnowledgeGraphQuery, KnowledgeGraphResponse, LedgerDetailResponse, LedgerEntryResponse,
-    LedgerListQuery, LedgerSearchQuery, ProjectResponse, SecurityBoundariesResponse,
-    SessionExchangeRequest, SessionExchangeResponse, SnapshotResponse, StatusResponse,
-    SyncStatusResponse, TrendPointDto, TrendsQuery, TrendsResponse, UserSession,
+    ChangeEvidenceCapability, ChangeResponse, ChangedFileResponse, ChangesListResponse,
+    ChangesQuery, ComplianceSignatureEntry, ComplianceSummaryResponse, ConfigResponse, DaemonEvent,
+    EvidenceKey, HotspotResponse, HotspotTrendQuery, HotspotTrendResponse, HotspotTrendSeries,
+    HotspotsQueryParams, KgEdge, KgNode, KnowledgeGraphQuery, KnowledgeGraphResponse,
+    LedgerDetailResponse, LedgerEntryResponse, LedgerListQuery, LedgerSearchQuery, ProjectResponse,
+    SecurityBoundariesResponse, SessionExchangeRequest, SessionExchangeResponse, SnapshotResponse,
+    StatusResponse, SyncStatusResponse, TrendPointDto, TrendsQuery, TrendsResponse, UserSession,
     VerificationHealthResponse, VerificationStepResponse, VerificationTrendPoint,
     VerifyHistoryQuery,
 };
@@ -58,6 +58,7 @@ pub(crate) use crate::commands::web::types::{
         ledger_search_handler,
         ledger_tx_handler,
         changes_handler,
+        get_change_evidence,
         hotspots_handler,
         config_handler,
         hotspots_trend_handler,
@@ -75,6 +76,7 @@ pub(crate) use crate::commands::web::types::{
         trends_handler,
         sync_status_handler
     ),
+    modifiers(&ChangeEvidenceSecurity),
     components(schemas(
         UserSession,
         SessionExchangeRequest,
@@ -90,6 +92,9 @@ pub(crate) use crate::commands::web::types::{
         LedgerSearchQuery,
         ChangesQuery,
         ChangeResponse,
+        ChangeEvidenceCapability,
+        ChangesListResponse,
+        EvidenceKey,
         HotspotsQueryParams,
         ConfigResponse,
         HotspotResponse,
@@ -136,6 +141,22 @@ pub(crate) use crate::commands::web::types::{
     )
 )]
 pub struct ApiDoc;
+
+#[cfg(any(test, feature = "openapi", feature = "web"))]
+struct ChangeEvidenceSecurity;
+
+#[cfg(any(test, feature = "openapi", feature = "web"))]
+impl utoipa::Modify for ChangeEvidenceSecurity {
+    fn modify(&self, api: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
+        if let Some(components) = &mut api.components {
+            components.add_security_scheme(
+                "changeEvidenceBearer",
+                SecurityScheme::Http(Http::new(HttpAuthScheme::Bearer)),
+            );
+        }
+    }
+}
 
 /// Generate the canonical OpenAPI JSON string for this build.
 #[cfg(any(test, feature = "openapi", feature = "web"))]

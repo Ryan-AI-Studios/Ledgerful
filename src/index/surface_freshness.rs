@@ -64,6 +64,7 @@ pub fn classify_mapping_head_pair(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum SurfaceFreshnessStatus {
     Available,

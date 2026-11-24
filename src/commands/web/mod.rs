@@ -13,6 +13,7 @@ use crate::commands::pid::PidFile;
 use crate::commands::web::auth::{generate_token, resolve_session_token};
 use crate::commands::web::spa_dir::validate_spa_dir;
 use crate::commands::web::state::{AppState, HANDOFF_TTL, HandoffCode};
+use crate::state::layout::{Layout, StateDirOrigin, get_layout_with_state_origin};
 use camino::{Utf8Path, Utf8PathBuf};
 use miette::{IntoDiagnostic, Result, miette};
 use owo_colors::{OwoColorize, Stream};
@@ -39,7 +40,7 @@ pub fn execute_web(command: WebCommands) -> Result<()> {
 }
 
 fn start_web(args: WebStartArgs) -> Result<()> {
-    let layout = get_layout()?;
+    let (layout, origin) = get_layout_with_state_origin()?;
 
     if !layout.state_dir.exists() {
         return Err(miette!(
@@ -89,6 +90,7 @@ fn start_web(args: WebStartArgs) -> Result<()> {
         return spawn_background_server(
             args,
             layout,
+            origin,
             &base_url,
             &token,
             token_file_path.as_deref(),
@@ -107,13 +109,10 @@ fn start_web(args: WebStartArgs) -> Result<()> {
     let handoff_code = handoff.as_ref().map(|h| h.code.clone());
 
     let _pid_guard = PidFile::create(pid_path)?;
-    let state = Arc::new(AppState::new(
-        layout,
-        token.clone(),
-        spa_dir,
-        peer_allowlist,
-        handoff,
-    ));
+    let state = Arc::new(
+        AppState::new(layout, token.clone(), spa_dir, peer_allowlist, handoff)
+            .with_change_evidence(origin, args.disable_change_evidence),
+    );
 
     println!("Starting ledgerful web at {}", base_url);
 
@@ -292,7 +291,8 @@ fn is_loopback_bind(bind: &str) -> bool {
 #[cfg(unix)]
 fn spawn_background_server(
     args: WebStartArgs,
-    layout: crate::state::layout::Layout,
+    layout: Layout,
+    origin: StateDirOrigin,
     url: &str,
     token: &str,
     token_file: Option<&Utf8Path>,
@@ -304,8 +304,11 @@ fn spawn_background_server(
     // Remove stale PID file so the child can create a fresh one.
     PidFile::remove(&pid_path);
 
-    // Double-fork via nix::unistd::daemon. The current process exits; the
-    // daemon continues as the server.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+    crate::change_evidence::passive_startup::confirm_parent_before_background_fork();
+
+    // Double-fork to detach the daemon. The current process exits; the final
+    // child continues as the server.
     // Legitimate: Unix double-fork to daemonize the web server process.
     // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     match unsafe { nix::unistd::fork() } {
@@ -323,6 +326,20 @@ fn spawn_background_server(
                     std::process::exit(0);
                 }
                 Ok(nix::unistd::ForkResult::Child) => {
+                    #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+                    if !args.disable_change_evidence {
+                        // SAFETY: the native initializer also requires the
+                        // executable's pre-thread background intent and a
+                        // single-task final child. No SQLite is used here yet.
+                        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+                        let startup = unsafe {
+                            crate::change_evidence::passive_startup::install_in_background_child()
+                        };
+                        if let Err(error) = startup {
+                            eprintln!("{error}");
+                            std::process::exit(1);
+                        }
+                    }
                     // SAFETY: single-threaded child process after double-fork,
                     // no other threads can observe the env mutation.
                     // Legitimate: pass auth token to daemonized child via env.
@@ -331,7 +348,7 @@ fn spawn_background_server(
                         std::env::set_var(TOKEN_ENV_VAR, token);
                     }
                     let _ = std::fs::write(pid_path.as_std_path(), std::process::id().to_string());
-                    run_server_blocking(args, layout);
+                    run_server_blocking(args, layout, origin);
                     std::process::exit(0);
                 }
                 Err(e) => {
@@ -345,7 +362,7 @@ fn spawn_background_server(
 }
 
 #[cfg(unix)]
-fn run_server_blocking(args: WebStartArgs, layout: crate::state::layout::Layout) {
+fn run_server_blocking(args: WebStartArgs, layout: Layout, origin: StateDirOrigin) {
     let env_token = match std::env::var(TOKEN_ENV_VAR) {
         Ok(v) => Some(v),
         Err(std::env::VarError::NotPresent) => None,
@@ -376,7 +393,10 @@ fn run_server_blocking(args: WebStartArgs, layout: crate::state::layout::Layout)
         }
     };
     // Background daemon path never mints a handoff code (no --open browser).
-    let state = Arc::new(AppState::new(layout, token, spa_dir, peer_allowlist, None));
+    let state = Arc::new(
+        AppState::new(layout, token, spa_dir, peer_allowlist, None)
+            .with_change_evidence(origin, args.disable_change_evidence),
+    );
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -397,7 +417,8 @@ fn run_server_blocking(args: WebStartArgs, layout: crate::state::layout::Layout)
 #[cfg(target_os = "windows")]
 fn spawn_background_server(
     args: WebStartArgs,
-    layout: crate::state::layout::Layout,
+    layout: Layout,
+    _origin: StateDirOrigin,
     url: &str,
     token: &str,
     token_file: Option<&Utf8Path>,
@@ -426,6 +447,9 @@ fn spawn_background_server(
     }
     if args.allow_public {
         command.arg("--allow-public");
+    }
+    if args.disable_change_evidence {
+        command.arg("--disable-change-evidence");
     }
     // Do NOT pass --token on the process command line (track 0090 W2).
     // Command lines are enumerable without knowing where the token file lives
@@ -456,7 +480,8 @@ fn spawn_background_server(
 #[cfg(not(any(unix, target_os = "windows")))]
 fn spawn_background_server(
     _args: WebStartArgs,
-    _layout: crate::state::layout::Layout,
+    _layout: Layout,
+    _origin: StateDirOrigin,
     _url: &str,
     _token: &str,
     _token_file: Option<&Utf8Path>,

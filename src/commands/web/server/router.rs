@@ -1,6 +1,7 @@
 //! Axum router construction for the Ledgerful web dashboard.
 
 use crate::commands::web::api;
+use crate::commands::web::server::change_evidence;
 use crate::commands::web::server::handlers;
 use crate::commands::web::server::middleware::{
     csp_header_middleware, host_validation_layer, local_cors, peer_allowlist_layer,
@@ -9,11 +10,12 @@ use crate::commands::web::server::middleware::{
 use crate::commands::web::server::sse;
 use crate::commands::web::state::AppState;
 use axum::Router;
+use axum::extract::Request;
 use axum::middleware;
 use axum::routing::{get, post};
 use std::sync::Arc;
 use tower_http::services::{ServeDir, ServeFile};
-use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
+use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, MakeSpan, TraceLayer};
 use tracing::Level;
 
 /// Build the axum router for the Ledgerful web dashboard.
@@ -30,6 +32,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/ledger/search", get(handlers::ledger_search_handler))
         .route("/ledger/{tx_id}", get(handlers::ledger_tx_handler))
         .route("/changes", get(handlers::changes_handler))
+        .route(
+            "/change-evidence",
+            get(change_evidence::get_change_evidence),
+        )
         .route("/hotspots", get(handlers::hotspots_handler))
         .route("/hotspots/trend", get(api::hotspots_trend_handler))
         .route("/trends", get(api::trends_handler))
@@ -89,6 +95,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         app = app.fallback(get(handlers::embedded_spa_handler));
     }
 
+    let mut default_span = DefaultMakeSpan::new()
+        .level(Level::INFO)
+        .include_headers(false);
+
     // CSP is state-aware (embedded hashes vs --spa-dir sidecar/fallback).
     // Security headers never include HSTS on the daemon path.
     app.layer(middleware::from_fn_with_state(
@@ -103,11 +113,13 @@ pub fn router(state: Arc<AppState>) -> Router {
     ))
     .layer(
         TraceLayer::new_for_http()
-            .make_span_with(
-                DefaultMakeSpan::new()
-                    .level(Level::INFO)
-                    .include_headers(false),
-            )
+            .make_span_with(move |request: &Request| {
+                if change_evidence::is_evidence_request(request) {
+                    tracing::info_span!("change_evidence_request")
+                } else {
+                    default_span.make_span(request)
+                }
+            })
             .on_response(
                 DefaultOnResponse::new()
                     .level(Level::INFO)
@@ -121,5 +133,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         peer_allowlist_layer,
     ))
     .layer(middleware::from_fn(host_validation_layer))
+    .layer(middleware::from_fn(change_evidence::response_boundary))
     .with_state(state)
 }

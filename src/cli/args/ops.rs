@@ -70,6 +70,9 @@ pub struct WebStartArgs {
     /// Run the server in the background
     #[arg(long)]
     pub background: bool,
+    /// Disable revision-bound change evidence in this daemon.
+    #[arg(long)]
+    pub disable_change_evidence: bool,
     /// Print the session token to stdout (default **false**). By default the token
     /// is written to `.ledgerful/web-session-token` and only the path is printed,
     /// reducing shell-history / screen-share / CI-log leakage. Pass

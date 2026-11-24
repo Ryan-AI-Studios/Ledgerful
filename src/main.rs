@@ -66,7 +66,7 @@ fn summary_layer_max_level(machine: bool, quiet: bool, verbose: bool) -> Level {
     }
 }
 
-fn run() -> Result<()> {
+fn parse_cli_args() -> Cli {
     // Intercept "help" and "version" subcommands ONLY if they are the first
     // positional argument to unify behavior without breaking legitimate
     // positional values or subcommand args later in the string.
@@ -97,8 +97,10 @@ fn run() -> Result<()> {
     // Parse CLI args once here so we can read the verbose flag before
     // initializing the logger.  cli::run_with(cli) reuses the parsed struct,
     // avoiding a second parse.
-    let cli_args = Cli::parse_from(args);
+    Cli::parse_from(args)
+}
 
+fn run(cli_args: Cli) -> Result<()> {
     // 0131: honour NO_COLOR / FORCE_COLOR / CLICOLOR_FORCE before any product
     // colour emit. Belt-and-suspenders for if_supports_color + test baseline.
     ledgerful::output::color::init_color_support();
@@ -228,14 +230,84 @@ fn sweep_stale_old_binaries() {
 fn sweep_stale_old_binaries() {}
 
 fn main() {
-    // Windows debug builds with many clap subcommands can overflow the default
-    // 1 MiB stack. Run the application logic in a thread with a larger stack.
-    let result = std::thread::Builder::new()
-        .stack_size(4 * 1024 * 1024)
-        .spawn(run)
-        .expect("Failed to spawn main thread")
-        .join()
-        .expect("Main thread panicked");
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+    let args = parse_cli_args();
+    #[cfg(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        target_env = "gnu",
+        feature = "web"
+    ))]
+    let background_web = {
+        use ledgerful::cli::args::{Commands, WebCommands};
+
+        if let Commands::Web {
+            command: WebCommands::Start(options),
+        } = &args.command
+        {
+            if !options.disable_change_evidence {
+                // SAFETY: the binary has only parsed CLI inputs. Background
+                // startup records intent here and installs in the final child.
+                // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+                let startup = unsafe {
+                    ledgerful::prepare_stock_passive_web_before_threads(options.background)
+                };
+                if let Err(error) = startup {
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }
+            }
+            options.background
+        } else {
+            false
+        }
+    };
+    #[cfg(not(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        target_env = "gnu",
+        feature = "web"
+    )))]
+    let background_web = false;
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+    let entry = {
+        use ledgerful::cli::args::{ChangeEvidenceCommands, Commands};
+        let explicit_capture = match &args.command {
+            Commands::Verify(options) => options.capture_change_evidence,
+            Commands::ChangeEvidence {
+                command:
+                    ChangeEvidenceCommands::AttestBaseline { .. }
+                    | ChangeEvidenceCommands::Prepare { .. },
+            } => true,
+            _ => false,
+        };
+        if explicit_capture {
+            // SAFETY: this binary entry has only parsed CLI inputs. No SQLite
+            // calls or worker threads precede this writer-only startup.
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+            let startup = unsafe { ledgerful::install_stock_evidence_sqlite_before_threads() };
+            if let Err(error) = startup {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+        move || run(args)
+    };
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")))]
+    let entry = || run(parse_cli_args());
+    let result = if background_web {
+        // Linux daemonization forks twice before it creates any worker.
+        entry()
+    } else {
+        // Windows debug builds with many clap subcommands can overflow the
+        // default 1 MiB stack. Run the application on a larger stack.
+        std::thread::Builder::new()
+            .stack_size(4 * 1024 * 1024)
+            .spawn(entry)
+            .expect("Failed to spawn main thread")
+            .join()
+            .expect("Main thread panicked")
+    };
 
     if let Err(e) = result {
         eprintln!("{}", e);

@@ -1,10 +1,11 @@
 //! Shared web dashboard state.
 
+use crate::change_evidence::http_worker::WorkerGate;
 use crate::commands::web::api::KnowledgeGraphResponse;
 use crate::commands::web::git_meta::GitMetaCacheEntry;
 use crate::commands::web::server::csp::{embedded_csp, resolve_csp_for_spa_dir};
 use crate::commands::web::types::DaemonEvent;
-use crate::state::layout::Layout;
+use crate::state::layout::{Layout, StateDirOrigin};
 use axum::http::HeaderValue;
 use camino::Utf8PathBuf;
 use std::collections::{HashMap, HashSet};
@@ -87,6 +88,9 @@ pub(crate) fn evaluate_handoff_exchange(
 #[derive(Debug, Clone)]
 pub struct AppState {
     pub layout: Layout,
+    pub(crate) change_evidence_origin: Option<StateDirOrigin>,
+    pub(crate) change_evidence_disabled: bool,
+    pub(crate) change_evidence_workers: Arc<WorkerGate>,
     pub token: String,
     pub spa_dir: Option<Utf8PathBuf>,
     /// Resolved Content-Security-Policy for this process instance.
@@ -148,6 +152,9 @@ impl AppState {
 
         Self {
             layout,
+            change_evidence_origin: None,
+            change_evidence_disabled: false,
+            change_evidence_workers: Arc::new(WorkerGate::new()),
             token,
             spa_dir,
             csp_header,
@@ -161,6 +168,12 @@ impl AppState {
             shutdown,
             handoff: Arc::new(Mutex::new(handoff)),
         }
+    }
+
+    pub(crate) fn with_change_evidence(mut self, origin: StateDirOrigin, disabled: bool) -> Self {
+        self.change_evidence_origin = Some(origin);
+        self.change_evidence_disabled = disabled;
+        self
     }
 
     /// Subscribe to daemon event broadcasts (SSE handlers, tests).

@@ -9,6 +9,138 @@
     "version": "0.2.18"
   },
   "paths": {
+    "/api/change-evidence": {
+      "get": {
+        "tags": [
+          "changes"
+        ],
+        "operationId": "getChangeEvidence",
+        "parameters": [
+          {
+            "name": "repoScope",
+            "in": "query",
+            "description": "Opaque serving repository scope UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "head",
+            "in": "query",
+            "description": "Full lowercase SHA-1 commit ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "base",
+            "in": "query",
+            "description": "Full lowercase SHA-1 only-parent commit ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "baselineName",
+            "in": "query",
+            "description": "Exact attested baseline name; requires baselineDigest",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "baselineDigest",
+            "in": "query",
+            "description": "Exact blake3 payload digest; requires baselineName",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Validated exact-pair evidence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidenceResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid evidence query",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidenceProblemSchema"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authorization or policy denied",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Exact pair unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidenceProblemSchema"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Inconsistent evidence infrastructure",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidenceProblemSchema"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Evidence serving unavailable or request budget exhausted",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidenceProblemSchema"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "changeEvidenceBearer": []
+          }
+        ]
+      }
+    },
     "/api/changes": {
       "get": {
         "tags": [
@@ -50,7 +182,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/ChangeResponse"
+                    "$ref": "#/components/schemas/ChangesListResponse"
                   }
                 }
               }
@@ -924,6 +1056,193 @@
           }
         }
       },
+      "AgeReason": {
+        "type": "string",
+        "enum": [
+          "attempt-time-invalid",
+          "attempt-time-future"
+        ]
+      },
+      "AgeStatus": {
+        "type": "string",
+        "enum": [
+          "current",
+          "stale",
+          "unknown"
+        ]
+      },
+      "AttemptKind": {
+        "type": "string",
+        "enum": [
+          "executed",
+          "dry-run",
+          "refused"
+        ]
+      },
+      "AttemptStatus": {
+        "type": "string",
+        "enum": [
+          "recorded",
+          "partial",
+          "planned",
+          "refused",
+          "run-record-lost"
+        ]
+      },
+      "BaselineCandidate": {
+        "type": "object",
+        "required": [
+          "name",
+          "payloadDigest",
+          "base",
+          "observedAt"
+        ],
+        "properties": {
+          "base": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "observedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "payloadDigest": {
+            "type": "string"
+          }
+        }
+      },
+      "BaselineCandidates": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "items",
+              "complete",
+              "status"
+            ],
+            "properties": {
+              "complete": {
+                "type": "boolean"
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/BaselineCandidate"
+                }
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "ready"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "reasonCode",
+              "status"
+            ],
+            "properties": {
+              "reasonCode": {
+                "$ref": "#/components/schemas/CandidateReason"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "unavailable"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "BaselineIdentity": {
+        "type": "object",
+        "description": "Identity bound to a baseline payload.",
+        "required": [
+          "baselineSchema",
+          "payloadKind",
+          "scope",
+          "parserVersion",
+          "edgeSources",
+          "ledgerfulVersion",
+          "inputDigest",
+          "inputCompleteness"
+        ],
+        "properties": {
+          "baselineSchema": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "edgeSources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "indexHeadHash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "inputCompleteness": {
+            "$ref": "#/components/schemas/InputCompleteness"
+          },
+          "inputDigest": {
+            "type": "string"
+          },
+          "ledgerfulVersion": {
+            "type": "string"
+          },
+          "parserVersion": {
+            "type": "string"
+          },
+          "payloadKind": {
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/BaselineScope"
+          }
+        }
+      },
+      "BaselineScope": {
+        "type": "object",
+        "description": "Scope of a baseline. v1 writes only `{\"kind\":\"repo\"}`.",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string"
+          }
+        }
+      },
+      "BaselineVerdict": {
+        "type": "string",
+        "enum": [
+          "baseline-missing",
+          "baseline-unattested",
+          "baseline-wrong-parent",
+          "baseline-digest-mismatch",
+          "baseline-incompatible",
+          "not-prepared",
+          "live-proof-unavailable",
+          "historical-head",
+          "head-moved",
+          "dirty-worktree",
+          "index-stale",
+          "config-changed",
+          "proof-stale",
+          "proof-time-invalid",
+          "proof-time-future"
+        ]
+      },
       "BoundSnapshot": {
         "type": "object",
         "description": "History head recorded for the newest bound run. Not the current git HEAD.",
@@ -1008,6 +1327,47 @@
           }
         }
       },
+      "CandidateReason": {
+        "type": "string",
+        "enum": [
+          "candidates-unavailable"
+        ]
+      },
+      "ChangeEvidenceCapability": {
+        "type": "object",
+        "required": [
+          "schemaVersion",
+          "status"
+        ],
+        "properties": {
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reasonCode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repoScope": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "schemaVersion": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
       "ChangeResponse": {
         "type": "object",
         "required": [
@@ -1089,6 +1449,28 @@
           }
         }
       },
+      "ChangesListResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ChangeResponse"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "evidenceKey": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/EvidenceKey"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
       "ChangesQuery": {
         "type": "object",
         "properties": {
@@ -1107,6 +1489,191 @@
             ]
           }
         }
+      },
+      "ComparableComparison": {
+        "type": "object",
+        "required": [
+          "baselineIdentity",
+          "currentIdentity",
+          "baselineCoverage",
+          "currentCoverage",
+          "regression",
+          "regressionReasons",
+          "notes",
+          "counts",
+          "items",
+          "sample"
+        ],
+        "properties": {
+          "baselineCoverage": {
+            "$ref": "#/components/schemas/EdgeCoverage"
+          },
+          "baselineIdentity": {
+            "$ref": "#/components/schemas/BaselineIdentity"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/DeltaCounts"
+          },
+          "currentCoverage": {
+            "$ref": "#/components/schemas/EdgeCoverage"
+          },
+          "currentIdentity": {
+            "$ref": "#/components/schemas/BaselineIdentity"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeltaItem"
+            }
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "regression": {
+            "$ref": "#/components/schemas/Regression"
+          },
+          "regressionReasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "sample": {
+            "$ref": "#/components/schemas/ComparisonSample"
+          }
+        }
+      },
+      "Comparison": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "selection-required"
+                ]
+              }
+            }
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ComparableComparison"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "capturedAt",
+                  "liveCheckedAt"
+                ],
+                "properties": {
+                  "capturedAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "liveCheckedAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "required": [
+                  "status"
+                ],
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "comparable"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/IncomparableComparison"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "status"
+                ],
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "incomparable"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "type": "object",
+            "required": [
+              "reasonCode",
+              "status"
+            ],
+            "properties": {
+              "reasonCode": {
+                "$ref": "#/components/schemas/ComparisonReason"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "unavailable"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "ComparisonReason": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/BaselineVerdict"
+          },
+          {
+            "$ref": "#/components/schemas/PreparationRefusal"
+          }
+        ]
+      },
+      "ComparisonSample": {
+        "type": "object",
+        "required": [
+          "complete",
+          "omitted"
+        ],
+        "properties": {
+          "complete": {
+            "type": "boolean"
+          },
+          "omitted": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "CompletenessState": {
+        "type": "string",
+        "description": "Completeness state, serialized as `COMPLETE` / `INCOMPLETE`.",
+        "enum": [
+          "COMPLETE",
+          "INCOMPLETE"
+        ]
       },
       "ComplianceSignatureEntry": {
         "type": "object",
@@ -1236,6 +1803,376 @@
           "unauditedDrift": {
             "type": "integer",
             "minimum": 0
+          }
+        }
+      },
+      "DeltaClass": {
+        "type": "string",
+        "description": "Per-edge classification.",
+        "enum": [
+          "added",
+          "removed",
+          "worsened",
+          "improved",
+          "unchanged"
+        ]
+      },
+      "DeltaCounts": {
+        "type": "object",
+        "description": "Per-class counts. Sums to the size of the union.",
+        "required": [
+          "added",
+          "removed",
+          "worsened",
+          "improved",
+          "unchanged"
+        ],
+        "properties": {
+          "added": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "improved": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "removed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "unchanged": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "worsened": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "DeltaItem": {
+        "type": "object",
+        "description": "One changed (or, with `--all`, unchanged) edge.",
+        "required": [
+          "edgeKey",
+          "class"
+        ],
+        "properties": {
+          "baselineWeight": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "class": {
+            "$ref": "#/components/schemas/DeltaClass"
+          },
+          "currentWeight": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "edgeKey": {
+            "$ref": "#/components/schemas/EdgeKey"
+          }
+        }
+      },
+      "EdgeCoverage": {
+        "type": "object",
+        "description": "Raw counts read from the index. These are row counts, not claims.",
+        "required": [
+          "filesIndexed",
+          "filesParseFailed",
+          "edgesResolvedCrossFile",
+          "edgesResolvedIntraFile",
+          "edgesAmbiguous",
+          "edgesUnresolved",
+          "edgesCapped"
+        ],
+        "properties": {
+          "edgesAmbiguous": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "edgesCapped": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "edgesResolvedCrossFile": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "edgesResolvedIntraFile": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "edgesUnresolved": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "filesIndexed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "filesParseFailed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "EdgeKey": {
+        "type": "object",
+        "description": "Stable per-item identity: the normalized path pair.",
+        "required": [
+          "srcPath",
+          "dstPath"
+        ],
+        "properties": {
+          "dstPath": {
+            "type": "string"
+          },
+          "srcPath": {
+            "type": "string"
+          }
+        }
+      },
+      "EvidenceKey": {
+        "type": "object",
+        "required": [
+          "repoScope",
+          "head",
+          "base"
+        ],
+        "properties": {
+          "base": {
+            "type": "string"
+          },
+          "head": {
+            "type": "string"
+          },
+          "repoScope": {
+            "type": "string"
+          }
+        }
+      },
+      "EvidenceProblemSchema": {
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "reasonCode"
+        ],
+        "properties": {
+          "reasonCode": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "EvidenceResponse": {
+        "type": "object",
+        "required": [
+          "schemaVersion",
+          "repoScope",
+          "displayName",
+          "head",
+          "base",
+          "git",
+          "baselineCandidates",
+          "comparison",
+          "verification"
+        ],
+        "properties": {
+          "base": {
+            "type": "string"
+          },
+          "baselineCandidates": {
+            "$ref": "#/components/schemas/BaselineCandidates"
+          },
+          "baselineDigest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "baselineName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "comparison": {
+            "$ref": "#/components/schemas/Comparison"
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "git": {
+            "$ref": "#/components/schemas/GitSection"
+          },
+          "head": {
+            "type": "string"
+          },
+          "repoScope": {
+            "type": "string"
+          },
+          "schemaVersion": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "verification": {
+            "$ref": "#/components/schemas/VerificationSection"
+          }
+        }
+      },
+      "GitPartialReason": {
+        "type": "string",
+        "enum": [
+          "unsupported-tree-path"
+        ]
+      },
+      "GitReason": {
+        "type": "string",
+        "enum": [
+          "not-prepared",
+          "git-files-unavailable"
+        ]
+      },
+      "GitSection": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "files",
+              "total",
+              "omitted",
+              "status"
+            ],
+            "properties": {
+              "files": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/PreparedFile"
+                }
+              },
+              "omitted": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "ready"
+                ]
+              },
+              "total": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "files",
+              "status"
+            ],
+            "properties": {
+              "files": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/PreparedFile"
+                }
+              },
+              "omitted": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "reasonCode": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/GitPartialReason"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "partial"
+                ]
+              },
+              "total": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "reasonCode",
+              "status"
+            ],
+            "properties": {
+              "reasonCode": {
+                "$ref": "#/components/schemas/GitReason"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "unavailable"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "HistorySample": {
+        "type": "object",
+        "required": [
+          "complete"
+        ],
+        "properties": {
+          "complete": {
+            "type": "boolean"
           }
         }
       },
@@ -1398,6 +2335,70 @@
           }
         }
       },
+      "IncomparableComparison": {
+        "type": "object",
+        "required": [
+          "baselineIdentity",
+          "incomparableReasons",
+          "currentInputReasons",
+          "notes"
+        ],
+        "properties": {
+          "baselineIdentity": {
+            "$ref": "#/components/schemas/BaselineIdentity"
+          },
+          "currentInputReasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "incomparableReasons": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IncomparableReason"
+            }
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "IncomparableReason": {
+        "type": "string",
+        "description": "Why a comparison is not comparable. Emitted sorted by token.",
+        "enum": [
+          "BASELINE_DIGEST_MISMATCH",
+          "BASELINE_INCOMPLETE",
+          "CURRENT_INCOMPLETE",
+          "EDGE_SOURCES_MISMATCH",
+          "PARSER_VERSION_MISMATCH",
+          "SCHEMA_MISMATCH",
+          "SCOPE_MISMATCH"
+        ]
+      },
+      "InputCompleteness": {
+        "type": "object",
+        "description": "Completeness verdict plus its sorted reason tokens.",
+        "required": [
+          "state",
+          "reasons"
+        ],
+        "properties": {
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "state": {
+            "$ref": "#/components/schemas/CompletenessState"
+          }
+        }
+      },
       "KgEdge": {
         "type": "object",
         "required": [
@@ -1506,6 +2507,13 @@
             "type": "boolean"
           }
         }
+      },
+      "Label": {
+        "type": "string",
+        "enum": [
+          "git --version",
+          "withheld"
+        ]
       },
       "LedgerDetailResponse": {
         "allOf": [
@@ -1747,6 +2755,142 @@
           }
         }
       },
+      "NotRecordedReason": {
+        "type": "string",
+        "enum": [
+          "revision-not-captured"
+        ]
+      },
+      "Outcome": {
+        "type": "object",
+        "required": [
+          "index",
+          "exitCode",
+          "durationMs",
+          "timedOut"
+        ],
+        "properties": {
+          "durationMs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "exitCode": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "index": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "timedOut": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Prediction": {
+        "type": "object",
+        "required": [
+          "state",
+          "warningCount"
+        ],
+        "properties": {
+          "impactFreshness": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SurfaceFreshnessStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/PredictionState"
+          },
+          "warningCount": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "PredictionState": {
+        "type": "string",
+        "enum": [
+          "ran",
+          "skipped",
+          "disabled",
+          "not-applicable"
+        ]
+      },
+      "PreparationRefusal": {
+        "type": "string",
+        "enum": [
+          "unsupported-input-encoding",
+          "unsupported-tree-path",
+          "index-generation-mismatch",
+          "index-parser-version-mismatch",
+          "index-input-stamp-missing",
+          "index-input-stamp-mismatch",
+          "index-input-hash-mismatch",
+          "index-input-unavailable"
+        ]
+      },
+      "PreparedFile": {
+        "type": "object",
+        "required": [
+          "kind",
+          "path"
+        ],
+        "properties": {
+          "additions": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "deletions": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "isBinary": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PreparedFileKind"
+          },
+          "oldPath": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "PreparedFileKind": {
+        "type": "string",
+        "enum": [
+          "added",
+          "deleted",
+          "modified",
+          "rewrite"
+        ]
+      },
       "ProblemDetail": {
         "type": "object",
         "description": "RFC 7807 problem-detail object. Additional members are allowed; this shape\nsupplies the core fields required by the track contract.\n\n`ToSchema` + `pub(crate)` so the OpenAPI can document error\nresponse bodies (e.g. the 501 from `/api/sync/status` when built without\nthe `sync` feature).",
@@ -1784,6 +2928,16 @@
           "validation_warnings"
         ],
         "properties": {
+          "changeEvidence": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ChangeEvidenceCapability"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "health_score": {
             "type": "integer",
             "format": "int32",
@@ -1816,6 +2970,40 @@
           }
         }
       },
+      "Regression": {
+        "type": "string",
+        "description": "Three-valued regression verdict. Never a boolean.",
+        "enum": [
+          "none",
+          "present",
+          "unknown"
+        ]
+      },
+      "Sample": {
+        "type": "object",
+        "required": [
+          "complete",
+          "omitted"
+        ],
+        "properties": {
+          "complete": {
+            "type": "boolean"
+          },
+          "omitted": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "Scope": {
+        "type": "string",
+        "enum": [
+          "fast",
+          "full",
+          "refused"
+        ]
+      },
       "SecurityBoundariesResponse": {
         "type": "object",
         "required": [
@@ -1825,6 +3013,87 @@
         "properties": {
           "boundaries": {},
           "meta": {}
+        }
+      },
+      "SelectionBasis": {
+        "type": "string",
+        "description": "How the run was assembled. Not a claim that the selection is sufficient.",
+        "enum": [
+          "full-requested",
+          "scoped-selection",
+          "fast-no-test-step",
+          "fallback-full",
+          "refused",
+          "explicit-steps",
+          "manual-command",
+          "unknown"
+        ]
+      },
+      "SelectionEvidence": {
+        "type": "object",
+        "required": [
+          "schemaVersion",
+          "basis",
+          "prediction",
+          "steps",
+          "omissions",
+          "limitationCodes"
+        ],
+        "properties": {
+          "basis": {
+            "$ref": "#/components/schemas/SelectionBasis"
+          },
+          "limitationCodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "omissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "prediction": {
+            "$ref": "#/components/schemas/Prediction"
+          },
+          "schemaVersion": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SelectionStep"
+            }
+          }
+        }
+      },
+      "SelectionStep": {
+        "type": "object",
+        "required": [
+          "index",
+          "command",
+          "kind",
+          "state"
+        ],
+        "properties": {
+          "command": {
+            "$ref": "#/components/schemas/Label"
+          },
+          "index": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "kind": {
+            "$ref": "#/components/schemas/StepKindJson"
+          },
+          "state": {
+            "$ref": "#/components/schemas/StepState"
+          }
         }
       },
       "SessionExchangeRequest": {
@@ -1950,6 +3219,32 @@
           }
         }
       },
+      "StepKindJson": {
+        "type": "string",
+        "enum": [
+          "test-run",
+          "non-test",
+          "unknown"
+        ]
+      },
+      "StepState": {
+        "type": "string",
+        "enum": [
+          "planned",
+          "passed",
+          "failed",
+          "not-run",
+          "unknown"
+        ]
+      },
+      "SurfaceFreshnessStatus": {
+        "type": "string",
+        "enum": [
+          "available",
+          "stale",
+          "unavailable"
+        ]
+      },
       "SyncStatusResponse": {
         "type": "object",
         "description": "`SyncStatusResponse` DTO — local M0 sync state.\n\nDeliberately **not** gated on `#[cfg(feature = \"sync\")]` so the OpenAPI\nschema can document the route in all builds (schema/runtime consistency).\nOnly the sync-specific *logic* (reading `SyncState`\nfrom the ledger DB) is feature-gated; the DTO and the route are always\npresent. When built without `sync`, the handler returns a clean\n`501 Not Implemented` (see `sync_status_handler`).",
@@ -2040,6 +3335,12 @@
           }
         }
       },
+      "UnavailableReason": {
+        "type": "string",
+        "enum": [
+          "attempts-unavailable"
+        ]
+      },
       "UserSession": {
         "type": "object",
         "required": [
@@ -2060,6 +3361,118 @@
           },
           "role": {
             "type": "string"
+          }
+        }
+      },
+      "VerificationAttempt": {
+        "type": "object",
+        "required": [
+          "attemptId",
+          "attemptKind",
+          "observedFrom",
+          "observedTo",
+          "ageStatus",
+          "state"
+        ],
+        "properties": {
+          "ageReason": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AgeReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ageStatus": {
+            "$ref": "#/components/schemas/AgeStatus"
+          },
+          "attemptId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "attemptKind": {
+            "$ref": "#/components/schemas/AttemptKind"
+          },
+          "observedFrom": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "observedTo": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "outcomes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/Outcome"
+            }
+          },
+          "runId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "sample": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Sample"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scopeExecuted": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Scope"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scopeRequested": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Scope"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "selectionEvidence": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SelectionEvidence"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/AttemptStatus"
+          },
+          "txId": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -2086,6 +3499,71 @@
             "type": "string"
           }
         }
+      },
+      "VerificationSection": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "attempts",
+              "sample",
+              "status"
+            ],
+            "properties": {
+              "attempts": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/VerificationAttempt"
+                }
+              },
+              "sample": {
+                "$ref": "#/components/schemas/HistorySample"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "recorded"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "reasonCode",
+              "status"
+            ],
+            "properties": {
+              "reasonCode": {
+                "$ref": "#/components/schemas/NotRecordedReason"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "not-recorded"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "reasonCode",
+              "status"
+            ],
+            "properties": {
+              "reasonCode": {
+                "$ref": "#/components/schemas/UnavailableReason"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "unavailable"
+                ]
+              }
+            }
+          }
+        ]
       },
       "VerificationStepResponse": {
         "type": "object",
@@ -2158,6 +3636,12 @@
             "minimum": 0
           }
         }
+      }
+    },
+    "securitySchemes": {
+      "changeEvidenceBearer": {
+        "type": "http",
+        "scheme": "bearer"
       }
     }
   },

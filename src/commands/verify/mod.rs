@@ -18,7 +18,9 @@ pub use diagnostic::{
 pub use dto::{
     VERIFY_JSON_SCHEMA_VERSION, VerifyCliJson, VerifyCliStepJson, step_status_from_exit_code,
 };
+pub(crate) use execute::AttemptPayload;
 pub use execute::{ExecuteVerifyOpts, execute_verify};
+pub(crate) use execute::{execute_verify_with_capture_request, isolated_capture_preview};
 pub use mapping::{MappedTest, TestMappingState, explain_test_mappings};
 pub use signatures::{
     SigEntryClass, SigEntryStream, SignatureAggregateCounts, class_for_sig_entry,

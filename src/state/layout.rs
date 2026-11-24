@@ -162,21 +162,9 @@ impl Layout {
     where
         F: FnOnce(&Utf8Path, &Utf8Path) -> std::io::Result<()>,
     {
-        if self.state_dir.exists() {
+        let Some(legacy_state_dir) = self.pending_legacy_state_dir() else {
             return Ok(false);
-        }
-
-        // Legacy state is a sibling of the *resolved* state directory (main
-        // worktree for linked worktrees), not necessarily under work_root.
-        let legacy_parent = self
-            .state_dir
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| self.root.clone());
-        let legacy_state_dir = legacy_parent.join(LEGACY_STATE_DIR);
-        if !legacy_state_dir.exists() {
-            return Ok(false);
-        }
+        };
 
         rename(&legacy_state_dir, &self.state_dir).map_err(|source| {
             StateError::LegacyMigrationFailed {
@@ -191,6 +179,27 @@ impl Layout {
             legacy_state_dir, self.state_dir
         );
         Ok(true)
+    }
+
+    /// Existing legacy state the ordinary startup would attempt to rename.
+    pub(crate) fn pending_legacy_state_dir(&self) -> Option<Utf8PathBuf> {
+        if self.state_dir.exists() {
+            return None;
+        }
+
+        // Legacy state is a sibling of the *resolved* state directory (main
+        // worktree for linked worktrees), not necessarily under work_root.
+        let legacy_parent = self
+            .state_dir
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| self.root.clone());
+        let legacy_state_dir = legacy_parent.join(LEGACY_STATE_DIR);
+        if !legacy_state_dir.exists() {
+            return None;
+        }
+
+        Some(legacy_state_dir)
     }
 
     pub fn ensure_dir(&self, path: &Utf8Path) -> Result<()> {
@@ -208,6 +217,15 @@ impl Layout {
 /// (the directory that contains `state/`, `config.toml`, etc.).
 pub const LEDGERFUL_STATE_DIR_ENV: &str = "LEDGERFUL_STATE_DIR";
 
+/// The branch that selected the state directory for an observed layout.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StateDirOrigin {
+    EnvironmentOverride,
+    LinkedWorktree,
+    RepositoryLocal,
+    CwdFallback,
+}
+
 /// Resolve the shared Ledgerful state directory for a discovered repository.
 ///
 /// Order (spec §3.3):
@@ -219,10 +237,26 @@ pub const LEDGERFUL_STATE_DIR_ENV: &str = "LEDGERFUL_STATE_DIR";
 ///
 /// Does **not** key linked-worktree detection on "`.git` is a file" (submodule trap).
 pub fn resolve_state_dir(repo: &gix::Repository) -> Result<Utf8PathBuf> {
-    if let Ok(raw) = env::var(LEDGERFUL_STATE_DIR_ENV) {
-        return resolve_state_dir_override(&raw);
-    }
+    resolve_state_dir_with_origin(repo).map(|(state_dir, _)| state_dir)
+}
 
+fn resolve_state_dir_with_origin(repo: &gix::Repository) -> Result<(Utf8PathBuf, StateDirOrigin)> {
+    let raw = env::var(LEDGERFUL_STATE_DIR_ENV).ok();
+    with_state_dir_override(raw.as_deref(), || resolve_repository_state_dir(repo))
+}
+
+fn with_state_dir_override(
+    raw: Option<&str>,
+    resolve_default: impl FnOnce() -> Result<(Utf8PathBuf, StateDirOrigin)>,
+) -> Result<(Utf8PathBuf, StateDirOrigin)> {
+    match raw {
+        Some(raw) => resolve_state_dir_override(raw)
+            .map(|state_dir| (state_dir, StateDirOrigin::EnvironmentOverride)),
+        None => resolve_default(),
+    }
+}
+
+fn resolve_repository_state_dir(repo: &gix::Repository) -> Result<(Utf8PathBuf, StateDirOrigin)> {
     if repo.is_bare() {
         return Err(miette::miette!(
             "Cannot open repo-scoped Ledgerful state for a bare repository \
@@ -265,11 +299,11 @@ pub fn resolve_state_dir(repo: &gix::Repository) -> Result<Utf8PathBuf> {
             ));
         }
         let main_root = utf8_path(main_root, "Main worktree root")?;
-        return Ok(main_root.join(STATE_DIR));
+        return Ok((main_root.join(STATE_DIR), StateDirOrigin::LinkedWorktree));
     }
 
     // Plain clone, main worktree, or submodule: private state under work root.
-    Ok(work_root.join(STATE_DIR))
+    Ok((work_root.join(STATE_DIR), StateDirOrigin::RepositoryLocal))
 }
 
 /// Parse and validate `LEDGERFUL_STATE_DIR` (absolute path required).
@@ -309,6 +343,10 @@ pub fn get_repo_root() -> Result<Utf8PathBuf> {
 /// resolution fails (bare repo, missing main parent, bad override). Prefer this
 /// for commands that require a repo.
 pub fn get_layout() -> Result<Layout> {
+    get_layout_with_state_origin().map(|(layout, _)| layout)
+}
+
+pub(crate) fn get_layout_with_state_origin() -> Result<(Layout, StateDirOrigin)> {
     let current_dir = env::current_dir().into_diagnostic()?;
     let repo = gix::discover(&current_dir).into_diagnostic()?;
     layout_from_discovered_repo(&repo)
@@ -325,23 +363,27 @@ pub fn get_layout() -> Result<Layout> {
 /// Use this instead of `match get_layout() { Ok => …, Err => Layout::new(cwd) }`,
 /// which collapses bare/missing-main resolve failures into a private state tree.
 pub fn get_layout_or_cwd_if_not_git() -> Result<Layout> {
+    get_layout_or_cwd_with_state_origin().map(|(layout, _)| layout)
+}
+
+pub(crate) fn get_layout_or_cwd_with_state_origin() -> Result<(Layout, StateDirOrigin)> {
     let current_dir = env::current_dir().into_diagnostic()?;
     match gix::discover(&current_dir) {
         Ok(repo) => layout_from_discovered_repo(&repo),
         Err(_) => {
             let root = utf8_path(&current_dir, "Current directory")?;
-            Ok(Layout::new(root))
+            Ok((Layout::new(root), StateDirOrigin::CwdFallback))
         }
     }
 }
 
-fn layout_from_discovered_repo(repo: &gix::Repository) -> Result<Layout> {
+fn layout_from_discovered_repo(repo: &gix::Repository) -> Result<(Layout, StateDirOrigin)> {
     let work_root = repo
         .workdir()
         .ok_or_else(|| miette::miette!("Failed to find work directory for repository"))?;
     let work_root = utf8_path(work_root, "Repository root")?;
-    let state_dir = resolve_state_dir(repo)?;
-    Ok(Layout::from_roots(work_root, state_dir))
+    let (state_dir, origin) = resolve_state_dir_with_origin(repo)?;
+    Ok((Layout::from_roots(work_root, state_dir), origin))
 }
 
 fn utf8_path(path: &Path, label: &str) -> Result<Utf8PathBuf> {

@@ -1,3 +1,4 @@
+use crate::change_evidence::pack_store::capture_budget::CaptureBudget;
 use crate::commands::CommandError;
 use crate::exec::{CommandOptions, ExecutionBoundary, ExecutionResult, ProcessError};
 use crate::platform::process_policy::{ProcessPolicy, ProcessPolicyError, check_policy};
@@ -122,6 +123,15 @@ pub fn execute_step_outcome(
     policy: &ProcessPolicy,
     command_override: Option<std::process::Command>,
 ) -> Result<StepExecution> {
+    execute_step_outcome_metered(step, policy, command_override, None)
+}
+
+pub(crate) fn execute_step_outcome_metered(
+    step: &PreparedStep,
+    policy: &ProcessPolicy,
+    command_override: Option<std::process::Command>,
+    capture_budget: Option<(&CaptureBudget, &std::path::Path)>,
+) -> Result<StepExecution> {
     // Direct mode: allowlist/deny check on the real executable.
     //
     // Shell mode: skip check_policy on the literal "cmd"/"sh" wrapper
@@ -146,8 +156,14 @@ pub fn execute_step_outcome(
         }
     };
     command.stdin(Stdio::null());
+    let cwd = env::current_dir().into_diagnostic()?;
+    if let Some((budget, root)) = capture_budget
+        && cwd != root
+    {
+        budget.invalidate();
+    }
     command
-        .current_dir(env::current_dir().into_diagnostic()?)
+        .current_dir(cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -156,7 +172,11 @@ pub fn execute_step_outcome(
         ..Default::default()
     };
 
-    match ExecutionBoundary::execute(command, &options) {
+    let outcome = {
+        let _pause = capture_budget.and_then(|(budget, _)| budget.pause_command());
+        ExecutionBoundary::execute(command, &options)
+    };
+    match outcome {
         Ok(result) => {
             if step.execution_mode == ExecutionMode::Shell && looks_like_command_not_found(&result)
             {

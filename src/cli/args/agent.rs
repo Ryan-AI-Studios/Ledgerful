@@ -355,6 +355,9 @@ pub struct VerifyArgs {
     /// agents never surprise multi-minute hangs. Pre-push does not set this.
     #[arg(long)]
     pub allow_full_fallback: bool,
+    /// Request revision-bound evidence for this verification or planning attempt.
+    #[arg(long, conflicts_with_all = ["health", "signatures", "chain", "against_export", "exact", "strict_signatures", "accept_adoption"])]
+    pub capture_change_evidence: bool,
     /// Emit a versioned machine-readable result object on stdout (schema
     /// version 1). Selects machine mode so human `cli_summary` lines cannot
     /// precede or follow the JSON. See `docs/agent-output-contract.md`.
