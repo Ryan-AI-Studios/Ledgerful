@@ -88,6 +88,25 @@ pub(crate) fn with_architecture_reader<T>(
         let _ = inspect;
         None
     };
+    qualify_architecture_observation(layout, observed)
+}
+
+#[cfg(all(windows, test))]
+pub(crate) fn with_architecture_reader_for_native_test<T>(
+    layout: &Layout,
+    duration: std::time::Duration,
+    inspect: impl FnOnce(rusqlite::Connection, Instant) -> (rusqlite::Connection, miette::Result<T>),
+) -> miette::Result<T> {
+    qualify_architecture_observation(
+        layout,
+        passive_db::read_architecture_for_native_test(layout, duration, inspect),
+    )
+}
+
+fn qualify_architecture_observation<T>(
+    layout: &Layout,
+    observed: Option<miette::Result<T>>,
+) -> miette::Result<T> {
     observed.ok_or_else(|| {
         miette::miette!(
             "ARCHITECTURE_STORAGE_UNAVAILABLE: could not qualify a passive SQLite read at {}",

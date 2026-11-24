@@ -88,3 +88,137 @@ mod tests {
         connection.close().unwrap();
     }
 }
+
+#[cfg(all(windows, test))]
+mod native_tests {
+    use super::*;
+    use crate::change_evidence::pack_store::with_architecture_reader_for_native_test;
+    use rusqlite::{Connection, ErrorCode};
+    use std::{
+        io::{BufRead, BufReader, Write},
+        path::Path,
+        process::{Command, Stdio},
+        sync::mpsc,
+        thread,
+    };
+
+    const WRITER_FIXTURE: &str = "LEDGERFUL_TEST_ARCHITECTURE_DEADLINE_WRITER";
+    const WAIT: Duration = Duration::from_secs(10);
+    const WRITE: &str = "BEGIN IMMEDIATE; INSERT INTO observed VALUES (2); COMMIT";
+
+    fn independent_writer(path: &Path) {
+        let connection = Connection::open(path).unwrap();
+        connection.busy_timeout(Duration::ZERO).unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;
+                 CREATE TABLE observed(value INTEGER NOT NULL);
+                 INSERT INTO observed VALUES (1);",
+            )
+            .unwrap();
+        let mut commands = std::io::stdin().lock().lines();
+        eprintln!("architecture-writer: ready");
+        assert_eq!(commands.next().unwrap().unwrap(), "during");
+        let blocked = connection.execute_batch(WRITE).unwrap_err();
+        assert_eq!(blocked.sqlite_error_code(), Some(ErrorCode::DatabaseBusy));
+        eprintln!("architecture-writer: busy");
+        assert_eq!(commands.next().unwrap().unwrap(), "after");
+        connection.execute_batch(WRITE).unwrap();
+        let count: i64 = connection
+            .query_row("SELECT count(*) FROM observed", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+        connection.close().unwrap();
+        eprintln!("architecture-writer: committed");
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn architecture_native_sql_deadline_releases_writer_custody__slow() {
+        if let Some(path) = std::env::var_os(WRITER_FIXTURE) {
+            independent_writer(Path::new(&path));
+            return;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let layout = Layout::new(camino::Utf8Path::from_path(directory.path()).unwrap());
+        std::fs::create_dir_all(layout.state_subdir()).unwrap();
+        let db = layout.state_subdir().join("ledger.db");
+        let test_name = format!(
+            "{}::architecture_native_sql_deadline_releases_writer_custody__slow",
+            module_path!().split_once("::").unwrap().1
+        );
+        let mut writer = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &test_name, "--nocapture"])
+            .env(WRITER_FIXTURE, db.as_std_path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut commands = writer.stdin.take().unwrap();
+        let responses = writer.stderr.take().unwrap();
+        let (send, receive) = mpsc::channel();
+        let read_responses = thread::spawn(move || {
+            for line in BufReader::new(responses).lines() {
+                if send.send(line.unwrap()).is_err() {
+                    break;
+                }
+            }
+        });
+        let expect = |answer| assert_eq!(receive.recv_timeout(WAIT).unwrap(), answer);
+        expect("architecture-writer: ready");
+
+        let mut interrupted = false;
+        let refusal = with_architecture_reader_for_native_test(
+            &layout,
+            Duration::from_secs(2),
+            |mut connection, deadline| {
+                bind_read_budget(&mut connection, deadline).unwrap();
+                let transaction = connection.transaction().unwrap();
+                let value: i64 = transaction
+                    .query_row("SELECT value FROM observed", [], |row| row.get(0))
+                    .unwrap();
+                assert_eq!(value, 1, "the native reader must see the WAL row");
+                writeln!(commands, "during").unwrap();
+                expect("architecture-writer: busy");
+
+                let query: rusqlite::Result<i64> = transaction.query_row(
+                    "WITH RECURSIVE n(i) AS (
+                        VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<1000000000
+                     )
+                     SELECT SUM(i) FROM n",
+                    [],
+                    |row| row.get(0),
+                );
+                let error = query.unwrap_err();
+                assert_eq!(
+                    error.sqlite_error_code(),
+                    Some(ErrorCode::OperationInterrupted)
+                );
+                assert!(Instant::now() >= deadline);
+                interrupted = true;
+                drop(transaction);
+                (connection, Err::<(), _>(miette::miette!("{error}")))
+            },
+        );
+        assert!(
+            interrupted,
+            "the real guarded callback must run to its deadline"
+        );
+        assert!(
+            refusal
+                .unwrap_err()
+                .to_string()
+                .contains("ARCHITECTURE_STORAGE_UNAVAILABLE")
+        );
+        writeln!(commands, "after").unwrap();
+        expect("architecture-writer: committed");
+        drop(commands);
+        assert!(writer.wait().unwrap().success());
+        read_responses.join().unwrap();
+        println!(
+            "native SQLite deadline: WAL row read; independent writer busy during custody; SQL interrupted; checked reader returned unavailable; independent writer committed without waiting"
+        );
+    }
+}

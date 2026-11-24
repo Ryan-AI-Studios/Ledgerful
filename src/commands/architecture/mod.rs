@@ -461,6 +461,32 @@ fn render_human(envelope: &ArchitectureEnvelope) -> String {
         envelope.observation.as_str(),
         envelope.regression.as_str(),
     );
+    let coverage = &envelope.evidence.coverage;
+    let _ = writeln!(
+        text,
+        "Evidence coverage {} files indexed, {} parse failures, {} resolved cross-file, {} resolved intra-file, {} ambiguous, {} unresolved, {} capped",
+        coverage.files_indexed,
+        coverage.files_parse_failed,
+        coverage.edges_resolved_cross_file,
+        coverage.edges_resolved_intra_file,
+        coverage.edges_ambiguous,
+        coverage.edges_unresolved,
+        coverage.edges_capped,
+    );
+    if let Some(baseline) = &envelope.baseline {
+        let status = match baseline.status {
+            BaselineStatus::Comparable => "comparable",
+            BaselineStatus::Incomparable => "incomparable",
+        };
+        let _ = writeln!(text, "Baseline {} {status}", baseline.name);
+        if !baseline.incomparable_reasons.is_empty() {
+            let _ = writeln!(
+                text,
+                "Baseline incomparable reasons {}",
+                baseline.incomparable_reasons.join(", "),
+            );
+        }
+    }
     for (label, reasons) in [
         ("Status", &envelope.status_reasons),
         ("Observation", &envelope.observation_reasons),

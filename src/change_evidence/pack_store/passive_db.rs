@@ -421,10 +421,31 @@ pub(super) fn read_architecture<T>(
     inspect: impl FnOnce(rusqlite::Connection, std::time::Instant) -> (rusqlite::Connection, T),
 ) -> Option<T> {
     use super::capture_budget::CaptureBudget;
+    let budget = CaptureBudget::new();
+    read_architecture_in_phase(layout, verified_binary_startup, budget.phase()?, inspect)
+}
+
+#[cfg(all(windows, test))]
+pub(super) fn read_architecture_for_native_test<T>(
+    layout: &Layout,
+    duration: std::time::Duration,
+    inspect: impl FnOnce(rusqlite::Connection, std::time::Instant) -> (rusqlite::Connection, T),
+) -> Option<T> {
+    let budget = super::capture_budget::CaptureBudget::new();
+    let mut phase = budget.phase()?;
+    phase.deadline = std::time::Instant::now().checked_add(duration)?;
+    read_architecture_in_phase(layout, true, phase, inspect)
+}
+
+#[cfg(windows)]
+fn read_architecture_in_phase<T>(
+    layout: &Layout,
+    verified_binary_startup: bool,
+    phase: super::capture_budget::CapturePhase<'_>,
+    inspect: impl FnOnce(rusqlite::Connection, std::time::Instant) -> (rusqlite::Connection, T),
+) -> Option<T> {
     use crate::change_evidence::contained::{ContainedRoot, ReadBudget};
 
-    let budget = CaptureBudget::new();
-    let phase = budget.phase()?;
     let io = ReadBudget::new_shared(
         phase.remaining_read_bytes(),
         phase.deadline,

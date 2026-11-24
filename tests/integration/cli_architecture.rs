@@ -734,7 +734,9 @@ fn assert_unknown_current(value: &Value) {
 fn architecture_check_missing_config_exits_nonzero_without_envelope() {
     let fixture = Fixture::empty();
     fixture.reject(&[], "ARCHITECTURE_CONFIG_NOT_FOUND");
-    fixture.reject(&["--config", "missing-rules.toml"], "missing-rules.toml");
+    let (out, err, exit) = fixture.refusal(BIN, &["--config", "missing-rules.toml"]);
+    assert!(err.contains("missing-rules.toml"), "{err}");
+    assert_refusal(out, err, exit, "ARCHITECTURE_CONFIG_NOT_FOUND");
     assert!(!fixture.root.join(".ledgerful").exists());
 }
 

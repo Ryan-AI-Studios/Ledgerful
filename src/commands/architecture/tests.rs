@@ -291,14 +291,30 @@ fn architecture_envelope_baseline_weight_absent_for_new() {
 #[test]
 fn architecture_human_summary_never_prints_pass_words() {
     let current = edge_set(&[FORWARD, REVERSE]);
-    let views = [
-        envelope(edge_set(&[FORWARD]), None),
-        envelope(current.clone(), Some(comparable(current.clone(), &current))),
-        envelope(current, Some(incomparable("BASELINE_CORRUPT"))),
+    let cases = [
+        (envelope(edge_set(&[FORWARD]), None), 1, None),
+        (
+            envelope(current.clone(), Some(comparable(current.clone(), &current))),
+            2,
+            Some("Baseline before comparable"),
+        ),
+        (
+            envelope(current, Some(incomparable("BASELINE_CORRUPT"))),
+            2,
+            Some("Baseline before incomparable\nBaseline incomparable reasons BASELINE_CORRUPT"),
+        ),
     ];
-    for view in views {
+    for (view, cross_file, baseline) in cases {
         let text = render_human(&view);
         assert!(text.contains("Evidence qualification unqualified"));
+        assert!(text.contains(&format!(
+            "Evidence coverage 0 files indexed, 0 parse failures, {cross_file} resolved cross-file, 0 resolved intra-file, 0 ambiguous, 0 unresolved, 0 capped"
+        )));
+        if let Some(baseline) = baseline {
+            assert!(text.contains(baseline), "{text}");
+        } else {
+            assert!(!text.contains("\nBaseline "), "{text}");
+        }
         assert!(text.contains("Observation "));
         assert!(text.contains("Regression "));
         for token in text.split(|character: char| !character.is_ascii_alphanumeric()) {
