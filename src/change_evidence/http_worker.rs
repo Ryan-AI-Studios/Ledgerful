@@ -486,12 +486,12 @@ mod strict_tests {
             .unwrap();
         runtime.block_on(async {
             let gate = WorkerGate::new();
-            let deadline = Instant::now() + SHORT_DEADLINE;
             let (processed, receipt) = oneshot::channel();
-            let worker = gate
-                .try_start(deadline, move |_| {
+            let mut worker = gate
+                .try_start(Instant::now() + Duration::from_secs(30), move |_| {
+                    let result = response(7).unwrap();
                     processed.send(()).unwrap();
-                    response(7)
+                    Ok(result)
                 })
                 .unwrap();
             timeout(TEST_LIMIT, receipt).await.unwrap().unwrap();
@@ -502,8 +502,8 @@ mod strict_tests {
             })
             .await
             .unwrap();
-            assert!(Instant::now() < deadline);
-            sleep_until(deadline).await;
+            // Expire only the wait, after the admitted worker has returned its result.
+            worker.deadline = Instant::now() - Duration::from_millis(1);
 
             assert_eq!(worker.wait().await, Err(WorkerError::Deadline));
             assert_eq!(gate.permits.available_permits(), 2);
