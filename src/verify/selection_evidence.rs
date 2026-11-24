@@ -23,6 +23,7 @@ pub const SELECTION_SOUNDNESS_LIMITATION: &str = "selection-soundness-not-establ
 
 /// How the run was assembled. Not a claim that the selection is sufficient.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum SelectionBasis {
     FullRequested,
@@ -36,6 +37,7 @@ pub enum SelectionBasis {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum PredictionState {
     Ran,
@@ -45,6 +47,7 @@ pub enum PredictionState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum StepKindJson {
     TestRun,
@@ -53,6 +56,7 @@ pub enum StepKindJson {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(utoipa::ToSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum StepState {
     Planned,

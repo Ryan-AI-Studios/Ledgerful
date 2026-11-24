@@ -28,13 +28,22 @@ use owo_colors::{OwoColorize, Stream, Style};
 use std::env;
 use tracing::{debug, warn};
 
-use super::diagnostic::{
-    VerifyDryRunJson, VerifyDryRunStepJson, diagnostic_schema_version,
-    refuse_mixed_verify_diagnostics, verify_dry_run_kind,
-};
-use super::dto::VerifyCliJson;
+use super::diagnostic::refuse_mixed_verify_diagnostics;
+
+#[path = "capture_ack.rs"]
+mod capture_ack;
+use capture_ack::{CaptureAck, print_human, root_json};
+use std::cell::Cell;
+
+#[path = "verification_origin.rs"]
+mod verification_origin;
 use super::health::{emit_verify_health_json, execute_verify_health};
 use super::mapping::{TestMappingState, explain_test_mappings, step_relevant_to_entity};
+pub(crate) use verification_origin::AttemptPayload;
+use verification_origin::{
+    CaptureAuthority, PlanningCaptureAuthority, emit_verify_dry_run_json, executed_json,
+    persist_planning_projection, prepare_executed, refused_json,
+};
 
 /// Named options for [`execute_verify`] (0191). Signature flags stay in dispatch.
 #[derive(Debug, Clone)]
@@ -55,6 +64,27 @@ pub struct ExecuteVerifyOpts {
 }
 
 pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
+    execute_verify_inner(opts, None)
+}
+
+type CaptureStartup<'a> = &'a mut dyn FnMut(&crate::state::layout::Layout) -> Result<()>;
+
+pub(crate) fn execute_verify_with_capture_request(
+    opts: ExecuteVerifyOpts,
+    startup: CaptureStartup<'_>,
+) -> Result<()> {
+    execute_verify_inner(opts, Some(startup))
+}
+
+pub(crate) fn isolated_capture_preview(capture_requested: bool, dry_run: bool) -> bool {
+    capture_requested && dry_run
+}
+
+fn execute_verify_inner(
+    opts: ExecuteVerifyOpts,
+    capture_startup: Option<CaptureStartup<'_>>,
+) -> Result<()> {
+    let capture_change_evidence = capture_startup.is_some();
     let ExecuteVerifyOpts {
         command: command_str,
         tx_id,
@@ -70,15 +100,99 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
         json,
         verbose,
     } = opts;
+    if capture_change_evidence && health {
+        return Err(miette::miette!(
+            "--capture-change-evidence cannot be combined with verification diagnostics"
+        ));
+    }
+    let isolated_preview = isolated_capture_preview(capture_change_evidence, dry_run);
+    let capture_budget = capture_change_evidence
+        .then(crate::change_evidence::pack_store::capture_budget::CaptureBudget::new);
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
-    let layout = crate::commands::helpers::get_layout_or_cwd_if_not_git()?;
+    use crate::change_evidence::pack_store::capture_session::CaptureSession;
+    use crate::state::storage::verification::{CaptureUnavailable, VerificationCaptureCommit};
+
+    let native_layout = capture_budget
+        .as_ref()
+        .and_then(|_| crate::state::layout::get_layout_with_state_origin().ok());
+    let (layout, origin) = match native_layout {
+        Some((layout, origin)) => (layout, Some(origin)),
+        None => (
+            crate::commands::helpers::get_layout_or_cwd_if_not_git()?,
+            None,
+        ),
+    };
+    // Keep the exact sampled inputs through the existing emitter. For live
+    // verification only a conclusive refusal can bypass ordinary execution.
+    let observed_dirty_plan = (capture_change_evidence && scope.is_fast() && command_str.is_none())
+        .then(|| {
+            observe_dirty_fast_plan(
+                &layout,
+                allow_full_fallback,
+                dry_run,
+                origin,
+                capture_budget.as_ref(),
+            )
+        })
+        .flatten();
+    let isolated_planning = isolated_preview || observed_dirty_plan.is_some();
+    // Planning capture independently proves a clean checkout of the exact HEAD.
+    // The fast empty-changes plan can therefore use the same isolated capture path.
+    let start = capture_budget.as_ref().map(|budget| {
+        if observed_dirty_plan.is_some() {
+            return Err(CaptureUnavailable::CheckoutUnavailable);
+        }
+        let origin = origin.ok_or(CaptureUnavailable::ScopeUnavailable)?;
+        if isolated_planning {
+            CaptureSession::start_planning(&layout, origin, &current_dir, budget)
+        } else {
+            CaptureSession::start(&layout, origin, &current_dir, budget)
+        }
+    });
+    let capture_ack = start.as_ref().map(|start| {
+        let refusal = start
+            .as_ref()
+            .err()
+            .copied()
+            .map(VerificationCaptureCommit::Unavailable);
+        Cell::new(CaptureAck::from_executed(refusal))
+    });
+    if !isolated_planning && let Some(startup) = capture_startup {
+        startup(&layout)?;
+    }
+    let mut session = start.and_then(std::result::Result::ok);
+    let has_planning_capture = session.is_some();
+    let mut persist_planning = |projection| {
+        if let Some(session) = session.take() {
+            let authority = PlanningCaptureAuthority {
+                prove: Box::new(move |layout| {
+                    session
+                        .finish_planning(layout)
+                        .map(|(identity, storage)| CaptureAuthority { identity, storage })
+                }),
+                completed: Box::new(|_| {}),
+            };
+            let committed = persist_planning_projection(&layout, projection, authority);
+            if let Some(ack) = &capture_ack {
+                ack.set(CaptureAck::from_planning(committed));
+            }
+        }
+    };
+    let mut capture = has_planning_capture
+        .then_some(&mut persist_planning as &mut verification_origin::CaptureObserver<'_>);
     let manual_requested = command_str.is_some();
 
     // 1. Initialize Context
-    let config = crate::config::load::load_config(&layout).unwrap_or_else(|e| {
-        warn!("Config load failed: {e}. Using defaults.");
-        crate::config::model::Config::default()
+    let (sampled_fast_plan, sampled_config) = match observed_dirty_plan {
+        Some((plan, config)) => (Some(plan), Some(config)),
+        None => (None, None),
+    };
+    let config = sampled_config.unwrap_or_else(|| {
+        crate::config::load::load_config(&layout).unwrap_or_else(|e| {
+            warn!("Config load failed: {e}. Using defaults.");
+            crate::config::model::Config::default()
+        })
     });
 
     // Deferred `tx_id` resolution until after short-circuits.
@@ -97,19 +211,20 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
     ctx.verbose = verbose;
 
     // 2. Load Storage and Packet
-    ctx.storage = match StorageManager::open_read_only(&layout) {
-        Ok(storage) => Some(storage),
-        Err(err) => {
-            if !no_predict {
-                let warning =
-                    format!("Prediction disabled: failed to initialize SQLite storage: {err}");
-                warn!("{warning}");
-                ctx.add_warning(warning);
+    if !isolated_planning {
+        ctx.storage = match StorageManager::open_read_only(&layout) {
+            Ok(storage) => Some(storage),
+            Err(err) => {
+                if !no_predict {
+                    let warning =
+                        format!("Prediction disabled: failed to initialize SQLite storage: {err}");
+                    warn!("{warning}");
+                    ctx.add_warning(warning);
+                }
+                None
             }
-            None
-        }
-    };
-
+        };
+    }
     if let Some(storage) = &ctx.storage {
         ctx.packet = match storage.get_latest_packet() {
             Ok(packet) => packet,
@@ -192,22 +307,33 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
     // One material snapshot feeds prediction, overlay, and JSON. Nested Rust
     // discovery is only needed here if strict and legacy materiality differ.
     let detect_rust = scope.is_fast() && !manual_requested && config_plan.is_none();
-    let (working_material, rust_crates, non_rust_present) =
-        classify_working_tree_material(layout.root.as_std_path(), detect_rust);
+    let (working_material, rust_crates, non_rust_present) = if sampled_fast_plan.is_some() {
+        (WorkingTreeMaterial::Dirty, None, false)
+    } else {
+        classify_working_tree_material(layout.root.as_std_path(), detect_rust)
+    };
 
     // 0600: true only for the 0288 clean-tree dry-run skip below.
     let mut prediction_clean_tree_skipped = false;
 
     // 3. Build Plan
-    let (plan, steps) = match command_str {
-        Some(ref cmd) => (
+    let (plan, steps) = match (sampled_fast_plan, command_str.as_ref()) {
+        (Some(mut plan), _) => {
+            for step in &mut plan.steps {
+                step.timeout_secs = cap_auto_step_timeout(step.timeout_secs, timeout_secs);
+            }
+            announce_live_plan(&plan, json, dry_run, verbose);
+            let steps = plan.steps.clone();
+            (Some(plan), steps)
+        }
+        (None, Some(cmd)) => (
             None,
             vec![manual_step(
                 cmd.clone(),
                 manual_timeout(manual_timeout_from_cli(timeout_secs)),
             )],
         ),
-        None => {
+        (None, None) => {
             if let Some(config_plan) = config_plan {
                 // Plan banner only under --verbose live path (0121 quiet success).
                 // Never on --dry-run: descriptions are pipe-merged walls (0144).
@@ -220,7 +346,8 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                 // (stale Temporal dump / optional-embed 10060). Do not set
                 // ctx.no_predict — that also gates storage/packet warnings.
                 // Manual --command and [[verify.steps]] never reach here.
-                let prediction = if dry_run && !working_tree_has_material_changes(working_material)
+                let prediction = if isolated_preview
+                    || (dry_run && !working_tree_has_material_changes(working_material))
                 {
                     prediction_clean_tree_skipped = true;
                     crate::verify::predict::PredictionResult::default()
@@ -252,7 +379,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                                 &config.verify,
                                 &profile,
                                 conn,
-                                auto_index,
+                                auto_index && !isolated_preview,
                                 allow_full_fallback,
                                 rust_crates,
                                 non_rust_present,
@@ -268,7 +395,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                                 scope,
                                 conn,
                                 &layout,
-                                auto_index,
+                                auto_index && !isolated_preview,
                                 allow_full_fallback,
                             )
                         }
@@ -294,7 +421,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                                     &config.verify,
                                     &profile,
                                     conn,
-                                    auto_index,
+                                    auto_index && !isolated_preview,
                                     allow_full_fallback,
                                     rust_crates,
                                     non_rust_present,
@@ -310,7 +437,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                                     scope,
                                     conn,
                                     &layout,
-                                    auto_index,
+                                    auto_index && !isolated_preview,
                                     allow_full_fallback,
                                 )
                             }
@@ -353,22 +480,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                     }
                 }
 
-                // Announce fast→full fallback or MappingRefuse before the user
-                // waits. On --json the reason is in fallbackReason — do not
-                // print around the payload. On --dry-run, defer so `scope:` is
-                // the first product line (0203-C / P5).
-                if !json
-                    && !dry_run
-                    && let Some(reason) = &plan.fallback_reason
-                {
-                    print_fallback_announcement(reason, plan.refused);
-                }
-
-                // Plan banner only under --verbose live path (0121 quiet success).
-                // Never on --dry-run: descriptions are pipe-merged walls (0144).
-                if verbose && !json && !dry_run {
-                    print_verify_plan(&plan);
-                }
+                announce_live_plan(&plan, json, dry_run, verbose);
                 for step in &mut plan.steps {
                     step.timeout_secs = cap_auto_step_timeout(step.timeout_secs, timeout_secs);
                 }
@@ -378,11 +490,13 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
         }
     };
 
+    let isolated_prediction =
+        isolated_planning && !manual_requested && !config_plan_used && !no_predict;
     let prediction_state = prediction_state_for(
         manual_requested,
         config_plan_used,
         no_predict,
-        prediction_clean_tree_skipped,
+        prediction_clean_tree_skipped || isolated_planning,
     );
 
     // Entity-scoped explanation: show tests mapped to the entity and relevant steps.
@@ -484,13 +598,19 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
 
     // MappingRefuse early path: never execute cargo; force fail (vacuous-pass guard).
     // Dry-run and live share this: refuse → exit 1 / Err.
+    let selection = SelectionInvocation {
+        manual_requested,
+        scope,
+        prediction_state,
+        impact_freshness: impact_freshness.as_ref(),
+    };
     let plan_refused = plan.as_ref().is_some_and(|p| p.refused);
     if plan_refused {
         if dry_run {
             let plan_source = plan.as_ref().and_then(|p| p.source.clone());
             let assurance =
                 execution_assurance_for(&steps, &[], plan_source, manual_requested, true, true);
-            if json {
+            if json || capture.is_some() {
                 let reason = plan
                     .as_ref()
                     .and_then(|p| p.fallback_reason.clone())
@@ -500,31 +620,24 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                         working_material,
                         WorkingTreeMaterial::Clean | WorkingTreeMaterial::Unavailable
                     );
-                let selection_evidence = selection_evidence_for(
-                    &steps,
-                    &[],
-                    plan.as_ref(),
-                    manual_requested,
-                    true,
-                    true,
-                    scope,
-                    prediction_state,
-                    ctx.warnings.len(),
-                    impact_freshness.as_ref(),
-                );
                 emit_verify_dry_run_json(
-                    &[],
-                    scope,
-                    Some(reason.clone()),
-                    true,
+                    &steps,
+                    plan.as_ref(),
+                    selection,
+                    ctx.warnings.len(),
                     bayesian_matched_steps,
                     bayesian_dataset_keys,
                     working_material,
                     prediction_skipped,
+                    isolated_prediction,
                     &assurance,
-                    &selection_evidence,
+                    capture.take(),
+                    capture_ack.as_ref(),
+                    json,
                 )?;
-                return Err(miette::miette!("{reason}"));
+                if json {
+                    return Err(miette::miette!("{reason}"));
+                }
             }
             // P5: scope line first, then ℹ/Next, assurance, then the refused footer.
             println!("{}", dry_run_scope_line(scope));
@@ -539,6 +652,9 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                 "Dry run mode: plan refused — no commands would be executed."
                     .if_supports_color(Stream::Stdout, |s| s.yellow())
             );
+            if let Some(ack) = &capture_ack {
+                print_human(ack.get());
+            }
             return Err(miette::miette!("{reason}"));
         }
 
@@ -557,24 +673,36 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
             true,
         );
         if json {
-            let selection_evidence = selection_evidence_for(
+            let payload = refused_json(
+                &report,
                 &steps,
-                &report.results,
-                report.plan.as_ref(),
-                manual_requested,
-                false,
-                true,
-                scope,
-                prediction_state,
+                selection,
                 ctx.warnings.len(),
-                impact_freshness.as_ref(),
+                bayesian_matched_steps,
+                assurance,
+                capture.take(),
             );
-            let payload =
-                VerifyCliJson::from_report(&report, scope, bayesian_matched_steps, assurance)
-                    .with_selection_evidence(selection_evidence);
-            println!("{}", payload.to_json_string()?);
+            if let Some(ack) = &capture_ack {
+                println!("{}", root_json(&payload, ack.get())?);
+            } else {
+                println!("{}", payload.to_json_string()?);
+            }
         } else {
             println!("{}", format_assurance_line(&assurance));
+            if capture.is_some() {
+                refused_json(
+                    &report,
+                    &steps,
+                    selection,
+                    ctx.warnings.len(),
+                    bayesian_matched_steps,
+                    assurance,
+                    capture.take(),
+                );
+            }
+            if let Some(ack) = &capture_ack {
+                print_human(ack.get());
+            }
         }
         let reason = report
             .plan
@@ -590,36 +718,30 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
         let plan_source = plan.as_ref().and_then(|p| p.source.clone());
         let assurance =
             execution_assurance_for(&steps, &[], plan_source, manual_requested, true, false);
-        if json {
+        if json || capture.is_some() {
             let prediction_skipped = command_str.is_none()
                 && matches!(
                     working_material,
                     WorkingTreeMaterial::Clean | WorkingTreeMaterial::Unavailable
                 );
-            let selection_evidence = selection_evidence_for(
+            emit_verify_dry_run_json(
                 &steps,
-                &[],
                 plan.as_ref(),
-                manual_requested,
-                true,
-                false,
-                scope,
-                prediction_state,
+                selection,
                 ctx.warnings.len(),
-                impact_freshness.as_ref(),
-            );
-            return emit_verify_dry_run_json(
-                &steps,
-                scope,
-                plan.as_ref().and_then(|p| p.fallback_reason.clone()),
-                false,
                 bayesian_matched_steps,
                 bayesian_dataset_keys,
                 working_material,
                 prediction_skipped,
+                isolated_prediction,
                 &assurance,
-                &selection_evidence,
-            );
+                capture.take(),
+                capture_ack.as_ref(),
+                json,
+            )?;
+            if json {
+                return Ok(());
+            }
         }
         // Manual --command: keep simple Verification Plan + single step + footer.
         // P9: same `scope:` first product line as plan dry-run.
@@ -642,6 +764,9 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                 "Dry run mode: verification plan displayed above. No commands were executed."
                     .if_supports_color(Stream::Stdout, |s| s.yellow())
             );
+            if let Some(ack) = &capture_ack {
+                print_human(ack.get());
+            }
             return Ok(());
         }
 
@@ -678,6 +803,9 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                 scope,
                 &assurance,
             );
+        }
+        if let Some(ack) = &capture_ack {
+            print_human(ack.get());
         }
         return Ok(());
     }
@@ -843,20 +971,59 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
         auto_id
     };
 
-    let mut report = VerifyEngine::execute_with_scope(
+    let postflight = match session
+        .take()
+        .map(|session| session.before_execution(&layout))
+    {
+        Some(Ok(session)) => Some(prepare_executed(
+            selection,
+            bayesian_matched_steps,
+            Box::new(move |layout| {
+                session
+                    .after_termination(layout)
+                    .map(|(identity, storage)| CaptureAuthority { identity, storage })
+            }),
+        )),
+        Some(Err(reason)) => {
+            if let Some(ack) = &capture_ack {
+                ack.set(CaptureAck::from_executed(Some(
+                    VerificationCaptureCommit::Unavailable(reason),
+                )));
+            }
+            None
+        }
+        None => None,
+    };
+    let command_budget = if postflight.is_some() {
+        capture_budget
+            .as_ref()
+            .map(|budget| (budget, layout.root.as_std_path()))
+    } else {
+        None
+    };
+    let mut execution = VerifyEngine::execute_collecting(
         &mut ctx,
         plan,
         &steps,
         manual_requested,
         resolved_tx_id,
         scope,
+        false,
+        postflight,
+        command_budget,
     )?;
 
     // 5. Generate Suggestions
     let ledger_status = query_ledger_status(&layout);
-    let suggestions = generate_suggestions(&report, &ledger_status);
-
-    report = report.with_suggested_actions(suggestions);
+    let suggestions = generate_suggestions(execution.report(), &ledger_status);
+    execution.add_suggestions(suggestions);
+    let capture_ack = capture_ack.map(|ack| {
+        execution.capture_commit().map_or_else(
+            || ack.into_inner(),
+            |commit| CaptureAck::from_executed(Some(commit)),
+        )
+    });
+    let report = execution.report();
 
     // 6. Final Reporting & IPC
     // Ordering on fail (non-json): step FAILURE lines (during run) → structured
@@ -872,13 +1039,13 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
     );
     if !json {
         if !report.overall_pass
-            && let Some(block) = crate::verify::fail_block::format_fail_block_from_report(&report)
+            && let Some(block) = crate::verify::fail_block::format_fail_block_from_report(report)
         {
             println!("{block}");
         }
 
         if should_print_suggested_actions(verbose, report.overall_pass) {
-            VerificationReporter::report(&ctx, &report);
+            VerificationReporter::report(&ctx, report);
             println!("{}", format_assurance_line(&assurance));
             print_cheap_command_line(&report.results, report.overall_pass);
         } else {
@@ -921,29 +1088,125 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
     // Emit versioned CLI payload before any error return (DoD-15 boundary):
     // JSON present + non-zero = validation rejection; no JSON + non-zero = fatal.
     if json {
-        // The engine copies `ctx.warnings` into the report, so the report's own
-        // count is the post-run value (0600).
-        let selection_evidence = selection_evidence_for(
-            &steps,
-            &report.results,
-            report.plan.as_ref(),
-            manual_requested,
-            false,
-            report.plan.as_ref().is_some_and(|p| p.refused),
-            scope,
-            prediction_state,
-            report.prediction_warnings.len(),
-            impact_freshness.as_ref(),
+        let payload = executed_json(
+            &execution,
+            selection,
+            bayesian_matched_steps,
+            assurance,
+            None,
         );
-        let payload = VerifyCliJson::from_report(&report, scope, bayesian_matched_steps, assurance)
-            .with_selection_evidence(selection_evidence);
-        println!("{}", payload.to_json_string()?);
+        if let Some(ack) = capture_ack {
+            println!("{}", root_json(&payload, ack)?);
+        } else {
+            println!("{}", payload.to_json_string()?);
+        }
+    } else if let Some(ack) = capture_ack {
+        print_human(ack);
     }
 
     if report.overall_pass {
         Ok(())
     } else {
         Err(miette::miette!("Verification failed"))
+    }
+}
+
+fn observe_dirty_fast_plan(
+    layout: &crate::state::layout::Layout,
+    allow_full_fallback: bool,
+    dry_run: bool,
+    _origin: Option<crate::state::layout::StateDirOrigin>,
+    _budget: Option<&crate::change_evidence::pack_store::capture_budget::CaptureBudget>,
+) -> Option<(VerificationPlan, crate::config::model::Config)> {
+    use crate::verify::plan::{FastPlanPrefix, RustCrates, classify_fast_plan_prefix};
+
+    if !dry_run && layout.pending_legacy_state_dir().is_some() {
+        return None;
+    }
+    let config = crate::config::load::load_config(layout).ok()?;
+    if !config.verify.steps.is_empty() {
+        return None;
+    }
+    let (material, rust, non_rust) =
+        classify_working_tree_material(layout.root.as_std_path(), true);
+    if material != WorkingTreeMaterial::Dirty {
+        return None;
+    }
+    let rules = crate::policy::load::load_rules(layout).ok()?;
+    let packet = match overlay_fast_classifier_packet_with_rust(
+        layout,
+        crate::impact::packet::ImpactPacket::default(),
+        rust.is_some_and(RustCrates::is_strict),
+        non_rust,
+    ) {
+        Ok(packet) => packet,
+        Err(_) => {
+            return match rust {
+                Some(RustCrates::Unknown(class)) => Some((
+                    crate::verify::plan::refuse_plan_for_trigger(&format!(
+                        "Rust detection inconclusive: {class}"
+                    )),
+                    config,
+                )),
+                _ => None,
+            };
+        }
+    };
+    let profile = crate::platform::repository::detect_repository(layout.root.as_std_path());
+    match classify_fast_plan_prefix(
+        &packet,
+        &rules,
+        &[],
+        &config.verify,
+        &profile,
+        layout.root.as_std_path(),
+        allow_full_fallback,
+        !dry_run,
+        rust,
+    ) {
+        FastPlanPrefix::Terminal(plan) if plan.refused || dry_run => Some((plan, config)),
+        #[cfg(any(windows, target_os = "linux"))]
+        FastPlanPrefix::Mapping(continuation) if dry_run || !allow_full_fallback => {
+            use crate::change_evidence::pack_store::capture_session::with_bound_fast_mapping;
+            use crate::verify::plan::{
+                build_fast_mapping_plan, decide_fast_plan_with_qualified_mapping,
+            };
+            let expected_head = packet.head_hash.as_deref()?;
+            let decision =
+                with_bound_fast_mapping(layout, _origin?, expected_head, _budget?, |tx| {
+                    decide_fast_plan_with_qualified_mapping(
+                        continuation,
+                        &packet,
+                        !dry_run,
+                        tx,
+                        expected_head,
+                    )
+                })?;
+            let plan = build_fast_mapping_plan(
+                decision,
+                &packet,
+                &rules,
+                &[],
+                &config.verify,
+                &profile,
+                layout.root.as_std_path(),
+                allow_full_fallback,
+            );
+            (plan.refused || dry_run).then_some((plan, config))
+        }
+        _ => None,
+    }
+}
+
+fn announce_live_plan(plan: &VerificationPlan, json: bool, dry_run: bool, verbose: bool) {
+    if !json
+        && !dry_run
+        && let Some(reason) = &plan.fallback_reason
+    {
+        print_fallback_announcement(reason, plan.refused);
+    }
+    if verbose && !json && !dry_run {
+        print_verify_plan(plan);
     }
 }
 
@@ -1311,104 +1574,37 @@ fn execution_assurance_for(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn selection_evidence_for(
-    steps: &[VerificationStep],
-    results: &[VerificationResult],
-    plan: Option<&VerificationPlan>,
+#[derive(Clone, Copy)]
+struct SelectionInvocation<'a> {
     manual_requested: bool,
-    preview: bool,
-    refused: bool,
     scope: VerifyScope,
     prediction_state: PredictionState,
-    warning_count: usize,
-    impact_freshness: Option<&ImpactFreshness>,
-) -> SelectionEvidenceJson {
-    build_selection_evidence(SelectionEvidenceInputs {
-        planned_steps: steps,
-        results,
-        plan_source: plan.and_then(|p| p.source.clone()),
-        manual_requested,
-        preview,
-        refused,
-        scope_requested: scope,
-        fallback_reason: plan.and_then(|p| p.fallback_reason.as_deref()),
-        prediction_state,
-        warning_count,
-        impact_freshness,
-    })
+    impact_freshness: Option<&'a ImpactFreshness>,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn emit_verify_dry_run_json(
-    steps: &[crate::verify::plan::VerificationStep],
-    scope: crate::verify::plan::VerifyScope,
-    fallback_reason: Option<String>,
-    refused: bool,
-    matched_steps: Option<usize>,
-    dataset_keys: Option<usize>,
-    material: WorkingTreeMaterial,
-    prediction_gate: bool,
-    assurance: &crate::verify::assurance::ExecutionAssuranceJson,
-    selection_evidence: &SelectionEvidenceJson,
-) -> Result<()> {
-    let git_available = !matches!(material, WorkingTreeMaterial::Unavailable);
-    let clean_tree = match material {
-        WorkingTreeMaterial::Clean => Some(true),
-        WorkingTreeMaterial::Dirty => Some(false),
-        WorkingTreeMaterial::Unavailable => None,
-    };
-    // Caller already applied the 0288 gate (Clean or Unavailable skip predict).
-    // Do not re-AND with Clean — that would report predictionSkipped:false after
-    // an Unavailable skip. Reason is cleanTree only when the tree is actually clean.
-    let prediction_skipped = prediction_gate;
-    let prediction_skip_reason =
-        if prediction_skipped && matches!(material, WorkingTreeMaterial::Clean) {
-            Some("cleanTree".to_string())
-        } else {
-            None
-        };
-    let scope_executed = if refused {
-        "refused".to_string()
-    } else if fallback_reason.is_some() {
-        "full".to_string()
-    } else {
-        scope.to_string()
-    };
-    let planned: Vec<VerifyDryRunStepJson> = if refused {
-        Vec::new()
-    } else {
-        steps
-            .iter()
-            .map(|s| VerifyDryRunStepJson {
-                name: crate::verify::fail_block::step_name_from_command(&s.command),
-                command: s.command.clone(),
-                status: "planned".to_string(),
-                timeout_secs: s.timeout_secs,
-                budget_source: s.budget_source.clone(),
-            })
-            .collect()
-    };
-    let payload = VerifyDryRunJson {
-        schema_version: diagnostic_schema_version(),
-        kind: verify_dry_run_kind(),
-        scope_requested: scope.to_string(),
-        scope_executed,
-        fallback_reason,
-        refused,
-        executed: false,
-        git_available,
-        clean_tree,
-        prediction_skipped,
-        prediction_skip_reason,
-        matched_steps,
-        dataset_keys,
-        steps: planned,
-        execution_assurance: Some(assurance.clone()),
-        selection_evidence: Some(selection_evidence.clone()),
-    };
-    println!("{}", payload.to_json_string()?);
-    Ok(())
+impl SelectionInvocation<'_> {
+    fn build(
+        self,
+        steps: &[VerificationStep],
+        results: &[VerificationResult],
+        plan: Option<&VerificationPlan>,
+        preview: bool,
+        warning_count: usize,
+    ) -> SelectionEvidenceJson {
+        build_selection_evidence(SelectionEvidenceInputs {
+            planned_steps: steps,
+            results,
+            plan_source: plan.and_then(|p| p.source.clone()),
+            manual_requested: self.manual_requested,
+            preview,
+            refused: plan.is_some_and(|p| p.refused),
+            scope_requested: self.scope,
+            fallback_reason: plan.and_then(|p| p.fallback_reason.as_deref()),
+            prediction_state: self.prediction_state,
+            warning_count,
+            impact_freshness: self.impact_freshness,
+        })
+    }
 }
 
 fn is_material_verify_path(path: &std::path::Path) -> bool {

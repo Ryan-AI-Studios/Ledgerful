@@ -1,5 +1,6 @@
 //! Web dashboard axum router and server submodules.
 
+mod change_evidence;
 pub mod csp;
 pub mod git;
 pub mod handlers;
@@ -8,6 +9,8 @@ pub mod middleware;
 pub mod router;
 pub mod sse;
 pub mod startup;
+
+pub(crate) use change_evidence::__path_get_change_evidence;
 
 pub use handlers::{
     __path_changes_handler, __path_config_handler, __path_health_handler, __path_hotspots_handler,

@@ -7,6 +7,8 @@
 //! the same call but outside the transaction: SQLite does not snapshot files,
 //! so `COMPLETE` is a point-in-time statement (R12).
 
+pub(crate) mod capture_snapshot;
+
 use super::identity::{
     BASELINE_SCHEMA, BaselineIdentity, BaselineScope, EdgeCoverage, FileEdge, FileEdgeSet,
     InputCompleteness, PAYLOAD_KIND, input_digest,
@@ -22,6 +24,7 @@ use crate::state::storage::StorageManager;
 use camino::Utf8Path;
 use chrono::{DateTime, Utc};
 use miette::{IntoDiagnostic, Result};
+use rusqlite::Connection;
 
 /// Counts that feed the completeness verdict, read in the same snapshot as
 /// the edges.
@@ -70,15 +73,16 @@ fn extract_in_snapshot(
     repo_root: &Utf8Path,
     now: DateTime<Utc>,
 ) -> Result<FileEdgeSet> {
-    let edges = read_edges(storage)?;
-    let coverage = read_coverage(storage, &edges)?;
-    let parser_version = read_metadata_value(storage, "parser_version")?;
-    let index_head_hash = read_metadata_value(storage, "head_hash")?;
-    let edge_sources = read_edge_sources(storage)?;
+    let conn = storage.get_connection();
+    let edges = read_edges(conn)?;
+    let coverage = read_coverage(conn, &edges)?;
+    let parser_version = read_metadata_value(conn, "parser_version")?;
+    let index_head_hash = read_metadata_value(conn, "head_hash")?;
+    let edge_sources = read_edge_sources(conn)?;
     let digest_rows = read_digest_rows(storage)?;
     let inputs = CompletenessInputs {
         files_parse_failed: coverage.files_parse_failed,
-        edges_capped: has_capped_edges(storage)?,
+        edges_capped: has_capped_edges(conn)?,
         parser_version_present: parser_version.is_some(),
     };
 
@@ -92,27 +96,50 @@ fn extract_in_snapshot(
     .discover_files_strict();
     let completeness = evaluate_completeness_for(storage, config, repo_root, now, &inputs, walk)?;
 
-    let identity = BaselineIdentity {
-        baseline_schema: BASELINE_SCHEMA,
-        payload_kind: PAYLOAD_KIND.to_string(),
-        scope: BaselineScope::repo(),
-        parser_version: parser_version.unwrap_or_default(),
-        edge_sources,
-        ledgerful_version: env!("LEDGERFUL_VERSION_LONG").to_string(),
-        index_head_hash,
-        input_digest: input_digest(&digest_rows),
-        input_completeness: completeness,
-    };
-
-    Ok(FileEdgeSet {
-        identity,
+    Ok(snapshot_edge_set(
+        SnapshotIdentity {
+            parser_version,
+            index_head_hash,
+            edge_sources,
+            input_digest: input_digest(&digest_rows),
+        },
         coverage,
         edges,
-    })
+        completeness,
+    ))
 }
 
-fn read_edges(storage: &StorageManager) -> Result<Vec<FileEdge>> {
-    let conn = storage.get_connection();
+struct SnapshotIdentity {
+    parser_version: Option<String>,
+    index_head_hash: Option<String>,
+    edge_sources: Vec<String>,
+    input_digest: String,
+}
+
+fn snapshot_edge_set(
+    snapshot: SnapshotIdentity,
+    coverage: EdgeCoverage,
+    edges: Vec<FileEdge>,
+    completeness: InputCompleteness,
+) -> FileEdgeSet {
+    FileEdgeSet {
+        identity: BaselineIdentity {
+            baseline_schema: BASELINE_SCHEMA,
+            payload_kind: PAYLOAD_KIND.to_string(),
+            scope: BaselineScope::repo(),
+            parser_version: snapshot.parser_version.unwrap_or_default(),
+            edge_sources: snapshot.edge_sources,
+            ledgerful_version: env!("LEDGERFUL_VERSION_LONG").to_string(),
+            index_head_hash: snapshot.index_head_hash,
+            input_digest: snapshot.input_digest,
+            input_completeness: completeness,
+        },
+        coverage,
+        edges,
+    }
+}
+
+fn read_edges(conn: &Connection) -> Result<Vec<FileEdge>> {
     let mut stmt = conn
         .prepare(
             "SELECT cf.file_path, df.file_path, COUNT(*)
@@ -147,8 +174,7 @@ fn read_edges(storage: &StorageManager) -> Result<Vec<FileEdge>> {
     Ok(edges)
 }
 
-fn read_coverage(storage: &StorageManager, edges: &[FileEdge]) -> Result<EdgeCoverage> {
-    let conn = storage.get_connection();
+fn read_coverage(conn: &Connection, edges: &[FileEdge]) -> Result<EdgeCoverage> {
     let (files_indexed, files_parse_failed) = conn
         .query_row(
             "SELECT COUNT(*),
@@ -198,37 +224,32 @@ fn read_coverage(storage: &StorageManager, edges: &[FileEdge]) -> Result<EdgeCov
     })
 }
 
-fn has_capped_edges(storage: &StorageManager) -> Result<bool> {
-    storage
-        .get_connection()
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM structural_edges WHERE resolution_status = 'CAPPED')",
-            [],
-            |row| row.get(0),
-        )
-        .into_diagnostic()
+fn has_capped_edges(conn: &Connection) -> Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM structural_edges WHERE resolution_status = 'CAPPED')",
+        [],
+        |row| row.get(0),
+    )
+    .into_diagnostic()
 }
 
 fn to_u64(value: i64) -> u64 {
     u64::try_from(value).unwrap_or(0)
 }
 
-fn read_metadata_value(storage: &StorageManager, key: &str) -> Result<Option<String>> {
+fn read_metadata_value(conn: &Connection, key: &str) -> Result<Option<String>> {
     use rusqlite::OptionalExtension;
-    storage
-        .get_connection()
-        .query_row(
-            "SELECT value FROM index_metadata WHERE key = ?1",
-            [key],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .into_diagnostic()
+    conn.query_row(
+        "SELECT value FROM index_metadata WHERE key = ?1",
+        [key],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .into_diagnostic()
 }
 
-fn read_edge_sources(storage: &StorageManager) -> Result<Vec<String>> {
-    let scip: i64 = storage
-        .get_connection()
+fn read_edge_sources(conn: &Connection) -> Result<Vec<String>> {
+    let scip: i64 = conn
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM structural_edges WHERE evidence LIKE 'scip:%')",
             [],
@@ -297,7 +318,15 @@ fn evaluate_completeness_for(
             age
         }
     };
-    match assessment.state {
+    Ok(finish_completeness(assessment.state, inputs, reasons))
+}
+
+fn finish_completeness(
+    state: IndexFreshnessState,
+    inputs: &CompletenessInputs,
+    mut reasons: Vec<String>,
+) -> InputCompleteness {
+    match state {
         IndexFreshnessState::FreshPopulated => {}
         IndexFreshnessState::StalePopulated => reasons.push("INDEX_STALE".to_string()),
         IndexFreshnessState::ContentStalePopulated => reasons.push("CONTENT_DRIFT".to_string()),
@@ -318,9 +347,9 @@ fn evaluate_completeness_for(
     }
 
     if reasons.is_empty() {
-        Ok(InputCompleteness::complete())
+        InputCompleteness::complete()
     } else {
-        Ok(InputCompleteness::incomplete(reasons))
+        InputCompleteness::incomplete(reasons)
     }
 }
 
@@ -784,7 +813,7 @@ mod snapshot_tests {
             .unwrap();
         assert_eq!(mode, "wal");
         let snapshot = reader.get_connection().unchecked_transaction().unwrap();
-        let before = read_edges(&reader).unwrap();
+        let before = read_edges(reader.get_connection()).unwrap();
         assert_eq!(before.len(), 1);
 
         seed_edge(&writer, c, b);
@@ -796,26 +825,29 @@ mod snapshot_tests {
             )
             .unwrap();
 
-        let during = read_edges(&reader).unwrap();
+        let during = read_edges(reader.get_connection()).unwrap();
         assert_eq!(during, before);
         assert_eq!(
-            read_coverage(&reader, &during)
+            read_coverage(reader.get_connection(), &during)
                 .unwrap()
                 .edges_resolved_cross_file,
             1
         );
-        assert_eq!(read_metadata_value(&reader, "head_hash").unwrap(), None);
+        assert_eq!(
+            read_metadata_value(reader.get_connection(), "head_hash").unwrap(),
+            None
+        );
         snapshot.commit().unwrap();
-        let after = read_edges(&reader).unwrap();
+        let after = read_edges(reader.get_connection()).unwrap();
         assert_eq!(after.len(), 2);
         assert_eq!(
-            read_coverage(&reader, &after)
+            read_coverage(reader.get_connection(), &after)
                 .unwrap()
                 .edges_resolved_cross_file,
             2
         );
         assert_eq!(
-            read_metadata_value(&reader, "head_hash")
+            read_metadata_value(reader.get_connection(), "head_hash")
                 .unwrap()
                 .as_deref(),
             Some("new-head")

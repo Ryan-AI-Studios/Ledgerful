@@ -23,7 +23,7 @@ use crate::state::storage::baselines::{
 use chrono::Utc;
 pub(crate) use delta::{
     Comparability, DeltaCounts, DeltaItem, EdgeSetDelta, IncomparableReason, Regression,
-    compare_edge_sets,
+    compare_edge_sets, regression_for,
 };
 #[allow(
     unused_imports,
@@ -118,12 +118,7 @@ pub(crate) fn create_baseline(
         ));
     }
 
-    let payload = StoredPayload {
-        coverage: set.coverage.clone(),
-        edges: set.edges.clone(),
-    };
-    let identity_json = canonical_identity_json(&set.identity)?;
-    let payload_json = canonical_payload_json(&payload)?;
+    let (identity_json, payload_json) = canonical_set_json(set)?;
     let payload_digest = compute_payload_digest(&identity_json, &payload_json);
     let created_at = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
@@ -141,6 +136,17 @@ pub(crate) fn create_baseline(
     )?;
 
     Ok((payload_digest, created_at))
+}
+
+pub(crate) fn canonical_set_json(set: &FileEdgeSet) -> Result<(String, String)> {
+    let payload = StoredPayload {
+        coverage: set.coverage.clone(),
+        edges: set.edges.clone(),
+    };
+    Ok((
+        canonical_identity_json(&set.identity)?,
+        canonical_payload_json(&payload)?,
+    ))
 }
 
 fn execute_list(json: bool) -> Result<()> {
@@ -346,14 +352,25 @@ fn supports_row(row: &BaselineRow, identity: &BaselineIdentity) -> bool {
 pub(crate) fn load_baseline(storage: &StorageManager, name: &str) -> Result<FileEdgeSet> {
     verify_baseline_db_version(storage.get_connection())?;
     let row = get_baseline(storage, name)?;
-    if !payload_digest_verified(&row) {
-        return Err(BaselineError::DigestMismatch { name: row.name }.into());
+    decode_verified_baseline_row(&row)
+}
+
+/// Reuse the strict 0601 row decoder on a caller's schema-qualified snapshot.
+pub(crate) fn decode_verified_baseline_row(row: &BaselineRow) -> Result<FileEdgeSet> {
+    if !payload_digest_verified(row) {
+        return Err(BaselineError::DigestMismatch {
+            name: row.name.clone(),
+        }
+        .into());
     }
-    let identity: BaselineIdentity = decode_required(&row, "identity", &row.identity_json)?;
-    if !supports_row(&row, &identity) {
-        return Err(BaselineError::RowSchemaMismatch { name: row.name }.into());
+    let identity: BaselineIdentity = decode_required(row, "identity", &row.identity_json)?;
+    if !supports_row(row, &identity) {
+        return Err(BaselineError::RowSchemaMismatch {
+            name: row.name.clone(),
+        }
+        .into());
     }
-    let payload: StoredPayload = decode_required(&row, "payload", &row.payload_json)?;
+    let payload: StoredPayload = decode_required(row, "payload", &row.payload_json)?;
     Ok(FileEdgeSet {
         identity,
         coverage: payload.coverage,

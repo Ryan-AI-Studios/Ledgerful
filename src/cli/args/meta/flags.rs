@@ -297,6 +297,7 @@ impl Commands {
                 dry_run,
                 auto_index,
                 allow_full_fallback,
+                capture_change_evidence,
                 json,
                 // `scope` is Option after 0288 (omitted vs explicit). Record the
                 // flag *name* unconditionally; values are stripped from the hash.
@@ -356,6 +357,9 @@ impl Commands {
                 }
                 if *allow_full_fallback {
                     f.push("allow_full_fallback");
+                }
+                if *capture_change_evidence {
+                    f.push("capture_change_evidence");
                 }
                 if *json {
                     f.push("json");
@@ -1648,6 +1652,15 @@ impl Commands {
                 }
                 crate::commands::schedule::ScheduleSubcommands::RunNightly => {}
             },
+            Commands::ChangeEvidence {
+                command:
+                    ChangeEvidenceCommands::AttestBaseline { json, .. }
+                    | ChangeEvidenceCommands::Prepare { json, .. },
+            } => {
+                if *json {
+                    f.push("json");
+                }
+            }
             Commands::Baseline { command } => match command {
                 BaselineCommands::Create { json, .. } | BaselineCommands::List { json } => {
                     if *json {
@@ -1749,6 +1762,9 @@ impl Commands {
                     }
                     if args.background {
                         f.push("background");
+                    }
+                    if args.disable_change_evidence {
+                        f.push("disable_change_evidence");
                     }
                     // print_token defaults to false (0090 W1); record only when opted in.
                     if args.print_token {

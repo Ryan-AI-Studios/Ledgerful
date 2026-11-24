@@ -6,6 +6,7 @@ pub(super) fn dispatch_verify(
     layout: &crate::state::layout::Layout,
     args: VerifyArgs,
     verbose: bool,
+    startup: &mut dyn FnMut(&crate::state::layout::Layout) -> Result<()>,
 ) -> Result<()> {
     let VerifyArgs {
         command,
@@ -25,8 +26,22 @@ pub(super) fn dispatch_verify(
         scope,
         auto_index,
         allow_full_fallback,
+        capture_change_evidence,
         json,
     } = args;
+    if capture_change_evidence
+        && (health
+            || signatures
+            || chain
+            || against_export.is_some()
+            || exact
+            || strict_signatures
+            || accept_adoption)
+    {
+        return Err(miette::miette!(
+            "--capture-change-evidence cannot be combined with verification diagnostics"
+        ));
+    }
     if exact && against_export.is_none() {
         return Err(miette::miette!(
             "--exact requires --against-export <path> (snapshot equality against a retained head)"
@@ -50,7 +65,7 @@ pub(super) fn dispatch_verify(
             accept_adoption,
         )
     } else {
-        crate::commands::verify::execute_verify(ExecuteVerifyOpts {
+        let opts = ExecuteVerifyOpts {
             command,
             tx_id,
             timeout_secs: timeout,
@@ -64,7 +79,12 @@ pub(super) fn dispatch_verify(
             allow_full_fallback,
             json,
             verbose,
-        })
+        };
+        if capture_change_evidence {
+            crate::commands::verify::execute_verify_with_capture_request(opts, startup)
+        } else {
+            crate::commands::verify::execute_verify(opts)
+        }
     }
 }
 

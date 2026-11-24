@@ -5,6 +5,7 @@
 //! synthetic directory, so an operator shell cannot redirect state.
 
 use crate::common::{git_add_and_commit, run_cli_isolated, setup_git_repo};
+use ledgerful::state::migrations::get_migrations_count;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -378,7 +379,10 @@ fn baseline_create_without_index_database_is_refused() {
 fn baseline_higher_sqlite_version_refused_for_every_subcommand__slow() {
     let (_tmp, dir) = indexed_repo();
     let db = rusqlite::Connection::open(dir.join(".ledgerful/state/ledger.db")).unwrap();
-    db.execute_batch("DROP TABLE analysis_baselines; PRAGMA user_version = 63;")
+    let supported_schema = i64::try_from(get_migrations_count()).unwrap();
+    let future_schema = supported_schema + 1;
+    db.execute_batch("DROP TABLE analysis_baselines").unwrap();
+    db.pragma_update(None, "user_version", future_schema)
         .unwrap();
     for args in [
         &["baseline", "create", "test", "--json"][..],
@@ -390,12 +394,15 @@ fn baseline_higher_sqlite_version_refused_for_every_subcommand__slow() {
         assert_eq!(code, 1, "{args:?}: {err}");
         assert!(out.is_empty(), "{args:?}: {out}");
         assert!(err.contains("BASELINE_SCHEMA_TOO_NEW"), "{args:?}: {err}");
-        assert!(err.contains("63") && err.contains("62"), "{args:?}: {err}");
+        assert!(
+            err.contains(&future_schema.to_string()) && err.contains(&supported_schema.to_string()),
+            "{args:?}: {err}"
+        );
     }
     let schema: i64 = db
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(schema, 63);
+    assert_eq!(schema, future_schema);
     let count: i64 = db
         .query_row(
             "SELECT COUNT(*) FROM sqlite_schema WHERE name LIKE 'analysis_baselines%'",

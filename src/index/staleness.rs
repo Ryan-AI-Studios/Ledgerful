@@ -118,6 +118,27 @@ pub fn assess_index_freshness(
     assess_index_freshness_at(storage, threshold_days, Utc::now())
 }
 
+/// Apply the index age rule to an already decoded, exact timestamp.
+pub(crate) fn age_with_index_timestamp(
+    populated: bool,
+    indexed_at: chrono::DateTime<Utc>,
+    now: chrono::DateTime<Utc>,
+    threshold_days: u64,
+) -> Option<(IndexFreshnessState, u64)> {
+    let days = (now - indexed_at).num_days();
+    if days < -1 {
+        return None;
+    }
+    let days = days.max(0) as u64;
+    let state = match (days <= threshold_days, populated) {
+        (true, true) => IndexFreshnessState::FreshPopulated,
+        (true, false) => IndexFreshnessState::FreshEmpty,
+        (false, true) => IndexFreshnessState::StalePopulated,
+        (false, false) => IndexFreshnessState::StaleEmpty,
+    };
+    Some((state, days))
+}
+
 pub fn assess_index_freshness_at(
     storage: &StorageManager,
     threshold_days: u64,
@@ -193,41 +214,23 @@ pub fn assess_index_freshness_at(
         None => None,
     };
 
-    let mut state = IndexFreshnessState::Indeterminate;
-    let mut days_since = None;
-
-    if db_err {
-        state = IndexFreshnessState::Indeterminate;
-    } else if final_source == FreshnessSource::None && active_rows == 0 {
-        state = IndexFreshnessState::NeverIndexed;
-    } else if let Some(parsed_dt) = dt {
-        let diff = now - parsed_dt;
-        let days = diff.num_days();
-
-        if days < -1 {
-            // Clock skew tolerance of 1 day
-            warnings.push("Future timestamp detected (clock skew).".to_string());
-            state = IndexFreshnessState::Indeterminate;
-        } else {
-            let clamped_days = if days < 0 { 0 } else { days as u64 };
-            days_since = Some(clamped_days);
-
-            if clamped_days <= threshold_days {
-                if active_rows == 0 {
-                    state = IndexFreshnessState::FreshEmpty;
-                } else {
-                    state = IndexFreshnessState::FreshPopulated;
-                }
-            } else if active_rows == 0 {
-                state = IndexFreshnessState::StaleEmpty;
-            } else {
-                state = IndexFreshnessState::StalePopulated;
-            }
-        }
-    } else if final_ts.is_none() && active_rows > 0 {
-        // Legacy with active rows but NO timestamp?
-        state = IndexFreshnessState::NeverIndexed; // Actually shouldn't happen
-    }
+    let (state, days_since) = if db_err {
+        (IndexFreshnessState::Indeterminate, None)
+    } else if let Some(parsed) = dt {
+        age_with_index_timestamp(active_rows > 0, parsed, now, threshold_days).map_or_else(
+            || {
+                warnings.push("Future timestamp detected (clock skew).".to_string());
+                (IndexFreshnessState::Indeterminate, None)
+            },
+            |(state, days)| (state, Some(days)),
+        )
+    } else if (final_source == FreshnessSource::None && active_rows == 0)
+        || (final_ts.is_none() && active_rows > 0)
+    {
+        (IndexFreshnessState::NeverIndexed, None)
+    } else {
+        (IndexFreshnessState::Indeterminate, None)
+    };
 
     // Age-only assess stays cheap: worktree unindexed count lives in
     // content-hash drift (`try_auto_index` / `count_content_hash_drift`).
@@ -559,21 +562,21 @@ pub fn apply_content_drift_override(
         assessment.sample_paths = drift.sample_paths.clone();
     }
 
-    if drift.is_dirty() {
-        // FreshEmpty + dirty: keep empty semantics honest (no invented state).
-        // NeverIndexed / Indeterminate: do not reclassify merely because
-        // drift or rows exist (preserve legacy branch).
-        if assessment.state == IndexFreshnessState::FreshPopulated {
-            assessment.state = IndexFreshnessState::ContentStalePopulated;
-        }
-    }
-
-    // Hard ban: never report FreshPopulated with positive content-stale count.
-    if assessment.stale_files > 0 && assessment.state == IndexFreshnessState::FreshPopulated {
-        assessment.state = IndexFreshnessState::ContentStalePopulated;
-    }
+    assessment.state = state_with_content_drift(assessment.state, drift.is_dirty());
 
     assessment
+}
+
+/// Preserve empty and indeterminate states when a content mismatch is known.
+pub(crate) fn state_with_content_drift(
+    state: IndexFreshnessState,
+    content_drift: bool,
+) -> IndexFreshnessState {
+    if content_drift && state == IndexFreshnessState::FreshPopulated {
+        IndexFreshnessState::ContentStalePopulated
+    } else {
+        state
+    }
 }
 
 /// Pure decision for light on-demand auto-index (testable without running indexers).

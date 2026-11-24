@@ -42,6 +42,50 @@ pub fn run_with(cli: Cli) -> Result<()> {
     {
         return index::dispatch_dependency_evidence(args);
     }
+    // Explicit producers own their storage authorization. Bypass startup state and
+    // telemetry so a refused publication cannot initialize the evidence store.
+    if let Commands::ChangeEvidence { command } = &cli.command {
+        return crate::commands::change_evidence::execute(command);
+    }
+    // Delay opt-in fast telemetry until the planner takes the ordinary path.
+    // A pure refusal and an explicit preview must not touch generic storage.
+    if matches!(&cli.command, Commands::Verify(args)
+        if crate::commands::verify::isolated_capture_preview(args.capture_change_evidence, args.dry_run)
+            || (args.capture_change_evidence && args.scope.is_some_and(crate::verify::plan::VerifyScope::is_fast)))
+    {
+        #[cfg(feature = "self-timing")]
+        let shape = cli.command.argv_shape();
+        let Commands::Verify(args) = cli.command else {
+            unreachable!("the isolated preview is always verify");
+        };
+        let layout = crate::commands::helpers::get_layout()?;
+        #[cfg(feature = "self-timing")]
+        let mut timed = None;
+        #[cfg(feature = "usage-metrics")]
+        let mut ordinary_path = false;
+        let result = dispatch_verify(&layout, args, cli.verbose, &mut |layout| {
+            #[cfg(feature = "self-timing")]
+            {
+                timed = Some(crate::observability::self_timing::TimedCommand::start(
+                    "verify", &shape,
+                ));
+            }
+            #[cfg(feature = "usage-metrics")]
+            {
+                ordinary_path = true;
+            }
+            load_startup_config(layout).map(drop)
+        });
+        #[cfg(feature = "usage-metrics")]
+        if ordinary_path {
+            record_command_usage("verify");
+        }
+        #[cfg(feature = "self-timing")]
+        if let Some(timed) = timed {
+            timed.finish(if result.is_ok() { 0 } else { 1 });
+        }
+        return result;
+    }
     let current_dir = env::current_dir().into_diagnostic()?;
 
     // Global commands must not mutate the current repository before dispatch.
@@ -56,6 +100,10 @@ pub fn run_with(cli: Cli) -> Result<()> {
     // orphan `{subdir}/.ledgerful` trees.
     let config = if is_global_command(&cli.command) {
         load_user_config().unwrap_or_default()
+    } else if matches!(&cli.command, Commands::Verify(args) if args.capture_change_evidence) {
+        // The capture startup must qualify the existing database before the
+        // ordinary startup path can migrate legacy state.
+        Default::default()
     } else if env::var(crate::commands::helpers::LEDGERFUL_STATE_DIR_ENV).is_ok() {
         // Override present: fail closed on relative/empty/invalid values.
         let layout = crate::commands::helpers::get_layout()?;
@@ -217,7 +265,9 @@ pub fn run_with(cli: Cli) -> Result<()> {
         }
         Commands::Verify(args) => {
             let layout = crate::commands::helpers::get_layout()?;
-            dispatch_verify(&layout, args, cli.verbose)
+            dispatch_verify(&layout, args, cli.verbose, &mut |layout| {
+                load_startup_config(layout).map(drop)
+            })
         }
         Commands::Ask(AskArgs {
             query,
@@ -418,6 +468,9 @@ pub fn run_with(cli: Cli) -> Result<()> {
         #[cfg(feature = "mcp")]
         Commands::Mcp { command } => dispatch_mcp(command),
         Commands::Schedule { subcommand } => dispatch_schedule(subcommand),
+        Commands::ChangeEvidence { .. } => {
+            unreachable!("explicit producer dispatches before startup")
+        }
         Commands::Baseline { command } => crate::commands::baseline::execute_baseline(command),
         Commands::Demo(DemoArgs {
             keep,
@@ -494,22 +547,8 @@ pub fn run_with(cli: Cli) -> Result<()> {
         Commands::Bench(args) => crate::commands::bench::execute_bench(args),
     };
 
-    // Usage metrics counter hook: increment counter and try flush
-    // This must never affect the host command's result.
     #[cfg(feature = "usage-metrics")]
-    {
-        let hook = std::panic::AssertUnwindSafe(|| {
-            crate::commands::usage::increment_counter(command_name);
-            crate::commands::usage::try_flush();
-        });
-        if let Err(e) = std::panic::catch_unwind(hook) {
-            // Best-effort: debug-level is correct for a panic in a
-            // never-fail hook. If a panic happens, the bug is in
-            // M7's code; downstream observability (not M7's concern)
-            // should be the place to count panics.
-            tracing::debug!("Usage metrics hook panicked: {:?}", e);
-        }
-    }
+    record_command_usage(command_name);
 
     // Finish self-timing after the host command completes (exit code 0/1).
     #[cfg(feature = "self-timing")]
@@ -519,6 +558,21 @@ pub fn run_with(cli: Cli) -> Result<()> {
     }
 
     result
+}
+
+#[cfg(feature = "usage-metrics")]
+fn record_command_usage(command_name: &str) {
+    let hook = std::panic::AssertUnwindSafe(|| {
+        crate::commands::usage::increment_counter(command_name);
+        crate::commands::usage::try_flush();
+    });
+    if let Err(e) = std::panic::catch_unwind(hook) {
+        // Best-effort: debug-level is correct for a panic in a
+        // never-fail hook. If a panic happens, the bug is in
+        // M7's code; downstream observability (not M7's concern)
+        // should be the place to count panics.
+        tracing::debug!("Usage metrics hook panicked: {:?}", e);
+    }
 }
 
 /// Apply global `-C` / `--directory` after parse and before layout/dispatch.

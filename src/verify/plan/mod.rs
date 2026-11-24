@@ -89,7 +89,9 @@ pub(crate) use full::{append_full_tier_commands, nextest_has_profile};
 #[cfg(test)]
 pub(crate) use non_code::INCLUDE_STR_MATERIAL;
 pub(crate) use non_code::{is_legacy_material_path, is_non_code_cheap_path};
-pub(crate) use scoped::test_file_to_nextest_stem;
+pub(crate) use scoped::{FastPlanPrefix, classify_fast_plan_prefix, test_file_to_nextest_stem};
+#[cfg(any(windows, target_os = "linux"))]
+pub(crate) use scoped::{build_fast_mapping_plan, decide_fast_plan_with_qualified_mapping};
 #[cfg(test)]
 pub(crate) use scoped::{
     build_scoped_nextest_command, is_test_mapping_stale, query_scoped_test_files,

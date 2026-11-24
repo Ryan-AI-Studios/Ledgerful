@@ -31,6 +31,19 @@ impl StorageManager {
         self.is_read_only
     }
 
+    /// Adopt the already proof-qualified SQLite-only writer with its real root.
+    pub(crate) fn from_capture_connection(
+        connection: crate::change_evidence::pack_store::capture_db::QualifiedSqliteConnection,
+        layout: &Layout,
+    ) -> Self {
+        Self {
+            conn: connection.into_inner(),
+            cozo: None,
+            is_read_only: false,
+            root_path: layout.root.clone(),
+        }
+    }
+
     /// Open write-mode storage for a path-shaped `ledger.db`.
     ///
     /// `root_path` is derived as parent of `.ledgerful` from the DB path

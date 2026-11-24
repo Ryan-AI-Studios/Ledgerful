@@ -29,6 +29,7 @@ pub mod m54_file_bindings;
 pub mod m55_ci_gate_qualifiers;
 pub mod m56_ledger_recovery_manifest;
 pub mod m57_analysis_baselines;
+pub mod m58_change_evidence;
 
 use rusqlite_migration::Migrations;
 
@@ -161,6 +162,7 @@ pub fn get_migrations() -> Migrations<'static> {
     // Registered unconditionally so a database that has run m57 fails
     // preflight on an older binary instead of opening with a missing table.
     all_m.extend(m57_analysis_baselines::m57_analysis_baselines());
+    all_m.extend(m58_change_evidence::m58_change_evidence());
 
     Migrations::new(all_m)
 }
@@ -210,6 +212,7 @@ pub fn get_migrations_count() -> usize {
     count += m55_ci_gate_qualifiers::m55_ci_gate_qualifiers().len();
     count += m56_ledger_recovery_manifest::m56_ledger_recovery_manifest().len();
     count += m57_analysis_baselines::m57_analysis_baselines().len();
+    count += m58_change_evidence::m58_change_evidence().len();
 
     count
 }
@@ -280,6 +283,12 @@ mod tests {
                 "command_timings",
                 "file_bindings",
                 "analysis_baselines",
+                "change_evidence_scopes",
+                "change_evidence_names",
+                "change_evidence_attestations",
+                "change_evidence_prepared",
+                "change_evidence_attempts",
+                "change_evidence_samples",
             ];
 
             // `sync_state` and `tx_tombstones` are registered
@@ -444,7 +453,8 @@ mod baseline_m57_tests {
             .pragma_query_value(None, "foreign_keys", |r| r.get(0))
             .unwrap();
         assert!(enabled);
-        let before_m57 = get_migrations_count() - 1;
+        // m56 corresponds to schema 61 in the registered migration sequence.
+        let before_m57 = 61;
         get_migrations().to_version(&mut conn, before_m57).unwrap();
 
         let has_baselines: i64 = conn
@@ -513,7 +523,9 @@ mod baseline_m57_tests {
             ]
         };
         let before = capture(&conn);
-        get_migrations().to_latest(&mut conn).unwrap();
+        get_migrations()
+            .to_version(&mut conn, before_m57 + 1)
+            .unwrap();
         assert_eq!(capture(&conn), before, "m57 must preserve existing rows");
         let mut statement = conn.prepare("PRAGMA foreign_key_check").unwrap();
         let mut violations = statement.query([]).unwrap();

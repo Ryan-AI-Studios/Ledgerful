@@ -18,6 +18,10 @@ use super::non_code::{
 use super::shared_infra::touches_shared_infra;
 
 /// nextest `test()` stem injected when packaging templates or bump scripts change.
+#[cfg(any(windows, target_os = "linux"))]
+#[path = "bounded_mapping.rs"]
+mod bounded_mapping;
+
 const BUMP_MANIFESTS_STEM: &str = "bump_manifests";
 
 /// Query `test_mapping` for the test files that cover the changed source
@@ -58,12 +62,8 @@ pub(crate) fn query_scoped_test_files(
         };
         let rows = scoped_test_file_rows(conn, fid)?;
         for (file_path, symbol_name) in rows {
-            if crate::index::test_mapping::is_test_path(&file_path) {
-                if let Some(stem) = test_file_to_nextest_stem(&file_path) {
-                    test_files.insert(stem);
-                }
-            } else if let Some(name) = symbol_name.filter(|s| !s.is_empty()) {
-                test_files.insert(name);
+            if let Some(stem) = mapping_row_stem(&file_path, symbol_name) {
+                test_files.insert(stem);
             }
         }
     }
@@ -72,6 +72,14 @@ pub(crate) fn query_scoped_test_files(
         None
     } else {
         Some(test_files.into_iter().collect())
+    }
+}
+
+fn mapping_row_stem(path: &str, symbol_name: Option<String>) -> Option<String> {
+    if crate::index::test_mapping::is_test_path(path) {
+        test_file_to_nextest_stem(path)
+    } else {
+        symbol_name.filter(|name| !name.is_empty())
     }
 }
 
@@ -222,26 +230,31 @@ pub fn build_plan_scoped_with_options(
     )
 }
 
+/// A fast decision that needs no state, or proof that the SQL lane must decide.
+pub(crate) enum FastPlanPrefix {
+    Terminal(VerificationPlan),
+    Deferred,
+    Mapping(FastMappingContinuation),
+}
+
+pub(crate) struct FastMappingContinuation {
+    emb: EmbeddedDecision,
+    has_source: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn build_plan_scoped_with_rust_crates(
+pub(crate) fn classify_fast_plan_prefix(
     packet: &ImpactPacket,
     rules: &Rules,
     predicted: &[PredictedFile],
     config: &VerifyConfig,
     profile: &crate::platform::repository::RepositoryProfile,
-    scope: VerifyScope,
-    conn: Option<&rusqlite::Connection>,
-    layout: &crate::state::layout::Layout,
-    auto_index: bool,
+    repo_root: &std::path::Path,
     allow_full_fallback: bool,
+    refusal_only: bool,
     rust_crates: Option<embedded::RustCrates>,
-) -> VerificationPlan {
-    let repo_root = layout.root.as_std_path();
-    if !scope.is_fast() {
-        // Explicit full request — no fallback announcement needed.
-        return build_plan_with_scope(packet, rules, predicted, config, profile, scope, repo_root);
-    }
-
+) -> FastPlanPrefix {
+    let scope = VerifyScope::Fast;
     // A broken root manifest is an execution precondition, not a discovery
     // failure. Preserve the empty-packet contract and root-based profile; this
     // guard precedes SharedInfra so malformed Cargo.toml cannot become a
@@ -262,7 +275,9 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
         } else {
             "malformed Cargo.toml"
         };
-        return super::refuse_plan(&format!("Rust detection inconclusive: {class}"));
+        return FastPlanPrefix::Terminal(super::refuse_plan(&format!(
+            "Rust detection inconclusive: {class}"
+        )));
     }
 
     // None is the memoized NotNeeded state. Only execution owns the discovery
@@ -274,11 +289,16 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
             .iter()
             .any(|change| !is_non_code_cheap_path(&change.path))
     {
-        return super::refuse_plan(&format!("Rust detection inconclusive: {class}"));
+        return FastPlanPrefix::Terminal(super::refuse_plan(&format!(
+            "Rust detection inconclusive: {class}"
+        )));
     }
 
     // 1. SharedInfra — justified full suite (unchanged from 0061).
     if touches_shared_infra(packet) {
+        if refusal_only {
+            return FastPlanPrefix::Deferred;
+        }
         let mut plan =
             build_plan_with_scope(packet, rules, predicted, config, profile, scope, repo_root);
         plan.fallback_reason = Some(format_fallback_reason(
@@ -286,7 +306,7 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
             "running full (~5-8 min)",
         ));
         plan.refused = false;
-        return plan;
+        return FastPlanPrefix::Terminal(plan);
     }
 
     // 2. NonCodeCheap — all classified paths match cheap globs (docs /
@@ -319,12 +339,15 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
         && !repo_root.join("Cargo.toml").is_file()
         && (!emb.stems.is_empty() || !emb.needs_mapping.is_empty())
     {
-        return super::refuse_plan(
+        return FastPlanPrefix::Terminal(super::refuse_plan(
             "Rust crates found only below the repo root (no root Cargo.toml); add a root workspace Cargo.toml or run verify from a checkout rooted at the crate",
-        );
+        ));
     }
     if let Some(trigger) = &emb.refuse {
-        return mapping_cannot_scope_outcome(
+        if refusal_only && allow_full_fallback {
+            return FastPlanPrefix::Deferred;
+        }
+        return FastPlanPrefix::Terminal(mapping_cannot_scope_outcome(
             trigger,
             allow_full_fallback,
             packet,
@@ -334,7 +357,7 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
             profile,
             scope,
             repo_root,
-        );
+        ));
     }
     let non_rust_candidates: Vec<String> = if lookup_active {
         emb.no_dependency
@@ -353,7 +376,10 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
             is_non_code_cheap_path(Path::new(path))
         });
         if let Some(trigger) = non_rust.refuse {
-            return mapping_cannot_scope_outcome(
+            if refusal_only && allow_full_fallback {
+                return FastPlanPrefix::Deferred;
+            }
+            return FastPlanPrefix::Terminal(mapping_cannot_scope_outcome(
                 &trigger,
                 allow_full_fallback,
                 packet,
@@ -363,7 +389,7 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
                 profile,
                 scope,
                 repo_root,
-            );
+            ));
         }
     }
     let has_source = packet
@@ -386,7 +412,10 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
         .map(String::as_str)
         .collect();
     if !legacy_unreferenced.is_empty() {
-        return mapping_cannot_scope_outcome(
+        if refusal_only && allow_full_fallback {
+            return FastPlanPrefix::Deferred;
+        }
+        return FastPlanPrefix::Terminal(mapping_cannot_scope_outcome(
             &format!(
                 "unreferenced legacy-material path(s): {}",
                 legacy_unreferenced.join(", ")
@@ -399,7 +428,7 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
             profile,
             scope,
             repo_root,
-        );
+        ));
     }
     if emb.needs_mapping.is_empty()
         && (all_non_code_cheap(packet)
@@ -409,13 +438,16 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
                 && (!engine_tree || !emb.stems.is_empty()))
             || (!lookup_active && pure_non_legacy))
     {
-        return build_non_code_cheap_plan(
+        if refusal_only {
+            return FastPlanPrefix::Deferred;
+        }
+        return FastPlanPrefix::Terminal(build_non_code_cheap_plan(
             packet,
             profile,
             repo_root,
             config.suite_timeout_secs,
             &emb,
-        );
+        ));
     }
 
     // 3. EmptyChanges — before stem query (query_scoped returns None for both
@@ -426,8 +458,50 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
     // Note: live-clean trees with a non-empty *saved* packet are handled in
     // `commands/verify` (B1) so this packet-empty path stays pure.
     if packet.changes.is_empty() {
-        return build_empty_changes_plan(profile);
+        if refusal_only {
+            return FastPlanPrefix::Deferred;
+        }
+        return FastPlanPrefix::Terminal(build_empty_changes_plan(profile));
     }
+
+    FastPlanPrefix::Mapping(FastMappingContinuation { emb, has_source })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_plan_scoped_with_rust_crates(
+    packet: &ImpactPacket,
+    rules: &Rules,
+    predicted: &[PredictedFile],
+    config: &VerifyConfig,
+    profile: &crate::platform::repository::RepositoryProfile,
+    scope: VerifyScope,
+    conn: Option<&rusqlite::Connection>,
+    layout: &crate::state::layout::Layout,
+    auto_index: bool,
+    allow_full_fallback: bool,
+    rust_crates: Option<embedded::RustCrates>,
+) -> VerificationPlan {
+    let repo_root = layout.root.as_std_path();
+    if !scope.is_fast() {
+        // Explicit full request — no fallback announcement needed.
+        return build_plan_with_scope(packet, rules, predicted, config, profile, scope, repo_root);
+    }
+
+    let FastMappingContinuation { emb, has_source } = match classify_fast_plan_prefix(
+        packet,
+        rules,
+        predicted,
+        config,
+        profile,
+        repo_root,
+        allow_full_fallback,
+        false,
+        rust_crates,
+    ) {
+        FastPlanPrefix::Terminal(plan) => return plan,
+        FastPlanPrefix::Deferred => unreachable!("ordinary planning constructs all plans"),
+        FastPlanPrefix::Mapping(next) => next,
+    };
 
     // 4. Freshness gate — must run before trusting stems.
     // HeadMismatch auto-repairs once (no flag). Empty still needs --auto-index.
@@ -507,6 +581,60 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
         );
     }
 
+    let decision = decide_fast_mapping(
+        packet,
+        FastMappingContinuation { emb, has_source },
+        false,
+        |packet| {
+            Ok::<_, std::convert::Infallible>(conn.and_then(|c| query_scoped_test_files(c, packet)))
+        },
+    )
+    .unwrap_or_else(|error| match error {})
+    .expect("ordinary planning decides every mapping outcome");
+    build_fast_mapping_plan(
+        decision,
+        packet,
+        rules,
+        predicted,
+        config,
+        profile,
+        repo_root,
+        allow_full_fallback,
+    )
+}
+
+pub(crate) struct FastMappingDecision(MappingOutcome);
+
+enum MappingOutcome {
+    CannotScope(String),
+    Scoped {
+        stems: Vec<String>,
+        emb: EmbeddedDecision,
+    },
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+pub(crate) fn decide_fast_plan_with_qualified_mapping(
+    continuation: FastMappingContinuation,
+    packet: &ImpactPacket,
+    refusal_only: bool,
+    tx: &rusqlite::Transaction<'_>,
+    expected_head: &str,
+) -> Option<FastMappingDecision> {
+    let mut mapping = bounded_mapping::BoundedMapping::new(tx, expected_head).ok()?;
+    decide_fast_mapping(packet, continuation, refusal_only, |packet| {
+        mapping.stems(packet.changes.iter().map(|change| change.path.as_path()))
+    })
+    .ok()?
+}
+
+fn decide_fast_mapping<E>(
+    packet: &ImpactPacket,
+    continuation: FastMappingContinuation,
+    refusal_only: bool,
+    mut lookup: impl FnMut(&ImpactPacket) -> Result<Option<Vec<String>>, E>,
+) -> Result<Option<FastMappingDecision>, E> {
+    let FastMappingContinuation { emb, has_source } = continuation;
     // 5. ScopedOk — stems only after non-stale gate passed.
     // P7: union `bump_manifests` when any packaging / bump-script path is in
     // the classified set (mixed src+packaging that already ScopedOk on src).
@@ -518,21 +646,8 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
         source_packet
             .changes
             .retain(|change| embedded::is_source_path(&change.path));
-        if conn
-            .and_then(|c| query_scoped_test_files(c, &source_packet))
-            .is_none()
-        {
-            return mapping_cannot_scope_outcome(
-                "test_mapping has no mappings for changed source independently of embedded includers",
-                allow_full_fallback,
-                packet,
-                rules,
-                predicted,
-                config,
-                profile,
-                scope,
-                repo_root,
-            );
+        if lookup(&source_packet)?.is_none() {
+            return Ok(Some(FastMappingDecision(MappingOutcome::CannotScope("test_mapping has no mappings for changed source independently of embedded includers".to_string()))));
         }
     }
     let mut includer_stems = Vec::new();
@@ -546,61 +661,69 @@ pub(crate) fn build_plan_scoped_with_rust_crates(
             head_hash: packet.head_hash.clone(),
             ..ImpactPacket::default()
         };
-        if let Some(stems) = conn.and_then(|c| query_scoped_test_files(c, &single)) {
+        if let Some(stems) = lookup(&single)? {
             includer_stems.extend(stems);
         } else {
-            return mapping_cannot_scope_outcome(
-                &format!("embedded path is read by {includer}, which has no test_mapping rows"),
-                allow_full_fallback,
-                packet,
-                rules,
-                predicted,
-                config,
-                profile,
-                scope,
-                repo_root,
-            );
+            return Ok(Some(FastMappingDecision(MappingOutcome::CannotScope(
+                format!("embedded path is read by {includer}, which has no test_mapping rows"),
+            ))));
         }
     }
     // P1-1: embedded stems never stand in for unmapped changed source; the
     // code-change mapping must scope on its own before they are unioned.
     let mut scoped_stems = if has_source {
-        conn.and_then(|c| query_scoped_test_files(c, packet))
+        lookup(packet)?
     } else if !includer_stems.is_empty() || !emb.stems.is_empty() {
         Some(Vec::new())
     } else {
-        conn.and_then(|c| query_scoped_test_files(c, packet))
+        lookup(packet)?
     };
+    if refusal_only && scoped_stems.is_some() {
+        return Ok(None);
+    }
     if let Some(stems) = scoped_stems.as_mut() {
         stems.extend(includer_stems);
         stems.extend(emb.stems.iter().cloned());
         stems.sort();
         stems.dedup();
     }
-    if let Some(mut test_stems) = scoped_stems {
-        let inject = union_cheap_inject_stems(packet, profile, repo_root, &mut test_stems);
-        return build_fast_scoped_plan(
-            packet,
-            &test_stems,
-            inject,
-            config.suite_timeout_secs,
-            &emb,
-        );
-    }
+    let outcome = match scoped_stems {
+        Some(stems) => MappingOutcome::Scoped { stems, emb },
+        None => MappingOutcome::CannotScope(
+            "test_mapping has no mappings for the changed files".to_string(),
+        ),
+    };
+    Ok(Some(FastMappingDecision(outcome)))
+}
 
-    // 6. MappingRefuse — fresh mapping but no coverage for changed files.
-    // Mixed src unmapped + packaging still refuses (do not cheap mixed).
-    mapping_cannot_scope_outcome(
-        "test_mapping has no mappings for the changed files",
-        allow_full_fallback,
-        packet,
-        rules,
-        predicted,
-        config,
-        profile,
-        scope,
-        repo_root,
-    )
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_fast_mapping_plan(
+    decision: FastMappingDecision,
+    packet: &ImpactPacket,
+    rules: &Rules,
+    predicted: &[PredictedFile],
+    config: &VerifyConfig,
+    profile: &crate::platform::repository::RepositoryProfile,
+    repo_root: &Path,
+    allow_full_fallback: bool,
+) -> VerificationPlan {
+    match decision.0 {
+        MappingOutcome::Scoped { mut stems, emb } => {
+            let inject = union_cheap_inject_stems(packet, profile, repo_root, &mut stems);
+            build_fast_scoped_plan(packet, &stems, inject, config.suite_timeout_secs, &emb)
+        }
+        MappingOutcome::CannotScope(trigger) => mapping_cannot_scope_outcome(
+            &trigger,
+            allow_full_fallback,
+            packet,
+            rules,
+            predicted,
+            config,
+            profile,
+            VerifyScope::Fast,
+            repo_root,
+        ),
+    }
 }
 /// Shared outcome for mapping-cannot-scope: refuse by default, or 0061 full
 /// execute + announce when `allow_full_fallback`.

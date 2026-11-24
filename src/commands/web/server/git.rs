@@ -8,11 +8,26 @@ use crate::state::layout::Layout;
 use miette::{Result, miette};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub(crate) type ChangeWithPair = (ChangeResponse, Option<(gix::ObjectId, gix::ObjectId)>);
+
 pub(crate) fn fetch_changes(
     layout: &Layout,
     days: u64,
     include_working_tree: bool,
 ) -> Result<Vec<ChangeResponse>> {
+    Ok(
+        fetch_changes_with_pairs(layout, days, include_working_tree)?
+            .into_iter()
+            .map(|(change, _)| change)
+            .collect(),
+    )
+}
+
+pub(crate) fn fetch_changes_with_pairs(
+    layout: &Layout,
+    days: u64,
+    include_working_tree: bool,
+) -> Result<Vec<ChangeWithPair>> {
     let repo = match open_repo(layout.root.as_std_path()) {
         Ok(r) => r,
         Err(e) => {
@@ -45,22 +60,25 @@ pub(crate) fn fetch_changes(
                     )
                 })
                 .unwrap_or_else(|| "Uncommitted changes".to_string());
-            changes.push(ChangeResponse {
-                id: "working-tree".to_string(),
-                path: if file_count == 1 {
-                    file_changes[0].path.to_string_lossy().to_string()
-                } else {
-                    format!("{} files", file_count)
+            changes.push((
+                ChangeResponse {
+                    id: "working-tree".to_string(),
+                    path: if file_count == 1 {
+                        file_changes[0].path.to_string_lossy().to_string()
+                    } else {
+                        format!("{} files", file_count)
+                    },
+                    status: "Uncommitted".to_string(),
+                    summary,
+                    author: current_user(),
+                    time_ago: "now".to_string(),
+                    file_count,
+                    additions,
+                    deletions,
+                    risk: "MEDIUM".to_string(),
                 },
-                status: "Uncommitted".to_string(),
-                summary,
-                author: current_user(),
-                time_ago: "now".to_string(),
-                file_count,
-                additions,
-                deletions,
-                risk: "MEDIUM".to_string(),
-            });
+                None,
+            ));
         }
     }
 
@@ -124,7 +142,7 @@ fn fetch_recent_commits(
     repo: &gix::Repository,
     days: u64,
     max_commits: usize,
-) -> Result<Vec<ChangeResponse>> {
+) -> Result<Vec<ChangeWithPair>> {
     let head = repo
         .head_commit()
         .map_err(|e| miette!("Failed to read HEAD: {e}"))?;
@@ -187,9 +205,13 @@ fn fetch_recent_commits(
                 continue;
             }
         };
+        let mut eligible_parent = None;
         let parent_tree = match commit.parent_ids().next() {
             Some(p_id) => match p_id.object().map(|obj| obj.into_commit().tree()) {
-                Ok(Ok(tree)) => tree,
+                Ok(Ok(tree)) => {
+                    eligible_parent = Some(p_id.detach());
+                    tree
+                }
                 _ => {
                     tracing::warn!(
                         "Failed to retrieve parent tree for {}; using empty tree",
@@ -258,26 +280,29 @@ fn fetch_recent_commits(
             "LOW"
         };
 
-        changes.push(ChangeResponse {
-            id: commit_id[..commit_id.len().min(8)].to_string(),
-            path: if file_count == 1 {
-                files.into_iter().next().unwrap_or_default()
-            } else {
-                format!("{} files", file_count)
+        changes.push((
+            ChangeResponse {
+                id: commit_id[..commit_id.len().min(8)].to_string(),
+                path: if file_count == 1 {
+                    files.into_iter().next().unwrap_or_default()
+                } else {
+                    format!("{} files", file_count)
+                },
+                status: "Committed".to_string(),
+                summary: if summary.is_empty() {
+                    "(no message)".to_string()
+                } else {
+                    summary
+                },
+                author,
+                time_ago: format_time_ago(commit_time),
+                file_count,
+                additions,
+                deletions,
+                risk: risk.to_string(),
             },
-            status: "Committed".to_string(),
-            summary: if summary.is_empty() {
-                "(no message)".to_string()
-            } else {
-                summary
-            },
-            author,
-            time_ago: format_time_ago(commit_time),
-            file_count,
-            additions,
-            deletions,
-            risk: risk.to_string(),
-        });
+            eligible_parent.map(|parent| (info.id().detach(), parent)),
+        ));
     }
 
     Ok(changes)

@@ -107,6 +107,40 @@ pub(crate) struct ProjectResponse {
     /// attention" badge without an `Option` round-trip. This is
     /// additive/non-breaking relative to the pre-TA31 DTO shape.
     pub(crate) validation_warnings: Vec<String>,
+    #[serde(rename = "changeEvidence", skip_serializing_if = "Option::is_none")]
+    pub(crate) change_evidence: Option<ChangeEvidenceCapability>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChangeEvidenceCapability {
+    pub(crate) schema_version: u8,
+    pub(crate) status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) reason_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) repo_scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) display_name: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EvidenceKey {
+    pub(crate) repo_scope: String,
+    pub(crate) head: String,
+    pub(crate) base: String,
+}
+
+#[derive(Debug, Serialize)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
+pub(crate) struct ChangesListResponse {
+    #[serde(flatten)]
+    pub(crate) change: ChangeResponse,
+    #[serde(rename = "evidenceKey", skip_serializing_if = "Option::is_none")]
+    pub(crate) evidence_key: Option<EvidenceKey>,
 }
 
 /// `SyncStatusResponse` DTO — local M0 sync state.

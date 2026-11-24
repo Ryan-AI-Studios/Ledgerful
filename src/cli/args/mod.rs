@@ -363,6 +363,40 @@ Tips:
 
     /// Generate a disposable demonstration repo with signed ledger entries, cryptographic VALID proof, and a DEMO evidence export (see docs/golden-path.md)
     Demo(DemoArgs),
+
+    /// Publish revision-bound evidence from an existing index
+    ChangeEvidence {
+        #[command(subcommand)]
+        command: ChangeEvidenceCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ChangeEvidenceCommands {
+    /// Prove and attest an existing immutable baseline at the current checkout
+    AttestBaseline {
+        /// Existing baseline name
+        #[arg(value_parser = parse_evidence_baseline_name)]
+        name: String,
+        /// Emit a machine-readable acknowledgement
+        #[arg(long)]
+        json: bool,
+    },
+    /// Prepare evidence for the exact current commit and its first parent
+    Prepare {
+        /// Existing baseline name
+        #[arg(value_parser = parse_evidence_baseline_name)]
+        name: String,
+        /// Emit a machine-readable acknowledgement
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+fn parse_evidence_baseline_name(raw: &str) -> Result<String, &'static str> {
+    crate::state::storage::baselines::validate_baseline_name(raw)
+        .map_err(|_| "expected a baseline name of 1-64 lowercase letters, digits, periods, underscores or hyphens starting with a letter or digit")?;
+    Ok(raw.to_owned())
 }
 
 /// Subcommands for `ledgerful baseline`.

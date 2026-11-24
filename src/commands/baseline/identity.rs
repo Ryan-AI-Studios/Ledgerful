@@ -23,6 +23,7 @@ pub(crate) struct FileEdge {
 
 /// Scope of a baseline. v1 writes only `{"kind":"repo"}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BaselineScope {
     pub kind: String,
@@ -38,6 +39,7 @@ impl BaselineScope {
 
 /// Completeness state, serialized as `COMPLETE` / `INCOMPLETE`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(utoipa::ToSchema))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub(crate) enum CompletenessState {
     Complete,
@@ -46,6 +48,7 @@ pub(crate) enum CompletenessState {
 
 /// Completeness verdict plus its sorted reason tokens.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct InputCompleteness {
     pub state: CompletenessState,
@@ -76,6 +79,7 @@ impl InputCompleteness {
 
 /// Raw counts read from the index. These are row counts, not claims.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EdgeCoverage {
     pub files_indexed: u64,
@@ -89,6 +93,7 @@ pub(crate) struct EdgeCoverage {
 
 /// Identity bound to a baseline payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "web", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BaselineIdentity {
     pub baseline_schema: u32,

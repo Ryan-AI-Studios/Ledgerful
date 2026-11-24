@@ -189,6 +189,11 @@ impl Commands {
                 WebCommands::Start(_) | WebCommands::Stop => false,
             },
             Commands::Internal { .. } => false,
+            Commands::ChangeEvidence {
+                command:
+                    ChangeEvidenceCommands::AttestBaseline { json, .. }
+                    | ChangeEvidenceCommands::Prepare { json, .. },
+            } => *json,
             Commands::Baseline { command } => match command {
                 BaselineCommands::Create { json, .. }
                 | BaselineCommands::List { json }

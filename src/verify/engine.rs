@@ -1,3 +1,5 @@
+use crate::change_evidence::pack_store::capture_budget::CaptureBudget;
+use crate::change_evidence::pack_store::capture_db::QualifiedCaptureStorage;
 use crate::config::model::Config;
 use crate::exec::ExecutionResult;
 use crate::impact::packet::ImpactPacket;
@@ -7,11 +9,14 @@ use crate::output::verification::{
 };
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
+use crate::state::storage::verification::{
+    CaptureUnavailable, PreparedExecutedAttempt, VerificationCaptureCommit,
+};
 use crate::verify::plan::{VerificationPlan, VerificationStep};
 use crate::verify::results::{VerificationReport, VerificationResult, write_verify_report};
 use crate::verify::runner::{
-    StepExecution, VERIFY_STEP_TIMEOUT_EXIT_CODE, execute_step_outcome, prepare_manual_step,
-    prepare_rule_step,
+    StepExecution, VERIFY_STEP_TIMEOUT_EXIT_CODE, execute_step_outcome,
+    execute_step_outcome_metered, prepare_manual_step, prepare_rule_step,
 };
 use chrono::Utc;
 use miette::Result;
@@ -76,6 +81,78 @@ pub fn probe_nextest() -> bool {
         .unwrap_or(false)
 }
 
+#[path = "execution_origin.rs"]
+mod execution_origin;
+use execution_origin::ExecutionCollector;
+pub(crate) use execution_origin::{ExecutionTerminal, MAX_CAPTURE_POSITIONS};
+
+/// Awaiting the caller's actual postflight revision/scope proof. The returned
+/// writer owns the original qualified attempt when that proof succeeds.
+pub(crate) type ExecutePostflight<'call, 'scope> = dyn FnOnce(
+        &Layout,
+        &CompletedExecution<'_>,
+    ) -> std::result::Result<
+        (QualifiedCaptureStorage<'scope>, PreparedExecutedAttempt),
+        CaptureUnavailable,
+    > + 'call;
+
+pub(crate) struct CompletedExecution<'a> {
+    report: VerificationReport,
+    terminal: Option<ExecutionTerminal>,
+    capture_commit: Option<VerificationCaptureCommit>,
+    steps: &'a [VerificationStep],
+    scope: crate::verify::plan::VerifyScope,
+    manual_requested: bool,
+}
+
+impl<'a> CompletedExecution<'a> {
+    pub(crate) fn report(&self) -> &VerificationReport {
+        &self.report
+    }
+    pub(crate) fn steps(&self) -> &'a [VerificationStep] {
+        self.steps
+    }
+    pub(crate) fn scope(&self) -> crate::verify::plan::VerifyScope {
+        self.scope
+    }
+
+    pub(crate) fn manual_requested(&self) -> bool {
+        self.manual_requested
+    }
+
+    pub(crate) fn terminal(&self) -> Option<&ExecutionTerminal> {
+        self.terminal.as_ref()
+    }
+    pub(crate) fn capture_commit(&self) -> Option<VerificationCaptureCommit> {
+        self.capture_commit
+    }
+
+    pub(crate) fn add_suggestions(
+        &mut self,
+        suggestions: Vec<crate::verify::suggestions::Suggestion>,
+    ) {
+        self.report.suggested_actions = suggestions;
+    }
+}
+
+#[cfg(test)]
+impl CompletedExecution<'static> {
+    pub(crate) fn for_storage_test(report: VerificationReport) -> Self {
+        let mut collector = ExecutionCollector::new(report.results.len());
+        for (position, result) in report.results.iter().enumerate() {
+            collector.record_finished(position, result);
+        }
+        Self {
+            report,
+            terminal: Some(collector.complete()),
+            capture_commit: None,
+            steps: &[],
+            scope: crate::verify::plan::VerifyScope::Full,
+            manual_requested: true,
+        }
+    }
+}
+
 pub struct VerifyEngine;
 
 impl VerifyEngine {
@@ -104,6 +181,34 @@ impl VerifyEngine {
         tx_id: Option<String>,
         scope: crate::verify::plan::VerifyScope,
     ) -> Result<VerificationReport> {
+        Self::execute_collecting(
+            ctx,
+            plan,
+            steps,
+            manual_requested,
+            tx_id,
+            scope,
+            false,
+            None,
+            None,
+        )
+        .map(|execution| execution.report)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn execute_collecting<'a>(
+        ctx: &mut VerificationContext,
+        plan: Option<VerificationPlan>,
+        steps: &'a [VerificationStep],
+        manual_requested: bool,
+        tx_id: Option<String>,
+        scope: crate::verify::plan::VerifyScope,
+        capture: bool,
+        postflight: Option<Box<ExecutePostflight<'_, '_>>>,
+        capture_budget: Option<(&CaptureBudget, &std::path::Path)>,
+    ) -> Result<CompletedExecution<'a>> {
+        let mut capture =
+            (capture || postflight.is_some()).then(|| ExecutionCollector::new(steps.len()));
         let mut persisted_results = Vec::new();
         let mut overall_success = true;
         let policy = ctx.config.verify.effective_process_policy();
@@ -163,7 +268,13 @@ impl VerifyEngine {
                 command.env("CARGO_INCREMENTAL", "1");
             }
 
-            match execute_step_outcome(&prepared, &policy, Some(command))? {
+            let outcome = match capture_budget {
+                Some(budget) => {
+                    execute_step_outcome_metered(&prepared, &policy, Some(command), Some(budget))
+                }
+                None => execute_step_outcome(&prepared, &policy, Some(command)),
+            };
+            match outcome? {
                 StepExecution::Finished(result) => {
                     // Product step-done (0148 matrix):
                     // - default pass: compact ok + elapsed (no SUCCESS banner)
@@ -196,13 +307,16 @@ impl VerifyEngine {
                     if report_result.exit_code != 0 {
                         overall_success = false;
                     }
+                    if let Some(capture) = &mut capture {
+                        capture.record_finished(idx, &report_result);
+                    }
                     persisted_results.push(report_result);
                 }
                 StepExecution::TimedOut { timeout, message } => {
                     overall_success = false;
                     let stderr_summary = Self::truncate_summary(&message);
                     let truncated = stderr_summary.chars().count() < message.chars().count();
-                    persisted_results.push(VerificationResult {
+                    let report_result = VerificationResult {
                         command: prepared.display_command.clone(),
                         exit_code: VERIFY_STEP_TIMEOUT_EXIT_CODE,
                         duration_ms: timeout.as_millis() as u64,
@@ -210,7 +324,11 @@ impl VerifyEngine {
                         stderr_summary,
                         truncated,
                         timestamp: Utc::now().to_rfc3339(),
-                    });
+                    };
+                    if let Some(capture) = &mut capture {
+                        capture.record_timeout(idx, &report_result);
+                    }
+                    persisted_results.push(report_result);
                     eprintln!("{message}");
                     break;
                 }
@@ -223,7 +341,36 @@ impl VerifyEngine {
         report.overall_pass = overall_success;
 
         write_verify_report(&ctx.layout, &report)?;
-        Self::persist_verify_report(&ctx.layout, &report);
+        let mut execution = CompletedExecution {
+            report,
+            terminal: capture.map(ExecutionCollector::complete),
+            capture_commit: None,
+            steps,
+            scope,
+            manual_requested,
+        };
+
+        if let Some(prove) = postflight {
+            let result = match execution.terminal() {
+                Some(terminal) if terminal.is_consistent() => prove(&ctx.layout, &execution),
+                _ => Err(CaptureUnavailable::InvalidOrigin),
+            };
+            execution.capture_commit = Some(match result {
+                Ok((storage, attempt)) => match storage.write_executed(&execution, attempt) {
+                    Ok(commit) => commit,
+                    Err(reason) => {
+                        Self::persist_verify_report(&ctx.layout, execution.report());
+                        VerificationCaptureCommit::Unavailable(reason)
+                    }
+                },
+                Err(reason) => {
+                    Self::persist_verify_report(&ctx.layout, execution.report());
+                    VerificationCaptureCommit::Unavailable(reason)
+                }
+            });
+        } else {
+            Self::persist_verify_report(&ctx.layout, execution.report());
+        }
 
         Self::record_semantic_test_outcomes(
             &ctx.layout,
@@ -232,7 +379,7 @@ impl VerifyEngine {
             &persisted_results,
         );
 
-        Ok(report)
+        Ok(execution)
     }
 
     fn to_report_result(command: &str, result: &ExecutionResult) -> VerificationResult {
