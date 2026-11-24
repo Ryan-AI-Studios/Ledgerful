@@ -1,3 +1,4 @@
+pub mod architecture;
 pub mod ask;
 pub mod ask_routing;
 pub mod baseline;

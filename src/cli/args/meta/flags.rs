@@ -1689,6 +1689,28 @@ impl Commands {
                     }
                 }
             },
+            Commands::Architecture {
+                command:
+                    ArchitectureCommands::Check {
+                        config,
+                        baseline,
+                        json,
+                        fail,
+                    },
+            } => {
+                if config.is_some() {
+                    f.push("config");
+                }
+                if baseline.is_some() {
+                    f.push("baseline");
+                }
+                if *json {
+                    f.push("json");
+                }
+                if *fail {
+                    f.push("fail");
+                }
+            }
             Commands::Demo(DemoArgs {
                 keep,
                 output,

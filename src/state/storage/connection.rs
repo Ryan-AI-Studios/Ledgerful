@@ -44,6 +44,23 @@ impl StorageManager {
         }
     }
 
+    /// Run an Architecture read with the calling checkout as its work root.
+    /// Return custody of the same SQLite handle so the guard can close it.
+    pub(crate) fn with_architecture_reader<T>(
+        conn: Connection,
+        layout: &Layout,
+        inspect: impl FnOnce(&Self) -> T,
+    ) -> (Connection, T) {
+        let storage = Self {
+            conn,
+            cozo: None,
+            is_read_only: true,
+            root_path: layout.root.clone(),
+        };
+        let result = inspect(&storage);
+        (storage.conn, result)
+    }
+
     /// Open write-mode storage for a path-shaped `ledger.db`.
     ///
     /// `root_path` is derived as parent of `.ledgerful` from the DB path

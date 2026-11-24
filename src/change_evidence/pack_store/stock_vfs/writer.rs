@@ -397,6 +397,19 @@ pub(in crate::change_evidence::pack_store) fn open_preflight<'memory, T>(
     work: &mut Work<'memory>,
     inspect: impl FnOnce(&mut Connection) -> T,
 ) -> Option<T> {
+    with_preflight_reader(scope, path, io, work, |mut reader| {
+        let result = inspect(&mut reader);
+        (reader, result)
+    })
+}
+
+pub(in crate::change_evidence::pack_store) fn with_preflight_reader<'memory, T>(
+    scope: &mut Scope<'memory>,
+    path: &Path,
+    io: &ReadBudget<'memory>,
+    work: &mut Work<'memory>,
+    inspect: impl FnOnce(Connection) -> (Connection, T),
+) -> Option<T> {
     let warm = scope.policy == Policy::WarmPreflight;
     if !scope.policy.preflights() {
         return None;
@@ -406,7 +419,7 @@ pub(in crate::change_evidence::pack_store) fn open_preflight<'memory, T>(
     if existing_pair {
         let heap = work.reserve_native_heap(WARM_HEAP_BYTES).ok()?;
         let result = heap.activate(|| read_preflight(scope, path, io, work, warm, inspect))?;
-        // The callback owns and closes the entire readonly connection. A lower
+        // The heap covers the observation and checked close. A lower
         // level optional allocation refusal still invalidates this proof.
         return (heap.refusal().is_none()).then_some(result).flatten();
     }
@@ -422,16 +435,19 @@ fn read_preflight<'memory, T>(
     io: &ReadBudget<'memory>,
     work: &mut Work<'memory>,
     warm: bool,
-    inspect: impl FnOnce(&mut Connection) -> T,
+    inspect: impl FnOnce(Connection) -> (Connection, T),
 ) -> Option<T> {
     let previous_wal_opens = scope.wal_count;
     let previous_shm_opens = scope.shm_count;
     let result = with_scope(scope, io, work, || {
-        let mut reader = open_connection(path)?;
-        if !reader.is_readonly("main").ok()? || !valid_header(&reader) {
-            return None;
-        }
-        if warm {
+        let reader = open_connection(path)?;
+        let ready = || {
+            if !reader.is_readonly("main").ok()? || !valid_header(&reader) {
+                return None;
+            }
+            if !warm {
+                return Some(());
+            }
             // SAFETY: the caller owns this live private connection and the
             // synchronous call limits workers before any statement runs.
             // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
@@ -445,8 +461,13 @@ fn read_preflight<'memory, T>(
             if mode != "exclusive" || !check_active() {
                 return None;
             }
+            Some(())
+        };
+        if ready().is_none() {
+            reader.close().ok()?;
+            return None;
         }
-        let result = inspect(&mut reader);
+        let (reader, result) = inspect(reader);
         reader.close().ok()?;
         Some(result)
     })??;

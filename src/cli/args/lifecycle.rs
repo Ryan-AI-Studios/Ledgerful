@@ -88,6 +88,25 @@ pub enum GateCommands {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum ArchitectureCommands {
+    /// Report observed dependency boundaries and component cycles
+    Check {
+        /// Read this architecture rules file instead of .ledgerful/architecture.toml
+        #[arg(long, value_name = "PATH")]
+        config: Option<PathBuf>,
+        /// Compare against this named analysis baseline
+        #[arg(long, value_name = "NAME")]
+        baseline: Option<String>,
+        /// Write the architectureCheck JSON envelope
+        #[arg(long)]
+        json: bool,
+        /// Exit 1 on findings or unknown evidence, or on present or unknown regression with a baseline
+        #[arg(long)]
+        fail: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub enum PolicyCommands {
     /// Evaluate declared policy against PR/diff/ledger state
     #[command(visible_alias = "evaluate")]

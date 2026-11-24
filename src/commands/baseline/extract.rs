@@ -3,9 +3,8 @@
 //!
 //! Every database read for one side of a comparison runs inside **one**
 //! read transaction, so the edges, coverage, identity inputs and freshness
-//! reads describe a single committed index snapshot. The worktree walk runs in
-//! the same call but outside the transaction: SQLite does not snapshot files,
-//! so `COMPLETE` is a point-in-time statement (R12).
+//! reads describe a single committed index snapshot. SQLite does not snapshot
+//! worktree files, so `COMPLETE` is a point-in-time statement (R12).
 
 pub(crate) mod capture_snapshot;
 
@@ -16,8 +15,9 @@ use super::identity::{
 use crate::config::model::Config;
 use crate::index::orchestrator::{BINARY_EXTENSIONS, SUPPORTED_EXTENSIONS};
 use crate::index::staleness::{
-    HashBudget, IndexFreshnessState, apply_content_drift_override, assess_index_freshness_at,
-    content_hash_drift_for_discovered, is_supported_code_path,
+    ContentHashDrift, ContentHashInputs, HashBudget, IndexFreshnessAssessment, IndexFreshnessState,
+    apply_content_drift_override, assess_index_freshness_at, content_hash_drift_for_discovered,
+    is_supported_code_path,
 };
 use crate::index::walker::RepoWalker;
 use crate::state::storage::StorageManager;
@@ -66,13 +66,85 @@ pub(crate) fn extract_file_edge_set_at(
     }
 }
 
-/// All reads for one side. Must be called with the snapshot guard alive.
+/// The baseline command keeps its original read path.
 fn extract_in_snapshot(
     storage: &StorageManager,
     config: &Config,
     repo_root: &Utf8Path,
     now: DateTime<Utc>,
 ) -> Result<FileEdgeSet> {
+    let facts = read_edge_facts(storage)?;
+    let completeness = evaluate_completeness_for(
+        storage,
+        config,
+        repo_root,
+        now,
+        &facts.completeness,
+        discover_files(repo_root),
+    )?;
+    Ok(facts.with_completeness(completeness))
+}
+
+/// All SQLite facts owned by the Architecture invocation, collected within
+/// its transaction. The worktree is inspected after the caller has closed it.
+pub(crate) struct ArchitectureSnapshot {
+    facts: EdgeFacts,
+    age: IndexFreshnessAssessment,
+    hashes: ContentHashInputs,
+}
+
+impl ArchitectureSnapshot {
+    pub(crate) fn capture(
+        storage: &StorageManager,
+        config: &Config,
+        now: DateTime<Utc>,
+    ) -> Result<Self> {
+        let facts = read_edge_facts(storage)?;
+        let age = assess_index_freshness_at(storage, config.index.stale_threshold_days, now);
+        let hashes = ContentHashInputs::capture(storage)?;
+        Ok(Self { facts, age, hashes })
+    }
+
+    pub(crate) fn evaluate(self, repo_root: &Utf8Path) -> Result<FileEdgeSet> {
+        let completeness = completeness_for_discovery(
+            self.age,
+            &self.facts.completeness,
+            discover_files(repo_root),
+            |discovered| Ok(self.hashes.compare(repo_root, discovered, HashBudget::Full)),
+        )?;
+        Ok(self.facts.with_completeness(completeness))
+    }
+}
+
+type DigestRow = (String, Option<String>, String);
+
+struct EdgeFacts {
+    edges: Vec<FileEdge>,
+    coverage: EdgeCoverage,
+    parser_version: Option<String>,
+    index_head_hash: Option<String>,
+    edge_sources: Vec<String>,
+    digest_rows: Vec<DigestRow>,
+    completeness: CompletenessInputs,
+}
+
+impl EdgeFacts {
+    fn with_completeness(self, completeness: InputCompleteness) -> FileEdgeSet {
+        snapshot_edge_set(
+            SnapshotIdentity {
+                parser_version: self.parser_version,
+                index_head_hash: self.index_head_hash,
+                edge_sources: self.edge_sources,
+                input_digest: input_digest(&self.digest_rows),
+            },
+            self.coverage,
+            self.edges,
+            completeness,
+        )
+    }
+}
+
+fn read_edge_facts(storage: &StorageManager) -> Result<EdgeFacts> {
     let conn = storage.get_connection();
     let edges = read_edges(conn)?;
     let coverage = read_coverage(conn, &edges)?;
@@ -80,33 +152,30 @@ fn extract_in_snapshot(
     let index_head_hash = read_metadata_value(conn, "head_hash")?;
     let edge_sources = read_edge_sources(conn)?;
     let digest_rows = read_digest_rows(storage)?;
-    let inputs = CompletenessInputs {
+    let completeness = CompletenessInputs {
         files_parse_failed: coverage.files_parse_failed,
         edges_capped: has_capped_edges(conn)?,
         parser_version_present: parser_version.is_some(),
     };
 
-    // The walk is filesystem I/O, not SQL; it runs while the database
-    // snapshot is open but the transaction does not cover it (R12).
-    let walk = RepoWalker::new(
+    Ok(EdgeFacts {
+        edges,
+        coverage,
+        parser_version,
+        index_head_hash,
+        edge_sources,
+        digest_rows,
+        completeness,
+    })
+}
+
+fn discover_files(repo_root: &Utf8Path) -> Result<Vec<camino::Utf8PathBuf>> {
+    RepoWalker::new(
         repo_root.to_path_buf(),
         SUPPORTED_EXTENSIONS,
         BINARY_EXTENSIONS,
     )
-    .discover_files_strict();
-    let completeness = evaluate_completeness_for(storage, config, repo_root, now, &inputs, walk)?;
-
-    Ok(snapshot_edge_set(
-        SnapshotIdentity {
-            parser_version,
-            index_head_hash,
-            edge_sources,
-            input_digest: input_digest(&digest_rows),
-        },
-        coverage,
-        edges,
-        completeness,
-    ))
+    .discover_files_strict()
 }
 
 struct SnapshotIdentity {
@@ -264,7 +333,7 @@ fn read_edge_sources(conn: &Connection) -> Result<Vec<String>> {
     Ok(sources)
 }
 
-fn read_digest_rows(storage: &StorageManager) -> Result<Vec<(String, Option<String>, String)>> {
+fn read_digest_rows(storage: &StorageManager) -> Result<Vec<DigestRow>> {
     let conn = storage.get_connection();
     let mut stmt = conn
         .prepare(
@@ -299,17 +368,23 @@ fn evaluate_completeness_for(
     inputs: &CompletenessInputs,
     walk: Result<Vec<camino::Utf8PathBuf>>,
 ) -> Result<InputCompleteness> {
+    let age = assess_index_freshness_at(storage, config.index.stale_threshold_days, now);
+    completeness_for_discovery(age, inputs, walk, |discovered| {
+        content_hash_drift_for_discovered(storage, repo_root, discovered, HashBudget::Full)
+    })
+}
+
+fn completeness_for_discovery(
+    age: IndexFreshnessAssessment,
+    inputs: &CompletenessInputs,
+    walk: Result<Vec<camino::Utf8PathBuf>>,
+    compare: impl FnOnce(&[camino::Utf8PathBuf]) -> Result<ContentHashDrift>,
+) -> Result<InputCompleteness> {
     let mut reasons: Vec<String> = Vec::new();
 
-    let age = assess_index_freshness_at(storage, config.index.stale_threshold_days, now);
     let assessment = match walk {
         Ok(discovered) => {
-            let drift = content_hash_drift_for_discovered(
-                storage,
-                repo_root,
-                &discovered,
-                HashBudget::Full,
-            )?;
+            let drift = compare(&discovered)?;
             apply_content_drift_override(age, &drift)
         }
         Err(e) => {
@@ -474,6 +549,61 @@ mod tests {
         set_metadata(&f.storage, "head_hash", "abc123");
         set_metadata(&f.storage, "last_indexed_at", &Utc::now().to_rfc3339());
         (a, b)
+    }
+
+    #[test]
+    fn architecture_snapshot_matches_baseline_after_sqlite_closes() {
+        let fixture = fixture();
+        complete_side(&fixture);
+        let capture = || {
+            let transaction = fixture
+                .storage
+                .get_connection()
+                .unchecked_transaction()
+                .unwrap();
+            let value =
+                ArchitectureSnapshot::capture(&fixture.storage, &fixture.config, fixture.now)
+                    .unwrap();
+            transaction.commit().unwrap();
+            value
+        };
+        let clean_capture = capture();
+        let dirty_capture = capture();
+        let expected_clean = extract_file_edge_set_at(
+            &fixture.storage,
+            &fixture.config,
+            &fixture.root,
+            fixture.now,
+        )
+        .unwrap();
+        let source = fixture.root.join("src/b.rs");
+        let original = std::fs::read(&source).unwrap();
+        let updated = "pub fn helper() { let _changed = 7; }";
+        std::fs::write(&source, updated).unwrap();
+        let expected_dirty = extract_file_edge_set_at(
+            &fixture.storage,
+            &fixture.config,
+            &fixture.root,
+            fixture.now,
+        )
+        .unwrap();
+        fixture.storage.conn.close().unwrap();
+
+        std::fs::write(&source, original).unwrap();
+        assert!(expected_clean.identity.input_completeness.is_complete());
+        assert_eq!(
+            clean_capture.evaluate(&fixture.root).unwrap(),
+            expected_clean
+        );
+        std::fs::write(&source, updated).unwrap();
+        assert_eq!(
+            expected_dirty.identity.input_completeness.reasons,
+            ["CONTENT_DRIFT"]
+        );
+        assert_eq!(
+            dirty_capture.evaluate(&fixture.root).unwrap(),
+            expected_dirty
+        );
     }
 
     #[test]
