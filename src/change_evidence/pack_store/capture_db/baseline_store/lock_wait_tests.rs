@@ -35,8 +35,12 @@ fn git(root: &Path, args: &[&str]) -> String {
 
 fn recheck_after_real_lock_wait(move_head: bool) {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("fixture");
-    let template = dir.path().join("empty");
+    #[cfg(windows)]
+    let fixture = dunce::canonicalize(dir.path()).expect("canonicalize private fixture");
+    #[cfg(not(windows))]
+    let fixture = dir.path();
+    let root = fixture.join("fixture");
+    let template = fixture.join("empty");
     std::fs::create_dir(&root).unwrap();
     std::fs::create_dir(&template).unwrap();
     git(
@@ -88,7 +92,7 @@ fn recheck_after_real_lock_wait(move_head: bool) {
         project_config: blake3::hash(CONFIG),
     };
 
-    let db = dir.path().join("observations.db");
+    let db = fixture.join("observations.db");
     let mut writer = Connection::open(&db).unwrap();
     writer
         .execute("CREATE TABLE unpublished (value INTEGER NOT NULL)", [])

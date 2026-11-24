@@ -21,6 +21,7 @@ type FixedLeaf = (Option<OpenLeaf>, [u8; 32]);
 
 const PATH_CAP: usize = 4_096;
 const COMPONENT_CAP: usize = 64;
+const MAX_DISCOVERY_SYSTEM_CONFIG_BYTES: usize = 256;
 const PARENT_FLAGS: OFlag = OFlag::O_RDONLY
     .union(OFlag::O_DIRECTORY)
     .union(OFlag::O_NOFOLLOW)
@@ -167,13 +168,20 @@ pub(super) fn observe_environment<'a>(
     let home_bytes = home.as_os_str().as_encoded_bytes();
     charge(io, work, home_bytes.len() + 1)?;
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"ledgerful:default-ignore-global-policy:v2\0");
+    hasher.update(b"ledgerful:default-ignore-global-policy:v3\0");
     hasher.update(&(home_bytes.len() as u64).to_le_bytes());
     hasher.update(home_bytes);
     let (home_config, fixed_home) = fixed_file(home_dirs.tail()?, &[], ".gitconfig", io, work)?;
     hasher.update(&fixed_home);
     if let Some((observed, observed_identity)) = home_config {
-        let raw = read_fixed_home(process_fds, &observed, observed_identity, io, work)?;
+        let raw = read_fixed_config(
+            process_fds,
+            &observed,
+            observed_identity,
+            MAX_DISCOVERY_HOME_CONFIG_BYTES,
+            io,
+            work,
+        )?;
         charge(io, work, 32 + 32 * raw.as_ref().len())?;
         let _parse = reserve(work, 128 * 1024 + 32 * raw.as_ref().len())?;
         if !admit_discovery_home_config(raw.as_ref()) {
@@ -184,11 +192,9 @@ pub(super) fn observe_environment<'a>(
     } else {
         hasher.update(&[0]);
     }
-    // Later fixed default sources remain absence-only. Their contents and
-    // configured external paths are outside this observer's authority.
+    // Both fixed XDG fallbacks remain absence-only.
     for (anchor, directories, file) in [
         (home_dirs.tail()?, [".config", "git"].as_slice(), "config"),
-        (current.root()?, ["etc"].as_slice(), "gitconfig"),
         (home_dirs.tail()?, [".config", "git"].as_slice(), "ignore"),
     ] {
         let (observed, anchors) = fixed_file(anchor, directories, file, io, work)?;
@@ -197,6 +203,10 @@ pub(super) fn observe_environment<'a>(
         }
         hasher.update(&anchors);
     }
+    let Some(system_config) = observe_system_config(current.root()?, process_fds, io, work)? else {
+        return Ok(None);
+    };
+    hasher.update(&system_config);
     charge(io, work, 32)?;
     Ok(Some((ancestors, *hasher.finalize().as_bytes())))
 }
@@ -284,10 +294,141 @@ fn fixed_at(
     Ok(Some((file, id)))
 }
 
-fn read_fixed_home<'a>(
+fn observe_system_config<'a>(
+    root: &File,
+    process_fds: &LinuxProcFds,
+    io: &mut ReadBudget<'_>,
+    work: &mut Work<'a>,
+) -> Result<Option<[u8; 32]>> {
+    let before = system_config_path(root, io, work)?;
+    let mut stamp = blake3::Hasher::new();
+    stamp.update(b"ledgerful:fixed-system-config:v1\0");
+    stamp.update(&before.stamp);
+    if let Some((file, id)) = &before.config {
+        let raw = read_fixed_config(
+            process_fds,
+            file,
+            *id,
+            MAX_DISCOVERY_SYSTEM_CONFIG_BYTES,
+            io,
+            work,
+        )?;
+        charge(io, work, 6 * raw.as_ref().len())?;
+        if !admit_hosted_system_config(raw.as_ref()) {
+            return Ok(None);
+        }
+        stamp.update(blake3::hash(raw.as_ref()).as_bytes());
+    }
+    if system_config_path(root, io, work)?.stamp != before.stamp {
+        return Err(ReadError::Changed);
+    }
+    charge(io, work, 32)?;
+    Ok(Some(*stamp.finalize().as_bytes()))
+}
+
+struct SystemConfigPath {
+    // Hold both original descriptors through the final path observation.
+    _etc: Option<File>,
+    config: Option<OpenLeaf>,
+    stamp: [u8; 32],
+}
+
+fn system_config_path(
+    root: &File,
+    io: &ReadBudget<'_>,
+    work: &mut Work<'_>,
+) -> Result<SystemConfigPath> {
+    let mut stamp = blake3::Hasher::new();
+    stamp.update(b"ledgerful:fixed-system-config-path:v1\0");
+    record_system_anchor(root, true, &mut stamp, io, work)?;
+    let etc = fixed_at(root, "etc", true, io, work)?;
+    stamp.update(&[u8::from(etc.is_some())]);
+    let config = if let Some((etc, _)) = &etc {
+        record_system_anchor(etc, true, &mut stamp, io, work)?;
+        fixed_at(etc, "gitconfig", false, io, work)?
+    } else {
+        None
+    };
+    stamp.update(&[u8::from(config.is_some())]);
+    if let Some((file, _)) = &config {
+        record_system_anchor(file, false, &mut stamp, io, work)?;
+    }
+    Ok(SystemConfigPath {
+        _etc: etc.map(|(file, _)| file),
+        config,
+        stamp: *stamp.finalize().as_bytes(),
+    })
+}
+
+fn record_system_anchor(
+    file: &File,
+    directory: bool,
+    stamp: &mut blake3::Hasher,
+    io: &ReadBudget<'_>,
+    work: &mut Work<'_>,
+) -> Result<()> {
+    charge(io, work, 128)?;
+    let meta = file.metadata()?;
+    if meta.uid() != 0 || meta.mode() & 0o022 != 0 {
+        return Err(ReadError::Unavailable);
+    }
+    stamp.update(&Identity::from_linux_metadata(&meta).inventory_bytes());
+    stamp.update(&meta.mode().to_be_bytes());
+    stamp.update(&meta.uid().to_be_bytes());
+    stamp.update(&meta.gid().to_be_bytes());
+    if !directory {
+        if meta.nlink() != 1 {
+            return Err(ReadError::Redirect);
+        }
+        stamp.update(&meta.len().to_be_bytes());
+        stamp.update(&meta.mtime().to_be_bytes());
+        stamp.update(&meta.mtime_nsec().to_be_bytes());
+        stamp.update(&meta.ctime().to_be_bytes());
+        stamp.update(&meta.ctime_nsec().to_be_bytes());
+    }
+    Ok(())
+}
+
+fn admit_hosted_system_config(bytes: &[u8]) -> bool {
+    // The pinned ignore reader scans for excludesfile. Recognize the Ubuntu
+    // defaults as inert discovery inputs. The values never enter an ownership
+    // check or command execution.
+    let Some(rest) = bytes.strip_prefix(b"[safe]\n        directory = *\n") else {
+        return false;
+    };
+    if rest.is_empty() {
+        return true;
+    }
+    let Some(lfs) = rest
+        .strip_prefix(b"[filter \"lfs\"]\n")
+        .and_then(|lines| lines.strip_suffix(b"\n"))
+    else {
+        return false;
+    };
+    // The stock Git LFS installer emits these exact keys in arbitrary order.
+    let expected: [&[u8]; 4] = [
+        b"\tclean = git-lfs clean -- %f",
+        b"\tsmudge = git-lfs smudge -- %f",
+        b"\tprocess = git-lfs filter-process",
+        b"\trequired = true",
+    ];
+    let mut seen = [false; 4];
+    for line in lfs.split(|&byte| byte == b'\n') {
+        let Some(index) = expected.iter().position(|&entry| entry == line) else {
+            return false;
+        };
+        if std::mem::replace(&mut seen[index], true) {
+            return false;
+        }
+    }
+    seen.into_iter().all(|present| present)
+}
+
+fn read_fixed_config<'a>(
     process_fds: &LinuxProcFds,
     observed: &File,
     expected: Identity,
+    limit: usize,
     io: &mut ReadBudget<'_>,
     work: &mut Work<'a>,
 ) -> Result<ReservedBytes<'a>> {
@@ -300,7 +441,7 @@ fn read_fixed_home<'a>(
     if identity(&file, false)? != expected {
         return Err(ReadError::Changed);
     }
-    let raw = read_linux_discovery_home_file(&file, io, work, MAX_DISCOVERY_HOME_CONFIG_BYTES)?;
+    let raw = read_linux_discovery_home_file(&file, io, work, limit)?;
     if identity(&file, false)? != expected {
         return Err(ReadError::Changed);
     }
@@ -341,5 +482,39 @@ fn native(error: Errno) -> ReadError {
         Errno::ELOOP | Errno::EXDEV => ReadError::Redirect,
         Errno::EINVAL | Errno::ENOSYS => ReadError::Unavailable,
         _ => io::Error::from_raw_os_error(error as i32).into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::admit_hosted_system_config;
+
+    const SAFE: &[u8] = b"[safe]\n        directory = *\n";
+
+    #[test]
+    fn recognizes_hosted_system_config_defaults() {
+        assert!(admit_hosted_system_config(SAFE));
+        for filter in [
+            &b"[filter \"lfs\"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n\tprocess = git-lfs filter-process\n\trequired = true\n"[..],
+            &b"[filter \"lfs\"]\n\tprocess = git-lfs filter-process\n\trequired = true\n\tsmudge = git-lfs smudge -- %f\n\tclean = git-lfs clean -- %f\n"[..],
+        ] {
+            assert!(admit_hosted_system_config(&[SAFE, filter].concat()));
+        }
+    }
+
+    #[test]
+    fn refuses_other_system_config_contents() {
+        assert!(!admit_hosted_system_config(b""));
+        for extra in [
+            SAFE,
+            b"# comment\n",
+            b"[include]\n\tpath = other-config\n",
+            b"[core]\n\texcludesfile = global-ignore\n",
+            b"[filter \"lfs\"]\n\trequired = true\n",
+            b"[filter \"lfs\"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n\tprocess = git-lfs filter-process\n\tprocess = git-lfs filter-process\n",
+            b"[filter \"lfs\"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n\tprocess = git-lfs filter-process\n\trequired = false\n",
+        ] {
+            assert!(!admit_hosted_system_config(&[SAFE, extra].concat()));
+        }
     }
 }

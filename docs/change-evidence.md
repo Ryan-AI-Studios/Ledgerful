@@ -23,6 +23,8 @@ The acknowledgements report the exact revision and baseline digest when establis
 
 The dashboard uses the full parent and child commit IDs and the opaque local repository ID. It checks the checkout, discovery policy, config, and saved index generation before serving current comparison rows. Reprepare after a relevant change or once an observation is more than seven days old. The current proof describes the checkout and index at the time of observation. A later edit can invalidate that proof. Preparation reports an index input hash mismatch as `index-input-hash-mismatch`. Git and verification evidence can remain available for a historical revision. A partial Git section with `unsupported-tree-path` omits names outside the evidence path format and retains verified representable changes.
 
+On Linux, comparison supports an absent system Git configuration and the stock hosted profile with Git's safe-directory setting and optional stock Git LFS entries. Ledgerful observes that fixed file for index discovery. Repository ownership, attribute and raw-input checks still apply. An unsupported system policy can return `index-discovery-unavailable`.
+
 ## Capture verification
 
 Run verification with explicit capture enabled.

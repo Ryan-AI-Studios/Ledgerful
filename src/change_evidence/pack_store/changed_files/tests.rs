@@ -31,6 +31,11 @@ fn git(root: &Path, args: &[&str]) -> String {
 #[test]
 fn changed_files_omit_only_changes_with_unrepresentable_paths() {
     let dir = tempfile::tempdir().unwrap();
+    #[cfg(windows)]
+    let physical = dunce::canonicalize(dir.path()).expect("canonicalize private fixture");
+    #[cfg(windows)]
+    let root = physical.as_path();
+    #[cfg(not(windows))]
     let root = dir.path();
     git(
         root,

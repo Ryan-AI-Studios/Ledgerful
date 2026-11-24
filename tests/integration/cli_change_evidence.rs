@@ -11,6 +11,8 @@ use crate::common::{isolated_command, nested_repo_root, synthetic_home};
 
 struct Checkout {
     _temp: TempDir,
+    #[cfg(windows)]
+    fixture: PathBuf,
     root: PathBuf,
     home: PathBuf,
 }
@@ -18,10 +20,18 @@ struct Checkout {
 impl Checkout {
     fn new() -> Self {
         let temp = tempdir().expect("capture tempdir");
-        let root = nested_repo_root(temp.path());
-        let home = synthetic_home(temp.path());
+        #[cfg(windows)]
+        let fixture = dunce::canonicalize(temp.path()).expect("canonicalize private fixture");
+        #[cfg(windows)]
+        let fixture_path: &Path = fixture.as_path();
+        #[cfg(not(windows))]
+        let fixture_path: &Path = temp.path();
+        let root = nested_repo_root(fixture_path);
+        let home = synthetic_home(fixture_path);
         let checkout = Self {
             _temp: temp,
+            #[cfg(windows)]
+            fixture,
             root,
             home,
         };
@@ -255,7 +265,7 @@ fn preview_refuses_linked_checkout_and_copied_database() {
     let source_bytes = fs::read(&source_db).unwrap();
     assert_no_database_companions(&source_db);
 
-    let sibling = checkout._temp.path().join("linked");
+    let sibling = checkout.fixture.join("linked");
     checkout.git(&["worktree", "add", "--detach", sibling.to_str().unwrap()]);
     let linked = verify_json(checkout.cli(&preview_args).current_dir(&sibling));
     let capture = &linked["changeEvidenceCapture"];
@@ -266,7 +276,7 @@ fn preview_refuses_linked_checkout_and_copied_database() {
     assert_eq!(fs::read(&source_db).unwrap(), source_bytes);
     assert_no_database_companions(&source_db);
 
-    let independent = checkout._temp.path().join("independent");
+    let independent = checkout.fixture.join("independent");
     checkout.git(&[
         "clone",
         "--quiet",

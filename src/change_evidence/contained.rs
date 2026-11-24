@@ -2865,6 +2865,15 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    #[cfg(any(windows, target_os = "linux"))]
+    fn fixture_path(fixture: &tempfile::TempDir) -> std::path::PathBuf {
+        #[cfg(windows)]
+        let path = dunce::canonicalize(fixture.path()).expect("canonicalize private fixture");
+        #[cfg(target_os = "linux")]
+        let path = fixture.path().to_path_buf();
+        path
+    }
+
     #[cfg(target_os = "linux")]
     thread_local! {
         static MUTATE_AFTER_FIRST_CHUNK: std::cell::RefCell<Option<std::path::PathBuf>> =
@@ -2935,18 +2944,19 @@ mod tests {
     #[test]
     fn lists_exact_names_with_a_limit_and_detects_inventory_change() {
         let fixture = tempfile::tempdir().unwrap();
-        let dir = fixture.path().join("pack");
+        let fixture_root = fixture_path(&fixture);
+        let dir = fixture_root.join("pack");
         std::fs::create_dir(&dir).unwrap();
         std::fs::write(dir.join("Exact.idx"), b"index").unwrap();
         for i in 0..90 {
             std::fs::write(dir.join(format!("pack-{i:040x}.pack")), b"scratch").unwrap();
         }
         #[cfg(target_os = "linux")]
-        std::os::unix::fs::symlink(fixture.path(), dir.join("redirect")).unwrap();
+        std::os::unix::fs::symlink(&fixture_root, dir.join("redirect")).unwrap();
         let interrupted = AtomicBool::new(false);
         let mut budget =
             ReadBudget::new(16, Instant::now() + Duration::from_secs(10), &interrupted);
-        let mut root = ContainedRoot::open(fixture.path(), &budget).unwrap();
+        let mut root = ContainedRoot::open(&fixture_root, &budget).unwrap();
         let entries = root.list("pack", 128, &budget).unwrap();
         assert_eq!(
             entries[0],
@@ -3000,13 +3010,14 @@ mod tests {
     #[test]
     fn reads_exact_bytes_and_enforces_limits_and_interrupt() {
         let fixture = tempfile::tempdir().unwrap();
-        std::fs::create_dir(fixture.path().join("src")).unwrap();
+        let fixture_root = fixture_path(&fixture);
+        std::fs::create_dir(fixture_root.join("src")).unwrap();
         let raw = b"\xef\xbb\xbf// raw\r\n";
-        std::fs::write(fixture.path().join("src/input.rs"), raw).unwrap();
+        std::fs::write(fixture_root.join("src/input.rs"), raw).unwrap();
         let interrupted = AtomicBool::new(false);
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut budget = ReadBudget::new(raw.len(), deadline, &interrupted);
-        let root = ContainedRoot::open(fixture.path(), &budget).unwrap();
+        let root = ContainedRoot::open(&fixture_root, &budget).unwrap();
         assert_eq!(
             root.read("src/input.rs", raw.len(), &mut budget).unwrap(),
             raw
@@ -3061,7 +3072,8 @@ mod tests {
     #[test]
     fn holds_worktree_identity_and_rejects_device_names() {
         let fixture = tempfile::tempdir().unwrap();
-        let path = fixture.path().join("scope");
+        let fixture_root = fixture_path(&fixture);
+        let path = fixture_root.join("scope");
         std::fs::create_dir(&path).unwrap();
         let interrupted = AtomicBool::new(false);
         let mut budget =
@@ -3069,7 +3081,7 @@ mod tests {
         let root = ContainedRoot::open(&path, &budget).unwrap();
         let duplicate = ContainedRoot::open(&path, &budget).unwrap();
         assert_eq!(root.identity(), duplicate.identity());
-        let target = fixture.path().join("moved");
+        let target = fixture_root.join("moved");
         assert!(std::fs::rename(&path, &target).is_err());
         for path in [
             "CON",

@@ -17,26 +17,38 @@ const BIN: &str = env!("CARGO_BIN_EXE_ledgerful");
 const UNKNOWN_SCOPE: &str = "00000000-0000-0000-0000-00000000002a";
 
 struct Checkout {
-    temp: tempfile::TempDir,
+    _temp: tempfile::TempDir,
+    fixture: PathBuf,
     root: PathBuf,
 }
 
 impl Checkout {
     fn new() -> Self {
         let temp = tempfile::tempdir().expect("private fixture");
-        let root = nested_repo_root(temp.path());
-        fs::create_dir(temp.path().join("home")).expect("fixture home");
-        fs::create_dir(temp.path().join("template")).expect("empty Git template");
+        // The Windows scope proof requires the native spelling of each component.
+        #[cfg(windows)]
+        let fixture = dunce::canonicalize(temp.path()).unwrap_or_else(|error| {
+            panic!(
+                "canonicalize private fixture (OS error {:?})",
+                error.raw_os_error()
+            )
+        });
+        #[cfg(not(windows))]
+        let fixture = temp.path().to_path_buf();
+        let root = nested_repo_root(&fixture);
+        fs::create_dir(fixture.join("home")).expect("fixture home");
+        fs::create_dir(fixture.join("template")).expect("empty Git template");
         fs::write(
-            temp.path().join("home/.gitconfig"),
+            fixture.join("home/.gitconfig"),
             "[user]\nname = Evidence Fixture\nemail = fixture@example.invalid\n",
         )
         .expect("local synthetic Git home");
-        let checkout = Self { temp, root };
-        let template = format!(
-            "--template={}",
-            checkout.temp.path().join("template").display()
-        );
+        let checkout = Self {
+            _temp: temp,
+            fixture,
+            root,
+        };
+        let template = format!("--template={}", checkout.fixture.join("template").display());
         checkout.git(&[
             "init",
             "--quiet",
@@ -51,7 +63,7 @@ impl Checkout {
     }
 
     fn command(&self, program: &str) -> Command {
-        let home = self.temp.path().join("home");
+        let home = self.fixture.join("home");
         let mut command = isolated_command(program, &home);
         for (key, _) in std::env::vars_os() {
             let name = key.to_string_lossy().to_ascii_uppercase();
@@ -83,6 +95,63 @@ impl Checkout {
         serde_json::from_str(&self.cli(args, exit)).expect("CLI JSON")
     }
 
+    fn attest(&self, base: &str) -> Value {
+        let output = self
+            .command(BIN)
+            .args(["change-evidence", "attest-baseline", "parent", "--json"])
+            .output()
+            .expect("run baseline attestation");
+        let attested: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+        let base_matches = attested["base"] == base;
+        assert!(
+            output.status.success() && attested["status"] == "attested" && base_matches,
+            "fixture attestation failed (exit {:?}, status {}, reasons {}, base matches {}), {}",
+            output.status.code(),
+            attested["status"],
+            attested["reasonCodes"],
+            base_matches,
+            self.attestation_fixture_details(),
+        );
+        attested
+    }
+
+    fn attestation_fixture_details(&self) -> String {
+        let git = self.root.join(".git");
+        let git_details = format!(
+            "Git directory={}, files main ref={}",
+            git.is_dir(),
+            git.join("refs/heads/main").is_file(),
+        );
+        #[cfg(windows)]
+        let git_details = {
+            use std::os::windows::fs::MetadataExt;
+            use std::path::{Component, Prefix};
+            use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+            let disk_prefix = matches!(
+                self.fixture.components().next(),
+                Some(Component::Prefix(prefix))
+                    if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+            );
+            let mut reparse = false;
+            let mut metadata_error = None;
+            for path in std::iter::once(git.as_path()).chain(self.root.ancestors()) {
+                match fs::symlink_metadata(path) {
+                    Ok(meta) => {
+                        reparse |= meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+                    }
+                    Err(error) => metadata_error = metadata_error.or(error.raw_os_error()),
+                }
+            }
+            let spelling_changed = self._temp.path().as_os_str() != self.fixture.as_os_str();
+            format!(
+                "{git_details}; temp spelling changed={spelling_changed}, disk prefix={disk_prefix}, \
+                 reparse attribute={reparse}, path metadata OS error={metadata_error:?}"
+            )
+        };
+        git_details
+    }
+
     fn run(mut command: Command, args: &[&str], expected: i32) -> String {
         let output = command.args(args).output().expect("run fixture command");
         assert_eq!(
@@ -104,10 +173,7 @@ impl Checkout {
 
     fn commit(&self, message: &str) -> String {
         self.git(&["add", "--", "."]);
-        let hooks = format!(
-            "core.hooksPath={}",
-            self.temp.path().join("template").display()
-        );
+        let hooks = format!("core.hooksPath={}", self.fixture.join("template").display());
         self.git(&[
             "-c",
             &hooks,
@@ -148,7 +214,7 @@ impl Daemon<'_> {
             .env("LEDGERFUL_WEB_TOKEN", &token)
             .stdout(Stdio::piped())
             .stderr(Stdio::from(
-                File::create(checkout.temp.path().join("daemon.stderr")).expect("daemon log"),
+                File::create(checkout.fixture.join("daemon.stderr")).expect("daemon log"),
             ));
         if disabled {
             command.arg("--disable-change-evidence");
@@ -175,7 +241,7 @@ impl Daemon<'_> {
         daemon.addr = ready
             .recv_timeout(Duration::from_secs(10))
             .unwrap_or_else(|error| {
-                let log = fs::read_to_string(checkout.temp.path().join("daemon.stderr"));
+                let log = fs::read_to_string(checkout.fixture.join("daemon.stderr"));
                 panic!("fixture daemon failed to bind: {error}, {log:?}");
             })
             .expect("valid loopback address from daemon");
@@ -288,12 +354,7 @@ fn ordinary_prepared_pair_transitions_from_incomparable_to_comparable__slow() {
     let base = checkout.commit("baseline");
     checkout.cli(&["index", "--full"], 0);
     checkout.cli_json(&["baseline", "create", "parent", "--json"], 0);
-    let attested = checkout.cli_json(
-        &["change-evidence", "attest-baseline", "parent", "--json"],
-        0,
-    );
-    assert_eq!(attested["status"], "attested");
-    assert_eq!(attested["base"], base);
+    let attested = checkout.attest(&base);
     let scope = attested["repoScope"].as_str().expect("attested scope");
     let digest = attested["baselineDigest"]
         .as_str()
@@ -451,10 +512,7 @@ fn prepared_head_with_an_unsupported_name_preserves_safe_git_rows__slow() {
     let base = checkout.commit("baseline");
     checkout.cli(&["index", "--full"], 0);
     checkout.cli_json(&["baseline", "create", "parent", "--json"], 0);
-    let attestation = checkout.cli_json(
-        &["change-evidence", "attest-baseline", "parent", "--json"],
-        0,
-    );
+    let attestation = checkout.attest(&base);
     let scope = attestation["repoScope"].as_str().unwrap();
     checkout.write(
         "docs/working notes.md",
