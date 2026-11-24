@@ -1417,8 +1417,8 @@ pub(crate) const EMBEDDED_SPA_FALLBACK_MESSAGE: &str = "No embedded dashboard in
 #[exclude = "**/Icon.png"]
 struct SpaAssets;
 
-/// Serve a static file from the embedded SPA bundle, falling back to
-/// `index.html` so client-side routing works.
+/// Serve an exact static asset or its emitted directory index. Unknown paths
+/// fall back to `index.html` so client-side routing works.
 #[cfg(all(not(debug_assertions), feature = "embed-spa"))]
 pub(crate) async fn embedded_spa_handler(uri: axum::http::Uri) -> Result<Response, WebError> {
     let request_path = uri.path();
@@ -1430,6 +1430,14 @@ fn serve_embedded_asset(request_path: &str) -> Result<Response, WebError> {
     let asset_path = request_path.trim_start_matches('/');
     let (file, path_for_mime) = SpaAssets::get(asset_path)
         .map(|f| (f, asset_path))
+        .or_else(|| {
+            if asset_path.is_empty() {
+                return None;
+            }
+            let directory = asset_path.strip_suffix('/').unwrap_or(asset_path);
+            let directory_index = format!("{directory}/index.html");
+            SpaAssets::get(&directory_index).map(|f| (f, "index.html"))
+        })
         .or_else(|| SpaAssets::get("index.html").map(|f| (f, "index.html")))
         .ok_or_else(|| WebError::Internal("index.html missing from embedded SPA".to_string()))?;
 
@@ -1558,6 +1566,31 @@ mod tests {
             has_dashboard_route,
             "Expected dashboard route files in embedded bundle (e.g. dashboard.html, ledger.html)"
         );
+    }
+
+    #[cfg(all(not(debug_assertions), feature = "embed-spa"))]
+    #[rstest::rstest]
+    #[case("/", "index.html")]
+    #[case("/changes", "changes/index.html")]
+    #[case("/changes/", "changes/index.html")]
+    #[case("/changes/index.html", "changes/index.html")]
+    #[case("/changes.html", "changes.html")]
+    #[case("/__unknown_dashboard_route__/", "index.html")]
+    #[tokio::test]
+    async fn embedded_spa_handler_serves_expected_exported_html(
+        #[case] request_path: &'static str,
+        #[case] asset_path: &str,
+    ) {
+        let expected = SpaAssets::get(asset_path).expect("expected dashboard export asset");
+        let response = embedded_spa_handler(axum::http::Uri::from_static(request_path))
+            .await
+            .expect("embedded handler returns Ok");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "text/html");
+        let body = axum::body::to_bytes(response.into_body(), expected.data.len())
+            .await
+            .expect("expected document bytes");
+        assert_eq!(body.as_ref(), expected.data.as_ref());
     }
 
     #[test]
