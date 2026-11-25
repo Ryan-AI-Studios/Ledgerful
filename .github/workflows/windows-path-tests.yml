@@ -6,7 +6,10 @@ on:
     paths:
       - .github/workflows/windows-path-tests.yml
       - src/cli/dispatch/**
+      - src/commands/architecture/**
       - src/util/path.rs
+      - tests/fixtures/architecture-proposal/**
+      - tests/integration/cli_architecture_proposal.rs
       - tests/integration/path_security.rs
 
 permissions:
@@ -34,3 +37,44 @@ jobs:
           validate_export_path_accepts_valid_relative_file
           validate_export_path_refuses_absolute_path_in_src
           normalize_relative_path__dotdot_sequences__never_escapes_root
+      - name: Witness proposal on a native 8.3 folder
+        env:
+          LEDGERFUL_TEST_REQUIRE_WINDOWS_SHORT_ALIAS: '1'
+        shell: pwsh
+        run: |
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
+            throw 'The 8.3 proposal witness requires a GitHub-hosted runner.'
+          }
+          $head = git rev-parse --verify HEAD
+          if ($LASTEXITCODE -ne 0 -or $head -ne $env:GITHUB_SHA) {
+            throw "Checkout does not match the workflow SHA $env:GITHUB_SHA"
+          }
+          $tree = git rev-parse --verify 'HEAD^{tree}'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the checked out tree.' }
+          Write-Output "Windows proposal 8.3 candidate head=$head tree=$tree runner=$env:RUNNER_ENVIRONMENT os=$env:RUNNER_OS"
+          $fixtureTemp = Join-Path $env:TEMP "Ledgerful proposal $env:GITHUB_RUN_ID $env:GITHUB_RUN_ATTEMPT"
+          New-Item -ItemType Directory -Path $fixtureTemp -ErrorAction Stop | Out-Null
+          $parent = Get-Item -LiteralPath $fixtureTemp
+          while ($null -ne $parent) {
+            foreach ($marker in @('.git', '.jj', '.gitignore', '.ignore')) {
+              if (Test-Path -LiteralPath (Join-Path $parent.FullName $marker)) {
+                throw "8.3 fixture inherits $marker under $($parent.FullName)"
+              }
+            }
+            $parent = $parent.Parent
+          }
+          $env:TEMP = $fixtureTemp
+          $env:TMP = $fixtureTemp
+          function Confirm-WitnessCheckout([string]$phase) {
+            $changes = @(git status --porcelain=v1 --untracked-files=normal)
+            if ($LASTEXITCODE -ne 0 -or $changes.Count -ne 0) {
+              throw "8.3 witness checkout is dirty or unreadable $phase the test."
+            }
+            Write-Output "Windows proposal 8.3 checkout clean $phase candidate=$head tree=$tree"
+          }
+          Confirm-WitnessCheckout 'before'
+          cargo nextest run --locked --all-features -j 1 --test integration --profile slow --retries 0 --no-tests fail --success-output immediate-final -E 'test(=cli_architecture_proposal::architecture_proposal_native_windows_short_alias__slow)'
+          $result = $LASTEXITCODE
+          Write-Output "Windows proposal 8.3 nextest exit=$result candidate=$head tree=$tree"
+          Confirm-WitnessCheckout 'after'
+          exit $result

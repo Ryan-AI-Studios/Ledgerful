@@ -17,6 +17,8 @@ mod isolated_fd;
 mod linux_capture;
 pub(crate) mod paired_checkout;
 pub(crate) mod passive_db;
+#[cfg(any(windows, target_os = "linux"))]
+pub(crate) mod proposal_source;
 #[cfg(target_os = "linux")]
 #[path = "pack_store/stock_vfs.rs"]
 pub(crate) mod stock_vfs;
@@ -91,6 +93,23 @@ pub(crate) fn with_architecture_reader<T>(
     qualify_architecture_observation(layout, observed)
 }
 
+/// Reuse the native architecture reader under the proposal's ingress deadline.
+/// Only admit the witnessed sidecar-free arrangement on either platform.
+#[cfg(any(
+    windows,
+    all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+))]
+pub(crate) fn with_proposal_reader<T>(
+    layout: &Layout,
+    phase: capture_budget::CapturePhase<'_>,
+    inspect: impl FnOnce(rusqlite::Connection, Instant) -> (rusqlite::Connection, T),
+) -> Option<T> {
+    #[cfg(windows)]
+    return passive_db::read_architecture_in_phase(layout, false, phase, inspect);
+    #[cfg(target_os = "linux")]
+    capture_db::read_architecture_in_phase(layout, phase, true, inspect)
+}
+
 #[cfg(all(windows, test))]
 pub(crate) fn with_architecture_reader_for_native_test<T>(
     layout: &Layout,
@@ -125,7 +144,7 @@ use super::git::{
     read_error as git_read_error, read_loose, resolve_head, visit_tree_entries,
 };
 use super::git_config::{
-    LocalGitConfigError, LocalGitPolicy, MAX_LOCAL_GIT_CONFIG_BYTES, admit_local_git_config,
+    LocalGitConfigError, LocalGitPolicy, MAX_LOCAL_GIT_CONFIG_BYTES, admit_local_git_config_with,
 };
 use super::inventory::{
     InventoryError, InventoryLimits, InventoryPass, InventoryRead, reason as inventory_error,
@@ -145,12 +164,23 @@ use super::tree_index::{TreeIndexWalk, TreePaths};
 use crate::state::layout::{Layout, STATE_DIR, StateDirOrigin};
 use gix::ObjectId;
 use gix::objs::{Kind, tree::EntryRef};
+use std::cell::Cell;
 use std::mem::size_of;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 type PackResult<T> = Result<T, &'static str>;
+
+pub(super) fn charge_proposal_limit(
+    remaining: &Cell<usize>,
+    count: usize,
+    reason: &'static str,
+) -> PackResult<()> {
+    remaining.set(remaining.get().checked_sub(count).ok_or(reason)?);
+    Ok(())
+}
+
 const INVENTORY_LIMIT: usize = 64;
 const PAIR_LIMIT: usize = 16;
 const PACK_DIRECTORY: &str = ".git/objects/pack";
@@ -231,6 +261,7 @@ pub(crate) struct Observation<'a> {
     io: ReadBudget<'a>,
     work: Work<'a>,
     packs: Option<PackResult<PackStore<'a>>>,
+    allow_regular_pack_index_cache: bool,
     git_config: Option<PackResult<ObservedLocalGitConfig<'a>>>,
     root_ignore: Option<PackResult<RootIgnoreSnapshot<'a>>>,
     compiled_root_ignore: Option<RootIgnoreMatcher<'a>>,
@@ -253,6 +284,7 @@ impl<'a> Observation<'a> {
             io,
             work: Work::new(deadline, interrupted, work_units, memory),
             packs: None,
+            allow_regular_pack_index_cache: false,
             git_config: None,
             root_ignore: None,
             compiled_root_ignore: None,
@@ -370,6 +402,7 @@ impl<'a> Observation<'a> {
             io,
             work,
             packs: None,
+            allow_regular_pack_index_cache: false,
             git_config: None,
             root_ignore: None,
             compiled_root_ignore: None,
@@ -406,11 +439,16 @@ impl<'a> Observation<'a> {
     }
 
     pub(crate) fn observe_local_git_config(&mut self) -> PackResult<&LocalGitPolicy> {
+        self.observe_local_git_config_with(false)
+    }
+
+    fn observe_local_git_config_with(&mut self, proposal: bool) -> PackResult<&LocalGitPolicy> {
         self.work.charge(0)?;
         self.git_config
             .get_or_insert_with(|| {
                 let raw = read_local_git_config(&self.root, &mut self.io, &mut self.work)?;
-                let policy = admit_local_git_config(raw.as_ref()).map_err(git_config_error)?;
+                let policy = admit_local_git_config_with(raw.as_ref(), proposal)
+                    .map_err(git_config_error)?;
                 self.work.charge(0)?;
                 Ok(ObservedLocalGitConfig { raw, policy })
             })
@@ -833,7 +871,7 @@ impl<'a> Observation<'a> {
         policy: FileModePolicy,
         captured_rules: Option<&[u8]>,
     ) -> PackResult<()> {
-        self.match_tracked_blob(path, id, executable, policy, captured_rules)?;
+        self.match_tracked_blob(path, id, executable, policy, captured_rules, None)?;
         Ok(())
     }
 
@@ -844,11 +882,20 @@ impl<'a> Observation<'a> {
         executable: bool,
         policy: FileModePolicy,
         captured_rules: Option<&[u8]>,
+        exact_size: Option<usize>,
     ) -> PackResult<(ReservedBytes<'a>, Option<i64>)> {
-        let blob = self.object(id, Kind::Blob, MAX_TRACKED_BLOB_BYTES)?;
+        let blob = self.object_with_pack_limit(
+            id,
+            Kind::Blob,
+            exact_size.unwrap_or(MAX_TRACKED_BLOB_BYTES),
+            exact_size,
+        )?;
         let expected = blob.as_ref();
         if expected.len() > MAX_TRACKED_BLOB_BYTES {
             return Err("tracked-blob-cap");
+        }
+        if exact_size.is_some_and(|size| size != expected.len()) {
+            return Err("index-input-stamp-mismatch");
         }
         if let Some(rules) = captured_rules {
             self.work.charge(rules.len())?;
@@ -908,12 +955,35 @@ impl<'a> Observation<'a> {
         tree: ObjectId,
         paths: TreePaths,
     ) -> PackResult<TreeIndexWalk<'a>> {
-        let mut walk = TreeIndexWalk::new(paths, &mut self.work)?;
-        self.visit_tree_with_work(tree, |entry, work| walk.push(None, entry, work))?;
+        self.walk_tree_with_limit(tree, paths, None)
+    }
+
+    fn walk_tree_with_limit(
+        &mut self,
+        tree: ObjectId,
+        paths: TreePaths,
+        remaining: Option<&Cell<usize>>,
+    ) -> PackResult<TreeIndexWalk<'a>> {
+        let mut walk = match remaining {
+            Some(limit) => TreeIndexWalk::with_limit(paths, limit.get(), &mut self.work)?,
+            None => TreeIndexWalk::new(paths, &mut self.work)?,
+        };
+        let charge_entry = || -> PackResult<()> {
+            if let Some(limit) = remaining {
+                charge_proposal_limit(limit, 1, "tree-walk-entry-cap")?;
+            }
+            Ok(())
+        };
+        self.visit_tree_with_work(tree, |entry, work| {
+            charge_entry()?;
+            walk.push(None, entry, work)
+        })?;
         let mut cursor = 0;
         while let Some(dir) = walk.next_tree(&mut cursor, &mut self.work)? {
-            let count = self
-                .visit_tree_with_work(dir.id, |entry, work| walk.push(Some(&dir), entry, work))?;
+            let count = self.visit_tree_with_work(dir.id, |entry, work| {
+                charge_entry()?;
+                walk.push(Some(&dir), entry, work)
+            })?;
             if count == 0 {
                 return Err("empty-subtree");
             }
@@ -929,6 +999,16 @@ impl<'a> Observation<'a> {
         kind: Kind,
         loose_byte_limit: usize,
     ) -> PackResult<ReservedBytes<'a>> {
+        self.object_with_pack_limit(id, kind, loose_byte_limit, None)
+    }
+
+    fn object_with_pack_limit(
+        &mut self,
+        id: ObjectId,
+        kind: Kind,
+        loose_byte_limit: usize,
+        pack_limit: Option<usize>,
+    ) -> PackResult<ReservedBytes<'a>> {
         match read_loose(
             &self.root,
             id,
@@ -941,12 +1021,17 @@ impl<'a> Observation<'a> {
             result => return result,
         }
         let packs = self.packs.get_or_insert_with(|| {
-            PackStore::observe(&mut self.root, &mut self.io, &mut self.work)
+            PackStore::observe(
+                &mut self.root,
+                &mut self.io,
+                &mut self.work,
+                self.allow_regular_pack_index_cache,
+            )
         });
         packs
             .as_ref()
             .map_err(|error| *error)?
-            .object(id, kind, &mut self.work)
+            .object(id, kind, pack_limit, &mut self.work)
     }
 
     pub(crate) fn confirm_pack_inventory(&mut self) -> PackResult<()> {
@@ -1132,6 +1217,7 @@ impl<'a> PackStore<'a> {
         root: &mut ScopeRoot<'_>,
         io: &mut ReadBudget<'a>,
         work: &mut Work<'a>,
+        allow_regular_pack_index_cache: bool,
     ) -> PackResult<Self> {
         let names = DirectoryRows::capture(root, PACK_DIRECTORY, INVENTORY_LIMIT, io, work)
             .map_err(row_error)?;
@@ -1145,6 +1231,12 @@ impl<'a> PackStore<'a> {
                 _ => return Err("nonregular"),
             }
             let name = std::str::from_utf8(bytes).map_err(|_| "unsafe-path")?;
+            // The container has already bounded and validated the directory
+            // entry. The proposal derives object custody exclusively from
+            // verified pack/index pairs and never opens this Git cache.
+            if allow_regular_pack_index_cache && name == "multi-pack-index" {
+                continue;
+            }
             let (stem, extension) = name
                 .strip_prefix("pack-")
                 .and_then(|name| name.split_once('.'))
@@ -1214,6 +1306,7 @@ impl<'a> PackStore<'a> {
         &self,
         id: ObjectId,
         kind: Kind,
+        limit: Option<usize>,
         work: &mut Work<'a>,
     ) -> PackResult<ReservedBytes<'a>> {
         let mut matches = self.packs.iter().filter(|pack| pack.contains(id));
@@ -1221,7 +1314,7 @@ impl<'a> PackStore<'a> {
         if matches.next().is_some() {
             return Err("ambiguous-packed-object");
         }
-        pack.object(id, kind, 16, work)
+        pack.object(id, kind, 16, limit, work)
     }
 }
 

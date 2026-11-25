@@ -6,6 +6,22 @@ pub struct ToolDescriptor {
 
 pub const INVENTORY: &[ToolDescriptor] = &[
     ToolDescriptor {
+        name: "architecture_propose",
+        description: "Advisory estimate for one additional resolved cross-file call. Prepare without context and replay the identical request with the token. Permission is always unknown. Independently check the actual edit. The local tool does not index or write repository state.",
+        schema_json: r#"{
+            "type": "object",
+            "properties": {
+                "from": {"type": "string"},
+                "to": {"type": "string"},
+                "kind": {"type": "string"},
+                "head": {"type": "string"},
+                "context": {"type": "string"}
+            },
+            "required": ["from", "to", "kind", "head"],
+            "additionalProperties": false
+        }"#,
+    },
+    ToolDescriptor {
         name: "change_context",
         description: "Budgeted agent change packet: impact risk, capped readSet, doctor readiness, pending ledger, and greenfield changeHints/suggestedTests (schemaVersion 1). Prefer after doctor --json.",
         schema_json: r#"{

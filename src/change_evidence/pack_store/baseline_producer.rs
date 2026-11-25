@@ -510,9 +510,9 @@ mod platform {
             CaptureSnapshotError::Limit(_) | CaptureSnapshotError::Allocation => {
                 reason("capture-budget")
             }
-            CaptureSnapshotError::Corrupt(_) | CaptureSnapshotError::Graph(_) => {
-                reason("index-snapshot-unavailable")
-            }
+            CaptureSnapshotError::Corrupt(_)
+            | CaptureSnapshotError::Graph(_)
+            | CaptureSnapshotError::Admission(_) => reason("index-snapshot-unavailable"),
         }
     }
 

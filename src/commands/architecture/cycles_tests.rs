@@ -30,6 +30,19 @@ fn architecture_cycles_acyclic_has_no_groups() {
 }
 
 #[test]
+fn architecture_cycles_cancellation_discards_partial_scc_partitions() {
+    let adjacency = [vec![1], vec![0], vec![3], vec![2]];
+    let mut checks = 0;
+    let result = Tarjan::new(&adjacency).run(&mut || {
+        checks += 1;
+        // The first SCC is complete and the second SCC is being traversed.
+        if checks == 9 { Err("expired") } else { Ok(()) }
+    });
+    assert_eq!(result, Err("expired"));
+    assert_eq!(checks, 9);
+}
+
+#[test]
 fn architecture_cycles_two_cycle_one_group_with_witness_each_direction() {
     let result = cycles(&[("a", "b"), ("b", "a")]);
     assert_eq!(result.len(), 1);

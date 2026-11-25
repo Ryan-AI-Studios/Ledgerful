@@ -4,6 +4,7 @@ mod classify;
 mod components;
 mod config;
 mod cycles;
+pub(crate) mod proposal;
 mod storage;
 
 #[cfg(test)]
@@ -48,7 +49,10 @@ pub(crate) fn execute_architecture(
         baseline,
         json,
         fail,
-    } = command;
+    } = command
+    else {
+        unreachable!("architecture proposals dispatch before ordinary setup");
+    };
     let layout = get_layout()?;
     let loaded = read_config(layout.root.as_std_path(), config.as_deref())?;
     let map = ComponentMap::build(&loaded.config)?;

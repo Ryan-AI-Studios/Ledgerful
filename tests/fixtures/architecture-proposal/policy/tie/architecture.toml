@@ -1,0 +1,39 @@
+schema_version = 1
+
+[[components]]
+name = "a"
+paths = ["src/a.rs"]
+
+[[components]]
+name = "b"
+paths = ["src/b.rs"]
+
+[[components]]
+name = "c"
+paths = ["src/c.rs"]
+
+[[components]]
+name = "d"
+paths = ["src/d.rs"]
+
+[[components]]
+name = "e"
+paths = ["src/e.rs"]
+
+[[rules]]
+id = "allow-ad"
+effect = "allow"
+from = "a"
+to = "d"
+
+[[rules]]
+id = "allow-from-c"
+effect = "allow"
+from = "c"
+to = "*"
+
+[[rules]]
+id = "forbid-to-a"
+effect = "forbid"
+from = "*"
+to = "a"

@@ -41,6 +41,13 @@ pub(crate) enum LocalGitConfigError {
 /// The caller supplies only the bounded contained `.git/config` snapshot.
 /// Successful admission establishes local policy for SHA-1 and files refs.
 pub(crate) fn admit_local_git_config(bytes: &[u8]) -> Result<LocalGitPolicy, LocalGitConfigError> {
+    admit_local_git_config_with(bytes, false)
+}
+
+pub(super) fn admit_local_git_config_with(
+    bytes: &[u8],
+    proposal: bool,
+) -> Result<LocalGitPolicy, LocalGitConfigError> {
     if bytes.len() > MAX_LOCAL_GIT_CONFIG_BYTES {
         return Err(LocalGitConfigError::Bytes);
     }
@@ -57,7 +64,7 @@ pub(crate) fn admit_local_git_config(bytes: &[u8]) -> Result<LocalGitPolicy, Loc
         },
     )
     .map_err(|_| LocalGitConfigError::Invalid)?;
-    check_fields(&config)?;
+    check_fields(&config, proposal)?;
 
     let format_version = config
         .integer("core.repositoryformatversion")
@@ -166,7 +173,7 @@ pub(super) fn admit_discovery_home_config(bytes: &[u8]) -> bool {
     true
 }
 
-fn check_fields(config: &config::File<'_>) -> Result<(), LocalGitConfigError> {
+fn check_fields(config: &config::File<'_>, proposal: bool) -> Result<(), LocalGitConfigError> {
     let mut seen_core = [false; CORE.len()];
     let mut seen_extensions = [false; EXTENSIONS.len()];
     for section in config.sections() {
@@ -182,6 +189,12 @@ fn check_fields(config: &config::File<'_>) -> Result<(), LocalGitConfigError> {
             }
             Some(sub) if !sub.is_empty() && name.eq_ignore_ascii_case("remote") => (&REMOTE, None),
             Some(sub) if !sub.is_empty() && name.eq_ignore_ascii_case("branch") => (&BRANCH, None),
+            // These fields only affect Git identity and commit creation, which
+            // the proposal neither calls nor uses to interpret stored source.
+            None if proposal && name.eq_ignore_ascii_case("user") => {
+                (&["name", "email", "signingkey", "useconfigonly"], None)
+            }
+            None if proposal && name.eq_ignore_ascii_case("commit") => (&["gpgsign"], None),
             _ => return Err(LocalGitConfigError::Unsupported),
         };
         for value_name in section.body().value_names() {

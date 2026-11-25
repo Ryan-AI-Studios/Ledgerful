@@ -51,6 +51,17 @@ pub(super) fn read_architecture<T>(
     inspect: impl FnOnce(Connection, Instant) -> (Connection, T),
 ) -> Option<T> {
     use super::capture_budget::CaptureBudget;
+    let budget = CaptureBudget::new();
+    read_architecture_in_phase(layout, budget.phase()?, false, inspect)
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+pub(super) fn read_architecture_in_phase<T>(
+    layout: &Layout,
+    phase: super::capture_budget::CapturePhase<'_>,
+    sidecar_free: bool,
+    inspect: impl FnOnce(Connection, Instant) -> (Connection, T),
+) -> Option<T> {
     use crate::change_evidence::pack::Work;
     use crate::state::layout::STATE_DIR;
 
@@ -59,8 +70,6 @@ pub(super) fn read_architecture<T>(
         return None;
     }
     let state_anchor = state_dir.parent()?;
-    let budget = CaptureBudget::new();
-    let phase = budget.phase()?;
     let io = ReadBudget::new_shared(
         phase.remaining_read_bytes(),
         phase.deadline,
@@ -80,6 +89,9 @@ pub(super) fn read_architecture<T>(
     let (root, proc_fd) = state_root.linux_capture_anchors();
     let state = layout.state_subdir();
     let mut scope = StockScope::cold(root, proc_fd, state.as_std_path(), &io, &mut work, expected)?;
+    if sidecar_free && !scope.is_sidecar_free() {
+        return None;
+    }
     let observed = stock_vfs::writer::with_preflight_reader(
         &mut scope,
         state.join("ledger.db").as_std_path(),

@@ -2,6 +2,7 @@ use crate::commands::mcp::INVENTORY;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{BufRead, Read, Write};
+use std::path::Path;
 
 const MAX_MCP_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 
@@ -24,6 +25,10 @@ pub struct JsonRpcResponse {
 }
 
 pub fn run_server() -> miette::Result<()> {
+    run_server_from(Path::new("."))
+}
+
+pub(super) fn run_server_from(proposal_cwd: &Path) -> miette::Result<()> {
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     let mut reader = stdin.lock();
@@ -119,7 +124,7 @@ pub fn run_server() -> miette::Result<()> {
             }
         };
 
-        if let Some(response) = handle_request(req) {
+        if let Some(response) = handle_request(req, proposal_cwd) {
             let resp_json = serde_json::to_string(&response).map_err(|e| miette::miette!(e))?;
             write!(
                 stdout,
@@ -133,7 +138,7 @@ pub fn run_server() -> miette::Result<()> {
     }
 }
 
-fn handle_request(req: JsonRpcRequest) -> Option<JsonRpcResponse> {
+fn handle_request(req: JsonRpcRequest, proposal_cwd: &Path) -> Option<JsonRpcResponse> {
     let result = match req.method.as_str() {
         "initialize" => {
             let protocol_version = req
@@ -173,9 +178,10 @@ fn handle_request(req: JsonRpcRequest) -> Option<JsonRpcResponse> {
             let name = params["name"].as_str().unwrap_or("");
             let tool_params = params["arguments"].clone();
 
-            Some(crate::commands::mcp::tools::dispatch_tool(
+            Some(crate::commands::mcp::tools::dispatch_tool_from(
                 name,
                 tool_params,
+                proposal_cwd,
             ))
         }
         "ping" => Some(serde_json::json!({})),
@@ -221,7 +227,7 @@ mod tests {
             params: Some(serde_json::json!({})),
             id: Some(serde_json::json!(1)),
         };
-        let resp = handle_request(req).unwrap();
+        let resp = handle_request(req, Path::new(".")).unwrap();
         assert_eq!(resp.id, Some(serde_json::json!(1)));
         let result = resp.result.unwrap();
         assert_eq!(result["serverInfo"]["name"], "ledgerful");

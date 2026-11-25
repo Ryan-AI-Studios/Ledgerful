@@ -1,8 +1,8 @@
 use serde_json::Value;
 
+use super::TOOL_HANDLERS;
 use super::dispatch_tool;
 use super::envelope::{error_response, json_response, json_stdout_response, text_response};
-use super::handler_for_tool;
 use super::handlers::{
     build_ask_args, build_search_args, hotspots_from_calc, ledger_status_object,
 };
@@ -35,14 +35,13 @@ fn unknown_tool_is_error_not_implemented() {
 }
 
 #[test]
-fn every_inventory_name_has_a_handler() {
-    for tool in crate::commands::mcp::INVENTORY {
-        assert!(
-            handler_for_tool(tool.name).is_some(),
-            "INVENTORY tool {} must have a dispatch handler",
-            tool.name
-        );
-    }
+fn inventory_and_handlers_have_the_same_unique_names() {
+    let inventory = crate::commands::mcp::INVENTORY;
+    let mut inventory_names: Vec<_> = inventory.iter().map(|entry| entry.name).collect();
+    inventory_names.sort_unstable();
+    let handler_names: Vec<_> = TOOL_HANDLERS.iter().map(|(name, _)| *name).collect();
+    assert!(handler_names.windows(2).all(|pair| pair[0] < pair[1]));
+    assert_eq!(inventory_names, handler_names);
 }
 
 #[test]

@@ -1,4 +1,5 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, btree_map::Entry};
+use std::convert::Infallible;
 
 #[cfg(test)]
 #[path = "components_tests.rs"]
@@ -45,17 +46,30 @@ impl ComponentMap {
     }
 
     pub(super) fn assign(&self, path: &str) -> Assignment {
-        let mut matching: Vec<_> = self
-            .sets
-            .iter()
-            .filter(|(_, set)| set.is_match(path))
-            .map(|(name, _)| name.clone())
-            .collect();
-        match matching.len() {
+        match self.assign_checked(path, &mut || Ok::<_, Infallible>(())) {
+            Ok(assignment) => assignment,
+            Err(never) => match never {},
+        }
+    }
+
+    pub(super) fn assign_checked<E>(
+        &self,
+        path: &str,
+        check: &mut impl FnMut() -> std::result::Result<(), E>,
+    ) -> std::result::Result<Assignment, E> {
+        let mut matching = Vec::new();
+        for (name, set) in &self.sets {
+            check()?;
+            if set.is_match(path) {
+                matching.push(name.clone());
+            }
+        }
+        check()?;
+        Ok(match matching.len() {
             0 => Assignment::Unassigned,
             1 => Assignment::Assigned(matching.remove(0)),
             _ => Assignment::Overlapping(matching),
-        }
+        })
     }
 }
 
@@ -114,16 +128,8 @@ pub(super) struct OverlappingFile {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RuleDecision<'a> {
-    Forbidden {
-        rule_id: &'a str,
-    },
-    Allowed {
-        #[allow(
-            dead_code,
-            reason = "The observational packet only reports forbid rule IDs"
-        )]
-        rule_id: &'a str,
-    },
+    Forbidden { rule_id: &'a str },
+    Allowed { rule_id: &'a str },
     Unconstrained,
 }
 
@@ -235,6 +241,56 @@ pub(super) fn analyze(
     analysis.component_edges = cycles::build_component_edges(&cross_edges);
     analysis.cycle_groups = cycles::find_cycle_groups(&analysis.component_edges);
     analysis
+}
+
+#[derive(Default)]
+pub(super) struct CycleProjection {
+    pub(super) cross_component_edges: u64,
+    pub(super) ambiguous_mapping_edges: u64,
+    pub(super) unmapped_edges: u64,
+    pub(super) groups: Vec<CycleGroup>,
+}
+
+/// Use the same assignment and edge categorization as Architecture check.
+/// The counterfactual consumes component topology and coverage counts only.
+pub(super) fn project_cycles<E>(
+    edges: &[FileEdge],
+    map: &ComponentMap,
+    check: &mut impl FnMut() -> std::result::Result<(), E>,
+) -> std::result::Result<CycleProjection, E> {
+    let mut endpoints = BTreeMap::new();
+    for edge in edges {
+        check()?;
+        for path in [edge.src_path.as_str(), edge.dst_path.as_str()] {
+            if let Entry::Vacant(entry) = endpoints.entry(path) {
+                entry.insert(map.assign_checked(path, check)?);
+            }
+        }
+    }
+
+    let mut projection = CycleProjection::default();
+    let mut components = BTreeMap::new();
+    for edge in edges {
+        check()?;
+        let source = &endpoints[edge.src_path.as_str()];
+        let destination = &endpoints[edge.dst_path.as_str()];
+        match categorize(edge, source, destination) {
+            EdgeCategory::AmbiguousMapping => projection.ambiguous_mapping_edges += 1,
+            EdgeCategory::Unmapped => projection.unmapped_edges += 1,
+            EdgeCategory::CrossComponent { from, to } => {
+                projection.cross_component_edges += 1;
+                let pair = components
+                    .entry((from, to))
+                    .or_insert_with(|| ComponentEdge::new(from, to));
+                pair.weight += u64::from(edge.weight);
+            }
+            EdgeCategory::SelfEdge | EdgeCategory::IntraComponent => {}
+        }
+    }
+    check()?;
+    let component_edges = components.into_values().collect::<Vec<_>>();
+    projection.groups = cycles::find_cycle_groups_checked(&component_edges, check)?;
+    Ok(projection)
 }
 
 fn summarize_endpoints(

@@ -1149,6 +1149,37 @@ fn architecture_check_argv_shapes() {
 }
 
 #[test]
+fn architecture_propose_metadata_tracks_flag_names_only() {
+    let required = [
+        "architecture",
+        "propose",
+        "--from",
+        "caller.rs",
+        "--to",
+        "target.rs",
+        "--kind",
+        "fileCall",
+        "--head",
+        "0123456789012345678901234567890123456789",
+    ];
+    let prepare = parse(&required);
+    assert!(prepare.is_machine_output());
+    assert_eq!(prepare.command_name(), "architecture_propose");
+    assert_eq!(
+        prepare.argv_shape(),
+        "architecture_propose|from,head,kind,to"
+    );
+
+    let replay = parse(&[&required[..], &["--context", "candidate", "--json"]].concat());
+    assert!(replay.is_machine_output());
+    assert_eq!(replay.command_name(), "architecture_propose");
+    assert_eq!(
+        replay.argv_shape(),
+        "architecture_propose|context,from,head,json,kind,to"
+    );
+}
+
+#[test]
 fn architecture_requires_subcommand() {
     assert!(Cli::try_parse_from(["ledgerful", "architecture"]).is_err());
 }

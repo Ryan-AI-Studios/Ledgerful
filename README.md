@@ -186,7 +186,7 @@ Default-features `--help` names, in clap order. Hidden variants (`bridge`, `sear
 | `mcp` | Run the MCP server (stdio) or install/uninstall host platform config |
 | `openapi` | Print the canonical OpenAPI JSON spec for this build to stdout |
 | `baseline` | Create, list, show, and compare named snapshots of resolved file dependencies |
-| `architecture` | Check dependency boundaries and cycles over observed call edges |
+| `architecture` | Check observed dependency boundaries and cycles, or project one additional call with `architecture propose` |
 | `change-evidence` | [Attest a named baseline and prepare evidence for the current revision](docs/change-evidence.md) |
 | `demo` | Generate a disposable demonstration repo with signed ledger entries, cryptographic VALID proof, and a DEMO evidence export (see `docs/golden-path.md`) |
 | `services` (gated) | Service boundary and topology commands |
@@ -194,6 +194,8 @@ Default-features `--help` names, in clap order. Hidden variants (`bridge`, `sear
 | `observability` (gated) | Manage runtime observability and SLOs |
 
 `daemon` and `usage` are absent from default `--help` (`--features daemon` / `usage-metrics`; install snippet above).
+
+Use `architecture propose` to prepare and replay an advisory dependency check against the current committed and indexed HEAD. Every result reports `permission: "unknown"`. After an edit, index the actual source and run `architecture check`. [Architecture proposal contract and example](docs/agent-output-contract.md#architecture-propose-schema-v1)
 
 ## MCP agent install (Top-N platforms)
 

@@ -1,10 +1,46 @@
 use serde_json::Value;
+use std::path::Path;
 
 use super::envelope::{error_response, json_response, json_stdout_response, text_response};
 use super::spawn::{
     MCP_ASK_CHILD_TIMEOUT_FLAG, MCP_ASK_CHILD_TIMEOUT_SECS, MCP_TOOL_TIMEOUT_SECS,
     run_ledgerful_tool,
 };
+
+pub(super) fn handle_architecture_propose(params: Value, proposal_cwd: &Path) -> Value {
+    use crate::commands::architecture::proposal::{InvalidProposal, ProposalRequest, evaluate};
+
+    if !params.is_object() {
+        return error_response(InvalidProposal);
+    }
+    let Ok(request) = serde_json::from_value::<ProposalRequest>(params) else {
+        return error_response(InvalidProposal);
+    };
+    match evaluate(request, proposal_cwd) {
+        Ok(packet) => json_response(&packet),
+        Err(error) => error_response(error),
+    }
+}
+
+/// Resolve and migrate state where ordinary CLI startup would have done so.
+/// Existing tools without a Git worktree still use their cwd fallback, where
+/// ordinary startup skipped the migration. Call after argument checks.
+fn stateful_tool_layout() -> miette::Result<crate::state::layout::Layout> {
+    use crate::state::layout::{
+        LEDGERFUL_STATE_DIR_ENV, StateDirOrigin, get_layout_or_cwd_with_state_origin,
+        get_layout_with_state_origin,
+    };
+
+    let (layout, origin) = if std::env::var(LEDGERFUL_STATE_DIR_ENV).is_ok() {
+        get_layout_with_state_origin()?
+    } else {
+        get_layout_or_cwd_with_state_origin()?
+    };
+    if origin != StateDirOrigin::CwdFallback {
+        crate::cli::dispatch::migrate_startup_layout(&layout)?;
+    }
+    Ok(layout)
+}
 
 pub(super) fn handle_change_context(params: Value) -> Value {
     use crate::commands::change_context::{
@@ -50,7 +86,7 @@ pub(super) fn handle_change_context(params: Value) -> Value {
         ..ChangeContextOpts::default()
     };
 
-    let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
+    let layout = match stateful_tool_layout() {
         Ok(l) => l,
         Err(e) => return error_response(format!("Failed to get layout: {}", e)),
     };
@@ -83,7 +119,7 @@ pub(super) fn handle_change_context(params: Value) -> Value {
 }
 
 pub(super) fn handle_ledger_status(_params: Value) -> Value {
-    let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
+    let layout = match stateful_tool_layout() {
         Ok(l) => l,
         Err(e) => return error_response(format!("Failed to get layout: {}", e)),
     };
@@ -150,7 +186,7 @@ pub(super) fn ledger_status_object<E: std::fmt::Display>(
 
 pub(super) fn handle_hotspots(params: Value) -> Value {
     let limit = params["limit"].as_u64().unwrap_or(10) as usize;
-    let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
+    let layout = match stateful_tool_layout() {
         Ok(l) => l,
         Err(e) => return error_response(format!("Failed to get layout: {}", e)),
     };
@@ -262,19 +298,19 @@ pub(super) fn handle_search(params: Value) -> Value {
 }
 
 pub(super) fn handle_ledger_search(params: Value) -> Value {
-    let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
+    let query = params["query"].as_str().unwrap_or("");
+    let days = params["days"].as_u64().unwrap_or(30) as u32;
+    let include_rollback = params["include_rollback"].as_bool().unwrap_or(false);
+    let layout = match stateful_tool_layout() {
         Ok(l) => l,
         Err(e) => return error_response(format!("Failed to get layout: {}", e)),
     };
-    let query = params["query"].as_str().unwrap_or("");
-    let days = params["days"].as_u64().unwrap_or(30) as u32;
     let mut storage =
         match crate::state::storage::StorageManager::open_read_only_sqlite_only(&layout) {
             Ok(s) => s,
             Err(e) => return error_response(format!("Failed to open storage: {}", e)),
         };
     let db = crate::ledger::db::LedgerDb::new(storage.get_connection_mut());
-    let include_rollback = params["include_rollback"].as_bool().unwrap_or(false);
     let results = match db.search_ledger(
         query,
         None,
@@ -379,7 +415,8 @@ pub(super) fn handle_security_boundaries(_params: Value) -> Value {
 }
 
 pub(super) fn handle_dead_code(params: Value) -> Value {
-    let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
+    let limit = params["limit"].as_u64().unwrap_or(50) as usize;
+    let layout = match stateful_tool_layout() {
         Ok(l) => l,
         Err(e) => return error_response(format!("Failed to get layout: {}", e)),
     };
@@ -398,7 +435,6 @@ pub(super) fn handle_dead_code(params: Value) -> Value {
     )
     .with_path_include(true, true);
 
-    let limit = params["limit"].as_u64().unwrap_or(50) as usize;
     let findings = match scorer.scan_repo(limit) {
         Ok(f) => f,
         Err(e) => return error_response(format!("Dead code scan failed: {}", e)),
@@ -407,7 +443,7 @@ pub(super) fn handle_dead_code(params: Value) -> Value {
 }
 
 pub(super) fn handle_verify_plan(_params: Value) -> Value {
-    let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
+    let layout = match stateful_tool_layout() {
         Ok(l) => l,
         Err(e) => return error_response(format!("Failed to get layout: {}", e)),
     };

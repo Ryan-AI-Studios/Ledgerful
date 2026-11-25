@@ -36,7 +36,7 @@ impl CaptureBudget {
         Self::at(Instant::now(), CAPTURE_DURATION, CAPTURE_BYTES)
     }
 
-    fn at(now: Instant, duration: Duration, bytes: usize) -> Self {
+    pub(crate) fn at(now: Instant, duration: Duration, bytes: usize) -> Self {
         Self {
             deadline: Cell::new(now.checked_add(duration).unwrap_or(now)),
             paused: Cell::new(false),

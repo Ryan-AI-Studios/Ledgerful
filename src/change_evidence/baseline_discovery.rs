@@ -16,6 +16,7 @@ use super::root_ignore::MAX_IGNORE_FILE_BYTES;
 use super::scope_owner::ScopeRoot;
 use super::witness_stream::WitnessStream;
 use crate::commands::baseline::extract::capture_snapshot::CaptureSnapshot;
+use std::cell::Cell;
 use std::mem::size_of;
 
 type Result<T> = std::result::Result<T, &'static str>;
@@ -28,6 +29,13 @@ const CONFIG_LINE_BYTES: usize = 1_024;
 const CONFIG_LINES: usize = 384;
 const EXCLUDE_PATH: &str = ".git/info/exclude";
 const CONFIG_PATH: &str = ".ledgerful/config.toml";
+const PROPOSAL_CONFIG_BYTES: usize = 64 * 1024;
+const PROPOSAL_SELECTED_FILES: usize = 2_000;
+
+#[derive(Clone, Copy)]
+pub(super) struct ProposalDiscoveryBudget<'a> {
+    pub(super) entries: &'a Cell<usize>,
+}
 
 /// A finished physical discovery pass and exact SQL path-set match.
 #[derive(Debug, Eq, PartialEq)]
@@ -102,6 +110,7 @@ struct DiscoveryWalk<'a, 'observation> {
     io: &'observation mut ReadBudget<'a>,
     work: &'observation mut Work<'a>,
     remaining: usize,
+    proposal: Option<ProposalDiscoveryBudget<'a>>,
     selected: Option<SelectedPaths<'a>>,
     transcript: WitnessStream,
     root_exclude: RuleFrame<'a, 'static>,
@@ -118,7 +127,12 @@ impl<'a, 'observation> DiscoveryWalk<'a, 'observation> {
         if depth > MAX_DEPTH {
             return Err("discovery-directory-depth-cap");
         }
-        let rows = self.rows(dir, self.remaining.min(MAX_DIR_ROWS))?;
+        let directory_cap = if self.proposal.is_some() {
+            super::contained::MAX_DIRECTORY_ENTRIES
+        } else {
+            MAX_DIR_ROWS
+        };
+        let rows = self.rows(dir, self.remaining.min(directory_cap))?;
         verify_unaliased_rows(rows.rows(), self.work).map_err(|error| match error {
             InventoryError::Budget(reason) => reason,
             _ => "discovery-alias",
@@ -216,12 +230,24 @@ impl<'a, 'observation> DiscoveryWalk<'a, 'observation> {
     }
 
     fn rows(&mut self, dir: &str, limit: usize) -> Result<DirectoryRows<'a>> {
-        DirectoryRows::capture(self.root, dir, limit, self.io, self.work).map_err(|error| {
-            match error {
-                DirectoryVisitError::Reader(error) => native(error),
-                DirectoryVisitError::Visitor(error) => error,
-            }
-        })
+        let limit = self
+            .proposal
+            .map_or(limit, |budget| limit.min(budget.entries.get()));
+        let rows =
+            DirectoryRows::capture(self.root, dir, limit, self.io, self.work).map_err(|error| {
+                match error {
+                    DirectoryVisitError::Reader(error) => native(error),
+                    DirectoryVisitError::Visitor(error) => error,
+                }
+            })?;
+        if let Some(budget) = self.proposal {
+            super::pack_store::charge_proposal_limit(
+                budget.entries,
+                rows.rows().len(),
+                "discovery-entry-cap",
+            )?;
+        }
+        Ok(rows)
     }
 
     fn local_rules(
@@ -269,7 +295,12 @@ impl<'a, 'observation> DiscoveryWalk<'a, 'observation> {
         let Err(slot) = insertion else {
             return Err("discovery-alias");
         };
-        if selection.paths.len() == MAX_ENTRIES {
+        let limit = if self.proposal.is_some() {
+            PROPOSAL_SELECTED_FILES
+        } else {
+            MAX_ENTRIES
+        };
+        if selection.paths.len() == limit {
             return Err("discovery-entry-cap");
         }
         self.work
@@ -296,6 +327,25 @@ pub(super) fn observe<'a>(
     #[cfg(target_os = "linux")] layout_root: &std::path::Path,
     snapshot: &CaptureSnapshot,
 ) -> Result<RetainedDiscovery> {
+    observe_with(
+        root,
+        io,
+        work,
+        #[cfg(target_os = "linux")]
+        layout_root,
+        snapshot,
+        None,
+    )
+}
+
+pub(super) fn observe_with<'a>(
+    root: &mut ScopeRoot<'a>,
+    io: &mut ReadBudget<'a>,
+    work: &mut Work<'a>,
+    #[cfg(target_os = "linux")] layout_root: &std::path::Path,
+    snapshot: &CaptureSnapshot,
+    proposal: Option<ProposalDiscoveryBudget<'a>>,
+) -> Result<RetainedDiscovery> {
     let sampled = sample(
         root,
         io,
@@ -303,6 +353,7 @@ pub(super) fn observe<'a>(
         #[cfg(target_os = "linux")]
         layout_root,
         true,
+        proposal,
     )?;
     let wanted = sorted_sql_paths(snapshot, work)?;
     let selected = sampled
@@ -347,6 +398,7 @@ pub(super) fn replay_fingerprint<'a>(
         #[cfg(target_os = "linux")]
         layout_root,
         false,
+        None,
     )?;
     Ok(sampled.witness)
 }
@@ -357,10 +409,12 @@ fn sample<'a>(
     work: &mut Work<'a>,
     #[cfg(target_os = "linux")] layout_root: &std::path::Path,
     collect_selected: bool,
+    proposal: Option<ProposalDiscoveryBudget<'a>>,
 ) -> Result<DiscoverySample<'a>> {
     let env = root.observe_default_policy_environment(
         #[cfg(target_os = "linux")]
         layout_root,
+        proposal.is_some(),
         io,
         work,
     )?;
@@ -370,7 +424,26 @@ fn sample<'a>(
     } else {
         None
     };
-    let (config, threshold, config_digest) = read_project_config(root, io, work)?;
+    let config_cap = if proposal.is_some() {
+        PROPOSAL_CONFIG_BYTES
+    } else {
+        CONFIG_BYTES
+    };
+    let config_identity = if proposal.is_some() {
+        Some(root.observe_entry(CONFIG_PATH, false, io).map_err(native)?)
+    } else {
+        None
+    };
+    let config = read(root, io, work, CONFIG_PATH, config_cap).map_err(|reason| {
+        if proposal.is_some() && reason == "stored-bytes-cap" {
+            "discovery-config-cap"
+        } else {
+            reason
+        }
+    })?;
+    let threshold = supported_config(config.as_ref(), work, config_cap)?;
+    work.charge(config.as_ref().len())?;
+    let config_digest = blake3::hash(config.as_ref());
     let root_identity = root.identity();
     let mut transcript = WitnessStream::new(b"ledgerful:retained-default-discovery:v1\0", work)?;
     transcript.record(
@@ -378,10 +451,18 @@ fn sample<'a>(
         &[&stamp.1, &env.1, config.as_ref(), &threshold.to_be_bytes()],
         work,
     )?;
+    if let Some(identity) = config_identity {
+        transcript.record(12, &[&identity.inventory_bytes()], work)?;
+    }
     let selected = if collect_selected {
-        let table = reserve(work, MAX_ENTRIES * size_of::<ReservedBytes<'a>>())?;
+        let limit = if proposal.is_some() {
+            PROPOSAL_SELECTED_FILES
+        } else {
+            MAX_ENTRIES
+        };
+        let table = reserve(work, limit * size_of::<ReservedBytes<'a>>())?;
         Some(SelectedPaths {
-            paths: allocate(MAX_ENTRIES, work)?,
+            paths: allocate(limit, work)?,
             _table: table,
         })
     } else {
@@ -390,7 +471,8 @@ fn sample<'a>(
     let mut walk = DiscoveryWalk {
         root,
         io,
-        remaining: MAX_ENTRIES,
+        remaining: proposal.map_or(MAX_ENTRIES, |budget| budget.entries.get()),
+        proposal,
         selected,
         transcript,
         root_exclude: RuleFrame::compile(b"", raw(&exclude), work).map_err(membership)?,
@@ -421,12 +503,22 @@ fn sample<'a>(
     {
         return Err("discovery-policy-changed");
     }
-    let after = read(walk.root, walk.io, walk.work, CONFIG_PATH, CONFIG_BYTES)?;
+    let after = read(walk.root, walk.io, walk.work, CONFIG_PATH, config_cap)?;
     walk.work.charge(config.as_ref().len())?;
+    if let Some(identity) = config_identity
+        && walk
+            .root
+            .observe_entry(CONFIG_PATH, false, walk.io)
+            .map_err(native)?
+            != identity
+    {
+        return Err("discovery-policy-changed");
+    }
     if after.as_ref() != config.as_ref()
         || walk.root.observe_default_policy_environment(
             #[cfg(target_os = "linux")]
             layout_root,
+            proposal.is_some(),
             walk.io,
             walk.work,
         )? != env
@@ -449,7 +541,7 @@ pub(super) fn read_project_config_days<'a>(
     work: &mut Work<'a>,
 ) -> Result<u64> {
     let bytes = read(root, io, work, CONFIG_PATH, CONFIG_BYTES)?;
-    supported_config(bytes.as_ref(), work)
+    supported_config(bytes.as_ref(), work, CONFIG_BYTES)
 }
 
 pub(super) fn read_project_config<'a>(
@@ -458,7 +550,7 @@ pub(super) fn read_project_config<'a>(
     work: &mut Work<'a>,
 ) -> Result<(ReservedBytes<'a>, u64, blake3::Hash)> {
     let config = read(root, io, work, CONFIG_PATH, CONFIG_BYTES)?;
-    let threshold = supported_config(config.as_ref(), work)?;
+    let threshold = supported_config(config.as_ref(), work, CONFIG_BYTES)?;
     work.charge(config.as_ref().len())?;
     let digest = blake3::hash(config.as_ref());
     Ok((config, threshold, digest))
@@ -505,8 +597,13 @@ fn sorted_sql_paths<'a, 'sql>(
     Ok((paths, held))
 }
 
-fn supported_config(bytes: &[u8], work: &mut Work<'_>) -> Result<u64> {
+fn supported_config(bytes: &[u8], work: &mut Work<'_>, byte_limit: usize) -> Result<u64> {
     work.charge(64 * bytes.len() + 1)?;
+    if byte_limit == PROPOSAL_CONFIG_BYTES {
+        let _parser = reserve(work, 512 * 1024 + 128 * bytes.len())?;
+        return decode_index_stale_threshold_days(bytes, byte_limit)
+            .map_err(|_| "discovery-config-unavailable");
+    }
     let text = std::str::from_utf8(bytes).map_err(|_| "discovery-config-unavailable")?;
     // Bound the input to ordinary line-oriented TOML before handing ownership,
     // default construction and validation to the same loader as legacy.
@@ -565,8 +662,7 @@ fn supported_config(bytes: &[u8], work: &mut Work<'_>) -> Result<u64> {
         return Err("discovery-config-shape");
     }
     let _parser = reserve(work, 512 * 1024 + 128 * bytes.len())?;
-    decode_index_stale_threshold_days(bytes, CONFIG_BYTES)
-        .map_err(|_| "discovery-config-unavailable")
+    decode_index_stale_threshold_days(bytes, byte_limit).map_err(|_| "discovery-config-unavailable")
 }
 
 fn raw<'a>(value: &'a Option<ReservedBytes<'_>>) -> Option<&'a [u8]> {
@@ -681,6 +777,7 @@ fn membership(error: MembershipError) -> &'static str {
 fn native(error: ReadError) -> &'static str {
     match error {
         ReadError::Work => "work-cap",
+        ReadError::Entries => "directory-entry-cap",
         other => read_error(other),
     }
 }

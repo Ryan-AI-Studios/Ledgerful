@@ -1,0 +1,2 @@
+Ordinary non-Rust tracked text.
+crate::a::a_target();

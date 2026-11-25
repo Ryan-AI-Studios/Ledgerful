@@ -301,13 +301,14 @@ impl<'a> MeteredWindowsScopeDirectories<'a> {
     /// Each fixed candidate must be absent. External file contents are never read.
     pub(crate) fn observe_default_global_absence(
         &self,
+        allow_contained_cwd: bool,
         budget: &mut ReadBudget<'_>,
         work: &mut Work<'a>,
     ) -> Result<Option<[u8; 32]>, ReadError> {
         self.held
             .root
             .root
-            .observe_default_global_absence(budget, work)
+            .observe_default_global_absence(allow_contained_cwd, budget, work)
     }
 
     pub(crate) fn list(
@@ -544,6 +545,7 @@ impl ContainedRoot {
     pub(super) fn observe_default_policy_environment<'a>(
         &self,
         worktree: &Path,
+        allow_contained_cwd: bool,
         io: &mut ReadBudget<'_>,
         work: &mut Work<'a>,
     ) -> Result<Option<(DefaultAncestorAbsence, [u8; 32])>, ReadError> {
@@ -551,6 +553,7 @@ impl ContainedRoot {
             worktree,
             self.root.policy_directory(),
             self.root.policy_procfs(),
+            allow_contained_cwd,
             io,
             work,
         )
@@ -1877,6 +1880,7 @@ mod platform {
 
         pub(super) fn observe_default_global_absence<'a>(
             &self,
+            allow_contained_cwd: bool,
             budget: &mut ReadBudget<'_>,
             work: &mut Work<'a>,
         ) -> Result<Option<[u8; 32]>, ReadError> {
@@ -1895,16 +1899,25 @@ mod platform {
             if !cwd.is_absolute() {
                 return Ok(None);
             }
-            let current = Self::open_for_scope_with_spelling(
-                &cwd,
-                ChildSpelling::CurrentDirectoryAsciiAlias,
-                budget,
-                work,
-            )?;
-            if current.root.identity != self.identity {
+            let mut matched_cwd = false;
+            for ancestor in cwd.ancestors() {
+                let current = Self::open_for_scope_with_spelling(
+                    ancestor,
+                    ChildSpelling::CurrentDirectoryAsciiAlias,
+                    budget,
+                    work,
+                )?;
+                if current.root.identity == self.identity {
+                    matched_cwd = true;
+                    break;
+                }
+                if !allow_contained_cwd {
+                    break;
+                }
+            }
+            if !matched_cwd {
                 return Ok(None);
             }
-            drop(current);
             let drive = cwd.ancestors().last().ok_or(ReadError::Path)?;
             // Match the exact home-selection API called by pinned ignore 0.4.33.
             #[allow(deprecated, reason = "Exact pinned default ignore home selection")]

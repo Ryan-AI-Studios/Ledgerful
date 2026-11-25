@@ -104,6 +104,33 @@ pub enum ArchitectureCommands {
         #[arg(long)]
         fail: bool,
     },
+    /// Estimate how one additional resolved call would affect boundaries and cycles
+    #[command(
+        after_help = "Prepare without --context, then replay the same request with the returned token.\n\
+        Output is always JSON with permission unknown. Independently check the actual edit.\n\
+        The measured engine-size R2 graph exceeds the 25,000 raw-row ceiling and returns unknown.\n\
+        Raw observations can repeat a pair and are counted separately from projected pairs."
+    )]
+    Propose {
+        /// Repository-relative path of the calling file
+        #[arg(long, value_name = "PATH", allow_hyphen_values = true)]
+        from: String,
+        /// Repository-relative path of the called file
+        #[arg(long, value_name = "PATH", allow_hyphen_values = true)]
+        to: String,
+        /// Hypothetical observation kind (fileCall)
+        #[arg(long, value_name = "KIND", allow_hyphen_values = true)]
+        kind: String,
+        /// Full lowercase object ID of the current committed and indexed HEAD
+        #[arg(long, value_name = "FULL-HEAD")]
+        head: String,
+        /// Observed context token from preparing the same proposal
+        #[arg(long, value_name = "TOKEN")]
+        context: Option<String>,
+        /// Write the architectureProposal JSON envelope (also the default)
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

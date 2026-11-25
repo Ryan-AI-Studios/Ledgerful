@@ -1711,6 +1711,17 @@ impl Commands {
                     f.push("fail");
                 }
             }
+            Commands::Architecture {
+                command: ArchitectureCommands::Propose { context, json, .. },
+            } => {
+                f.extend(["from", "to", "kind", "head"]);
+                if context.is_some() {
+                    f.push("context");
+                }
+                if *json {
+                    f.push("json");
+                }
+            }
             Commands::Demo(DemoArgs {
                 keep,
                 output,

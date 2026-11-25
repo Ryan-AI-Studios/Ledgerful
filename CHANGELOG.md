@@ -6,6 +6,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `architecture propose` and MCP `architecture_propose` project how one additional resolved cross-file call would affect configured boundaries and observed component cycles. The local read-only operation prepares a context token and rechecks it on replay. Results are advisory and always report `permission: "unknown"`.
+
+### Changed
+
+- Bare `mcp` and `mcp serve` defer repository setup until an existing tool first needs state. Discovery, ping, and proposal calls leave legacy state and server-level timing and usage untouched.
+
 ### Fixed
 
 - Doctor now reports when it cannot check for the timing table or count its rows. The warning marks the table size as unknown.
