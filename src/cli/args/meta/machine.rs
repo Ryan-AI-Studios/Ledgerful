@@ -200,6 +200,9 @@ impl Commands {
                 | BaselineCommands::Show { json, .. }
                 | BaselineCommands::Compare { json, .. } => *json,
             },
+            Commands::Architecture {
+                command: ArchitectureCommands::Check { json, .. },
+            } => *json,
             Commands::Demo(DemoArgs { .. }) => false,
             #[cfg(feature = "usage-metrics")]
             Commands::Usage { .. } => false,

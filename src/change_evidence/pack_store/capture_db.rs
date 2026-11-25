@@ -43,6 +43,57 @@ pub(super) const WAL: &str = ".ledgerful/state/ledger.db-wal";
 pub(super) const SHM: &str = ".ledgerful/state/ledger.db-shm";
 pub(super) const JOURNAL: &str = ".ledgerful/state/ledger.db-journal";
 
+/// Use the qualified CLI VFS with the selected state directory as its anchor.
+/// Architecture's calling checkout can be elsewhere, such as a linked worktree.
+#[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+pub(super) fn read_architecture<T>(
+    layout: &Layout,
+    inspect: impl FnOnce(Connection, Instant) -> (Connection, T),
+) -> Option<T> {
+    use super::capture_budget::CaptureBudget;
+    use crate::change_evidence::pack::Work;
+    use crate::state::layout::STATE_DIR;
+
+    let state_dir = layout.state_dir.as_std_path();
+    if state_dir.file_name()? != STATE_DIR {
+        return None;
+    }
+    let state_anchor = state_dir.parent()?;
+    let budget = CaptureBudget::new();
+    let phase = budget.phase()?;
+    let io = ReadBudget::new_shared(
+        phase.remaining_read_bytes(),
+        phase.deadline,
+        phase.interrupted,
+        phase.aggregate,
+    );
+    let mut work = Work::new(
+        phase.deadline,
+        phase.interrupted,
+        512 * 1024 * 1024,
+        phase.memory,
+    );
+    let checkout_path = layout.root.as_std_path();
+    let checkout = ContainedRoot::open(checkout_path, &io).ok()?;
+    let state_root = ContainedRoot::open(state_anchor, &io).ok()?;
+    let expected = state_root.observe_entry(STATE_DIR, true, &io).ok()?;
+    let (root, proc_fd) = state_root.linux_capture_anchors();
+    let state = layout.state_subdir();
+    let mut scope = StockScope::cold(root, proc_fd, state.as_std_path(), &io, &mut work, expected)?;
+    let observed = stock_vfs::writer::with_preflight_reader(
+        &mut scope,
+        state.join("ledger.db").as_std_path(),
+        &io,
+        &mut work,
+        |reader| inspect(reader, phase.deadline),
+    )?;
+    let state_matches =
+        ContainedRoot::open(state_anchor, &io).ok()?.identity() == state_root.identity();
+    let checkout_matches =
+        ContainedRoot::open(checkout_path, &io).ok()?.identity() == checkout.identity();
+    (state_matches && checkout_matches).then_some(observed)
+}
+
 /// Sealed native check: storage can invoke it but cannot access its SQL connection.
 #[cfg(target_os = "linux")]
 pub(crate) struct NativeCaptureRecheck<'a> {

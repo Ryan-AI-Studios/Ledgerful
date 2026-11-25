@@ -1086,6 +1086,74 @@ fn baseline_json_is_machine_output() {
 }
 
 #[test]
+fn architecture_check_json_is_machine_output() {
+    assert!(parse(&["architecture", "check", "--json"]).is_machine_output());
+    assert!(!parse(&["architecture", "check"]).is_machine_output());
+    assert!(
+        parse(&[
+            "architecture",
+            "check",
+            "--config",
+            "rules.toml",
+            "--baseline",
+            "before",
+            "--json",
+            "--fail",
+        ])
+        .is_machine_output()
+    );
+}
+
+#[test]
+fn architecture_check_command_name() {
+    assert_eq!(
+        parse(&["architecture", "check"]).command_name(),
+        "architecture_check"
+    );
+}
+
+#[test]
+fn architecture_check_argv_shapes() {
+    assert_eq!(
+        parse(&["architecture", "check"]).argv_shape().trim(),
+        "architecture_check"
+    );
+    assert_eq!(
+        parse(&[
+            "architecture",
+            "check",
+            "--baseline",
+            "before",
+            "--fail",
+            "--json"
+        ])
+        .argv_shape()
+        .trim(),
+        "architecture_check|baseline,fail,json",
+    );
+    assert_eq!(
+        parse(&[
+            "architecture",
+            "check",
+            "--config",
+            "rules.toml",
+            "--baseline",
+            "before",
+            "--fail",
+            "--json"
+        ])
+        .argv_shape()
+        .trim(),
+        "architecture_check|baseline,config,fail,json",
+    );
+}
+
+#[test]
+fn architecture_requires_subcommand() {
+    assert!(Cli::try_parse_from(["ledgerful", "architecture"]).is_err());
+}
+
+#[test]
 fn baseline_command_names() {
     assert_eq!(
         parse(&["baseline", "create", "x"]).command_name(),

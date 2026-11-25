@@ -101,6 +101,7 @@ contract and follows `LEDGERFUL_TABLE_STYLE`. Purity inventory unchanged
 | `baseline list --json` | yes | yes | schemaVersion 1 `kind: "analysisBaselineList"`: `baselines[]` with `name`/`createdAt`/`payloadKind`/`baselineSchema`/`payloadDigest`/`edgeCount`/`inputCompleteness.state`. Ordered by `createdAt`, then `name`. |
 | `baseline show --json` | yes | yes | schemaVersion 1 `kind: "analysisBaselineShow"`: `name`/`identity`/`coverage`/`payloadDigest`/`digestVerified`/`edges[]` (`srcPath`/`dstPath`/`weight`, JSON only). Unknown name exits 1 with `BASELINE_NOT_FOUND`. |
 | `baseline compare --json` | yes | yes | schemaVersion 1 `kind: "analysisBaselineCompare"`: `baseline`/`status`/`incomparableReasons`/`baselineIdentity`/`currentIdentity`/`currentCompleteness`/`regression` (`none`\|`present`\|`unknown`)/`regressionReasons`/`notes`, plus `counts`/`items` **only** when comparable. Exit 0 without `--fail-on-regression` is **not** a pass. See schema below. |
+| `architecture check --json` | yes | yes on successful checks | CLI-only. Schema version 1 `kind: "architectureCheck"` reports observed boundaries and cycles, current evidence and optional baseline comparison. |
 | `timings --json` | yes (0043; 0330; 0346; 0364) | yes | schemaVersion 1 envelope `{schemaVersion, data}` — **no** `kind`. `data[]` keeps `command` / `runs` / `p50_ms` / `p95_ms` / `p99_ms` / `total_ms`. Additive always: `comparable` (bool, never omitted), `workload_count`, `nonzero_exit_runs`, `window_days`. Additive omit-empty: `duration_spread` (`single`\|`mixed`), `incomparable_reason` (`unhashedArgv` when the sole success bucket is `"<unhashed>"`), `sample_note`, `workloads[]`. `runs` is success (`exit_code==0`) count. `--explain --json` `data` is an object with always `explain` / `command` / `runs` / `comparable` plus omit-empty `p50_ms` / `prior_p50_ms` / `incomparable_reason`. No success prior baseline (empty **or** all-failed) omits `prior_p50_ms` (never dummy `0`). Global explain keeps camelCase repo counts around that `data` object. `--inner --json` `data[]` is `{command, span_name, samples, total_ms, max_ms}`; omit-empty `coverage[]` `{command, outer_ms, inner_ms, uninstrumented_ms}` (present whenever outer rows exist; wall-clock, all exits; `--top` truncates `data[]` only). `--flame --json` `data` is `{collapsed}` plus omit-empty `unique_stacks` / `total_weight_ms` / `weight_unit` (`exclusive_ms`) / `window_days` (number, same `--days` window; snake_case). Empty collapsed omits those four keys (`{"collapsed":""}`). Human nonempty `--flame` eprints a units legend on stderr (not stdout; `--export` file stays pure Gregg stacks). Global `--flame --json` nested `data` uses the same omit-empty keys; camelCase envelope unchanged. Capture filter and inner `notes.span_id` do not retro-clean historical tokio rows. |
 
 \* Non-essential progress INFO suppressed under machine mode; hard failures still
@@ -959,6 +960,149 @@ ledgerful baseline list --json
 ledgerful baseline show base1 --json
 ledgerful baseline compare base1 --json --all --fail-on-regression
 ```
+
+---
+
+## `architecture check --json` schema (v1)
+
+`architecture check` reports dependency boundaries and strongly connected
+component groups over observed, resolved cross-file call edges. The output is
+local, advisory by default, and `evidence.evidenceQualification` is always
+`"unqualified"` (track 0605). The graph covers observed call edges only.
+Imports, type references, re-exports, and unresolved dynamic dispatch are
+outside the graph. `--fail` is an opt-in local gate over unqualified edges.
+
+The command reads the selected state directory under native SQLite file
+guards. It reports `ARCHITECTURE_STORAGE_UNAVAILABLE` with no JSON envelope
+when the platform, state location, or database files cannot be qualified.
+`LEDGERFUL_STATE_DIR` selects the state directory while the calling checkout
+continues to supply source and rules. The qualified x86-64 GNU Linux reader
+requires the selected state directory to be named `.ledgerful`.
+The live Windows reader requires an idle SQLite keeper and a valid,
+uncheckpointed committed WAL. Its qualification limits are 64 MiB for the
+database, 4 MiB for the WAL, and 512 KiB for shared memory.
+
+### Architecture rules
+
+The command reads `.ledgerful/architecture.toml` relative to the repository
+root. `--config PATH` selects a file explicitly. The rules are local and not
+tamper-evident. To version the default file deliberately, force-add it because
+Git ignores `.ledgerful/`. The reported `config.digest` is
+`blake3:` plus the hash of the raw file bytes, including line endings.
+
+```toml
+schema_version = 1
+
+[[components]]
+name = "ui"
+paths = ["src/ui/**"]
+
+[[components]]
+name = "core"
+paths = ["src/core/**"]
+
+[[rules]]
+id = "core-to-ui"
+effect = "forbid"
+from = "core"
+to = "ui"
+```
+
+- Supply `schema_version = 1` and at least one component. Component names
+  must be unique and match `^[a-z0-9][a-z0-9._-]{0,63}$`. Each component needs
+  at least one valid, case-sensitive, repo-relative glob. Globs use
+  `literal_separator`, so `*` stays within one path segment and
+  `**` can span segments. Empty globs, absolute paths, `./` and
+  `~` prefixes, drive prefixes, backslashes, and `..` segments are invalid.
+- A rule has a unique nonempty `id`, an `allow` or `forbid` effect,
+  and `from` and `to` endpoints. Each endpoint is a component name
+  or `*`. Duplicate endpoint pairs and explicit rules from a component
+  to itself are invalid. `* -> *` and a config with zero rules are valid.
+  Unknown keys at any level are errors.
+- Rules apply to edges between different, uniquely assigned components. The
+  most specific matching rule wins by number of named endpoints. At equal
+  specificity, `forbid` wins, then the bytewise-smallest deciding ID. An
+  edge with no matching rule increments `unconstrainedCrossEdges`.
+- Overlap and unassigned endpoints are counted and excluded from evaluation.
+  Cycles through unassigned files are not detected. The live extractor only
+  projects cross-file pairs, so `mapping.selfEdges` is zero on production
+  observations. Resolved calls inside one file still contribute to
+  `evidence.coverage.edgesResolvedIntraFile`.
+
+Missing, unreadable, and invalid rules files fail with
+`ARCHITECTURE_CONFIG_NOT_FOUND`, `ARCHITECTURE_CONFIG_UNREADABLE`, and
+`ARCHITECTURE_CONFIG_INVALID`, respectively.
+
+### Envelope
+
+| Field | Contents |
+|---|---|
+| `schemaVersion`, `kind` | `1`, `"architectureCheck"`. |
+| `config` | `path`, `source` (`local` or `trustedPath`), `digest`, `componentCount`, `ruleCount`. The local path is the repository-relative default. `trustedPath` records the supplied path. |
+| `evidence` | `state`, `reasons[]`, `edgeSources[]`, `parserVersion`, `inputDigest`, optional `indexHeadHash`, baseline-format `coverage`, and `evidenceQualification`. |
+| `status`, `statusReasons[]` | `evaluated` for `COMPLETE` current evidence. Otherwise `unknown` with the current 0601 completeness reasons, such as `INDEX_STALE`, `CONTENT_DRIFT`, `INDEX_EMPTY`, `INDEX_INDETERMINATE`, `PARSE_FAILED_FILES`, `CAPPED_EDGES`, or `SCAN_INCOMPLETE`. |
+| `observation`, `observationReasons[]` | `findings`, `noneObserved`, or `unknown` for the current graph. |
+| `baseline` | Present when requested. Contains `name`, `status` (`comparable` or `incomparable`), `incomparableReasons[]`, and `notes[]`. |
+| `regression`, `regressionReasons[]` | `present`, `none`, `unknown`, or `notEvaluated` without a baseline. |
+| `mapping`, `unconstrainedCrossEdges`, `violations[]`, `cycleGroups[]` | Present only when the current graph is evaluated. |
+| `removedViolations[]`, `removedCycleGroups[]`, `counts` | Present only when both sets are comparable and the current graph is evaluated. |
+
+When current `status` is `unknown`, all seven evaluated and compared fields
+are absent. With complete current evidence and an incomparable baseline, the
+current findings still appear and omit comparison classes and weights. An
+unsupported SQLite schema, an unavailable database, or an invalid or missing
+baseline name produces a hard refusal without a verdict envelope.
+
+`mapping` counts file-edge categories and distinct endpoint files. Its five
+categories are `selfEdges`, `ambiguousMappingEdges`, `unmappedEdges`,
+`intraComponentEdges`, and `crossComponentEdges`, in that precedence order.
+They sum to `fileEdges`. Endpoint fields are `endpointFiles`,
+`endpointFilesUnassigned`, `endpointFilesOverlapping`, and the sorted
+`overlappingEndpointFiles[]` with `path` and `components[]`.
+
+Each violation carries `ruleId`, `srcComponent`, `dstComponent`,
+`srcPath`, `dstPath`, and `weight`. Violations are ordered by file path
+pair. Each cycle group has sorted `members[]` and `componentEdges[]`. A
+component edge includes `src`, `dst`, total `weight`, `witnessCount`,
+`witnessTruncated`, and up to five sorted `witnesses[]` with `srcPath`,
+`dstPath`, and `weight`. Groups are sorted by their member lists and
+component edges by their component pairs.
+
+`noneObserved` is not "clean". It means this complete current set produced
+zero findings and supplied a mapped cross-component edge, with neither
+ambiguous mapping nor ambiguous or unresolved call rows. The corresponding
+blockers are `NO_MAPPED_CROSS_COMPONENT_EDGES`, `OVERLAPPING_COMPONENTS`,
+and `UNRESOLVED_PRESENT`. Observed findings remain visible alongside these
+blockers. Exit 0 without `--fail` is not a pass.
+
+### Relative comparison
+
+Both file-edge sets use the same current architecture rules. A policy-only
+rename or rule edit applies symmetrically to both sets, so the comparison
+does not attribute a change to policy drift. `baseline.notes[]` can
+include `analyzerBuildDiffers`, independent of comparability.
+
+- Violations with a comparable baseline have `class` values `new`,
+  `worsened`, and `existing`. The file path pair is their identity.
+  Moving a source file can make an equivalent forbidden call appear removed
+  and new, causing `--fail` to exit 1.
+  `baselineWeight` appears for `worsened` and `existing`, and for
+  entries in `removedViolations[]`.
+- Cycle groups have classes `introduced`, `grown`, `unchanged`, and
+  `shrunk`. New members, joined groups, and additional or replaced internal
+  component pairs can grow a group. Edge weight alone leaves its class
+  unchanged. Earlier groups with no remaining shared member appear in
+  `removedCycleGroups[]`. `counts` reports per-class totals under
+  `violations` and `cycleGroups`, including removals.
+- A positive relative verdict requires a comparable new or worsened violation
+  or introduced or grown group. A negative verdict also requires mapped
+  cross-component evidence on each side, no overlap, and no growth in the
+  ambiguous or unresolved call counts. Either count can rise independently,
+  giving `AMBIGUOUS_GREW` or `UNRESOLVED_GREW`.
+- Pure incomparability reasons come from 0601. Typed stored-row refusals map
+  to `BASELINE_DIGEST_MISMATCH`, `SCHEMA_MISMATCH`, and
+  `BASELINE_CORRUPT`. An incomplete live set adds `CURRENT_INCOMPLETE`
+  where applicable.
 
 ---
 
@@ -2051,6 +2195,17 @@ on stdout.
 
 `create` exits `1` whenever the index is not `COMPLETE`; it writes no row and
 does not create a database.
+
+### `architecture check`
+
+- Exit `0` means a completed advisory check when `--fail` is absent.
+- Exit `1` indicates a hard refusal or error, such as a missing rules file,
+  unknown baseline, or unavailable storage. JSON mode emits no envelope on a
+  hard refusal.
+- With `--fail`, exit `0` requires `regression: "none"` when comparing
+  a baseline, or `observation: "noneObserved"` for a current-only check.
+  Other completed outcomes return `1`, retain the JSON envelope on stdout
+  and emit one diagnostic line on stderr.
 
 ### `ledger status --exit-code`
 

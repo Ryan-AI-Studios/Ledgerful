@@ -180,11 +180,25 @@ fn run(cli_args: Cli) -> Result<()> {
 
     // H4: Sweep for stale shadow-copy binaries left over from a prior update
     // attempt (e.g. `ledgerful.old.exe` next to the current executable).
-    if !matches!(
-        &cli_args.command,
-        ledgerful::cli::args::Commands::Index(args) if args.is_dependency_evidence_only()
-    ) {
+    let inspect_only = match &cli_args.command {
+        ledgerful::cli::args::Commands::Index(args) => args.is_dependency_evidence_only(),
+        ledgerful::cli::args::Commands::Architecture { .. } => true,
+        _ => false,
+    };
+    if !inspect_only {
         sweep_stale_old_binaries();
+    }
+
+    #[cfg(windows)]
+    if matches!(
+        &cli_args.command,
+        ledgerful::cli::args::Commands::Architecture { .. }
+    ) {
+        // SAFETY: this is the only invocation in a fresh binary. Argument
+        // parsing and logger setup above did not open SQLite or start any
+        // database work.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+        return unsafe { cli::dispatch::run_architecture_from_binary(cli_args) };
     }
 
     cli::run_with(cli_args)?;
@@ -281,9 +295,9 @@ fn main() {
             } => true,
             _ => false,
         };
-        if explicit_capture {
+        if explicit_capture || matches!(&args.command, Commands::Architecture { .. }) {
             // SAFETY: this binary entry has only parsed CLI inputs. No SQLite
-            // calls or worker threads precede this writer-only startup.
+            // calls or worker threads precede this scoped native startup.
             // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             let startup = unsafe { ledgerful::install_stock_evidence_sqlite_before_threads() };
             if let Err(error) = startup {

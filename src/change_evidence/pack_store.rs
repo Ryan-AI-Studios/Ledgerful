@@ -42,12 +42,19 @@ mod isolated_readonly_inputs;
     feature = "web"
 ))]
 mod isolated_readonly_pager;
-#[cfg(all(
-    target_os = "linux",
-    target_arch = "x86_64",
-    target_env = "gnu",
-    feature = "web"
+#[cfg(any(
+    windows,
+    all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        target_env = "gnu",
+        feature = "web"
+    )
 ))]
+#[cfg_attr(
+    windows,
+    allow(dead_code, reason = "Windows uses only the nonempty WAL validator")
+)]
 mod published_snapshot;
 
 #[cfg(all(
@@ -58,6 +65,54 @@ mod published_snapshot;
 ))]
 pub(super) fn register_isolated_passive_pager() -> rusqlite::Result<()> {
     isolated_readonly_pager::register_private_pager()
+}
+
+/// Run the local Architecture observation only while the native reader owns
+/// the database paths. Return the callback result after checked close.
+pub(crate) fn with_architecture_reader<T>(
+    layout: &Layout,
+    verified_binary_startup: bool,
+    inspect: impl FnOnce(rusqlite::Connection, Instant) -> (rusqlite::Connection, miette::Result<T>),
+) -> miette::Result<T> {
+    #[cfg(windows)]
+    let observed = passive_db::read_architecture(layout, verified_binary_startup, inspect);
+    #[cfg(not(windows))]
+    let _ = verified_binary_startup;
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+    let observed = capture_db::read_architecture(layout, inspect);
+    #[cfg(not(any(
+        windows,
+        all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")
+    )))]
+    let observed = {
+        let _ = inspect;
+        None
+    };
+    qualify_architecture_observation(layout, observed)
+}
+
+#[cfg(all(windows, test))]
+pub(crate) fn with_architecture_reader_for_native_test<T>(
+    layout: &Layout,
+    duration: std::time::Duration,
+    inspect: impl FnOnce(rusqlite::Connection, Instant) -> (rusqlite::Connection, miette::Result<T>),
+) -> miette::Result<T> {
+    qualify_architecture_observation(
+        layout,
+        passive_db::read_architecture_for_native_test(layout, duration, inspect),
+    )
+}
+
+fn qualify_architecture_observation<T>(
+    layout: &Layout,
+    observed: Option<miette::Result<T>>,
+) -> miette::Result<T> {
+    observed.ok_or_else(|| {
+        miette::miette!(
+            "ARCHITECTURE_STORAGE_UNAVAILABLE: could not qualify a passive SQLite read at {}",
+            layout.state_subdir().join("ledger.db")
+        )
+    })?
 }
 
 use super::buffer::{MemoryBudget, Reservation, ReservedBytes};

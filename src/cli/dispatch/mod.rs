@@ -33,6 +33,22 @@ use ops::{dispatch_intent, dispatch_internal, dispatch_schedule};
 use search::dispatch_search;
 use verify::dispatch_verify;
 
+/// Run the Architecture command from the ordinary fresh Windows executable.
+///
+/// # Safety
+/// Call once from the executable entry path, before any SQLite connection or
+/// background work can open its database. An embedded caller must use
+/// [run_with], which cannot admit live WAL reads without this qualification.
+#[cfg(windows)]
+#[doc(hidden)]
+pub unsafe fn run_architecture_from_binary(cli: Cli) -> Result<()> {
+    let Commands::Architecture { command } = cli.command else {
+        return Err(miette::miette!("expected the Architecture command"));
+    };
+    apply_cli_directory(cli.directory.as_deref())?;
+    crate::commands::architecture::execute_architecture(command, true)
+}
+
 pub fn run_with(cli: Cli) -> Result<()> {
     apply_cli_directory(cli.directory.as_deref())?;
     // This explicitly passive path must bypass startup config migration and
@@ -41,6 +57,10 @@ pub fn run_with(cli: Cli) -> Result<()> {
         && args.is_dependency_evidence_only()
     {
         return index::dispatch_dependency_evidence(args);
+    }
+    // Architecture reads existing state even when ordinary startup would migrate it.
+    if let Commands::Architecture { command } = cli.command {
+        return crate::commands::architecture::execute_architecture(command, false);
     }
     // Explicit producers own their storage authorization. Bypass startup state and
     // telemetry so a refused publication cannot initialize the evidence store.
@@ -472,6 +492,9 @@ pub fn run_with(cli: Cli) -> Result<()> {
             unreachable!("explicit producer dispatches before startup")
         }
         Commands::Baseline { command } => crate::commands::baseline::execute_baseline(command),
+        Commands::Architecture { .. } => {
+            unreachable!("architecture dispatches before startup")
+        }
         Commands::Demo(DemoArgs {
             keep,
             output,

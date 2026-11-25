@@ -199,6 +199,7 @@ impl Commands {
                 BaselineCommands::Show { .. } => "baseline_show",
                 BaselineCommands::Compare { .. } => "baseline_compare",
             },
+            Commands::Architecture { .. } => "architecture_check",
             Commands::Demo(DemoArgs { .. }) => "demo",
             #[cfg(feature = "usage-metrics")]
             Commands::Usage { command } => match command {

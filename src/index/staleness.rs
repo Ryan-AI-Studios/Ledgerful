@@ -451,99 +451,117 @@ pub(crate) fn content_hash_drift_for_discovered(
     discovered: &[camino::Utf8PathBuf],
     budget: HashBudget,
 ) -> Result<ContentHashDrift> {
-    use rayon::prelude::*;
-    use std::collections::HashMap;
+    Ok(ContentHashInputs::capture(storage)?.compare(repo_root, discovered, budget))
+}
 
-    let conn = storage.get_connection();
-    let mut stmt = conn
+/// The index rows needed for content drift, copied from the caller's read
+/// snapshot. Comparison never opens SQLite.
+pub(crate) struct ContentHashInputs(std::collections::HashMap<String, StoredFileRow>);
+
+impl ContentHashInputs {
+    pub(crate) fn capture(storage: &StorageManager) -> Result<Self> {
+        use std::collections::HashMap;
+        let conn = storage.get_connection();
+        let mut stmt = conn
         .prepare(
             "SELECT file_path, content_hash, file_size, mtime_ns FROM project_files WHERE parse_status != 'DELETED'",
         )
         .into_diagnostic()?;
-    let mut stored: HashMap<String, StoredFileRow> = HashMap::new();
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                StoredFileRow {
-                    content_hash: row.get(1)?,
-                    file_size: row.get(2)?,
-                    mtime_ns: row.get(3)?,
-                },
-            ))
-        })
-        .into_diagnostic()?;
-    for row in rows {
-        let (path, meta) = row.into_diagnostic()?;
-        stored.insert(path.replace('\\', "/"), meta);
-    }
-
-    // Parallel map: metadata (and optional hash) each discovered file.
-    let file_results: Vec<(String, FileHashDriftKind, bool)> = discovered
-        .par_iter()
-        .map(|file_path| {
-            let relative = file_path
-                .strip_prefix(repo_root)
-                .unwrap_or(file_path)
-                .as_str()
-                .replace('\\', "/");
-
-            let (kind, did_hash) =
-                classify_discovered_hash_drift(file_path, &relative, &stored, budget);
-            (relative, kind, did_hash)
-        })
-        .collect();
-
-    // Sequential reduce: counts + sample candidates (deterministic after sort).
-    let mut changed_or_unindexed = 0usize;
-    let mut unindexed = 0usize;
-    let mut hashed = 0usize;
-    let mut sample_paths = Vec::new();
-    let mut seen_stored: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    for (relative, kind, did_hash) in file_results {
-        if did_hash {
-            hashed += 1;
+        let mut stored: HashMap<String, StoredFileRow> = HashMap::new();
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    StoredFileRow {
+                        content_hash: row.get(1)?,
+                        file_size: row.get(2)?,
+                        mtime_ns: row.get(3)?,
+                    },
+                ))
+            })
+            .into_diagnostic()?;
+        for row in rows {
+            let (path, meta) = row.into_diagnostic()?;
+            stored.insert(path.replace('\\', "/"), meta);
         }
-        seen_stored.insert(relative.clone());
-        match kind {
-            FileHashDriftKind::Clean => {}
-            FileHashDriftKind::Changed | FileHashDriftKind::Unreadable => {
-                changed_or_unindexed += 1;
-                sample_paths.push(relative);
+        Ok(Self(stored))
+    }
+
+    pub(crate) fn compare(
+        &self,
+        repo_root: &Utf8Path,
+        discovered: &[camino::Utf8PathBuf],
+        budget: HashBudget,
+    ) -> ContentHashDrift {
+        use rayon::prelude::*;
+        let stored = &self.0;
+        // Parallel map: metadata (and optional hash) each discovered file.
+        let file_results: Vec<(String, FileHashDriftKind, bool)> = discovered
+            .par_iter()
+            .map(|file_path| {
+                let relative = file_path
+                    .strip_prefix(repo_root)
+                    .unwrap_or(file_path)
+                    .as_str()
+                    .replace('\\', "/");
+
+                let (kind, did_hash) =
+                    classify_discovered_hash_drift(file_path, &relative, stored, budget);
+                (relative, kind, did_hash)
+            })
+            .collect();
+
+        // Sequential reduce: counts + sample candidates (deterministic after sort).
+        let mut changed_or_unindexed = 0usize;
+        let mut unindexed = 0usize;
+        let mut hashed = 0usize;
+        let mut sample_paths = Vec::new();
+        let mut seen_stored: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for (relative, kind, did_hash) in file_results {
+            if did_hash {
+                hashed += 1;
             }
-            FileHashDriftKind::Unindexed => {
-                changed_or_unindexed += 1;
-                unindexed += 1;
-                sample_paths.push(relative);
+            seen_stored.insert(relative.clone());
+            match kind {
+                FileHashDriftKind::Clean => {}
+                FileHashDriftKind::Changed | FileHashDriftKind::Unreadable => {
+                    changed_or_unindexed += 1;
+                    sample_paths.push(relative);
+                }
+                FileHashDriftKind::Unindexed => {
+                    changed_or_unindexed += 1;
+                    unindexed += 1;
+                    sample_paths.push(relative);
+                }
             }
         }
-    }
 
-    // Indexed **code** files removed from the worktree are also drift (DoD-4).
-    // Ignore enrichment-only rows (docs, CI, .env.example, …) which are not part of
-    // supported-extension discovery and must not trigger false deletes.
-    // Deleted post-step stays sequential over stored.keys() (unchanged order policy).
-    let mut deleted: Vec<String> = stored
-        .keys()
-        .filter(|path| !seen_stored.contains(*path) && is_supported_code_path(path))
-        .cloned()
-        .collect();
-    deleted.sort();
-    for path in deleted {
-        changed_or_unindexed += 1;
-        sample_paths.push(path);
-    }
+        // Indexed **code** files removed from the worktree are also drift (DoD-4).
+        // Ignore enrichment-only rows (docs, CI, .env.example, …) which are not part of
+        // supported-extension discovery and must not trigger false deletes.
+        // Deleted post-step stays sequential over stored.keys() (unchanged order policy).
+        let mut deleted: Vec<String> = stored
+            .keys()
+            .filter(|path| !seen_stored.contains(*path) && is_supported_code_path(path))
+            .cloned()
+            .collect();
+        deleted.sort();
+        for path in deleted {
+            changed_or_unindexed += 1;
+            sample_paths.push(path);
+        }
 
-    // Deterministic samples: sort all candidates then cap (parallel-safe).
-    sample_paths.sort();
-    sample_paths.truncate(DRIFT_SAMPLE_LIMIT);
-    Ok(ContentHashDrift {
-        changed_or_unindexed,
-        unindexed,
-        hashed,
-        sample_paths,
-    })
+        // Deterministic samples: sort all candidates then cap (parallel-safe).
+        sample_paths.sort();
+        sample_paths.truncate(DRIFT_SAMPLE_LIMIT);
+        ContentHashDrift {
+            changed_or_unindexed,
+            unindexed,
+            hashed,
+            sample_paths,
+        }
+    }
 }
 
 /// Apply content-hash drift onto an age-only assessment (check-path honesty).

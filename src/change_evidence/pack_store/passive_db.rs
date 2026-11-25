@@ -28,7 +28,10 @@ use uuid::Uuid;
 #[cfg(windows)]
 use super::capture_db::{
     DB, JOURNAL, SHM, WAL, opened_identity,
-    sqlite_open::{cold_sqlite_header, open_immutable_planning_reader},
+    sqlite_open::{
+        ArchitectureWalGuard, cold_sqlite_header, open_architecture_input,
+        open_architecture_wal_reader, open_immutable_planning_reader,
+    },
 };
 #[cfg(windows)]
 use crate::change_evidence::contained::{DatabaseEntryLease, ReadError};
@@ -200,16 +203,344 @@ fn read_passive_snapshot(
 
 #[cfg(windows)]
 fn require_absent(observation: &Observation<'_>, paths: &[&str]) -> Result<(), PassiveReadError> {
-    for path in paths {
-        match observation
-            .root
-            .observe_database_entry(path, &observation.io)
-        {
-            Err(ReadError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
-            _ => return Err(PassiveReadError::ScopeUnavailable),
+    entries_absent(&observation.root, &observation.io, paths)
+        .then_some(())
+        .ok_or(PassiveReadError::ScopeUnavailable)
+}
+
+#[cfg(windows)]
+fn entries_absent(
+    root: &crate::change_evidence::contained::ContainedRoot,
+    io: &crate::change_evidence::contained::ReadBudget<'_>,
+    paths: &[&str],
+) -> bool {
+    paths.iter().all(|path| {
+        matches!(
+            root.observe_database_entry(path, io),
+            Err(ReadError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
+        )
+    })
+}
+
+#[cfg(windows)]
+const ARCH_MAIN: &str = "ledger.db";
+#[cfg(windows)]
+const ARCH_WAL: &str = "ledger.db-wal";
+#[cfg(windows)]
+const ARCH_SHM: &str = "ledger.db-shm";
+#[cfg(windows)]
+const ARCH_JOURNAL: &str = "ledger.db-journal";
+
+#[cfg(windows)]
+enum ArchitectureLease {
+    Cold {
+        _exclusive: DatabaseEntryLease,
+    },
+    Live {
+        wal: DatabaseEntryLease,
+        shm: DatabaseEntryLease,
+        main_file: std::fs::File,
+        wal_file: std::fs::File,
+        guard: ArchitectureWalGuard,
+        epoch: [blake3::Hash; 3],
+    },
+}
+
+#[cfg(windows)]
+const ARCH_MAX_DATABASE: u64 = 64 * 1024 * 1024;
+#[cfg(windows)]
+const ARCH_MAX_WAL: u64 = 4 * 1024 * 1024;
+#[cfg(windows)]
+const ARCH_SHM_PAGE: u64 = 32 * 1024;
+
+#[cfg(windows)]
+fn read_exact_at(file: &std::fs::File, mut output: &mut [u8], mut offset: u64) -> Option<()> {
+    use std::os::windows::fs::FileExt;
+    while !output.is_empty() {
+        let bytes = file.seek_read(output, offset).ok()?;
+        if bytes == 0 {
+            return None;
         }
+        output = output.get_mut(bytes..)?;
+        offset += bytes as u64;
     }
-    Ok(())
+    Some(())
+}
+
+#[cfg(windows)]
+fn architecture_epoch(
+    main: &std::fs::File,
+    wal: &std::fs::File,
+    guard: &ArchitectureWalGuard,
+    io: &crate::change_evidence::contained::ReadBudget<'_>,
+) -> Option<[blake3::Hash; 3]> {
+    use super::published_snapshot::{SnapshotValidator, WAL_HEADER};
+
+    let main_len = main.metadata().ok()?.len();
+    let wal_len = wal.metadata().ok()?.len();
+    let shm_len = guard.shm().metadata().ok()?.len();
+    let mut header = [0; 100];
+    read_exact_at(main, &mut header, 0)?;
+    if main_len > ARCH_MAX_DATABASE
+        || header[18..20] != [2, 2]
+        || !cold_sqlite_header(&header, main_len)
+        || !(WAL_HEADER as u64 + 1..=ARCH_MAX_WAL).contains(&wal_len)
+        || !(ARCH_SHM_PAGE..=16 * ARCH_SHM_PAGE).contains(&shm_len)
+        || !shm_len.is_multiple_of(ARCH_SHM_PAGE)
+    {
+        return None;
+    }
+    let encoded = u16::from_be_bytes([header[16], header[17]]);
+    let page_size = if encoded == 1 {
+        65_536
+    } else {
+        u32::from(encoded)
+    };
+    let mut wal_header = [0; WAL_HEADER];
+    let mut index = vec![0; usize::try_from(shm_len).ok()?];
+    read_exact_at(wal, &mut wal_header, 0)?;
+    read_exact_at(guard.shm(), &mut index, 0)?;
+    // An unbackfilled WAL always requires SQLite to consult its page index.
+    // Partial checkpoints need separate evidence linking MAIN to those frames.
+    if index[96..100] != [0; 4] {
+        return None;
+    }
+    let mut validator = SnapshotValidator::begin(
+        &index,
+        &wal_header,
+        wal_len,
+        page_size,
+        ARCH_MAX_WAL,
+        ARCH_MAX_DATABASE,
+    )
+    .ok()?;
+    let plan = validator.read_plan();
+    let mut frame = vec![0; plan.frame_bytes];
+    let mut frame_pages = Vec::with_capacity(plan.frames as usize);
+    let mut wal_hash = blake3::Hasher::new();
+    wal_hash.update(&wal_header);
+    let mut offset = WAL_HEADER as u64;
+    for _ in 0..plan.frames {
+        io.checkpoint().ok()?;
+        read_exact_at(wal, &mut frame, offset)?;
+        validator.push_frame(&frame).ok()?;
+        frame_pages.push(u32::from_be_bytes(frame.get(..4)?.try_into().ok()?));
+        wal_hash.update(&frame);
+        offset += frame.len() as u64;
+    }
+    let committed = validator.finish().ok()?;
+    if committed.wal_bytes() != wal_len
+        || wal.metadata().ok()?.len() != wal_len
+        || guard.shm().metadata().ok()?.len() != shm_len
+        || !architecture_wal_index_matches(&index, &frame_pages)
+    {
+        return None;
+    }
+    Some([
+        architecture_file_hash(main, main_len, io)?,
+        wal_hash.finalize(),
+        blake3::hash(&index),
+    ])
+}
+
+/// Check the active 3.54.1 native-endian page-number and hash arrays used by
+/// walFindFrame. A valid WAL prefix alone cannot attest a shared lookup table.
+#[cfg(windows)]
+fn architecture_wal_index_matches(index: &[u8], mut frames: &[u32]) -> bool {
+    const HEADER_BYTES: usize = 136;
+    const TABLE_BYTES: usize = 16 * 1024;
+    const HASH_SLOTS: usize = TABLE_BYTES / 2;
+    const PAGE_NUMBERS: usize = TABLE_BYTES / 4;
+    const HASH_MULTIPLIER: u32 = 383;
+
+    for (block, bytes) in index
+        .as_chunks::<{ 2 * TABLE_BYTES }>()
+        .0
+        .iter()
+        .enumerate()
+    {
+        let offsets = if block == 0 { HEADER_BYTES } else { 0 };
+        let (pages, remaining) = frames.split_at(frames.len().min(PAGE_NUMBERS - offsets / 4));
+        let mut slots = [0u16; HASH_SLOTS];
+        for (frame, (&page_number, recorded)) in pages
+            .iter()
+            .zip(bytes[offsets..TABLE_BYTES].as_chunks::<4>().0)
+            .enumerate()
+        {
+            if *recorded != page_number.to_ne_bytes() {
+                return false;
+            }
+            let mut slot = (page_number.wrapping_mul(HASH_MULTIPLIER) as usize) & (HASH_SLOTS - 1);
+            while slots[slot] != 0 {
+                slot = (slot + 1) & (HASH_SLOTS - 1);
+            }
+            slots[slot] = (frame + 1) as u16;
+        }
+        if !bytes[TABLE_BYTES..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(slots)
+            .all(|(recorded, expected)| *recorded == expected.to_ne_bytes())
+        {
+            return false;
+        }
+        if remaining.is_empty() {
+            return true;
+        }
+        frames = remaining;
+    }
+    false
+}
+
+#[cfg(windows)]
+fn architecture_file_hash(
+    file: &std::fs::File,
+    len: u64,
+    io: &crate::change_evidence::contained::ReadBudget<'_>,
+) -> Option<blake3::Hash> {
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0; 16 * 1024];
+    let mut at = 0;
+    while at < len {
+        io.checkpoint().ok()?;
+        let bytes = (len - at).min(buffer.len() as u64) as usize;
+        read_exact_at(file, &mut buffer[..bytes], at)?;
+        hasher.update(&buffer[..bytes]);
+        at += bytes as u64;
+    }
+    (file.metadata().ok()?.len() == len).then(|| hasher.finalize())
+}
+
+/// Win32 reader custody is limited to this callback and its checked close.
+/// Open from the resolved state directory, which can differ from the checkout.
+#[cfg(windows)]
+pub(super) fn read_architecture<T>(
+    layout: &Layout,
+    verified_binary_startup: bool,
+    inspect: impl FnOnce(rusqlite::Connection, std::time::Instant) -> (rusqlite::Connection, T),
+) -> Option<T> {
+    use super::capture_budget::CaptureBudget;
+    let budget = CaptureBudget::new();
+    read_architecture_in_phase(layout, verified_binary_startup, budget.phase()?, inspect)
+}
+
+#[cfg(all(windows, test))]
+pub(super) fn read_architecture_for_native_test<T>(
+    layout: &Layout,
+    duration: std::time::Duration,
+    inspect: impl FnOnce(rusqlite::Connection, std::time::Instant) -> (rusqlite::Connection, T),
+) -> Option<T> {
+    let budget = super::capture_budget::CaptureBudget::new();
+    let mut phase = budget.phase()?;
+    phase.deadline = std::time::Instant::now().checked_add(duration)?;
+    read_architecture_in_phase(layout, true, phase, inspect)
+}
+
+#[cfg(windows)]
+fn read_architecture_in_phase<T>(
+    layout: &Layout,
+    verified_binary_startup: bool,
+    phase: super::capture_budget::CapturePhase<'_>,
+    inspect: impl FnOnce(rusqlite::Connection, std::time::Instant) -> (rusqlite::Connection, T),
+) -> Option<T> {
+    use crate::change_evidence::contained::{ContainedRoot, ReadBudget};
+
+    let io = ReadBudget::new_shared(
+        phase.remaining_read_bytes(),
+        phase.deadline,
+        phase.interrupted,
+        phase.aggregate,
+    );
+    let checkout_path = layout.root.as_std_path();
+    let checkout = ContainedRoot::open(checkout_path, &io).ok()?;
+    let state = layout.state_subdir();
+    let root = ContainedRoot::open(state.as_std_path(), &io).ok()?;
+    let main = root.retain_database_entry(ARCH_MAIN, &io).ok()?;
+    if !entries_absent(&root, &io, &[ARCH_JOURNAL]) {
+        return None;
+    }
+    let lease = match root.retain_database_entry(ARCH_WAL, &io) {
+        Ok(wal) if verified_binary_startup => {
+            let shm = root.retain_database_entry(ARCH_SHM, &io).ok()?;
+            let guard = ArchitectureWalGuard::acquire(open_architecture_input(
+                state.join(ARCH_SHM).as_std_path(),
+                shm.identity(),
+            )?)?;
+            let main_file =
+                open_architecture_input(state.join(ARCH_MAIN).as_std_path(), main.identity())?;
+            let wal_file =
+                open_architecture_input(state.join(ARCH_WAL).as_std_path(), wal.identity())?;
+            let epoch = architecture_epoch(&main_file, &wal_file, &guard, &io)?;
+            ArchitectureLease::Live {
+                wal,
+                shm,
+                main_file,
+                wal_file,
+                guard,
+                epoch,
+            }
+        }
+        Err(ReadError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            let exclusive = root
+                .retain_database_read_excluding_writers(ARCH_MAIN, &io)
+                .ok()?;
+            if main.identity() != exclusive.identity()
+                || !entries_absent(&root, &io, &[ARCH_WAL, ARCH_SHM, ARCH_JOURNAL])
+            {
+                return None;
+            }
+            let (header, bytes) = exclusive.database_header(&io).ok()?;
+            if !cold_sqlite_header(&header, bytes) {
+                return None;
+            }
+            ArchitectureLease::Cold {
+                _exclusive: exclusive,
+            }
+        }
+        _ => return None,
+    };
+    let path = state.join(ARCH_MAIN);
+    let reader = match &lease {
+        ArchitectureLease::Cold { .. } => open_immutable_planning_reader(path.as_std_path()),
+        ArchitectureLease::Live { .. } => open_architecture_wal_reader(path.as_std_path()),
+    }
+    .ok()?;
+    if opened_identity(&reader).ok() != Some(main.identity()) {
+        reader.close().ok()?;
+        return None;
+    }
+    let (reader, observed) = inspect(reader, phase.deadline);
+    let opened_matches = opened_identity(&reader).ok() == Some(main.identity());
+    reader.close().ok()?;
+    let state_matches = ContainedRoot::open(state.as_std_path(), &io)
+        .ok()?
+        .identity()
+        == root.identity();
+    let checkout_matches =
+        ContainedRoot::open(checkout_path, &io).ok()?.identity() == checkout.identity();
+    let main_matches = root.observe_database_entry(ARCH_MAIN, &io).ok()? == main.identity();
+    let layout_matches = match lease {
+        ArchitectureLease::Cold { .. } => {
+            entries_absent(&root, &io, &[ARCH_WAL, ARCH_SHM, ARCH_JOURNAL])
+        }
+        ArchitectureLease::Live {
+            wal,
+            shm,
+            main_file,
+            wal_file,
+            guard,
+            epoch,
+        } => {
+            let still_matches = root.observe_database_entry(ARCH_WAL, &io).ok()? == wal.identity()
+                && root.observe_database_entry(ARCH_SHM, &io).ok()? == shm.identity()
+                && entries_absent(&root, &io, &[ARCH_JOURNAL])
+                && architecture_epoch(&main_file, &wal_file, &guard, &io)? == epoch;
+            guard.release() && still_matches
+        }
+    };
+    (opened_matches && state_matches && checkout_matches && main_matches && layout_matches)
+        .then_some(observed)
 }
 
 #[cfg(windows)]

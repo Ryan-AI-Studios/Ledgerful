@@ -361,6 +361,17 @@ Tips:
         command: BaselineCommands,
     },
 
+    /// Inspect local dependency boundaries and component cycles
+    #[command(
+        after_help = "Checks observed call edges only. --fail is an opt-in local gate over unqualified evidence.\n\
+        The local .ledgerful/architecture.toml rules file is not tamper-evident.\n\
+        Exit 0 without --fail carries no pass verdict."
+    )]
+    Architecture {
+        #[command(subcommand)]
+        command: ArchitectureCommands,
+    },
+
     /// Generate a disposable demonstration repo with signed ledger entries, cryptographic VALID proof, and a DEMO evidence export (see docs/golden-path.md)
     Demo(DemoArgs),
 

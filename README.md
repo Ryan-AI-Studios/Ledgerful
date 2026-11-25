@@ -186,6 +186,7 @@ Default-features `--help` names, in clap order. Hidden variants (`bridge`, `sear
 | `mcp` | Run the MCP server (stdio) or install/uninstall host platform config |
 | `openapi` | Print the canonical OpenAPI JSON spec for this build to stdout |
 | `baseline` | Create, list, show, and compare named snapshots of resolved file dependencies |
+| `architecture` | Check dependency boundaries and cycles over observed call edges |
 | `change-evidence` | [Attest a named baseline and prepare evidence for the current revision](docs/change-evidence.md) |
 | `demo` | Generate a disposable demonstration repo with signed ledger entries, cryptographic VALID proof, and a DEMO evidence export (see `docs/golden-path.md`) |
 | `services` (gated) | Service boundary and topology commands |
