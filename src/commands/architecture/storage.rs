@@ -148,6 +148,9 @@ mod native_tests {
             "{}::architecture_native_sql_deadline_releases_writer_custody__slow",
             module_path!().split_once("::").unwrap().1
         );
+        // Test-only fixture: re-enter this harness as the independent writer. No trust
+        // or security decision depends on the reported executable path.
+        // nosemgrep: rust.lang.security.current-exe.current-exe
         let mut writer = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", &test_name, "--nocapture"])
             .env(WRITER_FIXTURE, db.as_std_path())
