@@ -1,6 +1,8 @@
 //! Bounded SQL inputs for an opt-in capture. Filesystem completeness is separate.
 use super::super::identity::{EdgeCoverage, FileEdge, input_digest};
-use super::{has_capped_edges, read_coverage, read_edge_sources, read_edges};
+use super::{
+    ProjectedPairLimit, has_capped_edges, read_coverage, read_edge_sources, read_edges_limited,
+};
 use crate::index::staleness::is_supported_code_path;
 use rusqlite::{Row, Transaction, types::ValueRef};
 
@@ -25,6 +27,7 @@ pub(crate) enum SnapshotBound {
     ScannedEdges,
     ScannedMetadata,
     TextBytes,
+    ProjectedPairs,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -39,6 +42,8 @@ pub(crate) enum CaptureSnapshotError {
     Sql(#[from] rusqlite::Error),
     #[error("baseline snapshot graph read failed")]
     Graph(miette::Report),
+    #[error("baseline snapshot precondition failed")]
+    Admission(&'static str),
 }
 
 type Result<T> = std::result::Result<T, CaptureSnapshotError>;
@@ -79,6 +84,12 @@ pub(crate) struct CaptureSnapshot {
 }
 
 impl CaptureSnapshot {
+    #[cfg(any(windows, target_os = "linux"))]
+    pub(crate) fn finish_proposal(self, stale_threshold_days: u64) -> super::FileEdgeSet {
+        self.build_set(stale_threshold_days, false, chrono::Utc::now())
+            .1
+    }
+
     #[cfg(any(windows, target_os = "linux"))]
     pub(crate) fn finish_proven(
         self,
@@ -194,6 +205,17 @@ pub(crate) fn extract_capture_snapshot(
     transaction: &Transaction<'_>,
     limits: CaptureSnapshotLimits,
 ) -> Result<CaptureSnapshot> {
+    extract_capture_snapshot_with(transaction, limits, None, |_| Ok(()))
+}
+
+/// Capture one snapshot, placing an optional checkout observation between the
+/// bounded raw/admission reads and the shared graph queries.
+pub(crate) fn extract_capture_snapshot_with(
+    transaction: &Transaction<'_>,
+    limits: CaptureSnapshotLimits,
+    pair_limit: Option<usize>,
+    before_graph: impl FnOnce(&CaptureSnapshot) -> std::result::Result<(), &'static str>,
+) -> Result<CaptureSnapshot> {
     let encoding: String = transaction.query_row("PRAGMA encoding", [], |row| row.get(0))?;
     if encoding != "UTF-8" {
         return Err(CaptureSnapshotError::Corrupt("sqlite-encoding"));
@@ -210,21 +232,30 @@ pub(crate) fn extract_capture_snapshot(
     bytes.charge(edge_paths)?;
     let (digest_rows, stamps) = read_witnesses(transaction, files.active)?;
     let generation = read_generation(transaction)?;
-    let edges = read_edges(transaction).map_err(CaptureSnapshotError::Graph)?;
-    let coverage = read_coverage(transaction, &edges).map_err(CaptureSnapshotError::Graph)?;
-    let edge_sources = read_edge_sources(transaction).map_err(CaptureSnapshotError::Graph)?;
-    let edges_capped = has_capped_edges(transaction).map_err(CaptureSnapshotError::Graph)?;
     let input_digest = input_digest(&digest_rows);
-    Ok(CaptureSnapshot {
+    let mut snapshot = CaptureSnapshot {
         generation,
-        coverage,
-        edges,
-        edge_sources,
-        edges_capped,
+        coverage: EdgeCoverage::default(),
+        edges: Vec::new(),
+        edge_sources: Vec::new(),
+        edges_capped: false,
         input_digest,
         digest_rows,
         stamps,
-    })
+    };
+    before_graph(&snapshot).map_err(CaptureSnapshotError::Admission)?;
+    snapshot.edges = read_edges_limited(transaction, pair_limit).map_err(|error| {
+        if error.downcast_ref::<ProjectedPairLimit>().is_some() {
+            CaptureSnapshotError::Limit(SnapshotBound::ProjectedPairs)
+        } else {
+            CaptureSnapshotError::Graph(error)
+        }
+    })?;
+    snapshot.coverage =
+        read_coverage(transaction, &snapshot.edges).map_err(CaptureSnapshotError::Graph)?;
+    snapshot.edge_sources = read_edge_sources(transaction).map_err(CaptureSnapshotError::Graph)?;
+    snapshot.edges_capped = has_capped_edges(transaction).map_err(CaptureSnapshotError::Graph)?;
+    Ok(snapshot)
 }
 
 struct FileAdmission {

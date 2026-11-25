@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::convert::Infallible;
 
 #[cfg(test)]
 #[path = "cycles_tests.rs"]
@@ -36,6 +37,19 @@ pub(super) struct ComponentEdge {
     pub(super) witnesses: Vec<Witness>,
 }
 
+impl ComponentEdge {
+    pub(super) fn new(src: &str, dst: &str) -> Self {
+        Self {
+            src: src.to_owned(),
+            dst: dst.to_owned(),
+            weight: 0,
+            witness_count: 0,
+            witness_truncated: false,
+            witnesses: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct CycleGroup {
@@ -59,14 +73,9 @@ pub(super) fn build_component_edges(edges: &[CrossEdge]) -> Vec<ComponentEdge> {
     let mut components = BTreeMap::new();
     for edge in sorted {
         let key = (edge.src_component.as_str(), edge.dst_component.as_str());
-        let aggregate = components.entry(key).or_insert_with(|| ComponentEdge {
-            src: key.0.to_owned(),
-            dst: key.1.to_owned(),
-            weight: 0,
-            witness_count: 0,
-            witness_truncated: false,
-            witnesses: Vec::new(),
-        });
+        let aggregate = components
+            .entry(key)
+            .or_insert_with(|| ComponentEdge::new(key.0, key.1));
         aggregate.weight += u64::from(edge.weight);
         aggregate.witness_count += 1;
         if aggregate.witnesses.len() < MAX_WITNESSES {
@@ -83,12 +92,22 @@ pub(super) fn build_component_edges(edges: &[CrossEdge]) -> Vec<ComponentEdge> {
 }
 
 pub(super) fn find_cycle_groups(edges: &[ComponentEdge]) -> Vec<CycleGroup> {
-    let names: Vec<_> = edges
-        .iter()
-        .flat_map(|edge| [edge.src.as_str(), edge.dst.as_str()])
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
+    match find_cycle_groups_checked(edges, &mut || Ok::<_, Infallible>(())) {
+        Ok(groups) => groups,
+        Err(never) => match never {},
+    }
+}
+
+pub(super) fn find_cycle_groups_checked<E>(
+    edges: &[ComponentEdge],
+    check: &mut impl FnMut() -> Result<(), E>,
+) -> Result<Vec<CycleGroup>, E> {
+    let mut names = BTreeSet::new();
+    for edge in edges {
+        check()?;
+        names.extend([edge.src.as_str(), edge.dst.as_str()]);
+    }
+    let names: Vec<_> = names.into_iter().collect();
     let ids: BTreeMap<_, _> = names
         .iter()
         .enumerate()
@@ -96,16 +115,19 @@ pub(super) fn find_cycle_groups(edges: &[ComponentEdge]) -> Vec<CycleGroup> {
         .collect();
     let mut adjacency = vec![Vec::new(); names.len()];
     for edge in edges {
+        check()?;
         adjacency[ids[edge.src.as_str()]].push(ids[edge.dst.as_str()]);
     }
     for neighbors in &mut adjacency {
+        check()?;
         neighbors.sort_unstable();
         neighbors.dedup();
     }
 
     let mut group_for_node = vec![None; names.len()];
     let mut groups = Vec::new();
-    for mut component in Tarjan::new(&adjacency).run() {
+    for mut component in Tarjan::new(&adjacency).run(check)? {
+        check()?;
         if component.len() < 2 {
             continue;
         }
@@ -124,6 +146,7 @@ pub(super) fn find_cycle_groups(edges: &[ComponentEdge]) -> Vec<CycleGroup> {
     }
 
     for edge in edges {
+        check()?;
         let target_group = group_for_node[ids[edge.dst.as_str()]];
         if let Some(group_id) = group_for_node[ids[edge.src.as_str()]]
             && target_group == Some(group_id)
@@ -132,12 +155,14 @@ pub(super) fn find_cycle_groups(edges: &[ComponentEdge]) -> Vec<CycleGroup> {
         }
     }
     for group in &mut groups {
+        check()?;
         group
             .component_edges
             .sort_by(|left, right| (&left.src, &left.dst).cmp(&(&right.src, &right.dst)));
     }
     groups.sort_by(|left, right| left.members.cmp(&right.members));
-    groups
+    check()?;
+    Ok(groups)
 }
 
 struct Frame {
@@ -183,13 +208,15 @@ impl<'a> Tarjan<'a> {
         });
     }
 
-    fn run(mut self) -> Vec<Vec<usize>> {
+    fn run<E>(mut self, check: &mut impl FnMut() -> Result<(), E>) -> Result<Vec<Vec<usize>>, E> {
         for root in 0..self.adjacency.len() {
+            check()?;
             if self.indices[root].is_some() {
                 continue;
             }
             self.enter(root);
             while let Some(frame) = self.traversal.last_mut() {
+                check()?;
                 let node = frame.node;
                 if let Some(&neighbor) = self.adjacency[node].get(frame.next_neighbor) {
                     frame.next_neighbor += 1;
@@ -213,7 +240,8 @@ impl<'a> Tarjan<'a> {
                 }
             }
         }
-        self.components
+        check()?;
+        Ok(self.components)
     }
 
     fn finish_component(&mut self, root: usize) {

@@ -132,6 +132,7 @@ pub(super) fn observe_environment<'a>(
     trusted_worktree: &Path,
     expected_worktree: &File,
     process_fds: &LinuxProcFds,
+    allow_contained_cwd: bool,
     io: &mut ReadBudget<'_>,
     work: &mut Work<'a>,
 ) -> Result<Option<(DefaultAncestorAbsence, [u8; 32])>> {
@@ -147,7 +148,9 @@ pub(super) fn observe_environment<'a>(
     let cwd = std::env::current_dir()?;
     let trusted_bytes = trusted_worktree.as_os_str().as_encoded_bytes();
     charge(io, work, 2 * trusted_bytes.len() + 2)?;
-    if !matches_layout_cwd(trusted_worktree, &cwd) {
+    if !(matches_layout_cwd(trusted_worktree, &cwd)
+        || (allow_contained_cwd && cwd.starts_with(trusted_worktree)))
+    {
         return Ok(None);
     }
 

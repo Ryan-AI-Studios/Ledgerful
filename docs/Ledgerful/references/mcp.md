@@ -40,7 +40,7 @@ by default, and uses atomic temp+rename. It does **not** shell out to
 need interactive project trust; Claude Code / VS Code may prompt to approve the
 server. Status reports config-file presence only.
 
-Bare `ledgerful mcp` (or `ledgerful mcp serve`) still starts the stdio server.
+Both `ledgerful mcp` and `ledgerful mcp serve` start the same stdio server. Pass the global `-C` option to select the worktree. Initialization, listing tools, and ping need no repository setup. When an existing tool first needs state, it performs the usual legacy migration if applicable. Trusted CLI child tools still follow normal CLI startup.
 
 ### Manual / npm (optional)
 
@@ -74,6 +74,7 @@ still writes concrete command/args and never writes secrets or embedding URLs.
 9. `security_boundaries`: Security policy graph summary. Tool text is the structured `security boundaries --json` document behind the provenance line (0552).
 10. `dead_code`: Confidence-ranked dead code candidates in the repo.
 11. `verify_plan`: Prediction of the verification plan for the current diff. No verification commands are executed. The framed object flattens the existing plan and adds `executionAssurance` (`execution: planned`, zero recorded results, `selectionCompleteness: not-established`). Completeness is not established. `scan --impact` still runs. Sanitized command text is not a copy-paste guarantee.
+12. `architecture_propose`: Project one additional resolved directional `fileCall` between two existing repo-relative files in distinct components. Send `from`, `to`, `kind`, and full lowercase `head`. Prepare without `context`, then replay the same request with the returned `observedContext.token` as `context`. The tool uses the server's effective worktree and existing private canonical state. It runs in process without indexing, writes, subprocesses, or network requests. Evaluated and unknown packets use the structured frame and always carry `permission: "unknown"`. Malformed arguments use the sanitized `isError: true` frame. The measured engine-size R2 graph exceeds the 25,000 raw-row ceiling and returns unknown. Multiple raw rows can project to one pair. After editing, index and check the actual source. [Packet and limits](../../agent-output-contract.md#architecture-propose-schema-v1)
 
 ## Known Limitations
 

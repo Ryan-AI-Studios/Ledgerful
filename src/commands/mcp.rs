@@ -20,6 +20,11 @@ pub use manifest::{INVENTORY, ToolDescriptor, get_tool_count};
 
 #[cfg(feature = "mcp")]
 pub fn execute_mcp_server() -> miette::Result<()> {
+    execute_mcp_server_from(std::path::Path::new("."))
+}
+
+#[cfg(feature = "mcp")]
+pub(crate) fn execute_mcp_server_from(proposal_cwd: &std::path::Path) -> miette::Result<()> {
     // Redirect tracing to stderr to avoid polluting stdout
     let _ = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -29,7 +34,7 @@ pub fn execute_mcp_server() -> miette::Result<()> {
         )
         .try_init();
 
-    server::run_server()
+    server::run_server_from(proposal_cwd)
 }
 
 #[cfg(not(feature = "mcp"))]

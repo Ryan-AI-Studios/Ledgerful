@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
 
+#[path = "proposal/policy_limits.rs"]
+mod policy_limits;
 #[cfg(test)]
 #[path = "config_tests.rs"]
 mod tests;
@@ -74,12 +76,24 @@ pub(super) fn invalid_config(detail: impl Into<String>) -> ArchitectureError {
 }
 
 pub(super) fn parse_architecture_toml(text: &str) -> Result<ArchitectureConfig> {
-    let toml = toml::Deserializer::parse(text)
-        .map_err(|error| toml_error(text, &error, "invalid TOML"))?;
-    let config = ArchitectureConfig::deserialize(toml)
-        .map_err(|error| toml_error(text, &error, schema_diagnostic(error.message())))?;
+    let config = decode_architecture_toml(text)?;
     validate_config(&config)?;
     Ok(config)
+}
+
+fn decode_architecture_toml(text: &str) -> Result<ArchitectureConfig> {
+    let toml = toml::Deserializer::parse(text)
+        .map_err(|error| toml_error(text, &error, "invalid TOML"))?;
+    ArchitectureConfig::deserialize(toml)
+        .map_err(|error| toml_error(text, &error, schema_diagnostic(error.message())).into())
+}
+
+pub(super) fn parse_bounded_architecture_toml(
+    raw: &[u8],
+) -> std::result::Result<ArchitectureConfig, &'static str> {
+    let text = std::str::from_utf8(raw).map_err(|_| "INVALID_CONTEXT_CONFIG")?;
+    policy_limits::admit(text)?;
+    parse_architecture_toml(text).map_err(|_| "INVALID_CONTEXT_CONFIG")
 }
 
 fn schema_diagnostic(message: &str) -> &'static str {
@@ -178,7 +192,7 @@ fn validate_config(config: &ArchitectureConfig) -> Result<()> {
     Ok(())
 }
 
-fn is_valid_component_name(name: &str) -> bool {
+pub(super) fn is_valid_component_name(name: &str) -> bool {
     let Some((first, rest)) = name.as_bytes().split_first() else {
         return false;
     };

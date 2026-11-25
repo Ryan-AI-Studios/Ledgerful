@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::convert::Infallible;
 
 #[cfg(test)]
 #[path = "classify_tests.rs"]
@@ -183,31 +184,21 @@ fn classify_cycle_groups(
     current: &[CycleGroup],
     delta: &mut ArchitectureDelta,
 ) {
-    let mut baseline_groups_by_member = BTreeMap::new();
-    for (id, group) in baseline.iter().enumerate() {
-        for member in &group.members {
-            baseline_groups_by_member.insert(member.as_str(), id);
-        }
-    }
+    let check = &mut || Ok::<_, Infallible>(());
+    let baseline_groups_by_member = match index_group_members(baseline, check) {
+        Ok(groups) => groups,
+        Err(never) => match never {},
+    };
 
     let mut represented = vec![false; baseline.len()];
     for group in current {
-        let mut overlaps = BTreeSet::new();
-        let mut has_added_member = false;
-        for member in &group.members {
-            if let Some(&id) = baseline_groups_by_member.get(member.as_str()) {
-                overlaps.insert(id);
-                represented[id] = true;
-            } else {
-                has_added_member = true;
-            }
-        }
-
-        let class = match overlaps.first().copied() {
-            None => CycleClass::Introduced,
-            Some(_) if has_added_member || overlaps.len() > 1 => CycleClass::Grown,
-            Some(id) => classify_overlapping_group(&baseline[id], group),
-        };
+        let class =
+            match classify_cycle_group(baseline, &baseline_groups_by_member, group, check, |id| {
+                represented[id] = true
+            }) {
+                Ok(class) => class,
+                Err(never) => match never {},
+            };
         match class {
             CycleClass::Introduced => delta.counts.cycle_groups.introduced += 1,
             CycleClass::Grown => delta.counts.cycle_groups.grown += 1,
@@ -229,28 +220,103 @@ fn classify_cycle_groups(
     delta.counts.cycle_groups.removed = delta.removed_cycle_groups.len() as u64;
 }
 
-fn internal_pairs(group: &CycleGroup) -> BTreeSet<(&str, &str)> {
-    group
-        .component_edges
-        .iter()
-        .map(|edge| (edge.src.as_str(), edge.dst.as_str()))
-        .collect()
+pub(super) fn projected_cycle_change<'a, E>(
+    baseline: &[CycleGroup],
+    current: &'a [CycleGroup],
+    endpoints: [&str; 2],
+    check: &mut impl FnMut() -> Result<(), E>,
+) -> Result<Option<(CycleClass, &'a [String])>, E> {
+    for group in current {
+        check()?;
+        if endpoints
+            .iter()
+            .all(|endpoint| group.members.iter().any(|member| member == endpoint))
+        {
+            let members = index_group_members(baseline, check)?;
+            let class = classify_cycle_group(baseline, &members, group, check, |_| {})?;
+            return Ok(match class {
+                CycleClass::Introduced | CycleClass::Grown => {
+                    Some((class, group.members.as_slice()))
+                }
+                CycleClass::Unchanged | CycleClass::Shrunk => None,
+            });
+        }
+    }
+    Ok(None)
 }
 
-fn classify_overlapping_group(baseline: &CycleGroup, current: &CycleGroup) -> CycleClass {
+fn index_group_members<'a, E>(
+    baseline: &'a [CycleGroup],
+    check: &mut impl FnMut() -> Result<(), E>,
+) -> Result<BTreeMap<&'a str, usize>, E> {
+    let mut groups = BTreeMap::new();
+    for (id, group) in baseline.iter().enumerate() {
+        for member in &group.members {
+            check()?;
+            groups.insert(member.as_str(), id);
+        }
+    }
+    Ok(groups)
+}
+
+fn classify_cycle_group<E>(
+    baseline: &[CycleGroup],
+    baseline_groups_by_member: &BTreeMap<&str, usize>,
+    group: &CycleGroup,
+    check: &mut impl FnMut() -> Result<(), E>,
+    mut on_overlap: impl FnMut(usize),
+) -> Result<CycleClass, E> {
+    let mut overlaps = BTreeSet::new();
+    let mut has_added_member = false;
+    for member in &group.members {
+        check()?;
+        if let Some(&id) = baseline_groups_by_member.get(member.as_str()) {
+            overlaps.insert(id);
+            on_overlap(id);
+        } else {
+            has_added_member = true;
+        }
+    }
+    match overlaps.first().copied() {
+        None => Ok(CycleClass::Introduced),
+        Some(_) if has_added_member || overlaps.len() > 1 => Ok(CycleClass::Grown),
+        Some(id) => classify_overlapping_group(&baseline[id], group, check),
+    }
+}
+
+fn internal_pairs<'a, E>(
+    group: &'a CycleGroup,
+    check: &mut impl FnMut() -> Result<(), E>,
+) -> Result<BTreeSet<(&'a str, &'a str)>, E> {
+    let mut pairs = BTreeSet::new();
+    for edge in &group.component_edges {
+        check()?;
+        pairs.insert((edge.src.as_str(), edge.dst.as_str()));
+    }
+    Ok(pairs)
+}
+
+fn classify_overlapping_group<E>(
+    baseline: &CycleGroup,
+    current: &CycleGroup,
+    check: &mut impl FnMut() -> Result<(), E>,
+) -> Result<CycleClass, E> {
     if current.members.len() < baseline.members.len() {
         // The caller established that every current member belongs to this one baseline group.
-        return CycleClass::Shrunk;
+        return Ok(CycleClass::Shrunk);
     }
-    let before = internal_pairs(baseline);
-    let after = internal_pairs(current);
-    if before == after {
+    let before = internal_pairs(baseline, check)?;
+    let after = internal_pairs(current, check)?;
+    check()?;
+    let class = if before == after {
         CycleClass::Unchanged
     } else if after.is_subset(&before) {
         CycleClass::Shrunk
     } else {
         CycleClass::Grown
-    }
+    };
+    check()?;
+    Ok(class)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -345,25 +411,30 @@ pub(super) struct Verdicts {
 const NO_CROSS_EDGES: &str = "NO_MAPPED_CROSS_COMPONENT_EDGES";
 const OVERLAP: &str = "OVERLAPPING_COMPONENTS";
 
+pub(super) fn observation_reasons(
+    cross_component_edges: u64,
+    ambiguous_mapping_edges: u64,
+    coverage: &EdgeCoverage,
+) -> Vec<String> {
+    let mut reasons = Vec::new();
+    add_reason(&mut reasons, cross_component_edges == 0, NO_CROSS_EDGES);
+    add_reason(&mut reasons, ambiguous_mapping_edges > 0, OVERLAP);
+    add_reason(
+        &mut reasons,
+        coverage.edges_ambiguous > 0 || coverage.edges_unresolved > 0,
+        "UNRESOLVED_PRESENT",
+    );
+    reasons
+}
+
 pub(super) fn derive_verdicts(inputs: &VerdictInputs) -> Verdicts {
     let mut status_reasons = Vec::new();
     let mut observation_reasons = Vec::new();
     let (status, observation) = if inputs.current_completeness_complete {
-        add_reason(
-            &mut observation_reasons,
-            inputs.current_cross_component_edges == 0,
-            NO_CROSS_EDGES,
-        );
-        add_reason(
-            &mut observation_reasons,
-            inputs.current_mapping_ambiguous > 0,
-            OVERLAP,
-        );
-        add_reason(
-            &mut observation_reasons,
-            inputs.current_coverage.edges_ambiguous > 0
-                || inputs.current_coverage.edges_unresolved > 0,
-            "UNRESOLVED_PRESENT",
+        observation_reasons = self::observation_reasons(
+            inputs.current_cross_component_edges,
+            inputs.current_mapping_ambiguous,
+            &inputs.current_coverage,
         );
         let observation = if inputs.current_findings > 0 {
             Observation::Findings

@@ -209,6 +209,18 @@ fn snapshot_edge_set(
 }
 
 fn read_edges(conn: &Connection) -> Result<Vec<FileEdge>> {
+    read_edges_limited(conn, None)
+}
+
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("projected file edge limit")]
+struct ProjectedPairLimit;
+
+fn read_edges_limited(conn: &Connection, limit: Option<usize>) -> Result<Vec<FileEdge>> {
+    let sql_limit = match limit {
+        Some(limit) => i64::try_from(limit).into_diagnostic()? + 1,
+        None => -1,
+    };
     let mut stmt = conn
         .prepare(
             "SELECT cf.file_path, df.file_path, COUNT(*)
@@ -220,22 +232,20 @@ fn read_edges(conn: &Connection) -> Result<Vec<FileEdge>> {
                AND se.caller_file_id != se.callee_file_id
                AND cf.parse_status != 'DELETED'
                AND df.parse_status != 'DELETED'
-             GROUP BY cf.file_path, df.file_path",
+             GROUP BY cf.file_path, df.file_path LIMIT ?1",
         )
         .into_diagnostic()?;
-    let rows = stmt
-        .query_map([], |row| {
-            let weight: i64 = row.get(2)?;
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, weight))
-        })
-        .into_diagnostic()?;
+    let mut rows = stmt.query([sql_limit]).into_diagnostic()?;
 
     let mut edges = Vec::new();
-    for row in rows {
-        let (src_path, dst_path, weight) = row.into_diagnostic()?;
+    while let Some(row) = rows.next().into_diagnostic()? {
+        if limit == Some(edges.len()) {
+            return Err(ProjectedPairLimit.into());
+        }
+        let weight: i64 = row.get(2).into_diagnostic()?;
         edges.push(FileEdge {
-            src_path,
-            dst_path,
+            src_path: row.get(0).into_diagnostic()?,
+            dst_path: row.get(1).into_diagnostic()?,
             weight: u32::try_from(weight).into_diagnostic()?,
         });
     }

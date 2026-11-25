@@ -1,11 +1,12 @@
 use crate::cli::args::{
-    AskArgs, AuditArgs, ChangeContextArgs, Cli, Commands, ConfigureArgs, DeadCodeArgs, DemoArgs,
-    DoctorArgs, GraphCommands, GraphExportFormatArg, ImpactArgs, InitArgs, LedgerCommands,
-    ResetArgs, ReviewArgs, ScanArgs, SearchTrigramsArgs, SessionArgs, SetupArgs, StatusArgs,
-    SurfacesArgs, TimingsCliArgs, UpdateArgs, VizArgs, WatchArgs,
+    ArchitectureCommands, AskArgs, AuditArgs, ChangeContextArgs, Cli, Commands, ConfigureArgs,
+    DeadCodeArgs, DemoArgs, DoctorArgs, GraphCommands, GraphExportFormatArg, ImpactArgs, InitArgs,
+    LedgerCommands, ResetArgs, ReviewArgs, ScanArgs, SearchTrigramsArgs, SessionArgs, SetupArgs,
+    StatusArgs, SurfacesArgs, TimingsCliArgs, UpdateArgs, VizArgs, WatchArgs,
 };
 use miette::{IntoDiagnostic, Result};
 use std::env;
+use std::path::{Path, PathBuf};
 
 mod config;
 mod defaults;
@@ -33,6 +34,38 @@ use ops::{dispatch_intent, dispatch_internal, dispatch_schedule};
 use search::dispatch_search;
 use verify::dispatch_verify;
 
+fn dispatch_architecture(
+    command: ArchitectureCommands,
+    verified_binary_startup: bool,
+    proposal_cwd: &Path,
+) -> Result<()> {
+    use crate::commands::architecture::proposal::{ProposalRequest, evaluate};
+
+    match command {
+        ArchitectureCommands::Propose {
+            from,
+            to,
+            kind,
+            head,
+            context,
+            ..
+        } => {
+            let request = ProposalRequest {
+                from,
+                to,
+                kind,
+                head,
+                context,
+            };
+            let packet = evaluate(request, proposal_cwd)?;
+            crate::output::json::emit(&packet)
+        }
+        ArchitectureCommands::Check { .. } => {
+            crate::commands::architecture::execute_architecture(command, verified_binary_startup)
+        }
+    }
+}
+
 /// Run the Architecture command from the ordinary fresh Windows executable.
 ///
 /// # Safety
@@ -45,12 +78,17 @@ pub unsafe fn run_architecture_from_binary(cli: Cli) -> Result<()> {
     let Commands::Architecture { command } = cli.command else {
         return Err(miette::miette!("expected the Architecture command"));
     };
-    apply_cli_directory(cli.directory.as_deref())?;
-    crate::commands::architecture::execute_architecture(command, true)
+    let ingress = apply_cli_directory(cli.directory.as_deref())?;
+    dispatch_architecture(command, true, ingress.as_deref().unwrap_or(Path::new(".")))
 }
 
 pub fn run_with(cli: Cli) -> Result<()> {
-    apply_cli_directory(cli.directory.as_deref())?;
+    let ingress = apply_cli_directory(cli.directory.as_deref())?;
+    let proposal_cwd = ingress.as_deref().unwrap_or(Path::new("."));
+    #[cfg(feature = "mcp")]
+    if cli.command.is_mcp_server() {
+        return crate::commands::mcp::execute_mcp_server_from(proposal_cwd);
+    }
     // This explicitly passive path must bypass startup config migration and
     // optional telemetry/state writers, as well as the regular index dispatch.
     if let Commands::Index(args) = &cli.command
@@ -60,7 +98,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
     }
     // Architecture reads existing state even when ordinary startup would migrate it.
     if let Commands::Architecture { command } = cli.command {
-        return crate::commands::architecture::execute_architecture(command, false);
+        return dispatch_architecture(command, false, proposal_cwd);
     }
     // Explicit producers own their storage authorization. Bypass startup state and
     // telemetry so a refused publication cannot initialize the evidence store.
@@ -604,12 +642,12 @@ fn record_command_usage(command_name: &str) {
 /// - whitespace-only → fail-closed (not a directory)
 /// - leading `~` / `~/` / `~\` expanded; missing / non-dir → miette
 /// - last-wins is clap `Option<String>` (this function sees one path)
-pub(crate) fn apply_cli_directory(directory: Option<&str>) -> Result<()> {
+pub(crate) fn apply_cli_directory(directory: Option<&str>) -> Result<Option<PathBuf>> {
     let Some(raw) = directory else {
-        return Ok(());
+        return Ok(None);
     };
     if raw.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     if raw.trim().is_empty() {
         return Err(miette::miette!("directory {raw:?} is not a directory"));
@@ -627,9 +665,17 @@ pub(crate) fn apply_cli_directory(directory: Option<&str>) -> Result<()> {
             path.display()
         ));
     }
+    // `chdir` can resolve aliases that later disappear from `current_dir()`.
+    // The passive proposal must qualify the explicit spelling supplied at
+    // ingress. Ordinary commands still use the effective cwd after `chdir`.
+    let ingress = if path.is_absolute() {
+        path.clone()
+    } else {
+        env::current_dir().map_or_else(|_| path.clone(), |cwd| cwd.join(&path))
+    };
     env::set_current_dir(&path)
         .map_err(|e| miette::miette!("failed to change directory to '{}': {e}", path.display()))?;
-    Ok(())
+    Ok(Some(ingress))
 }
 
 /// Return true for commands that operate across discovered repos and must not
@@ -655,6 +701,20 @@ const GLOBAL_CONFIG_LOAD_FALLBACK_WARN: &str =
 pub(super) fn load_startup_config(
     layout: &crate::state::layout::Layout,
 ) -> Result<crate::config::model::Config> {
+    migrate_startup_layout(layout)?;
+    // DoD-7: warn-then-default on parse failure (same idiom as load_user_config).
+    // Do NOT introduce deny_unknown_fields — old configs must keep loading;
+    // unknown keys are reported via doctor / serde_ignored (DoD-8).
+    match crate::config::load::load_config(layout) {
+        Ok(cfg) => Ok(cfg),
+        Err(_) => {
+            tracing::warn!("{CONFIG_LOAD_FALLBACK_WARN}");
+            Ok(Default::default())
+        }
+    }
+}
+
+pub(crate) fn migrate_startup_layout(layout: &crate::state::layout::Layout) -> Result<()> {
     // 0094: migrate + gitignore side-effect live at this seam (not in `state`)
     // so the state crate does not depend on git. On rename we ensure
     // `.ledgerful/` is ignored — finishing an operation the tool started
@@ -672,16 +732,7 @@ pub(super) fn load_startup_config(
             }
         }
     }
-    // DoD-7: warn-then-default on parse failure (same idiom as load_user_config).
-    // Do NOT introduce deny_unknown_fields — old configs must keep loading;
-    // unknown keys are reported via doctor / serde_ignored (DoD-8).
-    match crate::config::load::load_config(layout) {
-        Ok(cfg) => Ok(cfg),
-        Err(_) => {
-            tracing::warn!("{CONFIG_LOAD_FALLBACK_WARN}");
-            Ok(Default::default())
-        }
-    }
+    Ok(())
 }
 
 pub(super) fn load_user_config() -> Result<crate::config::model::Config> {

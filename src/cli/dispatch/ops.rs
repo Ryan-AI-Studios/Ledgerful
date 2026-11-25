@@ -45,7 +45,7 @@ pub(super) fn dispatch_schedule(
 pub(super) fn dispatch_mcp(command: Option<crate::cli::args::McpCommands>) -> Result<()> {
     match command {
         None | Some(crate::cli::args::McpCommands::Serve) => {
-            crate::commands::mcp::execute_mcp_server()
+            unreachable!("MCP stdio server dispatches before startup")
         }
         Some(crate::cli::args::McpCommands::Install {
             platforms,

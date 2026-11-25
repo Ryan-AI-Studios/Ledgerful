@@ -1,6 +1,8 @@
-use clap::Parser;
+use clap::{Parser, error::ContextKind};
 use ledgerful::cli::{self, Cli, resolve_quiet};
 use miette::Result;
+use std::ffi::OsStr;
+use std::path::Path;
 use tracing::Level;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
@@ -70,34 +72,53 @@ fn parse_cli_args() -> Cli {
     // Intercept "help" and "version" subcommands ONLY if they are the first
     // positional argument to unify behavior without breaking legitimate
     // positional values or subcommand args later in the string.
-    // Legitimate: CLI argv for help/version rewrite only — not an auth boundary.
-    // nosemgrep: rust.lang.security.args.args
-    let args: Vec<String> = std::env::args().collect();
-    let mut transformed = Vec::with_capacity(args.len());
-
-    if args.len() > 1 && args[1] == "help" {
+    // Preserve non-UTF-8 input for Clap. argv[0] only supplies its program label.
+    // nosemgrep: rust.lang.security.args-os.args-os
+    let mut args: Vec<_> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|argument| argument == "help") {
         // [exe, help, cmd1, cmd2] -> [exe, cmd1, cmd2, --help]
-        transformed.push(args[0].clone());
-        for arg in args.iter().skip(2) {
-            transformed.push(arg.clone());
-        }
-        transformed.push("--help".to_string());
-    } else if args.len() > 1 && args[1] == "version" {
+        args.remove(1);
+        args.push("--help".into());
+    } else if args.get(1).is_some_and(|argument| argument == "version") {
         // [exe, version, ...] -> [exe, --version, ...]
-        transformed.push(args[0].clone());
-        transformed.push("--version".to_string());
-        for arg in args.iter().skip(2) {
-            transformed.push(arg.clone());
-        }
-    } else {
-        transformed = args;
+        args[1] = "--version".into();
     }
 
-    let args = transformed;
     // Parse CLI args once here so we can read the verbose flag before
     // initializing the logger.  cli::run_with(cli) reuses the parsed struct,
     // avoiding a second parse.
-    Cli::parse_from(args)
+    let argv0 = args.first().cloned();
+    match Cli::try_parse_from(args) {
+        Ok(cli) => cli,
+        Err(error) => {
+            if is_architecture_proposal_usage(&error, argv0.as_deref()) {
+                eprintln!("ARCHITECTURE_PROPOSAL_INVALID_REQUEST");
+                std::process::exit(2);
+            }
+            error.exit()
+        }
+    }
+}
+
+fn is_architecture_proposal_usage(error: &clap::Error, argv0: Option<&OsStr>) -> bool {
+    // Use Clap's selected command name without the user-controlled program
+    // label. A non-Unicode filename contributes no label to nested usage.
+    let program = argv0
+        .and_then(|arg| Path::new(arg).file_name())
+        .and_then(OsStr::to_str);
+    error.get(ContextKind::Usage).is_some_and(|usage| {
+        let usage = usage.to_string();
+        let Some(invocation) = usage.strip_prefix("Usage: ") else {
+            return false;
+        };
+        let command = match program {
+            Some(label) => invocation
+                .strip_prefix(label)
+                .and_then(|suffix| suffix.strip_prefix(' ')),
+            None => Some(invocation),
+        };
+        command.is_some_and(|command| command.starts_with("architecture propose "))
+    })
 }
 
 fn run(cli_args: Cli) -> Result<()> {
@@ -111,12 +132,13 @@ fn run(cli_args: Cli) -> Result<()> {
     // skip also sets `Cli.verbose`); do not treat that as logging-verbose.
     // A leading `-v` before `boundaries` still enables logging.
     let boundaries_local_verbose = {
-        // CLI flag detection only (URN table vs tracing); not an auth check.
-        // nosemgrep: rust.lang.security.args.args
-        let raw: Vec<String> = std::env::args().collect();
-        raw.iter()
-            .position(|a| a == "boundaries")
-            .is_some_and(|i| raw.iter().skip(i + 1).any(|a| a == "--verbose"))
+        // Inspect flag tokens after argv[0] to select tracing verbosity.
+        // nosemgrep: rust.lang.security.args-os.args-os
+        std::env::args_os()
+            .skip(1)
+            .skip_while(|argument| argument != "boundaries")
+            .skip(1)
+            .any(|argument| argument == "--verbose")
     };
     let effective_verbose = cli_args.verbose
         && !boundaries_local_verbose
@@ -183,7 +205,7 @@ fn run(cli_args: Cli) -> Result<()> {
     let inspect_only = match &cli_args.command {
         ledgerful::cli::args::Commands::Index(args) => args.is_dependency_evidence_only(),
         ledgerful::cli::args::Commands::Architecture { .. } => true,
-        _ => false,
+        commands => commands.is_mcp_server(),
     };
     if !inspect_only {
         sweep_stale_old_binaries();
@@ -295,7 +317,10 @@ fn main() {
             } => true,
             _ => false,
         };
-        if explicit_capture || matches!(&args.command, Commands::Architecture { .. }) {
+        if explicit_capture
+            || matches!(&args.command, Commands::Architecture { .. })
+            || args.command.is_mcp_server()
+        {
             // SAFETY: this binary entry has only parsed CLI inputs. No SQLite
             // calls or worker threads precede this scoped native startup.
             // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
@@ -338,6 +363,21 @@ mod tests {
     use std::io::{self, Write};
     use std::sync::{Arc, Mutex};
     use tracing_subscriber::fmt::MakeWriter;
+
+    #[test]
+    fn proposal_usage_uses_the_selected_subcommand_after_argv0() {
+        let program = "alias architecture propose fake";
+        let proposal = Cli::try_parse_from([program, "architecture", "propose"]).unwrap_err();
+        let ordinary = Cli::try_parse_from([program, "doctor", "--unknown"]).unwrap_err();
+        assert!(is_architecture_proposal_usage(
+            &proposal,
+            Some(OsStr::new(program))
+        ));
+        assert!(!is_architecture_proposal_usage(
+            &ordinary,
+            Some(OsStr::new(program))
+        ));
+    }
 
     #[test]
     fn cli_has_verbose_flag() {

@@ -59,6 +59,7 @@ pub(super) struct TreeIndexWalk<'a> {
     entries: Vec<WalkEntry<'a>>,
     by_path: Vec<usize>,
     files: usize,
+    limit: usize,
     paths: TreePaths,
     unsupported_checkout_path: bool,
     _tables: Reservation<'a>,
@@ -77,23 +78,28 @@ pub(super) enum ExpectedEntry {
 
 impl<'a> TreeIndexWalk<'a> {
     pub(super) fn new(paths: TreePaths, work: &mut Work<'a>) -> TreeIndexResult<Self> {
-        let bytes = MAX_NODES * (size_of::<WalkEntry<'a>>() + size_of::<usize>());
+        Self::with_limit(paths, MAX_NODES, work)
+    }
+
+    pub(super) fn with_limit(
+        paths: TreePaths,
+        limit: usize,
+        work: &mut Work<'a>,
+    ) -> TreeIndexResult<Self> {
+        let bytes = limit * (size_of::<WalkEntry<'a>>() + size_of::<usize>());
         let tables = reserve(work, bytes)?;
         let mut entries = Vec::new();
         let mut by_path = Vec::new();
-        entries
-            .try_reserve_exact(MAX_NODES)
-            .map_err(|_| "allocation")?;
-        by_path
-            .try_reserve_exact(MAX_NODES)
-            .map_err(|_| "allocation")?;
-        if entries.capacity() != MAX_NODES || by_path.capacity() != MAX_NODES {
+        entries.try_reserve_exact(limit).map_err(|_| "allocation")?;
+        by_path.try_reserve_exact(limit).map_err(|_| "allocation")?;
+        if entries.capacity() != limit || by_path.capacity() != limit {
             return Err("memory-cap");
         }
         Ok(Self {
             entries,
             by_path,
             files: 0,
+            limit,
             paths,
             unsupported_checkout_path: false,
             _tables: tables,
@@ -215,7 +221,7 @@ impl<'a> TreeIndexWalk<'a> {
     ) -> TreeIndexResult<()> {
         let prefix = parent.map_or(&[][..], |tree| tree.path.as_ref());
         let depth = parent.map_or(1, |tree| tree.depth + 1);
-        if self.entries.len() == MAX_NODES {
+        if self.entries.len() == self.limit {
             return Err("tree-walk-entry-cap");
         }
         if depth > MAX_DEPTH {

@@ -438,7 +438,7 @@ pub(super) fn read_architecture_for_native_test<T>(
 }
 
 #[cfg(windows)]
-fn read_architecture_in_phase<T>(
+pub(super) fn read_architecture_in_phase<T>(
     layout: &Layout,
     verified_binary_startup: bool,
     phase: super::capture_budget::CapturePhase<'_>,

@@ -346,6 +346,7 @@ impl<'a> Pack<'a> {
         id: ObjectId,
         expected: Kind,
         depth: usize,
+        limit: Option<usize>,
         work: &mut Work<'a>,
     ) -> PackResult<ReservedBytes<'a>> {
         let mut position = self.find(id)?;
@@ -392,6 +393,9 @@ impl<'a> Pack<'a> {
         if kind != expected {
             return Err("object-kind");
         }
+        if chain.is_empty() && limit.is_some_and(|limit| base.decompressed_size > limit as u64) {
+            return Err("packed-object-output-cap");
+        }
         let mut data = self.inflate(position, &base, chain_bytes, work)?;
         self.verify_object(position, kind, &data, work)?;
         while let Some((index, entry)) = chain.pop() {
@@ -400,6 +404,7 @@ impl<'a> Pack<'a> {
                 &data,
                 &delta,
                 chain_bytes + data.capacity() + delta.capacity(),
+                if chain.is_empty() { limit } else { None },
                 work,
             )?;
             self.verify_object(index, kind, &data, work)?;
@@ -513,12 +518,16 @@ fn apply_delta(
     base: &[u8],
     mut input: &[u8],
     live: usize,
+    limit: Option<usize>,
     work: &mut Work<'_>,
 ) -> PackResult<Vec<u8>> {
     let source = delta_size(&mut input)?;
     let target = delta_size(&mut input)?;
     if source != base.len() {
         return Err("delta-base-size");
+    }
+    if limit.is_some_and(|limit| target > limit) {
+        return Err("packed-object-output-cap");
     }
     work.reserve(target, live)?;
     let mut output = Vec::new();
@@ -563,11 +572,11 @@ mod tests {
         let memory = MemoryBudget::new(100);
         let mut work = Work::new(deadline, &cancelled, 100, &memory);
         assert_eq!(
-            apply_delta(b"same-a", b"\x06\x06\x90\x05\x01b", 0, &mut work).unwrap(),
+            apply_delta(b"same-a", b"\x06\x06\x90\x05\x01b", 0, None, &mut work).unwrap(),
             b"same-b"
         );
         assert!(matches!(
-            apply_delta(b"same-a", b"\x06\x06\x91\x10\x06", 0, &mut work),
+            apply_delta(b"same-a", b"\x06\x06\x91\x10\x06", 0, None, &mut work),
             Err("delta-copy")
         ));
     }

@@ -404,6 +404,23 @@ pub enum ChangeEvidenceCommands {
     },
 }
 
+impl Commands {
+    /// Whether the command enters the passive stdio server lifecycle.
+    pub fn is_mcp_server(&self) -> bool {
+        #[cfg(feature = "mcp")]
+        {
+            matches!(
+                self,
+                Self::Mcp {
+                    command: None | Some(McpCommands::Serve),
+                }
+            )
+        }
+        #[cfg(not(feature = "mcp"))]
+        false
+    }
+}
+
 fn parse_evidence_baseline_name(raw: &str) -> Result<String, &'static str> {
     crate::state::storage::baselines::validate_baseline_name(raw)
         .map_err(|_| "expected a baseline name of 1-64 lowercase letters, digits, periods, underscores or hyphens starting with a letter or digit")?;

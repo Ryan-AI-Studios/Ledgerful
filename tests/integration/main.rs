@@ -18,6 +18,7 @@ mod cargo_lock_orphan_pruning;
 mod cedar_orphan_pruning;
 mod ci_prediction;
 mod cli_architecture;
+mod cli_architecture_proposal;
 mod cli_ask;
 mod cli_audit;
 mod cli_baseline;

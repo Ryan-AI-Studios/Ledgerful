@@ -102,6 +102,7 @@ contract and follows `LEDGERFUL_TABLE_STYLE`. Purity inventory unchanged
 | `baseline show --json` | yes | yes | schemaVersion 1 `kind: "analysisBaselineShow"`: `name`/`identity`/`coverage`/`payloadDigest`/`digestVerified`/`edges[]` (`srcPath`/`dstPath`/`weight`, JSON only). Unknown name exits 1 with `BASELINE_NOT_FOUND`. |
 | `baseline compare --json` | yes | yes | schemaVersion 1 `kind: "analysisBaselineCompare"`: `baseline`/`status`/`incomparableReasons`/`baselineIdentity`/`currentIdentity`/`currentCompleteness`/`regression` (`none`\|`present`\|`unknown`)/`regressionReasons`/`notes`, plus `counts`/`items` **only** when comparable. Exit 0 without `--fail-on-regression` is **not** a pass. See schema below. |
 | `architecture check --json` | yes | yes on successful checks | CLI-only. Schema version 1 `kind: "architectureCheck"` reports observed boundaries and cycles, current evidence and optional baseline comparison. |
+| `architecture propose [--json]` | yes | yes on evaluated and unknown proposals | CLI and MCP `architecture_propose` emit schema version 1 `kind: "architectureProposal"`. Malformed CLI requests have empty stdout and nonzero exit. |
 | `timings --json` | yes (0043; 0330; 0346; 0364) | yes | schemaVersion 1 envelope `{schemaVersion, data}` — **no** `kind`. `data[]` keeps `command` / `runs` / `p50_ms` / `p95_ms` / `p99_ms` / `total_ms`. Additive always: `comparable` (bool, never omitted), `workload_count`, `nonzero_exit_runs`, `window_days`. Additive omit-empty: `duration_spread` (`single`\|`mixed`), `incomparable_reason` (`unhashedArgv` when the sole success bucket is `"<unhashed>"`), `sample_note`, `workloads[]`. `runs` is success (`exit_code==0`) count. `--explain --json` `data` is an object with always `explain` / `command` / `runs` / `comparable` plus omit-empty `p50_ms` / `prior_p50_ms` / `incomparable_reason`. No success prior baseline (empty **or** all-failed) omits `prior_p50_ms` (never dummy `0`). Global explain keeps camelCase repo counts around that `data` object. `--inner --json` `data[]` is `{command, span_name, samples, total_ms, max_ms}`; omit-empty `coverage[]` `{command, outer_ms, inner_ms, uninstrumented_ms}` (present whenever outer rows exist; wall-clock, all exits; `--top` truncates `data[]` only). `--flame --json` `data` is `{collapsed}` plus omit-empty `unique_stacks` / `total_weight_ms` / `weight_unit` (`exclusive_ms`) / `window_days` (number, same `--days` window; snake_case). Empty collapsed omits those four keys (`{"collapsed":""}`). Human nonempty `--flame` eprints a units legend on stderr (not stdout; `--export` file stays pure Gregg stacks). Global `--flame --json` nested `data` uses the same omit-empty keys; camelCase envelope unchanged. Capture filter and inner `notes.span_id` do not retro-clean historical tokio rows. |
 
 \* Non-essential progress INFO suppressed under machine mode; hard failures still
@@ -963,6 +964,33 @@ ledgerful baseline compare base1 --json --all --fail-on-regression
 
 ---
 
+## `architecture propose` schema (v1)
+
+In an already indexed standalone Git worktree with `.ledgerful/architecture.toml`, use repo-relative paths for existing files in two distinct components. The request assumes the edit would add one resolved directional `fileCall` from the first file to the second.
+
+```bash
+head=$(git rev-parse HEAD)
+ledgerful architecture propose --from src/core/b.rs --to src/ui/a.rs --kind fileCall --head "$head" --json
+```
+
+When the snapshot is usable, the prepare response has `status: "unknown"`, `reasonCodes: ["CONTEXT_REQUIRED"]`, and `observedContext` with `head`, `indexHead`, `inputDigest`, `configDigest`, and `token`. Copy the returned token into the second command.
+
+```bash
+ledgerful architecture propose --from src/core/b.rs --to src/ui/a.rs --kind fileCall --head "$head" --context "$token" --json
+```
+
+Each invocation rechecks the committed and indexed HEAD, scoped source, configuration, and observed graph in the current checkout. A changed context can return `CONTEXT_MISMATCH` with no replacement token. Start a fresh prepare to observe a new context. The token pins equality of observations for the proposal. After making the edit, commit and index the actual source, then run `ledgerful architecture check --json`. To compare against the pre-edit graph, create a baseline with `ledgerful baseline create before-edit` before editing and pass `--baseline before-edit` to the check.
+
+Every packet includes `kind: "architectureProposal"`, `schemaVersion: 1`, `status: "evaluated"` or `"unknown"`, sorted `reasonCodes`, and `permission: "unknown"`. An evaluated packet also includes `observedContext`, `sourceComponent`, `targetComponent`, `evidenceQualification: "unqualified"`, `ruleDecision` (`allow`, `forbid`, or `unconstrained`), `ruleId` (null for unconstrained), and `cycleEffect` (`introduced`, `grown`, `noChangeObserved`, or `unknown`). `members` lists the affected group in sorted order when a group is introduced or grown. A rule decision and any cycle projection apply only if the proposed resolved call materializes. Index evidence remains unqualified for authorization, including when coverage is complete and the rule is `allow`.
+
+The passive [dependency evidence report](#index---check---dependency-evidence---json-schema) (0605) measures a bounded sample of observed relationships. Even matching bytes for a registered SCIP artifact leave its source freshness unknown and leave retained SCIP rows unattributed to an originating artifact. Ignored or unseen files, cross-language relationships, imports, aliases, and re-exports remain outside qualified coverage. The independently checked native Rust fixture establishes resolution and post-edit behavior for its exact inputs, parser and analyzer, observed rows, and preregistered edits. Other inputs and producers retain the unqualified evidence status.
+
+An evaluated `cycleEffect: "noChangeObserved"` requires a mapped pre-edit cross-component edge, coverage without ambiguous or unresolved observations, and no overlapping or unmapped graph endpoints. If one of those conditions fails and the complete observed graph yields no affected group, the evaluated packet gives `cycleEffect: "unknown"` with the applicable reason codes. A complete graph can still show an introduced or grown group within its observed scope. Incomplete or indeterminate extraction instead gives top-level `status: "unknown"` without rule or cycle fields.
+
+The command uses the effective directory selected by `-C`. The supplied spelling must reach that same directory without following symlinks or other filesystem redirects. It requires private canonical local state and can report `STORAGE_UNAVAILABLE` for layouts it cannot read passively, including any state override and unsupported live journals. It runs without indexing, network requests, subprocesses, or writes to repository state. It bounds both config inputs at 64 KiB each, components at 64, globs and rules at 256 each, walked entries at 20,000, source/index rows at 2,000, cumulative scoped source bytes at 16 MiB, raw structural rows at 25,000, projected pairs at 5,000, and the response at 32 KiB. A three-second cooperative compute/read deadline is checked around synchronous operations. The measured engine-size R2 graph exceeds the raw-row ceiling and returns unknown. Repeated observations of a single pair count individually toward the raw-row limit. Exhausted budgets return unknown without partial rule or cycle results.
+
+CLI emits one JSON object and exits 0 on evaluated or unknown results. `--json` is optional. Malformed proposal requests exit nonzero with empty stdout and the fixed `ARCHITECTURE_PROPOSAL_INVALID_REQUEST` diagnostic. MCP `architecture_propose` sends the same packet after the structured provenance line. Its tools/call arguments are `from`, `to`, `kind`, `head`, and optional `context`. Evaluated and unknown packets omit `isError`, and malformed proposal arguments return the fixed diagnostic in a sanitized `isError: true` frame. These diagnostics omit request values. The shared JSON-RPC parser retains its existing transport error behavior.
+
 ## `architecture check --json` schema (v1)
 
 `architecture check` reports dependency boundaries and strongly connected
@@ -1591,7 +1619,8 @@ MCP `query` echo is the sanitized request, so `run_server()` echoes as
 ## MCP structured output frame (0552)
 
 `search`, `scan`, `endpoints_changed` and `security_boundaries` parse the CLI
-`--json` stdout as one JSON document and return it as text content. Success
+`--json` stdout as one JSON document and return it as text content.
+`architecture_propose` serializes its advisory packet in process using the same frame. Success
 text begins with exactly this line and its LF, then the whole document:
 
 ```

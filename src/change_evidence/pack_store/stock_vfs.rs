@@ -161,6 +161,11 @@ impl Activation<'_, '_> {
     }
 }
 impl<'m> Scope<'m> {
+    #[cfg(all(target_arch = "x86_64", target_env = "gnu"))]
+    pub(super) fn is_sidecar_free(&self) -> bool {
+        self.warm_epoch.is_none()
+    }
+
     pub(super) fn cold(
         root: &File,
         proc_fd: &File,
