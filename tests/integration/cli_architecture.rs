@@ -43,6 +43,7 @@ const UNAVAILABLE_FIELDS: &[&str] = &[
 
 struct Fixture {
     _temp: TempDir,
+    base: PathBuf,
     root: PathBuf,
     profile: PathBuf,
 }
@@ -50,14 +51,18 @@ struct Fixture {
 impl Fixture {
     fn empty() -> Self {
         let temp = tempfile::tempdir().unwrap();
-        let root = nested_repo_root(temp.path());
-        let profile = temp.path().join("profile");
+        // The native reader verifies each component's exact spelling, so use the
+        // canonical fixture path, not an 8.3 temp alias such as `RUNNER~1`.
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let root = nested_repo_root(&base);
+        let profile = base.join("profile");
         fs::create_dir(&profile).unwrap();
         setup_git_repo(&root);
         git_cmd(&root, &["config", "core.autocrlf", "false"]);
         git_cmd(&root, &["config", "commit.gpgsign", "false"]);
         Self {
             _temp: temp,
+            base,
             root,
             profile,
         }
@@ -581,7 +586,7 @@ fn architecture_check_reads_only_the_selected_alternate_state__slow() {
     let fixture = Fixture::cyclic();
     fixture.baseline();
     checkpoint_fixture(&fixture);
-    let alternate_root = fixture._temp.path().join("alternate");
+    let alternate_root = fixture.base.join("alternate");
     let alternate = alternate_root.join(".ledgerful");
     fs::create_dir_all(alternate.join("state")).unwrap();
     let alternate_db = alternate.join("state/ledger.db");
@@ -618,7 +623,7 @@ fn architecture_check_reads_only_the_selected_alternate_state__slow() {
     assert_eq!(verdict["regression"], "none");
     fixture.reject(&[], "Schema mismatch detected.");
 
-    let missing = fixture._temp.path().join("missing").join(".ledgerful");
+    let missing = fixture.base.join("missing").join(".ledgerful");
     let (out, err, exit) = run(&missing);
     assert!(err.contains("missing"), "{err}");
     assert_refusal(out, err, exit, ARCH_STORAGE_UNAVAILABLE);

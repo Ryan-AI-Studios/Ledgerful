@@ -141,7 +141,9 @@ mod native_tests {
         }
 
         let directory = tempfile::tempdir().unwrap();
-        let layout = Layout::new(camino::Utf8Path::from_path(directory.path()).unwrap());
+        // The reader verifies exact component spelling; avoid 8.3 temp aliases.
+        let canonical = dunce::canonicalize(directory.path()).unwrap();
+        let layout = Layout::new(camino::Utf8Path::from_path(&canonical).unwrap());
         std::fs::create_dir_all(layout.state_subdir()).unwrap();
         let db = layout.state_subdir().join("ledger.db");
         let test_name = format!(
