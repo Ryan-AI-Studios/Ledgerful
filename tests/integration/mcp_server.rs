@@ -100,6 +100,12 @@ to = "ui"
                     .arg(&self.root)
                     .args(args)
                     .env_remove("RUST_LOG")
+                    // Hosted runners export XDG_CONFIG_HOME. Passive discovery
+                    // cannot prove ambient ignore policy then and refuses.
+                    // Match the CLI proposal fixture's isolation.
+                    .env_remove("GIT_CONFIG_GLOBAL")
+                    .env_remove("GIT_CONFIG_SYSTEM")
+                    .env_remove("XDG_CONFIG_HOME")
                     .env("LEDGERFUL_NON_INTERACTIVE", "1");
                 cmd
             }
