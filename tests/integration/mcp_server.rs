@@ -388,6 +388,74 @@ to = "ui"
             }
         }
 
+        #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+        #[test]
+        fn architecture_propose_reports_inherited_config_without_state_changes() {
+            let fixture = Fixture::new();
+            fixture.git_fixture();
+            fixture.init();
+            fixture.cli_ok(&["index", "--full"]);
+            let head = fixture.head();
+            let args = prepare_args(&head);
+            let control = fixture.cli_ok(&args);
+            let prepared: Value = serde_json::from_slice(&control.stdout).unwrap();
+            assert_eq!(prepared["reasonCodes"], json!(["CONTEXT_REQUIRED"]));
+            let token = prepared["observedContext"]["token"].as_str().unwrap();
+            let expected = json!({
+                "kind": "architectureProposal", "schemaVersion": 1, "status": "unknown",
+                "permission": "unknown",
+                "reasonCodes": ["AMBIENT_GIT_CONFIG_OVERRIDE", "DISCOVERY_FAILED"]
+            });
+            let stock = fixture.home.join(".config");
+            let stock = stock.to_str().unwrap();
+            let sentinel = "/dummy-ambient-config-value";
+            let before = snapshot(&fixture);
+            for (name, value) in [
+                ("XDG_CONFIG_HOME", stock),
+                ("XDG_CONFIG_HOME", sentinel),
+                ("XDG_CONFIG_HOME", ""),
+                ("GIT_CONFIG_GLOBAL", sentinel),
+                ("GIT_CONFIG_GLOBAL", ""),
+                ("GIT_CONFIG_SYSTEM", sentinel),
+                ("GIT_CONFIG_SYSTEM", ""),
+            ] {
+                let cli = fixture
+                    .cli(&args)
+                    .env(name, value)
+                    .env("RUST_LOG", "debug")
+                    .output()
+                    .unwrap();
+                assert!(cli.status.success());
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&cli.stdout).unwrap(),
+                    expected
+                );
+                assert!(!String::from_utf8_lossy(&cli.stderr).contains(sentinel));
+
+                let mut cmd = fixture.cli(FORM[0]);
+                cmd.env(name, value);
+                let mut session = McpSession::spawn_command(&mut cmd, Arc::default());
+                session.initialize();
+                let prepare = request(&head);
+                let reply = session.call_tool(TOOL, prepare.clone());
+                assert_eq!(assert_structured_success(&reply), expected);
+                let mut evaluate = prepare;
+                evaluate["context"] = json!(token);
+                let reply = session.call_tool(TOOL, evaluate);
+                assert_eq!(assert_structured_success(&reply), expected);
+                assert!(!session.finish().contains(sentinel));
+                assert_snapshot_unchanged(&fixture, &before, "inherited configuration refused");
+            }
+            let mut args = args;
+            args[7] = "unsupported";
+            let unrelated = fixture.cli_ok(&args);
+            assert_eq!(
+                serde_json::from_slice::<Value>(&unrelated.stdout).unwrap()["reasonCodes"],
+                json!(["UNSUPPORTED_KIND"])
+            );
+            assert_snapshot_unchanged(&fixture, &before, "unrelated refusal");
+        }
+
         #[test]
         fn architecture_propose_help_and_cli_diagnostics_are_fixed() {
             let fixture = Fixture::new();

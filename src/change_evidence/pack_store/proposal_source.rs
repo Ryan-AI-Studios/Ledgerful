@@ -6,6 +6,7 @@ use super::paired_checkout::CheckoutLimits;
 use super::{ContainedRoot, InventoryLimits, Observation, ReadBudget, ReadError};
 use crate::change_evidence::contained::Identity;
 use crate::change_evidence::scope::ScopeGuard;
+use crate::commands::architecture::proposal::AMBIENT_GIT_CONFIG_OVERRIDE;
 use crate::commands::baseline::extract::capture_snapshot::CaptureSnapshot;
 use crate::state::layout::{Layout, STATE_DIR, StateDirOrigin};
 use gix::ObjectId;
@@ -180,6 +181,7 @@ impl<'a> ProposalCheckout<'a> {
         )
         .map_err(|error| match error {
             "discovery-config-unavailable" | "discovery-config-shape" => "INVALID_CONTEXT_CONFIG",
+            AMBIENT_GIT_CONFIG_OVERRIDE => AMBIENT_GIT_CONFIG_OVERRIDE,
             _ => limit_or(error, "DISCOVERY_FAILED"),
         })?;
         discovery

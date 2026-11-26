@@ -22,6 +22,7 @@ const MAX_PAIRS: usize = 5_000;
 const MAX_REPLY_BYTES: usize = 32 * 1024;
 const MAX_TIME: Duration = Duration::from_secs(3);
 const FILE_CALL: &str = "fileCall";
+pub(crate) const AMBIENT_GIT_CONFIG_OVERRIDE: &str = "AMBIENT_GIT_CONFIG_OVERRIDE";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -105,7 +106,11 @@ pub(crate) struct ProposalPacket {
 
 impl ProposalPacket {
     fn unknown(reason: &str) -> Self {
-        Self::with_reasons(vec![reason.to_owned()])
+        let mut reasons = vec![reason.to_owned()];
+        if reason == AMBIENT_GIT_CONFIG_OVERRIDE {
+            reasons.push("DISCOVERY_FAILED".to_owned());
+        }
+        Self::with_reasons(reasons)
     }
 
     fn with_reasons(mut reason_codes: Vec<String>) -> Self {
