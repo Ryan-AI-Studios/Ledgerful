@@ -991,6 +991,8 @@ The command uses the effective directory selected by `-C`. The supplied spelling
 
 CLI emits one JSON object and exits 0 on evaluated or unknown results. `--json` is optional. Malformed proposal requests exit nonzero with empty stdout and the fixed `ARCHITECTURE_PROPOSAL_INVALID_REQUEST` diagnostic. MCP `architecture_propose` sends the same packet after the structured provenance line. Its tools/call arguments are `from`, `to`, `kind`, `head`, and optional `context`. Evaluated and unknown packets omit `isError`, and malformed proposal arguments return the fixed diagnostic in a sanitized `isError: true` frame. These diagnostics omit request values. The shared JSON-RPC parser retains its existing transport error behavior.
 
+On Linux, a proposal refused because its process inherited a Git or XDG configuration override includes both `AMBIENT_GIT_CONFIG_OVERRIDE` and `DISCOVERY_FAILED`. Check whether the proposal process inherited `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` or `XDG_CONFIG_HOME`. Even an empty variable is treated as present. The packet omits environment values and paths.
+
 ## `architecture check --json` schema (v1)
 
 `architecture check` reports dependency boundaries and strongly connected

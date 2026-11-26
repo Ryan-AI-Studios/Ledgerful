@@ -194,7 +194,7 @@ impl<'a> ScopeRoot<'a> {
     pub(super) fn observe_default_policy_environment(
         &self,
         #[cfg(target_os = "linux")] layout_root: &Path,
-        allow_contained_cwd: bool,
+        for_proposal: bool,
         io: &mut ReadBudget<'_>,
         work: &mut Work<'a>,
     ) -> Result<(super::contained::DefaultAncestorAbsence, [u8; 32]), &'static str> {
@@ -207,7 +207,7 @@ impl<'a> ScopeRoot<'a> {
                     .map_err(read_error)?
                     .ok_or("discovery-ancestor-policy-unavailable")?;
                 let global = owner
-                    .observe_default_global_absence(allow_contained_cwd, io, work)
+                    .observe_default_global_absence(for_proposal, io, work)
                     .map_err(read_error)?
                     .ok_or("discovery-global-policy-unavailable")?;
                 Ok((ancestry, global))
@@ -224,11 +224,17 @@ impl<'a> ScopeRoot<'a> {
                     .root()
                     .observe_default_policy_environment(
                         Path::new(canonical),
-                        allow_contained_cwd,
+                        for_proposal,
                         io,
                         work,
                     )
-                    .map_err(read_error)?
+                    .map_err(|error| match error {
+                        ReadError::InheritedGitConfig if for_proposal => {
+                            crate::commands::architecture::proposal::AMBIENT_GIT_CONFIG_OVERRIDE
+                        }
+                        ReadError::InheritedGitConfig => "discovery-ambient-policy-unavailable",
+                        other => read_error(other),
+                    })?
                     .ok_or("discovery-ambient-policy-unavailable")
             }
             _ => Err("discovery-scope-unavailable"),

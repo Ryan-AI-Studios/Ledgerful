@@ -26,6 +26,9 @@ pub(crate) enum ReadError {
     Redirect,
     #[error("contained repository reads are unavailable on this platform")]
     Unavailable,
+    #[cfg(target_os = "linux")]
+    #[error("an inherited Git or XDG configuration override is present")]
+    InheritedGitConfig,
     #[error("repository observation interrupted")]
     Interrupted,
     #[error("repository observation reached its time budget")]

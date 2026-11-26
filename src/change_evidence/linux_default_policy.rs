@@ -142,7 +142,7 @@ pub(super) fn observe_environment<'a>(
     for name in ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "XDG_CONFIG_HOME"] {
         charge(io, work, 1)?;
         if std::env::var_os(name).is_some() {
-            return Ok(None);
+            return Err(ReadError::InheritedGitConfig);
         }
     }
     let cwd = std::env::current_dir()?;
