@@ -9,14 +9,29 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - `architecture propose` and MCP `architecture_propose` project how one additional resolved cross-file call would affect configured boundaries and observed component cycles. The local read-only operation prepares a context token and rechecks it on replay. Results are advisory and always report `permission: "unknown"`.
+- **Verification selection evidence (0600, #679):** Executed and dry-run `verify` JSON can include `selectionEvidence` to explain per-run selection, coverage, and limitations. The evidence is not a claim that the project suite passed.
+- **Analysis baselines and deltas (0601, #685):** `baseline create`, `list`, `show`, and `compare` store and inspect named file-dependency snapshots. Comparisons require complete, compatible evidence; an incomparable snapshot cannot establish that there were no regressions.
+- **Dependency evidence and readiness (0605, #686):** `index --check --dependency-evidence` reports bounded, read-only evidence about dependency coverage and readiness. Explicit SCIP selection is policy-aware; default index behavior is unchanged.
+- **Revision-bound change evidence (0608, #687):** The engine can attach prepared baseline comparisons and explicitly captured verification attempts to exact Git revisions for the local dashboard. It reports unavailable or partial evidence explicitly.
+- **Dependency boundaries and cycles (0602, #690):** `architecture check` reports observations against configured boundaries, identifies component cycles, and can compare a named baseline. Local failure is opt-in; unavailable evidence is not a clean result.
+- **CLI performance budgets (0564, #674):** `bench --check` compares representative warm workloads against recorded latency and resource budgets. The Windows performance workflow is advisory, not a guarantee of performance on every repository.
 
 ### Changed
 
 - Bare `mcp` and `mcp serve` defer repository setup until an existing tool first needs state. Discovery, ping, and proposal calls leave legacy state and server-level timing and usage untouched.
+- **Timing retention guidance (0594, #671):** Clarified that the suggested 90-day prune removes only older outer timing rows. Recent rows or inner spans can remain, so pruning does not necessarily clear a size warning. Added regression coverage without changing the prune policy.
 
 ### Fixed
 
 - Doctor now reports when it cannot check for the timing table or count its rows. The warning marks the table size as unknown.
+- **Embedded dashboard routes (#689):** Resolve exported directory indexes such as `/changes` and `/changes/` while keeping exact static assets and the fallback for unknown routes.
+- **Linux dependency proposals (#693):** CLI and MCP report `AMBIENT_GIT_CONFIG_OVERRIDE` when inherited Git or XDG configuration prevents passive discovery. The existing refusal remains in place, and the diagnostic does not expose paths or values.
+
+### Security
+
+- **Markdown parser (#672):** Updated the locked `pulldown-cmark` to 0.13.5 for RUSTSEC-2026-0433.
+- **SQLite, ZIP, and QUIC dependencies (#680):** Updated the locked dependencies for RUSTSEC-2026-0459, RUSTSEC-2026-0548, and RUSTSEC-2026-0538. The separate unmaintained `chrono` family advisories are acknowledged in `audit` and `deny`; they were not fixed by these updates.
+- **URL parsing (0610, #683):** Raised the `url` dependency floor to 2.5.9 for RUSTSEC-2026-0592 and updated `form_urlencoded` to 1.2.3.
 
 ## [0.2.18] - 2026-10-27
 
