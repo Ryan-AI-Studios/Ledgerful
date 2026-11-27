@@ -137,7 +137,7 @@ jobs:
         working-directory: ledgerful-frontend
       - run: npm run build
         working-directory: ledgerful-frontend
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ledgerful-web-spa
           path: ledgerful-frontend/out
@@ -279,7 +279,7 @@ jobs:
           set -euo pipefail
           echo "Skipping GitHub artifact attestation: repository is not public and this is not GitHub Enterprise Cloud."
           echo "Attestation will be enabled automatically once the repo is public (when the repository becomes public)."
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.asset }}
           path: |
@@ -350,7 +350,7 @@ jobs:
           set -euo pipefail
           echo "Skipping GitHub artifact attestation: repository is not public and this is not GitHub Enterprise Cloud."
           echo "Attestation will be enabled automatically once the repo is public (when the repository becomes public)."
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ledgerful-mcp-server-npm
           path: mcp-server/dist/*.tgz
@@ -432,7 +432,7 @@ jobs:
           set -euo pipefail
           echo "Skipping GitHub SBOM attestation: repository is not public and this is not GitHub Enterprise Cloud."
           echo "Attestation will be enabled automatically once the repo is public (when the repository becomes public)."
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom
           path: dist/*.cdx.json
@@ -519,7 +519,7 @@ jobs:
               --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
               "$artifact"
           done
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: signatures
           path: |
@@ -708,7 +708,7 @@ jobs:
           head -n 40 bumped/homebrew/ledgerful.rb
           echo "---- scoop/ledgerful.json ----"
           cat bumped/scoop/ledgerful.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bumped-manifests
           path: bumped/
