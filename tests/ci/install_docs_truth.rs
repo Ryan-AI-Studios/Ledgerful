@@ -1054,7 +1054,7 @@ fn smoke_yml_installs_without_building_the_spa() {
         "CARGO_HTTP_MULTIPLEXING",
         "CARGO_NET_RETRY",
         "3d3c42e5aac5ba805825da76410c181273ba90b1",
-        "e2a55d2ffb04f378e9626c28d38b36d230d1e12f",
+        "683b588c487a69d01f6c6ddf40f036ff682cc2c8",
         "6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
         "toolchain: stable",
     ];
