@@ -1,0 +1,70 @@
+name: Engine RSS attribution diagnostic
+
+on:
+  push:
+    branches: [diagnostics/engine-rss-697-v2]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: engine-rss-diagnostic-697
+  cancel-in-progress: false
+
+jobs:
+  engine-rss-diagnostic:
+    name: Engine RSS attribution diagnostic
+    if: github.repository == 'Ryan-AI-Studios/Ledgerful' && github.ref == 'refs/heads/diagnostics/engine-rss-697-v2' && github.event_name == 'push'
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      # Capture Git output privately, including on failure. This public fetch
+      # needs no token, credential helper or credentials in local Git config.
+      - name: Fetch exact diagnostic revision
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $env:GIT_TERMINAL_PROMPT = '0'
+          $raw = Join-Path $env:RUNNER_TEMP 'engine-rss-fetch.log'
+          try {
+            if ($env:GITHUB_SHA -cnotmatch '\A[0-9a-f]{40}\z') { throw 'invalid revision' }
+            git -c init.defaultBranch=diagnostic init --quiet *> $raw
+            if ($LASTEXITCODE -ne 0) { throw 'init failed' }
+            git -c credential.helper= -c core.longpaths=true fetch --no-tags https://github.com/Ryan-AI-Studios/Ledgerful.git refs/heads/diagnostics/engine-rss-697-v2 *> $raw
+            if ($LASTEXITCODE -ne 0) { throw 'fetch failed' }
+            $fetched = git rev-parse FETCH_HEAD 2>> $raw
+            if ($LASTEXITCODE -ne 0 -or $fetched -cne $env:GITHUB_SHA) { throw 'unexpected ref tip' }
+            $parents = git show -s --format=%P $env:GITHUB_SHA 2>> $raw
+            if ($LASTEXITCODE -ne 0 -or $parents -cne 'fa899a99b0a4275ddc07b75e90486c9eb050e9c3') { throw 'unexpected diagnostic parent' }
+            git -c core.autocrlf=false -c core.longpaths=true checkout --detach $env:GITHUB_SHA *> $raw
+            if ($LASTEXITCODE -ne 0) { throw 'checkout failed' }
+          } catch {
+            [Console]::Error.WriteLine('Engine RSS diagnostic checkout failed.')
+            exit 1
+          } finally {
+            Remove-Item -LiteralPath $raw -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Validate projection and collect one paired block
+        shell: pwsh
+        timeout-minutes: 112
+        run: |
+          try {
+            & ./.github/scripts/engine-rss/Test-Projection.ps1 *> $null
+          } catch {
+            [Console]::Error.WriteLine('Engine RSS diagnostic projection tests failed.')
+            exit 1
+          }
+          & ./.github/scripts/engine-rss/Invoke-Diagnostic.ps1
+          exit $LASTEXITCODE
+
+      - name: Retain projected diagnostic
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: engine-rss-diagnostic-697
+          path: engine-rss-public/diagnostic.json
+          retention-days: 1
+          if-no-files-found: ignore
