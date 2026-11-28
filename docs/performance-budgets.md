@@ -1,9 +1,10 @@
 # Performance budgets
 
 This page records the regression ceilings enforced by `ledgerful bench --check`. They are
-**predefined** ceilings derived from a recorded baseline on each measured host class
-(`local-windows-2026-11` and `ci-windows-latest`) and one declared fixture band. They are not
-product targets, not a wall-clock promise for every repository, and not a population claim.
+**predefined** ceilings tied to each measured host class (`local-windows-2026-11` and
+`ci-windows-latest`) and one declared fixture band. Most derive from recorded baselines; the
+hosted `review-warm` latency ceilings have an explicit policy below. These ceilings are not
+product targets, a wall-clock promise for every repository, or a population claim.
 
 The checker is documented in `docs/agent-output-contract.md` (`kind: "perfBudgetCheck"`).
 
@@ -41,8 +42,8 @@ if ($LASTEXITCODE -ne 0) { throw "reference fixture refused: doctor --json exite
 A row accepts any fixture with **1000-3000 files** and **500-5000 commits** whose **root commit**
 is `85ace228532eb523a4840c34d2ae59850b6cb6ae` (the measured clone: 1170 files / 678 commits).
 `fixtureRootCommit` proves shared root ancestry, not content equality; a same-root fork or a
-divergent branch inside the band is an accepted comparability risk, mitigated by the 25 %
-latency headroom, the 50 % peak-RSS headroom and the advisory CI status. A receipt whose root
+divergent branch inside the band is an accepted comparability risk, mitigated by latency and
+peak-RSS headroom (see Derivation and the CI table) and the advisory CI status. A receipt whose root
 commit is `null` (unborn or multi-root fixture) can never qualify.
 
 The two pilot sets disagree by an order of magnitude on `review` (2.2 s on a synthetic service
@@ -77,7 +78,8 @@ order and is not sorted.
 
 ## Derivation
 
-The **only** way a ceiling may be written is from a recorded baseline:
+Ceilings derive from a recorded baseline except for the hosted Windows `review-warm` latency
+ceilings described in the CI table:
 
 - `p50BudgetMs = max(50, ceil10(baselineP50Ms x 5 / 4))`
 - `p95BudgetMs = max(50, ceil10(baselineP95Ms x 5 / 4))`
@@ -85,8 +87,8 @@ The **only** way a ceiling may be written is from a recorded baseline:
   the baseline p95 is at least 500 ms and every baseline sample observed at least one sampling
   tick (`rssMeasuredSamples == n`)
 
-All arithmetic is integer (saturating multiply, truncating divide, then ceiling), so the table is
-deterministic and no hand-rounded number enters it.
+Baseline-derived arithmetic is integer (saturating multiply, truncating divide, then ceiling),
+so those values are deterministic.
 
 Worked example (`status-warm`): baseline p50 `410 ms` -> `410 x 5 / 4 = 512` -> `ceil10(512) = 520`;
 baseline p95 `456 ms` -> `456 x 5 / 4 = 570` -> `ceil10(570) = 570`. Worked example
@@ -130,7 +132,7 @@ default-clock partial is claimed.
 
 ### Current status (2026-11-05)
 
-The committed ceilings are **unchanged** (no recalibration). The pre-repair evidence stands: the
+The committed local ceilings are **unchanged** (no recalibration). The pre-repair evidence stands: the
 independent eight-workload n=10 local proof at `4ff40b0`
 (`receipts/independent-recovery-20261105/`) is `within-budget` for all eight, and the `674d995`
 final-check set was recorded `within-budget` 8/8 by that leg's review (its raw receipts were
@@ -153,14 +155,14 @@ p50 1634 with `pulldown-cmark 0.13.5` rebuilt. That is most consistent with host
 variance in `impact-warm` rather than the dependency patch or a fixture-content change (host
 variance is inferred from the probes, not directly measured). Every other workload is
 `within-budget` in both batteries, and the failing receipts' ten samples are tightly clustered,
-so this is a median shift rather than one slow sample. No ceiling was raised and no row was
+so this is a median shift rather than one slow sample. No local ceiling was raised and no local row was
 re-baselined to make a check pass; the accepted `9b8ccd1` proof records no recalibration either.
 The historical cause of the red medians remains unknown.
 
 The earlier n=10 local check on build `ed24ee23d7bc` is **retained as historical evidence** of
 the same variance class: it reported 7/8 `within-budget`, with `impact-warm` `over-budget`
 (`p50 1763 ms` vs the `1390 ms` ceiling, `p95 1850` vs `1490`) after a host/workload shift that
-reproduced across clones. No ceiling was raised then either. Evidence:
+reproduced across clones. No local ceiling was raised then either. Evidence:
 `conductor/0564-RepresentativePerformanceBudgets/receipts/check/` (failing verdict and the eight
 n=10 receipts) and `receipts/rebaseline-2026-11-05/`; the conductor receipts are authoritative.
 
@@ -211,7 +213,25 @@ Baseline: `2026-11-05`, `buildSha` `85ada8cafb25` (the Run 1 PR merge commit), n
 | `doctor-warm` | 20 | 670 | 732 | 840 | 920 | 247 730 176 | 385 875 968 | 3000 | `met` |
 | `hotspots-warm` | 20 | 602 | 617 | 760 | 780 | 32 133 120 | 50 331 648 | 3000 | `met` |
 | `impact-warm` | 20 | 1 055 | 1 082 | 1 320 | 1 360 | 42 549 248 | 67 108 864 | 10 000 | `met` |
-| `review-warm` | 20 | 6 835 | 6 907 | 8 550 | 8 640 | 141 189 120 | 218 103 808 | 10 000 | `met` |
+| `review-warm` | 20 | 6 835 | 6 907 | 13 000 | 13 200 | 141 189 120 | 218 103 808 | 10 000 | `met` |
+
+The hosted `review-warm` latency policy applies only to `ci-windows-latest` on
+`windows` / `x86_64-pc-windows-msvc`. It replaces the baseline-derived 8,550/8,640 ms
+ceilings with maintained, owner-approved limits of 13,000/13,200 ms p50/p95, enforced by
+`bench --check` in the advisory CI job. This exception may widen, not lower, the baseline-derived
+ceilings. These are policy values, not a new baseline: the
+[#697 hosted run](https://github.com/Ryan-AI-Studios/Ledgerful/actions/runs/45938877970/job/140308319340)
+recorded 12,902/12,995 ms, and a matched local comparison did not establish a consistent
+candidate-specific latency effect. The rounded caps accommodate that hosted observation, but
+would still reject the slower
+[#695](https://github.com/Ryan-AI-Studios/Ledgerful/actions/runs/45913588323/job/140227411176)
+(14,015/14,174 ms) and
+[#698](https://github.com/Ryan-AI-Studios/Ledgerful/actions/runs/45938894966/job/140308369220)
+(13,726/14,036 ms) latency pairs.
+The table's `met` status describes the retained baseline, not later runs. A measured p95 above the
+unchanged 10,000 ms interactive target still reports `not-met`, even below the new ceilings.
+The baseline, local row, RSS limits, timeout and other
+workloads are unchanged. Historical verdicts are not rewritten.
 
 `status-warm` and `search-warm` carry no peak-RSS ceiling for the same reason as their local
 counterparts (p95 below 500 ms).
@@ -223,8 +243,8 @@ and [Run 1-rerun2](https://github.com/Ryan-AI-Studios/Ledgerful/actions/runs/420
 measured from empty trigger commits on the PR branch (identical merge tree, new immutable run
 ids). Every workload's p95 agreed with Run 1 within ±25 % in at least one rerun; `search-warm`
 (−30.5 % on Run 1-rerun) and `doctor-warm` (+165 % on Run 1-rerun2, two slow samples, 1944 and
-1988 ms, in the n=20 set) were the two outliers, each settled by the other run. Rows derive from
-Run 1 only and are never averaged. [Run 2](https://github.com/Ryan-AI-Studios/Ledgerful/actions/runs/42095089818)
+1988 ms, in the n=20 set) were the two outliers, each settled by the other run. The baselines are
+from Run 1 only and are never averaged. [Run 2](https://github.com/Ryan-AI-Studios/Ledgerful/actions/runs/42095089818)
 (head `674d995`, measured merge build `e7cbbf5a0f37`) re-checked the committed rows against its
 own build: all seven `within-budget`, 0 violations / 0 unqualified; its p95s were
 73 / 76 / 1 018 / 720 / 470 / 891 / 5 942 ms for status / search / context / doctor / hotspots /
@@ -236,9 +256,9 @@ Measured refresh cost for the CI rows (`samplerWallMs / n`): `status-warm` 0 ms,
 `review-warm` 101 ms. All are below `max(50 ms, 5 % of p50)` (56, 50, 50, 52 and 341 ms for
 context, doctor, hotspots, impact and review).
 
-The CI check is a sanity band, not a fine regression detector: a 25 % ceiling means a
-run-to-run move inside that band passes by construction, and p50/peak RSS have no cross-run
-agreement.
+The CI check is a sanity band, not a fine regression detector. Baseline-derived latency ceilings
+allow roughly 25 % headroom; hosted `review-warm` uses the wider, explicit limits above.
+The original cross-run comparison did not establish agreement for p50 or peak RSS.
 
 ## Measurement clock vs shipped clocks
 
@@ -261,9 +281,9 @@ bounded monitoring cost is inside the budget. The measured per-sample refresh co
 
 - One OS/arch/language profile, one fixture band, one declared host class per row. There is no
   baseline arm and no comparison to an unmeasured "expected" machine.
-- No p99. At n=10 the p95 is the maximum observed, so one slow sample can false-alarm against the
-  1.25x latency ceiling (a deliberate conservative trade).
-- Headroom factors are stated separately: 25 % for p50/p95, 50 % for peak RSS
+- No p99. At n=10 the p95 is the maximum observed, so one slow sample can false-alarm against a
+  baseline-derived 1.25x latency ceiling (a deliberate conservative trade).
+- Baseline-derived headroom factors are stated separately: 25 % for p50/p95, 50 % for peak RSS
   (`(baseline x 3 + 1) / 2`, rounded up to 16 MiB).
 - `peakRssBytes` is a **sampled peak of the summed descendant working set**. On Windows
   `Process::memory()` is the working set, so a shared DLL or mapped page counts once per process;
@@ -278,7 +298,7 @@ bounded monitoring cost is inside the budget. The measured per-sample refresh co
   sample.
 - No content manifest; `fixtureRootCommit` proves shared root ancestry only.
 - Each CI receipt measures the PR merge ref's own tree, so successive CI receipts can be
-  different in-band trees; the 25 % headroom and advisory status are the mitigation.
+  different in-band trees; the documented headroom and advisory status are the mitigation.
 - The PR path filter covers the measured command surfaces; a dependency change outside it is
   caught only by the weekly run, and GitHub's path-filter diff evaluation cap (up to 3 000
   changed files) means a very large PR may not trigger the PR run at all. The weekly run is the

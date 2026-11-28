@@ -1,9 +1,8 @@
 //! Compiled performance budget table and `bench --check` (0564).
 //!
-//! One row per `(workload, hostClass, os, targetTriple)`. A ceiling is written
-//! only from a recorded baseline by the published arithmetic in spec §3.2; the
-//! table is compiled and reviewed, and `check_with_budgets` exists so tests can
-//! inject a synthetic table. There is no CLI override.
+//! One row per `(workload, hostClass, os, targetTriple)`. Ceilings derive from
+//! recorded baselines, except for the documented hosted Windows review latency
+//! policy. The table is compiled and reviewed; there is no CLI override.
 
 use crate::commands::bench::{StoredBench, os_name};
 use crate::state::storage::timings::percentile_sorted;
@@ -24,6 +23,9 @@ pub(crate) const STATUS_UNMEASURED_RESOURCE: &str = "unmeasured-resource";
 pub(crate) const STATUS_FOREIGN_BUILD: &str = "foreign-build";
 pub(crate) const STATUS_DUPLICATE_RECEIPT: &str = "duplicate-receipt";
 pub(crate) const STATUS_INVALID_RECEIPT: &str = "invalid-receipt";
+
+// Owner-set advisory ceilings, not a new baseline or interactive target.
+const HOSTED_WINDOWS_REVIEW_LATENCY_MS: (i64, i64) = (13_000, 13_200);
 
 /// One budget row: a regression ceiling for a declared host class and fixture band.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -583,8 +585,8 @@ pub(crate) const BUDGETS: &[BudgetRow] = &[
         fixture_min_commits: 500,
         fixture_max_commits: 5000,
         n_min: 10,
-        p50_budget_ms: 8_550,
-        p95_budget_ms: 8_640,
+        p50_budget_ms: HOSTED_WINDOWS_REVIEW_LATENCY_MS.0,
+        p95_budget_ms: HOSTED_WINDOWS_REVIEW_LATENCY_MS.1,
         peak_rss_budget_bytes: Some(218_103_808),
         interactive_target_ms: Some(10_000),
         expected_child_args: &["review", "HEAD~5..HEAD", "--json", "--timeout", "120"],
@@ -642,8 +644,7 @@ pub(crate) fn check_with_budgets(
                 b.receipt_path.as_str(),
             ))
     });
-    // The ceiling arithmetic is the only way a ceiling may be written; a table
-    // that fails its own invariants must never be trusted by a check.
+    // Validate the compiled ceiling policy as well as the shape of the table.
     debug_assert!(
         validate_rows(budgets).is_empty(),
         "budget table violates its own invariants: {:?}",
@@ -1031,11 +1032,37 @@ pub(crate) fn validate_rows(rows: &[BudgetRow]) -> Vec<String> {
             ));
         }
         let baseline = &row.baseline;
-        if row.p50_budget_ms != derive_p50(baseline.p50_ms) {
-            violations.push(format!("{}: p50 ceiling not derived", row.workload));
+        let hosted_windows_review = key
+            == (
+                "review-warm",
+                "ci-windows-latest",
+                "windows",
+                "x86_64-pc-windows-msvc",
+            );
+        let derived = (derive_p50(baseline.p50_ms), derive_p95(baseline.p95_ms));
+        let (expected_p50, expected_p95) = if hosted_windows_review {
+            let (p50, p95) = HOSTED_WINDOWS_REVIEW_LATENCY_MS;
+            if p50 < derived.0 || p95 < derived.1 {
+                violations.push(format!(
+                    "{}: hosted latency policy must not lower baseline-derived ceilings",
+                    row.workload
+                ));
+            }
+            (p50, p95)
+        } else {
+            derived
+        };
+        if row.p50_budget_ms != expected_p50 {
+            violations.push(format!(
+                "{}: p50 ceiling not derived or policy-approved",
+                row.workload
+            ));
         }
-        if row.p95_budget_ms != derive_p95(baseline.p95_ms) {
-            violations.push(format!("{}: p95 ceiling not derived", row.workload));
+        if row.p95_budget_ms != expected_p95 {
+            violations.push(format!(
+                "{}: p95 ceiling not derived or policy-approved",
+                row.workload
+            ));
         }
         match row.peak_rss_budget_bytes {
             Some(bytes) => {
@@ -1350,6 +1377,129 @@ mod tests {
     fn validate_rows__live_table__clean() {
         let violations = validate_rows(BUDGETS);
         assert!(violations.is_empty(), "live BUDGETS table: {violations:?}");
+    }
+
+    fn hosted_review_row() -> &'static BudgetRow {
+        BUDGETS
+            .iter()
+            .find(|row| row.workload == "review-warm" && row.host_class == "ci-windows-latest")
+            .expect("hosted Windows review-warm row")
+    }
+
+    #[test]
+    fn check__hosted_review_latency_policy__preserves_hard_ceilings_and_interactive_target() {
+        let row = hosted_review_row();
+        let make_receipt = |p50_ms, p95_ms, peak_rss_bytes| {
+            // At n=20 the zero-based rounded percentile indices are 10 and 18.
+            let mut samples = [p50_ms; 20];
+            samples[11..].fill(p95_ms);
+            let mut receipt = receipt_for(row.workload, row.host_class, "hosted.json", &samples);
+            receipt.os = row.os.to_string();
+            receipt.target_triple = row.target_triple.to_string();
+            receipt.fixture_root_commit = Some(row.baseline.fixture_root_commit.to_string());
+            receipt.child_args = row
+                .expected_child_args
+                .iter()
+                .map(|arg| (*arg).to_string())
+                .collect();
+            receipt.peak_rss_bytes = Some(peak_rss_bytes);
+            receipt.rss_ticks = 20;
+            receipt.rss_measured_samples = 20;
+            receipt
+        };
+        let at_ceiling = make_receipt(13_000, 13_200, 218_103_808);
+        assert_eq!(
+            compare_to_row(&at_ceiling, row),
+            (STATUS_WITHIN_BUDGET, None)
+        );
+        assert_eq!(row.interactive_target_ms, Some(10_000));
+        let result = check(&[at_ceiling], EMBED).results.remove(0);
+        if row.os == os_name() && row.target_triple == env!("TARGET") {
+            assert_eq!(result.status, STATUS_WITHIN_BUDGET);
+            assert_eq!(result.target_status, "not-met");
+            let below_ceiling = make_receipt(11_000, 12_000, 218_103_808);
+            let result = check(&[below_ceiling], EMBED).results.remove(0);
+            assert_eq!(result.status, STATUS_WITHIN_BUDGET);
+            assert_eq!(result.target_status, "not-met");
+        } else {
+            assert_eq!(result.status, STATUS_UNQUALIFIED_HOST);
+        }
+        for (p50, p95, rss, reason) in [
+            (13_001, 13_200, 218_103_808, "p50"),
+            (13_000, 13_201, 218_103_808, "p95"),
+            (13_000, 13_200, 218_103_809, "peak RSS"),
+        ] {
+            let (status, detail) = compare_to_row(&make_receipt(p50, p95, rss), row);
+            assert_eq!(status, STATUS_OVER_BUDGET);
+            assert!(detail.unwrap().starts_with(reason));
+        }
+    }
+
+    #[test]
+    fn validate_rows__hosted_review_latency_policy__rejects_other_keys_and_arbitrary_caps() {
+        let row = hosted_review_row();
+        let mut arbitrary = row.clone();
+        arbitrary.p50_budget_ms += 10;
+        assert!(
+            validate_rows(&[arbitrary])
+                .iter()
+                .any(|error| error.contains("p50 ceiling"))
+        );
+        let mut arbitrary = row.clone();
+        arbitrary.p95_budget_ms += 10;
+        assert!(
+            validate_rows(&[arbitrary])
+                .iter()
+                .any(|error| error.contains("p95 ceiling"))
+        );
+        let mut arbitrary = row.clone();
+        arbitrary.peak_rss_budget_bytes = Some(218_103_809);
+        assert!(
+            validate_rows(&[arbitrary])
+                .iter()
+                .any(|error| error.contains("RSS ceiling not derived"))
+        );
+
+        for (workload, host_class, os, target_triple) in [
+            ("doctor-warm", row.host_class, row.os, row.target_triple),
+            (
+                row.workload,
+                "local-windows-2026-11",
+                row.os,
+                row.target_triple,
+            ),
+            (row.workload, row.host_class, "linux", row.target_triple),
+            (
+                row.workload,
+                row.host_class,
+                row.os,
+                "aarch64-pc-windows-msvc",
+            ),
+        ] {
+            let mut other = row.clone();
+            other.workload = workload;
+            other.host_class = host_class;
+            other.os = os;
+            other.target_triple = target_triple;
+            assert!(
+                validate_rows(&[other])
+                    .iter()
+                    .any(|error| error.contains("p50 ceiling")),
+                "{workload}/{host_class}/{os}/{target_triple}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_rows__hosted_review_latency_policy__cannot_lower_derived_ceilings() {
+        let mut row = hosted_review_row().clone();
+        row.baseline.p50_ms = 12_000;
+        row.baseline.p95_ms = 13_000;
+        assert!(
+            validate_rows(&[row])
+                .iter()
+                .any(|error| error.contains("must not lower"))
+        );
     }
 
     #[test]
