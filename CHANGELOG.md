@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.19] - 2026-11-26
+
 ### Added
 
 - `architecture propose` and MCP `architecture_propose` project how one additional resolved cross-file call would affect configured boundaries and observed component cycles. The local read-only operation prepares a context token and rechecks it on replay. Results are advisory and always report `permission: "unknown"`.
