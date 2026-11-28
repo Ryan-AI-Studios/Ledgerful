@@ -120,14 +120,14 @@ jobs:
           repository: Ryan-AI-Studios/ledgerful-frontend
           ref: 4a1df7e2be68bb1136a18c52f1ba420801858c89
           path: ledgerful-frontend
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
       - run: npm ci
         working-directory: ledgerful-frontend
       - run: npm run build
         working-directory: ledgerful-frontend
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ledgerful-web-spa
           path: ledgerful-frontend/out
@@ -140,7 +140,7 @@ jobs:
         os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           # Pin exact 1.98.1 (not floating `stable`). Bump = manual PR when we
           # want a new compiler; not Dependabot (it bumps action SHAs, not rustc).
@@ -166,7 +166,7 @@ jobs:
         run: echo "Suite skipped as docs-only; this required check succeeded without compiling." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.changes.outputs.rust == 'true'
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         if: needs.changes.outputs.rust == 'true'
         with:
           toolchain: 1.98.1
@@ -189,7 +189,7 @@ jobs:
         run: echo "Suite skipped as docs-only; this required check succeeded without compiling." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.changes.outputs.rust == 'true'
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         if: needs.changes.outputs.rust == 'true'
         with:
           toolchain: 1.98.1
@@ -215,7 +215,7 @@ jobs:
         run: echo "Suite skipped as docs-only; this required check succeeded without compiling." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.changes.outputs.rust == 'true'
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         if: needs.changes.outputs.rust == 'true'
         with:
           toolchain: 1.98.1
@@ -230,7 +230,7 @@ jobs:
         # Pin mainline v2 release SHA (not per-tool tags). Dependabot shallow-
         # clones cannot resolve diverged nextest/cargo-llvm-cov/cargo-mutants
         # convenience commits (error: no such commit).
-        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: nextest
 
@@ -272,7 +272,7 @@ jobs:
         run: echo "Suite skipped as docs-only; this required check succeeded without compiling." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.changes.outputs.rust == 'true'
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         if: needs.changes.outputs.rust == 'true'
         with:
           toolchain: 1.98.1
@@ -284,7 +284,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
       - name: Install cargo-nextest
         if: needs.changes.outputs.rust == 'true'
-        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: nextest
 
@@ -307,7 +307,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 15
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         timeout-minutes: 15
         with:
           toolchain: 1.98.1
@@ -365,7 +365,7 @@ jobs:
         run: |
           echo "::warning::search-perf was cancelled before it finished (non-blocking). A cancelled run produces no perf result, so no regression is claimed."
           echo "search-perf was cancelled before it finished (non-blocking). A cancelled run produces no perf result, so no regression is claimed." >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         timeout-minutes: 5
         with:
@@ -383,7 +383,7 @@ jobs:
         run: echo "Suite skipped as docs-only; this required check succeeded without compiling." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.changes.outputs.rust == 'true'
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         if: needs.changes.outputs.rust == 'true'
         with:
           toolchain: 1.98.1
@@ -391,7 +391,7 @@ jobs:
         if: needs.changes.outputs.rust == 'true'
       - name: Install cargo-deny and cargo-audit
         if: needs.changes.outputs.rust == 'true'
-        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: cargo-deny,cargo-audit
       - name: cargo deny check
@@ -432,7 +432,7 @@ jobs:
             exit 1
           fi
           echo "PASS: no network dependencies in self-timing modules" >> no-network-result.txt
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: no-network-grep
           path: no-network-result.txt
@@ -443,15 +443,15 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: 1.98.1
           components: llvm-tools-preview
-      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: cargo-llvm-cov,nextest
       - run: cargo llvm-cov nextest --workspace --all-features --html --output-dir coverage/
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-report
           path: coverage/
@@ -463,11 +463,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 15
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         timeout-minutes: 15
         with:
           toolchain: 1.98.1
-      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         timeout-minutes: 15
         with:
           tool: cargo-mutants,nextest
@@ -496,7 +496,7 @@ jobs:
         run: |
           echo "::warning::mutation was cancelled before it finished (non-blocking). A cancelled run produces no mutation result."
           echo "mutation was cancelled before it finished (non-blocking). A cancelled run produces no mutation result." >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         timeout-minutes: 5
         with:
