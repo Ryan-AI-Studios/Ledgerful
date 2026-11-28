@@ -1,0 +1,503 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 2ba4110..75cce73 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -153,7 +153,7 @@ nix = { version = "0.31.3", features = ["signal", "process", "fs"] }
+ 
+ [target.'cfg(target_os = "windows")'.dependencies]
+ windows = { version = "0.62", features = ["Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_System_Com"] }
+-windows-sys = { version = "0.61", features = ["Win32_System_Pipes", "Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Console"] }
++windows-sys = { version = "0.61", features = ["Win32_System_Pipes", "Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_ProcessStatus", "Win32_System_Console"] }
+ 
+ [features]
+ default = ["viz-server", "mcp", "web", "export", "self-timing", "sync"]
+diff --git a/src/commands/bench.rs b/src/commands/bench.rs
+index 608f9fc..017764d 100644
+--- a/src/commands/bench.rs
++++ b/src/commands/bench.rs
+@@ -21,6 +21,10 @@ use std::sync::mpsc;
+ use std::time::{Duration, Instant};
+ use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+ 
++#[cfg(windows)]
++#[path = "bench_memory_attribution.rs"]
++mod memory_attribution;
++
+ /// Child wall budget per sample (spec §5.3).
+ const CHILD_TIMEOUT: Duration = Duration::from_secs(120);
+ const CHILD_MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+@@ -119,7 +123,7 @@ fn execute_run(args: &BenchCliArgs, fixture: &Path) -> Result<()> {
+     let mut rss_measured_samples: u64 = 0;
+     let mut sampler_wall_us: u64 = 0;
+ 
+-    for _ in 0..args.runs {
++    for sample_index in 0..args.runs {
+         if !args.workload.expects_setup() {
+             prepare_cold_fixture(&fixture_canon, &engine_canon)?;
+         }
+@@ -132,6 +136,24 @@ fn execute_run(args: &BenchCliArgs, fixture: &Path) -> Result<()> {
+         // Capture the sample clock the instant the child wait returns, before
+         // the sampler is stopped/joined, so a join sleep cannot inflate it.
+         let (ms, sample) = finish_sample(started, sampler)?;
++        #[cfg(windows)]
++        if let Some(attribution) = &sample.attribution {
++            eprintln!(
++                "LEDGERFUL_RSS_ATTRIBUTION_V1 {}",
++                serde_json::json!({
++                    "sample": sample_index + 1,
++                    "phase": "timed",
++                    "tickIntervalMs": SAMPLER_TICK.as_millis() as u64,
++                    "refreshWallUs": sample.wall_us,
++                    "attributionWallUs": sample.attribution_wall_us,
++                    "nonzeroTicks": sample.ticks,
++                    "sampleMs": ms,
++                    "peak": attribution,
++                })
++            );
++        }
++        #[cfg(not(windows))]
++        let _ = sample_index;
+         match outcome {
+             Ok(captured) => {
+                 if captured.truncated {
+@@ -377,20 +399,24 @@ fn completeness_stop(completeness: Option<&serde_json::Value>) -> Option<&'stati
+     }
+ }
+ 
+-/// Per-timed-sample process-tree working-set sampler (100 ms ticks, mem only).
++/// Per-timed-sample process-tree working-set sampler.
+ struct MemorySampler {
+     stop_tx: mpsc::Sender<()>,
+     handle: Option<std::thread::JoinHandle<SamplerSample>>,
+     stop_delay: Duration,
+ }
+ 
+-#[derive(Debug, Default, Clone, Copy)]
++#[derive(Debug, Default)]
+ struct SamplerSample {
+     peak_bytes: Option<u64>,
+     ticks: u64,
+     /// Wall time inside refreshes, in microseconds. Accumulated in micros so a
+     /// sub-millisecond refresh is not truncated to zero per tick.
+     wall_us: u64,
++    #[cfg(windows)]
++    attribution: Option<memory_attribution::Peak>,
++    #[cfg(windows)]
++    attribution_wall_us: u64,
+ }
+ 
+ impl MemorySampler {
+@@ -406,6 +432,10 @@ impl MemorySampler {
+         let handle = std::thread::spawn(move || {
+             let mut system = System::new();
+             let mut sample = SamplerSample::default();
++            #[cfg(windows)]
++            let probe = (std::env::var_os("LEDGERFUL_BENCH_RSS_ATTRIBUTION").as_deref()
++                == Some(std::ffi::OsStr::new("1")))
++            .then(|| memory_attribution::Probe::new(root_pid));
+             loop {
+                 match stop_rx.recv_timeout(SAMPLER_TICK) {
+                     Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+@@ -437,6 +467,16 @@ impl MemorySampler {
+                 // invariant when a child exits between spawn and the first tick.
+                 if bytes > 0 {
+                     sample.ticks += 1;
++                    #[cfg(windows)]
++                    if let Some(probe) = &probe
++                        && sample.peak_bytes.is_none_or(|old| bytes > old)
++                    {
++                        let peak = probe.capture(&system, &rows, bytes, sample.ticks);
++                        sample.attribution_wall_us = sample
++                            .attribution_wall_us
++                            .saturating_add(peak.attribution_wall_us);
++                        sample.attribution = Some(peak);
++                    }
+                     sample.peak_bytes =
+                         Some(sample.peak_bytes.map_or(bytes, |seen| seen.max(bytes)));
+                 }
+@@ -475,6 +515,14 @@ fn finish_sample(started: Instant, sampler: MemorySampler) -> Result<(i64, Sampl
+ 
+ /// Sum working set for strict descendants of `root`; the runner itself is excluded.
+ fn tree_rss(rows: &[(u32, Option<u32>, u64)], root: u32) -> u64 {
++    let mut total = 0_u64;
++    visit_tree(rows, root, |_, _, memory| {
++        total = total.saturating_add(memory)
++    });
++    total
++}
++
++fn visit_tree(rows: &[(u32, Option<u32>, u64)], root: u32, mut visit: impl FnMut(u32, u32, u64)) {
+     let mut children: std::collections::BTreeMap<u32, Vec<u32>> = std::collections::BTreeMap::new();
+     for (pid, parent, _) in rows {
+         if let Some(parent) = parent {
+@@ -484,7 +532,6 @@ fn tree_rss(rows: &[(u32, Option<u32>, u64)], root: u32) -> u64 {
+     let mut seen: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+     seen.insert(root);
+     let mut stack = vec![(root, 0_usize)];
+-    let mut total = 0_u64;
+     while let Some((pid, depth)) = stack.pop() {
+         // Bound the walk: a synthetic or corrupted tree must not traverse
+         // without limit. Depth 1 is a direct child; depth 32 is still counted.
+@@ -497,14 +544,13 @@ fn tree_rss(rows: &[(u32, Option<u32>, u64)], root: u32) -> u64 {
+                 // not loop forever.
+                 if seen.insert(*kid) {
+                     if let Some((_, _, memory)) = rows.iter().find(|(id, _, _)| id == kid) {
+-                        total = total.saturating_add(*memory);
++                        visit(*kid, pid, *memory);
+                     }
+                     stack.push((*kid, depth + 1));
+                 }
+             }
+         }
+     }
+-    total
+ }
+ 
+ /// Fixture identity: file count is part of the id (`"<count>:<hash>"`).
+@@ -1959,8 +2005,13 @@ mod tests {
+     #[test]
+     fn memory_sampler__live_child__observes_its_working_set() {
+         let mut child = if cfg!(windows) {
+-            Command::new("cmd")
+-                .args(["/C", "ping", "-n", "3", "127.0.0.1"])
++            Command::new("powershell.exe")
++                .args([
++                    "-NoProfile",
++                    "-NonInteractive",
++                    "-Command",
++                    "Start-Sleep -Seconds 2",
++                ])
+                 .stdout(Stdio::null())
+                 .stderr(Stdio::null())
+                 .spawn()
+@@ -1978,6 +2029,31 @@ mod tests {
+         let sample = sampler.stop_and_join().expect("sampler thread");
+         // Let the child exit on its own so the test leaves nothing running.
+         let _ = child.wait();
++        #[cfg(windows)]
++        if std::env::var("LEDGERFUL_BENCH_RSS_ATTRIBUTION").as_deref() == Ok("1") {
++            let peak = serde_json::to_value(sample.attribution.as_ref().expect("peak attribution"))
++                .expect("serialize attribution");
++            assert_eq!(
++                peak["sampledTreeWorkingSetBytes"].as_u64(),
++                sample.peak_bytes
++            );
++            let processes = peak["processes"].as_array().expect("process rows");
++            let row = processes
++                .iter()
++                .find(|row| row["pid"] == child.id())
++                .expect("owned child attributed");
++            assert_eq!(row["parentPid"], std::process::id());
++            assert_eq!(row["parentCreationFiletime"], peak["rootCreationFiletime"]);
++            assert!(row["rereadPrivateCommitBytes"].as_u64().unwrap() > 0);
++            let attributed: u64 = processes
++                .iter()
++                .map(|row| row["sampledWorkingSetBytes"].as_u64().unwrap())
++                .sum();
++            assert_eq!(
++                attributed + peak["unattributedWorkingSetBytes"].as_u64().unwrap(),
++                sample.peak_bytes.unwrap()
++            );
++        }
+         assert!(
+             sample.ticks >= 1,
+             "a live child must be observed at least once"
+diff --git a/src/commands/bench_memory_attribution.rs b/src/commands/bench_memory_attribution.rs
+new file mode 100644
+index 0000000..0cf374b
+--- /dev/null
++++ b/src/commands/bench_memory_attribution.rs
+@@ -0,0 +1,293 @@
++use serde::Serialize;
++use std::collections::BTreeMap;
++use std::ffi::OsStr;
++use std::mem::size_of_val;
++use std::os::windows::io::{FromRawHandle, OwnedHandle};
++use std::time::{Instant, SystemTime, UNIX_EPOCH};
++use sysinfo::{Pid, System};
++use windows_sys::Win32::Foundation::FILETIME;
++use windows_sys::Win32::System::ProcessStatus::{
++    K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX,
++};
++use windows_sys::Win32::System::Threading::{
++    GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
++};
++
++const FILETIME_UNIX_EPOCH: u64 = 116_444_736_000_000_000;
++const FILETIME_TICKS_PER_SECOND: u64 = 10_000_000;
++type NativeReading = (u64, Option<(u64, u64)>);
++
++#[derive(Debug, Serialize)]
++#[serde(rename_all = "camelCase")]
++pub(super) struct Peak {
++    utc_unix_ms: u64,
++    nonzero_tick: u64,
++    root_pid: u32,
++    root_creation_filetime: Option<u64>,
++    sampled_tree_working_set_bytes: u64,
++    unattributed_working_set_bytes: u64,
++    missed_reads: u64,
++    rejected_identity: u64,
++    pub(super) attribution_wall_us: u64,
++    processes: Vec<Row>,
++}
++
++#[derive(Debug, Serialize)]
++#[serde(rename_all = "camelCase")]
++struct Row {
++    pid: u32,
++    parent_pid: u32,
++    creation_filetime: u64,
++    parent_creation_filetime: u64,
++    image: String,
++    sampled_working_set_bytes: u64,
++    reread_working_set_bytes: u64,
++    reread_private_commit_bytes: u64,
++}
++
++pub(super) struct Probe {
++    root: u32,
++    creation: Option<u64>,
++}
++
++impl Probe {
++    pub(super) fn new(root: u32) -> Self {
++        Self {
++            root,
++            creation: read(root, false).map(|(creation, _)| creation),
++        }
++    }
++
++    pub(super) fn capture(
++        &self,
++        system: &System,
++        rows: &[(u32, Option<u32>, u64)],
++        total: u64,
++        nonzero_tick: u64,
++    ) -> Peak {
++        self.capture_with(
++            rows,
++            total,
++            nonzero_tick,
++            |pid| {
++                system
++                    .process(Pid::from_u32(pid))
++                    .map(|process| (process.start_time(), process.name()))
++            },
++            read,
++        )
++    }
++
++    fn capture_with<'a>(
++        &self,
++        rows: &[(u32, Option<u32>, u64)],
++        total: u64,
++        nonzero_tick: u64,
++        snapshot: impl Fn(u32) -> Option<(u64, &'a OsStr)>,
++        reread: impl Fn(u32, bool) -> Option<NativeReading>,
++    ) -> Peak {
++        let started = Instant::now();
++        let mut peak = Peak {
++            utc_unix_ms: SystemTime::now()
++                .duration_since(UNIX_EPOCH)
++                .unwrap_or_default()
++                .as_millis() as u64,
++            nonzero_tick,
++            root_pid: self.root,
++            root_creation_filetime: self.creation,
++            sampled_tree_working_set_bytes: total,
++            unattributed_working_set_bytes: total,
++            missed_reads: 0,
++            rejected_identity: 0,
++            attribution_wall_us: 0,
++            processes: Vec::new(),
++        };
++        let mut verified = BTreeMap::new();
++        if let Some((creation, _)) = reread(self.root, false)
++            && Some(creation) == self.creation
++        {
++            verified.insert(self.root, creation);
++        } else {
++            peak.missed_reads += 1;
++        }
++
++        super::visit_tree(rows, self.root, |pid, parent_pid, sampled| {
++            let Some(&parent_creation) = verified.get(&parent_pid) else {
++                peak.rejected_identity += 1;
++                return;
++            };
++            let Some((snapshot_start, image)) = snapshot(pid) else {
++                peak.missed_reads += 1;
++                return;
++            };
++            let Some((creation, Some((working_set, private_commit)))) = reread(pid, true) else {
++                peak.missed_reads += 1;
++                return;
++            };
++            if !identity_matches(creation, parent_creation, snapshot_start) {
++                peak.rejected_identity += 1;
++                return;
++            }
++            verified.insert(pid, creation);
++            peak.unattributed_working_set_bytes -= sampled;
++            peak.processes.push(Row {
++                pid,
++                parent_pid,
++                creation_filetime: creation,
++                parent_creation_filetime: parent_creation,
++                image: image
++                    .to_string_lossy()
++                    .chars()
++                    .filter(|c| c.is_ascii_alphanumeric() || "._-".contains(*c))
++                    .take(80)
++                    .collect(),
++                sampled_working_set_bytes: sampled,
++                reread_working_set_bytes: working_set,
++                reread_private_commit_bytes: private_commit,
++            });
++        });
++        peak.processes.sort_by_key(|row| row.pid);
++        peak.attribution_wall_us = started.elapsed().as_micros() as u64;
++        peak
++    }
++}
++
++fn identity_matches(creation: u64, parent_creation: u64, snapshot_start: u64) -> bool {
++    creation >= parent_creation
++        && creation
++            .checked_sub(FILETIME_UNIX_EPOCH)
++            .is_some_and(|ticks| ticks / FILETIME_TICKS_PER_SECOND == snapshot_start)
++}
++
++fn read(pid: u32, memory: bool) -> Option<NativeReading> {
++    // SAFETY: the PID is a snapshot candidate. A non-null handle transfers to
++    // OwnedHandle and all output buffers are initialized and correctly sized.
++    unsafe {
++        let raw = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
++        if raw.is_null() {
++            return None;
++        }
++        let _handle = OwnedHandle::from_raw_handle(raw);
++        let mut creation = FILETIME::default();
++        let mut exit = FILETIME::default();
++        let mut kernel = FILETIME::default();
++        let mut user = FILETIME::default();
++        if GetProcessTimes(raw, &mut creation, &mut exit, &mut kernel, &mut user) == 0 {
++            return None;
++        }
++        let creation =
++            (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
++        if !memory {
++            return Some((creation, None));
++        }
++        let mut counters = PROCESS_MEMORY_COUNTERS_EX::default();
++        let length = size_of_val(&counters) as u32;
++        counters.cb = length;
++        if K32GetProcessMemoryInfo(
++            raw,
++            (&mut counters as *mut PROCESS_MEMORY_COUNTERS_EX).cast(),
++            length,
++        ) == 0
++        {
++            return None;
++        }
++        Some((
++            creation,
++            Some((counters.WorkingSetSize as u64, counters.PrivateUsage as u64)),
++        ))
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn peak_reconciles_original_samples_after_failed_rereads() {
++        let first = FILETIME_UNIX_EPOCH + 10 * FILETIME_TICKS_PER_SECOND;
++        let probe = Probe {
++            root: 1,
++            creation: Some(first),
++        };
++        let rows = [
++            (1, None, 999),
++            (2, Some(1), 10),
++            (3, Some(2), 20),
++            (4, Some(1), 40),
++            (5, Some(4), 80),
++            (6, Some(1), 160),
++            (7, Some(6), 320),
++        ];
++        let total = super::super::tree_rss(&rows, 1);
++        let peak = probe.capture_with(
++            &rows,
++            total,
++            3,
++            |_| Some((10, OsStr::new("test.exe"))),
++            |pid, memory| match (pid, memory) {
++                (1, false) => Some((first, None)),
++                (2, true) => Some((first + 2, Some((1000, 2000)))),
++                (3, true) => Some((first + 3, Some((2000, 4000)))),
++                (4, true) => None,
++                (6, true) => Some((first - 1, Some((4000, 8000)))),
++                _ => panic!("unexpected reread of PID {pid}"),
++            },
++        );
++        let receipt = serde_json::to_value(peak).expect("serializable peak receipt");
++        assert_eq!(receipt["nonzeroTick"], 3);
++        assert_eq!(receipt["sampledTreeWorkingSetBytes"], 630);
++        assert_eq!(receipt["unattributedWorkingSetBytes"], 600);
++        assert_eq!(receipt["missedReads"], 1);
++        assert_eq!(receipt["rejectedIdentity"], 3);
++        let processes = receipt["processes"].as_array().expect("process rows");
++        assert_eq!(processes.len(), 2);
++        assert_eq!(processes[0]["pid"], 2);
++        assert_eq!(processes[0]["parentPid"], 1);
++        assert_eq!(processes[0]["sampledWorkingSetBytes"], 10);
++        assert_eq!(processes[0]["rereadWorkingSetBytes"], 1000);
++        assert_eq!(processes[1]["pid"], 3);
++        assert_eq!(processes[1]["parentPid"], 2);
++        assert_eq!(processes[1]["sampledWorkingSetBytes"], 20);
++        assert_eq!(processes[1]["rereadWorkingSetBytes"], 2000);
++        assert_eq!(processes[1]["parentCreationFiletime"], first + 2);
++        let attributed: u64 = processes
++            .iter()
++            .map(|row| row["sampledWorkingSetBytes"].as_u64().unwrap())
++            .sum();
++        assert_eq!(
++            attributed + receipt["unattributedWorkingSetBytes"].as_u64().unwrap(),
++            total
++        );
++    }
++
++    #[test]
++    fn rejects_reused_pid_with_incompatible_snapshot_or_parent() {
++        let first = FILETIME_UNIX_EPOCH + 10 * FILETIME_TICKS_PER_SECOND;
++        assert!(identity_matches(first + 1, first, 10));
++        assert!(!identity_matches(first, first + 1, 10));
++        assert!(!identity_matches(
++            first + FILETIME_TICKS_PER_SECOND,
++            first,
++            10
++        ));
++    }
++
++    #[test]
++    fn reads_known_touched_allocation_and_detects_missing_pid() {
++        let pid = std::process::id();
++        let (creation, Some((_, before))) = read(pid, true).expect("initial counters") else {
++            panic!("missing counters")
++        };
++        let allocation = vec![0xA5_u8; 32 * 1024 * 1024];
++        std::hint::black_box(&allocation);
++        let (after_creation, Some((working_set, after))) = read(pid, true).expect("final counters")
++        else {
++            panic!("missing counters")
++        };
++        std::hint::black_box(&allocation);
++        assert_eq!(after_creation, creation);
++        assert!(working_set >= 32 * 1024 * 1024);
++        assert!(after >= before + 24 * 1024 * 1024);
++        assert!(read(0, true).is_none());
++    }
++}
